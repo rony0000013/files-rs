@@ -1,0 +1,12 @@
+/target
+.env
+
+# ByteRover — .brv/context-tree/ contains a nested .git managed by brv vc.
+# Without these entries, `git add .` fails with "does not have a commit checked out".
+.brv/
+Files-community
+gpui-examples
+graphify-out
+logs
+all_files.txt
+*errors.txt
