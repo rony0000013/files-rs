@@ -98,6 +98,13 @@ pub struct UserPreferences {
 #[allow(dead_code)]
 pub struct SidebarConfig {
     pub pinned_locations: Vec<String>,
+    /// Persisted sidebar width in pixels (None = use default)
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
+    /// Persisted section display order (list of SectionId names, e.g. "Favorites", "Libraries", ...)
+    /// None = use default order from build_all_sections()
+    #[serde(default)]
+    pub section_order: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

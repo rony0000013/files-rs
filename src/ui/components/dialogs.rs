@@ -110,11 +110,55 @@ pub enum SettingsTab {
 
 pub struct DialogsView;
 
+/// Pre-read data for the Settings dialog to avoid BorrowMutError during render.
+#[derive(Debug, Clone)]
+pub struct SettingsPreReadData {
+    pub active_tab: SettingsTab,
+    pub config: crate::config::config::AppConfig,
+    pub action_pairs: Vec<(crate::core::action_registry::ActionKind, crate::core::action_registry::KeyCombination)>,
+    pub toolbar_new_folder: bool,
+    pub toolbar_new_file: bool,
+    pub toolbar_cut: bool,
+    pub toolbar_copy: bool,
+    pub toolbar_paste: bool,
+    pub toolbar_details_view: bool,
+    pub toolbar_grid_view: bool,
+    pub toolbar_columns_view: bool,
+    pub toolbar_preview_pane: bool,
+    pub toolbar_info_pane: bool,
+}
+
 impl DialogsView {
+    /// Pre-read settings data before rendering to avoid BorrowMutError.
+    /// Must be called from the render method where self.state is accessible.
+    pub fn pre_read_settings_data(
+        state: &crate::app::AppState,
+        cx: &mut Context<crate::app::AppWindow>,
+    ) -> SettingsPreReadData {
+        let config = state.settings.read(cx).config().clone();
+        let action_pairs = state.action_registry.iter();
+        let tb = &state.main_view.toolbar_customization;
+        SettingsPreReadData {
+            active_tab: state.active_settings_tab,
+            config,
+            action_pairs,
+            toolbar_new_folder: tb.is_visible("new_folder"),
+            toolbar_new_file: tb.is_visible("new_file"),
+            toolbar_cut: tb.is_visible("cut"),
+            toolbar_copy: tb.is_visible("copy"),
+            toolbar_paste: tb.is_visible("paste"),
+            toolbar_details_view: tb.is_visible("details_view"),
+            toolbar_grid_view: tb.is_visible("grid_view"),
+            toolbar_columns_view: tb.is_visible("columns_view"),
+            toolbar_preview_pane: tb.is_visible("preview_pane"),
+            toolbar_info_pane: tb.is_visible("info_pane"),
+        }
+    }
     pub fn build(
         dialog: &DialogType,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
+        settings_data: Option<SettingsPreReadData>,
     ) -> impl IntoElement {
         let content = match dialog {
             DialogType::Rename {
@@ -135,7 +179,8 @@ impl DialogsView {
                 Self::build_dynamic_dialog(title, message, view.clone()).into_any_element()
             }
             DialogType::Settings => {
-                Self::build_settings_dialog(view.clone(), cx).into_any_element()
+                let data = settings_data.expect("SettingsPreReadData required for Settings dialog");
+                Self::build_settings_dialog(&data, view.clone()).into_any_element()
             }
             DialogType::CommandPalette => {
                 Self::build_command_palette_dialog(view.clone()).into_any_element()
@@ -705,21 +750,12 @@ impl DialogsView {
     }
 
     fn build_settings_dialog(
+        data: &SettingsPreReadData,
         view: Entity<crate::app::AppWindow>,
-        cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        tracing::info!("DEBUG: Building Settings dialog");
+        let active_tab = data.active_tab;
+        let config = &data.config;
         let v_close = view.clone();
-        let app = view.read(cx);
-        let active_tab = app.state.active_settings_tab;
-        let _selected_item = app
-            .state
-            .main_view
-            .selected_indices
-            .iter()
-            .next()
-            .and_then(|&i| app.state.main_view.items.get(i));
-        let settings_model = app.state.settings.read(cx).config().clone();
 
         div()
             .flex_col()
@@ -764,6 +800,7 @@ impl DialogsView {
                         // Settings Sidebar
                         div()
                             .w(px(180.0))
+                            .flex()
                             .flex_col()
                             .border_r(px(1.0))
                             .border_color(rgba(UiConstants::DIVIDER_RGBA))
@@ -831,22 +868,62 @@ impl DialogsView {
                             )),
                     )
                     .child(
-                        // Settings Content
+                        // Settings Content (scrollable)
                         div()
-                            .flex_grow()
-                            .flex_col()
-                            .max_h(px(300.0))
                             .id("settings-scroll")
-                            .p(px(24.0))
+                            .flex_col()
+                            .w_full()
+                            .flex_grow()
+                            .overflow_y_scroll()
+                            .px(px(24.0))
+                            .py(px(16.0))
                             .gap(px(16.0))
                             .child(Self::build_settings_content(
                                 active_tab,
-                                &settings_model,
+                                config,
+                                data,
                                 view.clone(),
-                                cx,
                             )),
                     ),
             )
+    }
+
+    fn settings_group_header(label: &str) -> impl IntoElement {
+        div()
+            .text_size(px(11.0))
+            .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+            .font_weight(FontWeight(600.0))
+            .mt(px(12.0))
+            .mb(px(4.0))
+            .child(label.to_string())
+    }
+
+    fn build_compact_btn(
+        label: &str,
+        active: bool,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let mut btn = div()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.0))
+            .on_mouse_down(MouseButton::Left, on_click);
+
+        if active {
+            btn = btn.bg(rgba(UiConstants::ACCENT_RGBA));
+        } else {
+            btn = btn
+                .bg(rgba(0xFFFFFF15u32))
+                .border(px(1.0))
+                .border_color(rgba(UiConstants::STROKE_RGBA))
+                .hover(|s| s.bg(rgba(0xFFFFFF25u32)));
+        }
+        btn.child(label.to_string())
     }
 
     fn settings_tab_btn(
@@ -884,126 +961,151 @@ impl DialogsView {
     fn build_settings_content<'a>(
         tab: SettingsTab,
         config: &'a crate::config::config::AppConfig,
+        data: &'a SettingsPreReadData,
         view: Entity<crate::app::AppWindow>,
-        cx: &'a mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement + 'a {
         match tab {
             SettingsTab::General => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("General"))
+                div().flex_col().gap(px(4.0))
+                    // Group: Behavior
+                    .child(Self::settings_group_header("Behavior"))
                     .child(Self::settings_toggle("Show hidden files", config.preferences.show_hidden_files, "show_hidden_files", view.clone()))
                     .child(Self::settings_toggle("Show dot files", config.preferences.show_dot_files, "show_dot_files", view.clone()))
+                    .child(Self::settings_toggle("Show file extensions", config.preferences.show_file_extensions, "show_file_extensions", view.clone()))
                     .child(Self::settings_toggle("Confirm on delete", config.preferences.confirm_delete, "confirm_delete", view.clone()))
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Startup
+                    .child(Self::settings_group_header("Startup"))
+                    .child(div().flex().items_center().justify_between()
+                        .child(div().text_size(px(13.0)).text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)).child("Restore last session"))
+                        .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_MUTED_RGB)).child("Coming soon"))
+                    )
             }
             SettingsTab::Appearance => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Appearance"))
-                    .child(Self::settings_toggle("Mica Effect (Windows 11)", config.appearance.mica_enabled, "mica_enabled", view.clone()))
-                    .child(Self::settings_toggle("Mica Alt Backdrop (saturated)", config.appearance.mica_alt, "mica_alt", view.clone()))
-                    .child(Self::settings_toggle("Show file extensions", config.preferences.show_file_extensions, "show_file_extensions", view.clone()))
-                    .child(Self::settings_toggle("Show hidden files", config.preferences.show_hidden_files, "show_hidden_files", view.clone()))
-                    .child(Self::settings_toggle("Show dot files", config.preferences.show_dot_files, "show_dot_files", view.clone()))
-                    .child(div().mt(px(8.0)).h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)))
-                    .child(div().mt(px(8.0)).font_weight(FontWeight(600.0)).child("Custom Fonts"))
-                    .child(Self::settings_text_input("Font Family", &config.appearance.font_family, "font_family", view.clone()))
-                    .child(Self::settings_number_input("Font Size", config.appearance.font_size, "font_size", view.clone()))
+                div().flex_col().gap(px(4.0))
+                    // Group: Theme
+                    .child(Self::settings_group_header("Theme"))
+                    .child(Self::settings_toggle("Mica effect", config.appearance.mica_enabled, "mica_enabled", view.clone()))
+                    .child(Self::settings_toggle("Mica alt backdrop (saturated)", config.appearance.mica_alt, "mica_alt", view.clone()))
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Fonts
+                    .child(Self::settings_group_header("Fonts"))
+                    .child(Self::settings_text_input("Font family", &config.appearance.font_family, "font_family", view.clone()))
+                    .child(Self::settings_number_input("Font size", config.appearance.font_size, "font_size", view.clone()))
             }
             SettingsTab::Layout => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Layout"))
+                div().flex_col().gap(px(4.0))
+                    // Group: Default View
+                    .child(Self::settings_group_header("Default View"))
+                    .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).mb(px(4.0)).child("View mode"))
+                    .child(div().flex().gap(px(4.0)).flex_wrap()
+                        .child(Self::build_compact_btn("Details", config.view.default_view_mode == crate::config::config::ViewMode::Details, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::Details; }); }
+                        }))
+                        .child(Self::build_compact_btn("Grid", config.view.default_view_mode == crate::config::config::ViewMode::Grid, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::Grid; }); }
+                        }))
+                        .child(Self::build_compact_btn("List", config.view.default_view_mode == crate::config::config::ViewMode::List, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::List; }); }
+                        }))
+                        .child(Self::build_compact_btn("Columns", config.view.default_view_mode == crate::config::config::ViewMode::Columns, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::Columns; }); }
+                        }))
+                        .child(Self::build_compact_btn("Tiles", config.view.default_view_mode == crate::config::config::ViewMode::Tiles, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::Tiles; }); }
+                        }))
+                        .child(Self::build_compact_btn("Cards", config.view.default_view_mode == crate::config::config::ViewMode::Cards, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.view_mode = crate::config::config::ViewMode::Cards; }); }
+                        }))
+                    )
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Sorting
+                    .child(Self::settings_group_header("Sorting"))
                     .child(Self::settings_toggle("Folders on top", config.view.folder_on_top, "folder_on_top", view.clone()))
-                    .child(Self::settings_toggle("Show hidden files", config.preferences.show_hidden_files, "show_hidden_files", view.clone()))
-                    .child(div().mt(px(8.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Default View Mode"))
-                    .child(div().flex().gap(px(8.0))
-                        .child(Self::build_button("Details", config.view.default_view_mode == crate::config::config::ViewMode::Details, |_ , _, _| {}))
-                        .child(Self::build_button("Grid", config.view.default_view_mode == crate::config::config::ViewMode::Grid, |_ , _, _| {}))
-                        .child(Self::build_button("List", config.view.default_view_mode == crate::config::config::ViewMode::List, |_ , _, _| {}))
+                    .child(div().mt(px(8.0)).text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Sort by"))
+                    .child(div().flex().gap(px(4.0)).flex_wrap()
+                        .child(Self::build_compact_btn("Name", config.view.sort_by == crate::config::config::SortBy::Name, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::Name; }); }
+                        }))
+                        .child(Self::build_compact_btn("Date modified", config.view.sort_by == crate::config::config::SortBy::DateModified, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::DateModified; }); }
+                        }))
+                        .child(Self::build_compact_btn("Date created", config.view.sort_by == crate::config::config::SortBy::DateCreated, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::DateCreated; }); }
+                        }))
+                        .child(Self::build_compact_btn("Size", config.view.sort_by == crate::config::config::SortBy::Size, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::Size; }); }
+                        }))
+                        .child(Self::build_compact_btn("Type", config.view.sort_by == crate::config::config::SortBy::Type, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::Type; }); }
+                        }))
+                        .child(Self::build_compact_btn("Tag", config.view.sort_by == crate::config::config::SortBy::Tag, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.sort.column = crate::config::config::SortBy::Tag; }); }
+                        }))
                     )
-                    .child(div().mt(px(8.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Group By"))
-                    .child(div().flex_col().gap(px(4.0))
-                        .child(div().flex().gap(px(4.0))
-                            .child(Self::build_button("None", config.view.group_by == crate::config::config::GroupColumn::None, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::None;
-                                    });
-                                }
-                            }))
-                            .child(Self::build_button("Name", config.view.group_by == crate::config::config::GroupColumn::Name, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::Name;
-                                    });
-                                }
-                            }))
-                            .child(Self::build_button("Date Modified", config.view.group_by == crate::config::config::GroupColumn::DateModified, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::DateModified;
-                                    });
-                                }
-                            }))
-                        )
-                        .child(div().flex().gap(px(4.0))
-                            .child(Self::build_button("Date Created", config.view.group_by == crate::config::config::GroupColumn::DateCreated, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::DateCreated;
-                                    });
-                                }
-                            }))
-                            .child(Self::build_button("Size", config.view.group_by == crate::config::config::GroupColumn::Size, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::Size;
-                                    });
-                                }
-                            }))
-                            .child(Self::build_button("File Type", config.view.group_by == crate::config::config::GroupColumn::FileType, {
-                                let v = view.clone();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, _| {
-                                        this.state.main_view.group_by = crate::config::config::GroupColumn::FileType;
-                                    });
-                                }
-                            }))
-                        )
+                    .child(div().mt(px(8.0)).text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Group by"))
+                    .child(div().flex().gap(px(4.0)).flex_wrap()
+                        .child(Self::build_compact_btn("None", config.view.group_by == crate::config::config::GroupColumn::None, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::None; }); }
+                        }))
+                        .child(Self::build_compact_btn("Name", config.view.group_by == crate::config::config::GroupColumn::Name, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::Name; }); }
+                        }))
+                        .child(Self::build_compact_btn("Date modified", config.view.group_by == crate::config::config::GroupColumn::DateModified, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::DateModified; }); }
+                        }))
+                        .child(Self::build_compact_btn("Date created", config.view.group_by == crate::config::config::GroupColumn::DateCreated, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::DateCreated; }); }
+                        }))
+                        .child(Self::build_compact_btn("Size", config.view.group_by == crate::config::config::GroupColumn::Size, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::Size; }); }
+                        }))
+                        .child(Self::build_compact_btn("File type", config.view.group_by == crate::config::config::GroupColumn::FileType, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::FileType; }); }
+                        }))
+                        .child(Self::build_compact_btn("Sync status", config.view.group_by == crate::config::config::GroupColumn::SyncStatus, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::SyncStatus; }); }
+                        }))
+                        .child(Self::build_compact_btn("Tag", config.view.group_by == crate::config::config::GroupColumn::Tag, {
+                            let v = view.clone(); move |_, _, cx| { v.update(cx, |this, _| { this.state.main_view.group_by = crate::config::config::GroupColumn::Tag; }); }
+                        }))
                     )
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Columns
+                    .child(Self::settings_group_header("Columns"))
+                    .child(Self::build_settings_row("Column width", "Auto (adaptive)"))
             }
             SettingsTab::Folders => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Folders"))
-                    .child(Self::settings_toggle("Show file extensions", config.preferences.show_file_extensions, "show_file_extensions", view.clone()))
-                    .child(Self::settings_toggle("Show dot files", config.preferences.show_dot_files, "show_dot_files", view.clone()))
+                div().flex_col().gap(px(4.0))
+                    // Group: Visibility
+                    .child(Self::settings_group_header("Visibility"))
                     .child(Self::settings_toggle("Show hidden files", config.preferences.show_hidden_files, "show_hidden_files", view.clone()))
+                    .child(Self::settings_toggle("Show dot files", config.preferences.show_dot_files, "show_dot_files", view.clone()))
                     .child(Self::settings_toggle("Show protected system files", config.preferences.show_system_files, "show_system_files", view.clone()))
+                    .child(Self::settings_toggle("Show file extensions", config.preferences.show_file_extensions, "show_file_extensions", view.clone()))
             }
             SettingsTab::Tags => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Tags"))
-                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Manage your file tags here."))
-                    .child(div().flex_col().gap(px(4.0))
+                div().flex_col().gap(px(4.0))
+                    // Group: File Tags
+                    .child(Self::settings_group_header("File Tags"))
+                    .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Manage your file tags"))
+                    .child(div().flex_col().gap(px(4.0)).mt(px(8.0))
                         .child(Self::build_tag_item("Work", 0xFF5555))
                         .child(Self::build_tag_item("Personal", 0x55FF55))
                         .child(Self::build_tag_item("Important", 0x5555FF))
+                        .child(Self::build_tag_item("Documents", 0xFFAA00))
+                        .child(Self::build_tag_item("Media", 0xAA00FF))
                     )
-                    .child(Self::build_button("Add New Tag", false, |_ , _, _| {}))
+                    .child(div().mt(px(12.0)).child(Self::build_button("Add new tag", false, |_, _, _| {})))
             }
             SettingsTab::Actions => {
-                let v = view.clone();
-                let pairs = view.read(cx).state.action_registry.iter();
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Actions & Shortcuts"))
-                    .child(div().text_size(px(13.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                        .child("Click a shortcut to rebind. Press Escape to cancel."))
+                div().flex_col().gap(px(4.0))
+                    // Group: Shortcuts
+                    .child(Self::settings_group_header("Shortcuts"))
+                    .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("All action-keyboard shortcut pairs"))
                     .child(
-                        div().flex_col().gap(px(2.0))
-                            .children(pairs.into_iter().map(|(action, key)| {
+                        div().flex_col().gap(px(2.0)).mt(px(8.0))
+                            .children(data.action_pairs.iter().map(|(action, key)| {
                                 let action_label = action.label().to_string();
                                 let key_str = key.to_string();
                                 div()
@@ -1013,105 +1115,73 @@ impl DialogsView {
                                     .py(px(4.0))
                                     .px(px(8.0))
                                     .rounded(px(4.0))
-                                    .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
-                                    .child(div().text_size(px(14.0)).child(action_label))
+                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                                    .child(div().text_size(px(13.0)).text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)).child(action_label))
                                     .child(
                                         div()
                                             .bg(rgba(0xFFFFFF20u32))
                                             .px(px(8.0))
                                             .py(px(2.0))
                                             .rounded(px(4.0))
-                                            .text_size(px(13.0))
+                                            .text_size(px(12.0))
                                             .child(key_str)
                                     )
                             }))
                     )
                     .child(
                         div().mt(px(12.0)).flex().gap(px(8.0))
-                            .child(Self::build_button("Reset to Defaults", false, move |_, _, cx| {
-                                v.update(cx, |this, _| {
-                                    this.state.action_registry.reset_all_defaults();
-                                });
+                            .child(Self::build_button("Reset to defaults", false, {
+                                let v = view.clone();
+                                move |_, _, cx| {
+                                    v.update(cx, |this, _| {
+                                        this.state.action_registry.reset_all_defaults();
+                                    });
+                                }
                             }))
                     )
             }
             SettingsTab::Toolbar => {
-                let v_customize = view.clone();
-                let app_state = view.read(cx);
-                let tb = &app_state.state.main_view.toolbar_customization;
-                let vis_new_folder = tb.is_visible("new_folder");
-                let vis_new_file = tb.is_visible("new_file");
-                let vis_cut = tb.is_visible("cut");
-                let vis_copy = tb.is_visible("copy");
-                let vis_paste = tb.is_visible("paste");
-                let vis_details = tb.is_visible("details_view");
-                let vis_grid = tb.is_visible("grid_view");
-                let vis_columns = tb.is_visible("columns_view");
-                let vis_preview = tb.is_visible("preview_pane");
-                let vis_info = tb.is_visible("info_pane");
-                let vis_search = tb.is_visible("search");
-                let vis_compact = tb.is_visible("compact_mode");
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Toolbar Customization"))
-                    .child(div().text_size(px(13.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                        .child("Choose which buttons appear on the toolbar. Changes apply immediately."))
-                    .child(Self::settings_toggle("New Folder", vis_new_folder, "toolbar_new_folder", v_customize.clone()))
-                    .child(Self::settings_toggle("New File", vis_new_file, "toolbar_new_file", v_customize.clone()))
-                    .child(Self::settings_toggle("Cut", vis_cut, "toolbar_cut", v_customize.clone()))
-                    .child(Self::settings_toggle("Copy", vis_copy, "toolbar_copy", v_customize.clone()))
-                    .child(Self::settings_toggle("Paste", vis_paste, "toolbar_paste", v_customize.clone()))
-                    .child(Self::settings_toggle("Details View", vis_details, "toolbar_details_view", v_customize.clone()))
-                    .child(Self::settings_toggle("Grid View", vis_grid, "toolbar_grid_view", v_customize.clone()))
-                    .child(Self::settings_toggle("Columns View", vis_columns, "toolbar_columns_view", v_customize.clone()))
-                    .child(Self::settings_toggle("Preview Pane", vis_preview, "toolbar_preview_pane", v_customize.clone()))
-                    .child(Self::settings_toggle("Info Pane", vis_info, "toolbar_info_pane", v_customize.clone()))
-                    .child(Self::settings_toggle("Search", vis_search, "toolbar_search", v_customize.clone()))
-                    .child(Self::settings_toggle("Compact Mode", vis_compact, "toolbar_compact_mode", v_customize.clone()))
+                div().flex_col().gap(px(4.0))
+                    // Group: Toolbar Buttons
+                    .child(Self::settings_group_header("Toolbar Buttons"))
+                    .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Toggle which buttons appear on the toolbar"))
+                    .child(Self::settings_toggle("New Folder", data.toolbar_new_folder, "toolbar_new_folder", view.clone()))
+                    .child(Self::settings_toggle("New File", data.toolbar_new_file, "toolbar_new_file", view.clone()))
+                    .child(Self::settings_toggle("Cut", data.toolbar_cut, "toolbar_cut", view.clone()))
+                    .child(Self::settings_toggle("Copy", data.toolbar_copy, "toolbar_copy", view.clone()))
+                    .child(Self::settings_toggle("Paste", data.toolbar_paste, "toolbar_paste", view.clone()))
+                    .child(Self::settings_toggle("Details View", data.toolbar_details_view, "toolbar_details_view", view.clone()))
+                    .child(Self::settings_toggle("Grid View", data.toolbar_grid_view, "toolbar_grid_view", view.clone()))
+                    .child(Self::settings_toggle("Columns View", data.toolbar_columns_view, "toolbar_columns_view", view.clone()))
+                    .child(Self::settings_toggle("Preview Pane", data.toolbar_preview_pane, "toolbar_preview_pane", view.clone()))
+                    .child(Self::settings_toggle("Info Pane", data.toolbar_info_pane, "toolbar_info_pane", view.clone()))
             }
             SettingsTab::Advanced => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Advanced"))
+                div().flex_col().gap(px(4.0))
+                    .child(Self::settings_group_header("Advanced"))
                     .child(Self::settings_toggle("Enable experimental tabs", config.experimental.enable_tabs, "enable_tabs", view.clone()))
                     .child(Self::settings_toggle("Enable preview pane", config.experimental.enable_preview_pane, "enable_preview_pane", view.clone()))
-                    .child(Self::settings_toggle("Indexing service (Fast Search)", true, "indexing_service", view.clone()))
             }
             SettingsTab::DevTools => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("Developer Tools"))
+                div().flex_col().gap(px(4.0))
+                    .child(Self::settings_group_header("Developer Tools"))
                     .child(div().bg(rgb(0x101010)).p(px(8.0)).rounded(px(4.0)).child(
                         div().text_size(px(12.0)).text_color(rgb(0xAAAAAA)).child("Log Viewer (Mock)\n[INFO] App started\n[DEBUG] Loading drive C:\\\n[WARN] Thumbnail extraction failed for image.psd")
                     ))
-                    .child(Self::build_button("Export Logs", false, |_ , _, _| {}))
+                    .child(div().mt(px(8.0)).child(Self::build_button("Export Logs", false, |_, _, _| {})))
             }
             SettingsTab::About => {
-                div().flex_col().gap(px(12.0))
-                    .child(div().font_weight(FontWeight(600.0)).child("About"))
+                div().flex_col().gap(px(4.0))
+                    // Group: Application
+                    .child(Self::settings_group_header("Application"))
                     .child(
-                        div()
-                            .flex_col()
-                            .gap(px(4.0))
+                        div().flex_col().gap(px(4.0)).mt(px(8.0))
+                            .child(Self::build_settings_row("Application", "Files-Rust"))
+                            .child(Self::build_settings_row("Version", "0.1.0 (Alpha)"))
+                            .child(Self::build_settings_row("Build", "Debug (GPUI + Rust)"))
+                            .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
                             .child(
-                                div()
-                                    .text_size(AbsoluteLength::Pixels(px(16.0)))
-                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                    .child("Files-Rust")
-                            )
-                            .child(
-                                div()
-                                    .text_size(AbsoluteLength::Pixels(px(13.0)))
-                                    .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                                    .child("Version 0.1.0 (Alpha)")
-                            )
-                            .child(
-                                div()
-                                    .text_size(AbsoluteLength::Pixels(px(13.0)))
-                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                    .child("A high-performance, idiomatic Rust port of the Files file manager.")
-                            )
-                            .child(
-                                div().mt(px(8.0))
-                                    .text_size(AbsoluteLength::Pixels(px(13.0)))
-                                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                div().text_size(px(13.0)).text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
                                     .cursor_pointer()
                                     .child("GitHub Repository")
                                     .on_mouse_down(MouseButton::Left, {
@@ -1122,27 +1192,8 @@ impl DialogsView {
                                     })
                             )
                             .child(
-                                div().mt(px(4.0))
-                                    .text_size(AbsoluteLength::Pixels(px(13.0)))
-                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                    .child("Files-Rust is a Rust port of the Files file manager for Windows.")
-                            )
-                            .child(
-                                div().mt(px(12.0)).h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA))
-                            )
-                            .child(
-                                div().mt(px(8.0)).font_weight(FontWeight(600.0)).child("Release Notes")
-                            )
-                            .child(
-                                div().flex_col().gap(px(4.0)).text_size(AbsoluteLength::Pixels(px(13.0)))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)).child("v0.1.0 — Initial Alpha Release"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• File browsing with Details, Grid, List, and Column views"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Keyboard shortcuts overlay (Ctrl+Shift+P)"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Session persistence and crash recovery"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Tag system with file categorization"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Drag-and-drop item reordering between groups"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Background customization with folder images"))
-                                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("• Recycle Bin integration with item restoration"))
+                                div().mt(px(4.0)).text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                    .child("Files-Rust is a high-performance, idiomatic Rust port of the Files file manager for Windows.")
                             )
                     )
             }

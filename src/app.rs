@@ -8,6 +8,7 @@ use crate::storage::storage::{FileType, LocalFileSystem, StorageService};
 use crate::ui::components::dialogs::{DialogType, DialogsView, SettingsTab};
 use crate::ui::components::navigation_bar::{NavigationBarState, NavigationBarView};
 use crate::ui::components::sidebar_state::SidebarItemId;
+#[cfg(windows)]
 use crate::ui::components::sidebar::{SidebarSplitter, SidebarView};
 use crate::ui::components::sidebar_state::SidebarState;
 use crate::ui::components::splash_screen::SplashState;
@@ -599,6 +600,25 @@ impl AppWindow {
         }
     }
 
+    /// Navigate to the Home view (quick access dashboard)
+    pub fn navigate_home(&mut self, cx: &mut Context<Self>) {
+        match crate::core::navigation_service::NavigationService::get_home_path() {
+            Ok(home_path) => {
+                // Update navigation history
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.tabs.active_tab_mut().navigate(home_path.clone());
+                });
+                self.navigate(home_path, cx);
+            }
+            Err(_) => {
+                // Fallback: try user's home directory
+                if let Some(home) = dirs::home_dir() {
+                    self.navigate(crate::core::path_util::FilesPath::from(home), cx);
+                }
+            }
+        }
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let path = self.state.main_view.primary_path.clone();
         self.navigate(path, cx);
@@ -1052,7 +1072,7 @@ impl AppWindow {
         settings_entity.update(cx, |settings, _cx| {
             settings.pin_folder(&path, _cx, entity_id);
         });
-        self.state.sidebar.reload();
+        self.state.sidebar.reload(&settings_entity.read(cx).config);
         cx.notify();
     }
 
@@ -1062,7 +1082,7 @@ impl AppWindow {
         settings_entity.update(cx, |settings, _cx| {
             settings.unpin_folder(&path, _cx, entity_id);
         });
-        self.state.sidebar.reload();
+        self.state.sidebar.reload(&settings_entity.read(cx).config);
         cx.notify();
     }
 
@@ -1217,7 +1237,7 @@ impl AppWindow {
         let _ = settings_entity.read(cx).config().save();
 
         // Reload sidebar to reflect changes
-        self.state.sidebar.reload();
+        self.state.sidebar.reload(&settings_entity.read(cx).config);
         cx.notify();
     }
 
@@ -3079,6 +3099,9 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                 "mica_alt" => {
                     s.config.appearance.mica_alt = !s.config.appearance.mica_alt
                 }
+                "folder_on_top" => {
+                    s.config.view.folder_on_top = !s.config.view.folder_on_top
+                }
                 _ => {}
             }
             let _ = s.config.save();
@@ -3548,15 +3571,38 @@ impl Render for AppWindow {
                                         )),
                                     )
                                     .child({
-                                        let mut row = div().flex().flex_row().flex_grow().overflow_hidden();
+                                        let view = cx.entity();
+                                        let mut row = div().flex().flex_row().flex_grow().overflow_hidden()
+                                            // Track mouse moves ANYWHERE in this row during sidebar resize
+                                            .on_mouse_move({
+                                                let view = view.clone();
+                                                move |event, _win, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        if this.state.sidebar.resize_start_x.is_some() {
+                                                            let x: f32 = event.position.x.into();
+                                                            if this.state.sidebar.update_resize_drag(x) {
+                                                                cx.notify();
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            })
+                                            .on_mouse_up(MouseButton::Left, {
+                                                let view = view.clone();
+                                                move |_event, _win, cx| {
+                                                    view.update(cx, |this, _cx| {
+                                                        if this.state.sidebar.resize_start_x.is_some() {
+                                                            this.state.sidebar.end_resize_drag();
+                                                        }
+                                                    });
+                                                }
+                                            });
                                         if state.sidebar_visible {
                                             #[cfg(windows)]
                                             {
                                                 row = row
                                                     .child(SidebarView::build(&state.sidebar, state, cx.entity()))
-                                                    .child(SidebarSplitter::build(move |_new_width| {
-                                                        // This is a placeholder for the actual resize logic
-                                                    }));
+                                                    .child(SidebarSplitter::build(&state.sidebar, cx.entity()));
                                             }
                                         }
                                         row.child(
@@ -3594,13 +3640,54 @@ impl Render for AppWindow {
             ],
         );
 
+        if state.sidebar_visible && state.sidebar.anim_start_time.is_some() {
+            if state.sidebar.anim_start_time.unwrap().elapsed() < std::time::Duration::from_millis(200) {
+                _window.request_animation_frame();
+            }
+        }
+
         let mut base = div().relative().w_full().h_full();
         if let Some(dialog) = &state.active_dialog {
+            // Pre-read settings dialog data to avoid BorrowMutError during render tree construction
+            let settings_data = match dialog {
+                crate::ui::components::dialogs::DialogType::Settings => {
+                    Some(crate::ui::components::dialogs::DialogsView::pre_read_settings_data(&self.state, cx))
+                }
+                _ => None,
+            };
             base = base
                 .child(main_content)
-                .child(DialogsView::build(dialog, cx.entity(), cx));
+                .child(crate::ui::components::dialogs::DialogsView::build(dialog, cx.entity(), cx, settings_data));
         } else {
             base = base.child(main_content);
+        }
+
+        // Render sidebar collapsed-mode tooltip at app level (outside overflow-hidden areas)
+        if state.sidebar.collapsed {
+            if let Some(sid) = state.sidebar.tooltip_section {
+                // Find the section index in the current display order to compute Y offset
+                let section_idx = state
+                    .sidebar
+                    .sections
+                    .iter()
+                    .position(|s| s.id == sid);
+                if let (Some(idx), Some(section)) =
+                    (section_idx, state.sidebar.sections.iter().find(|s| s.id == sid))
+                {
+                    // Y offset: 40px home toggle + 12px scroll padding + idx * 36px per collapsed icon
+                    let tooltip_y = 52.0 + idx as f32 * 36.0;
+                    base = base.child({
+                        let sidebar_w = px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32);
+                        let tooltip_left = sidebar_w + px(4.0);
+                        crate::ui::components::sidebar::SidebarView::render_tooltip(
+                            section,
+                            tooltip_y,
+                            tooltip_left,
+                            cx.entity(),
+                        )
+                    });
+                }
+            }
         }
 
         if state.show_shortcut_overlay {

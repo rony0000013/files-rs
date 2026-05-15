@@ -8,7 +8,6 @@
 use crate::core::path_util::FilesPath;
 use crate::ui::constants::UiConstants;
 
-#[cfg(windows)]
 use crate::config::config::AppConfig;
 #[cfg(windows)]
 use crate::platform::windows::cloud_drive_service::{enumerate_cloud_drives, CloudProvider};
@@ -120,18 +119,106 @@ pub struct SidebarState {
     pub active_item: Option<SidebarItemId>,
     pub collapsed: bool,
     pub width: f32,
+    /// Display order of sections by SectionId
+    pub section_display_order: Vec<SectionId>,
+
+    // Resize drag tracking
+    pub resize_start_x: Option<f32>,
+    pub resize_start_width: Option<f32>,
+    /// Last width that triggered a notification (avoids per-pixel re-render)
+    pub last_notified_width: f32,
+
+    /// Width animation for smooth collapse/expand
+    pub anim_start_time: Option<std::time::Instant>,
+    pub anim_from_width: f32,
+    pub anim_to_width: f32,
+
+    // Section reorder drag tracking
+    pub drag_section_idx: Option<usize>,
+    pub drag_section_current_y: f32,
+    pub drop_target_section_idx: Option<usize>,
+    pub saved_order: Vec<SectionId>,
+
+    /// Which section's tooltip/flyout is shown in collapsed mode
+    pub tooltip_section: Option<SectionId>,
+
+    /// Animation version counter — incremented on collapse toggle to restart animation
+    pub anim_version: u64,
+    /// Width before collapsing (so we can animate back to it on expand)
+    pub previous_width: f32,
 }
 
 impl SidebarState {
     pub fn new() -> Self {
+        let config = AppConfig::load();
         let mut state = Self::default();
-        state.width = UiConstants::SIDEBAR_WIDTH_RAW as f32;
-        state.reload();
+        state.width = config
+            .sidebar
+            .sidebar_width
+            .unwrap_or(UiConstants::SIDEBAR_WIDTH_RAW as f32)
+            .max(UiConstants::SIDEBAR_WIDTH_MIN_RAW as f32)
+            .min(UiConstants::SIDEBAR_WIDTH_MAX_RAW as f32);
+        state.reload(&config);
         state
     }
 
-    pub fn reload(&mut self) {
+    pub fn reload(&mut self, config: &AppConfig) {
         self.sections = build_all_sections();
+
+        // Apply saved section order if available
+        if let Some(order) = &config.sidebar.section_order {
+            let name_to_id: std::collections::HashMap<&str, SectionId> = [
+                ("Favorites", SectionId::Favorites),
+                ("Tags", SectionId::Tags),
+                ("Libraries", SectionId::Libraries),
+                ("ThisPc", SectionId::ThisPc),
+                ("CloudDrives", SectionId::CloudDrives),
+                ("Network", SectionId::Network),
+                ("Wsl", SectionId::Wsl),
+            ].iter().cloned().collect();
+
+            // Build sections in the configured order
+            let mut reordered: Vec<SidebarSectionData> = Vec::new();
+            let mut remaining: std::collections::HashSet<SectionId> = self.sections.iter().map(|s| s.id).collect();
+
+            for name in order {
+                if let Some(&sid) = name_to_id.get(name.as_str()) {
+                    if let Some(idx) = self.sections.iter().position(|s| s.id == sid) {
+                        reordered.push(self.sections.remove(idx));
+                        remaining.remove(&sid);
+                    }
+                }
+            }
+
+            // Add any sections not in the saved order (e.g., new sections added in an update)
+            for section in self.sections.drain(..) {
+                if remaining.contains(&section.id) {
+                    reordered.push(section);
+                }
+            }
+
+            self.sections = reordered;
+        }
+
+        // Update display order to match current section order
+        self.section_display_order = self.sections.iter().map(|s| s.id).collect();
+    }
+
+    pub fn save_width(&self) {
+        let mut config = AppConfig::load();
+        config.sidebar.sidebar_width = Some(self.width);
+        let _ = config.save();
+    }
+
+    pub fn save_section_order(&self) {
+        let mut config = AppConfig::load();
+        config.sidebar.section_order = Some(
+            self.section_display_order
+                .iter()
+                .map(|id| format!("{:?}", id))
+                .collect(),
+        );
+        let _ = config.save();
     }
 
     pub fn toggle_section(&mut self, section: SectionId) {
@@ -142,6 +229,51 @@ impl SidebarState {
 
     pub fn set_collapsed(&mut self, collapsed: bool) {
         self.collapsed = collapsed;
+    }
+
+    pub fn toggle_collapsed(&mut self) {
+        let from = self.width;
+        if !self.collapsed {
+            self.previous_width = self.width;
+            self.collapsed = true;
+            self.width = UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32;
+        } else {
+            let restore = self
+                .previous_width
+                .max(UiConstants::SIDEBAR_WIDTH_MIN_RAW as f32);
+            self.width = restore;
+            self.collapsed = false;
+        }
+        self.anim_version += 1;
+        self.anim_start_time = Some(std::time::Instant::now());
+        self.anim_from_width = from;
+        self.anim_to_width = self.width;
+        self.save_width();
+    }
+
+    /// Get the current display width, interpolated during animation
+    pub fn get_display_width(&self) -> f32 {
+        if let Some(start) = self.anim_start_time {
+            let elapsed = start.elapsed();
+            let dur = std::time::Duration::from_millis(200);
+            if elapsed < dur {
+                let t = elapsed.as_secs_f32() / dur.as_secs_f32();
+                let eased = if t < 0.5 {
+                    2.0 * t * t
+                } else {
+                    let x = -2.0 * t + 2.0;
+                    1.0 - x * x / 2.0
+                };
+                return self.anim_from_width + (self.anim_to_width - self.anim_from_width) * eased;
+            }
+        }
+        self.width
+    }
+    /// Show/hide the section tooltip in collapsed mode
+    pub fn set_tooltip(&mut self, section: Option<SectionId>) {
+        if self.collapsed {
+            self.tooltip_section = section;
+        }
     }
 
     /// Mark a path as the active sidebar item.
@@ -159,6 +291,123 @@ impl SidebarState {
             }
         }
         self.active_item = None;
+    }
+
+    /// Start dragging a section header for reordering
+    pub fn start_section_drag(&mut self, section_idx: usize) {
+        self.drag_section_idx = Some(section_idx);
+        self.saved_order = self.section_display_order.clone();
+    }
+
+    /// Update section drag position and compute drop target
+    pub fn update_section_drag(&mut self, current_y: f32) {
+        self.drag_section_current_y = current_y;
+        // Drop target is computed during render based on Y position
+    }
+
+    /// End section drag and apply the reorder
+    pub fn end_section_drag(&mut self) {
+        self.drag_section_idx = None;
+        self.drag_section_current_y = 0.0;
+        self.drop_target_section_idx = None;
+        self.saved_order.clear();
+    }
+
+    /// Cancel section drag and restore original order
+    pub fn cancel_section_drag(&mut self) {
+        self.section_display_order = self.saved_order.clone();
+        self.reorder_sections();
+        self.end_section_drag();
+    }
+
+    /// Reorder sections based on current section_display_order
+    pub fn reorder_sections(&mut self) {
+        let mut reordered: Vec<SidebarSectionData> = Vec::new();
+        for &sid in &self.section_display_order {
+            if let Some(idx) = self.sections.iter().position(|s| s.id == sid) {
+                reordered.push(self.sections.remove(idx));
+            }
+        }
+        // Add any remaining sections not in the order list
+        reordered.extend(self.sections.drain(..));
+        self.sections = reordered;
+    }
+
+    /// Swap two sections in the display order
+    pub fn swap_sections(&mut self, from: usize, to: usize) {
+        if from < self.section_display_order.len() && to < self.section_display_order.len() {
+            self.section_display_order.swap(from, to);
+            self.reorder_sections();
+            self.save_section_order();
+        }
+    }
+
+    /// Start sidebar resize drag. If currently collapsed, un-collapse so dragging expands.
+    pub fn start_resize_drag(&mut self, start_x: f32) {
+        self.resize_start_x = Some(start_x);
+        self.resize_start_width = Some(if self.collapsed {
+            UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32
+        } else {
+            self.width
+        });
+        self.last_notified_width = if self.collapsed {
+            UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32
+        } else {
+            self.width
+        };
+        // If collapsed, immediately exit collapsed mode so drag can resize freely
+        if self.collapsed {
+            self.collapsed = false;
+            self.width = UiConstants::SIDEBAR_WIDTH_RAW as f32;
+        }
+    }
+
+    /// Update sidebar width during resize drag (throttled: only changes when width meaningfully differs)
+    /// Auto-collapses when dragged below the collapse threshold.
+    pub fn update_resize_drag(&mut self, current_x: f32) -> bool {
+        if let (Some(start_x), Some(start_width)) = (self.resize_start_x, self.resize_start_width) {
+            let delta = current_x - start_x;
+            let raw_width = start_width + delta;
+
+            // Auto-collapse when dragged below threshold (check BEFORE clamping to min)
+            let collapse_threshold = UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32 + 30.0;
+            if raw_width < collapse_threshold && !self.collapsed {
+                self.collapsed = true;
+                self.width = UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32;
+                self.last_notified_width = self.width;
+                // Reset start width so subsequent mouse moves use collapsed reference
+                self.resize_start_width = Some(self.width);
+                return true;
+            }
+
+            // Auto-expand when dragged above threshold
+            let expand_threshold = collapse_threshold + 10.0;
+            if raw_width > expand_threshold && self.collapsed {
+                self.collapsed = false;
+                self.width = raw_width.min(UiConstants::SIDEBAR_WIDTH_MAX_RAW as f32);
+                self.resize_start_width = Some(self.width);
+            }
+
+            // Clamp to normal range
+            let new_width = raw_width
+                .max(UiConstants::SIDEBAR_WIDTH_MIN_RAW as f32)
+                .min(UiConstants::SIDEBAR_WIDTH_MAX_RAW as f32);
+
+            // Throttle: only accept if width changed by at least 2px from last notified value
+            if (new_width - self.last_notified_width).abs() >= 2.0 {
+                self.width = new_width;
+                self.last_notified_width = new_width;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// End resize drag and persist width
+    pub fn end_resize_drag(&mut self) {
+        self.resize_start_x = None;
+        self.resize_start_width = None;
+        self.save_width();
     }
 }
 
@@ -189,6 +438,26 @@ fn build_favorites_section() -> SidebarSectionData {
         })
         .collect();
 
+    // Add Quick Access pinned folders from Windows File Explorer
+    if let Ok(quick_access_pins) = read_quick_access_pins() {
+        for pin in quick_access_pins {
+            let label = pin
+                .as_path()
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Pinned Folder".to_string());
+            // Skip duplicates (already in pinned_locations)
+            if !items.iter().any(|i| i.id.get_path().as_ref() == Some(&pin)) {
+                items.push(SidebarItem {
+                    id: SidebarItemId::Pinned(pin),
+                    label,
+                    icon: "\u{E8B7}".to_string(),
+                    badge: None,
+                });
+            }
+        }
+    }
+
     // Add Recycle Bin
     items.push(SidebarItem {
         id: SidebarItemId::RecycleBin,
@@ -202,6 +471,116 @@ fn build_favorites_section() -> SidebarSectionData {
         title: "Favorites".to_string(),
         items,
         collapsed: false,
+    }
+}
+
+/// Read Quick Access pinned folders from Windows %APPDATA%\\Microsoft\\Windows\\Quick Access\\
+/// Resolves .lnk shortcut targets to get the actual folder paths.
+#[cfg(windows)]
+fn read_quick_access_pins() -> Result<Vec<FilesPath>, Box<dyn std::error::Error>> {
+    let appdata = std::env::var("APPDATA")?;
+    let qa_path = std::path::PathBuf::from(&appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Quick Access");
+
+    if !qa_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut pins = Vec::new();
+    for entry in std::fs::read_dir(&qa_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "lnk") {
+            if let Some(target) = resolve_lnk_target(&path) {
+                pins.push(target);
+            }
+        }
+    }
+
+    Ok(pins)
+}
+
+/// Simple .lnk (Shell Link) target resolver.
+/// Reads the LinkInfo structure from a .lnk binary file to extract the volume local path.
+/// Format: 76-byte header, then optional structures.
+/// The path is stored as a UTF16-LE string in the LinkInfo (after 0x1C offset from LinkInfo start).
+#[cfg(windows)]
+fn resolve_lnk_target(lnk_path: &std::path::Path) -> Option<FilesPath> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(lnk_path).ok()?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).ok()?;
+
+    if data.len() < 76 {
+        return None;
+    }
+
+    // ShellLinkHeader is 76 bytes
+    // Flags at offset 0x14 (4 bytes): bit 0 = HasLinkTargetIDList, bit 1 = HasLinkInfo
+    let flags = u32::from_le_bytes([data[0x14], data[0x15], data[0x16], data[0x17]]);
+    let has_link_info = (flags & 0x02) != 0;
+
+    if !has_link_info {
+        return None;
+    }
+
+    // LinkTargetIDList starts at offset 0x4C (if HasLinkTargetIDList flag is set)
+    let has_id_list = (flags & 0x01) != 0;
+    let mut offset = 0x4C; // 76
+
+    if has_id_list {
+        // IDList size is at offset 0x4C (2 bytes)
+        if offset + 2 > data.len() {
+            return None;
+        }
+        let idlist_size = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+        offset += 2 + idlist_size;
+    }
+
+    // LinkInfo structure
+    // LinkInfoSize at current offset (4 bytes)
+    if offset + 4 > data.len() {
+        return None;
+    }
+    let link_info_size = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+    if link_info_size < 0x1C || offset + link_info_size > data.len() {
+        return None;
+    }
+
+    // VolumeLocalPath offset within LinkInfo (at 0x1C from LinkInfo start, 4 bytes)
+    let local_path_offset = u32::from_le_bytes([
+        data[offset + 0x1C],
+        data[offset + 0x1D],
+        data[offset + 0x1E],
+        data[offset + 0x1F],
+    ]) as usize;
+
+    if local_path_offset == 0 || offset + local_path_offset + 2 > data.len() {
+        return None;
+    }
+
+    // The path is a null-terminated UTF16-LE string
+    let path_start = offset + local_path_offset;
+    let mut path_end = path_start;
+    while path_end + 1 < data.len() {
+        if data[path_end] == 0 && data[path_end + 1] == 0 {
+            break;
+        }
+        path_end += 2;
+    }
+
+    let wide_chars: Vec<u16> = data[path_start..path_end]
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+
+    let target_str = String::from_utf16_lossy(&wide_chars);
+    if target_str.is_empty() {
+        None
+    } else {
+        Some(FilesPath::new(target_str.trim_matches('\0')))
     }
 }
 

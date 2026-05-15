@@ -1,15 +1,48 @@
 //! Sidebar UI component.
 //! Sections: Favorites, File Tags, Libraries, This PC (drives), Cloud Drives, Network, WSL.
-//! Uses the function-based builder pattern matching existing components (ToolbarView, TabBarView, etc.).
+//!
+//! Features:
+//! - Collapse toggle (hamburger) → compact icon-only mode
+//! - "Home" item for quick navigation
+//! - Collapsed mode: icon-only section headers, click to show tooltip/flyout with items
+//! - Draggable/reorderable section groups
+//! - Settings button pinned to bottom
 
 use super::sidebar_state::*;
 use crate::app::AppState;
 use crate::ui::components::dialogs::DialogType;
 use crate::ui::constants::UiConstants;
 use gpui::*;
+use std::time::Duration;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SidebarView — the main sidebar container
+// Layout constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SECTION_HEADER_HEIGHT: f32 = 32.0;
+const SECTION_ITEM_HEIGHT: f32 = 36.0;
+const SECTION_MARGIN_BOTTOM: f32 = 8.0;
+const COLLAPSED_SECTION_ICON_SIZE: f32 = 36.0;
+const TOOLTIP_WIDTH: f32 = 220.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Icon lookup for sections (used in collapsed mode)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn section_icon(section_id: SectionId) -> &'static str {
+    match section_id {
+        SectionId::Favorites => "\u{E734}",   // Favorite star
+        SectionId::Tags => "\u{E8EC}",          // Tag
+        SectionId::Libraries => "\u{E8B7}",    // Folder
+        SectionId::ThisPc => "\u{E770}",         // HDD/This PC
+        SectionId::CloudDrives => "\u{E753}",   // Cloud
+        SectionId::Network => "\u{E802}",        // Network
+        SectionId::Wsl => "\u{E756}",           // Terminal/WSL
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SidebarView
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct SidebarView;
@@ -20,39 +53,109 @@ impl SidebarView {
         _app_state: &AppState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let width = if state.collapsed {
+        let collapsed = state.collapsed;
+        let width = if collapsed {
             px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32)
         } else {
-            px(state.width)
+            px(state.get_display_width())
+        };
+
+        // Precompute section Y offsets for tooltip positioning
+        let section_offsets: Vec<f32> = if collapsed {
+            state
+                .sections
+                .iter()
+                .scan(0.0f32, |offset, _| {
+                    let start = *offset;
+                    *offset += COLLAPSED_SECTION_ICON_SIZE + 4.0;
+                    Some(start)
+                })
+                .collect()
+        } else {
+            state
+                .sections
+                .iter()
+                .scan(COLLAPSED_SECTION_ICON_SIZE + 4.0, |offset, section| {
+                    let h = section_height(section);
+                    let start = *offset;
+                    *offset += h;
+                    Some(start)
+                })
+                .collect()
+        };
+
+        // Find current tooltip's Y offset for positioning (used by app.rs)
+        #[allow(unused_variables)]
+        let tooltip_y = state.tooltip_section.and_then(|sid| {
+            state
+                .sections
+                .iter()
+                .position(|s| s.id == sid)
+                .and_then(|idx| section_offsets.get(idx))
+                .copied()
+        });
+        let collapsed = state.collapsed;
+        let width = if collapsed {
+            px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32)
+        } else {
+            px(state.get_display_width())
         };
 
         div()
             .id("sidebar")
             .w(width)
             .h_full()
+            .flex()
             .flex_col()
+            .flex_shrink_0() // Prevent sidebar from shrinking when content needs space
+            .overflow_hidden() // Clip content to explicit width
             .bg(rgb(UiConstants::BG_SIDEBAR_RGB))
             .border_r(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            .child(Self::render_collapse_toggle(state))
-            // Scrollable sections
+            .relative() // For absolute-positioned tooltip
+            // Scrollable sections area
             .child(
                 div()
                     .id("sidebar-scroll-container")
                     .flex_grow()
                     .flex_col()
-                    .overflow_y_scroll() // Ensure this is present
+                    .w_full()
+                    .overflow_y_scroll()
                     .pt(px(UiConstants::PADDING_BASE as f32))
                     .pb(px(UiConstants::PADDING_BASE as f32))
-                    .children(state.sections.iter().enumerate().map(|(idx, section)| {
-                        Self::render_section(section, idx, state.active_item.as_ref(), view.clone())
-                    })),
+                    // Sections
+                    .children(
+                        state
+                            .sections
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, section)| {
+                                if collapsed {
+                                    Self::render_collapsed_section(
+                                        section, idx, state, view.clone(),
+                                    )
+                                    .into_any_element()
+                                } else {
+                                    Self::render_section(
+                                        section,
+                                        idx,
+                                        state.active_item.as_ref(),
+                                        view.clone(),
+                                    )
+                                    .into_any_element()
+                                }
+                            }),
+                    ),
             )
-            // Settings button fixed at the bottom (outside scroll area)
-            .child(Self::render_settings_button(view))
+            // Settings button (pinned to bottom)
+            .child(Self::render_settings_button(collapsed, view.clone()))
     }
 
-    fn render_collapse_toggle(state: &SidebarState) -> impl IntoElement {
+    fn render_collapse_toggle(
+        state: &SidebarState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v = view.clone();
         let collapsed = state.collapsed;
 
         div()
@@ -60,27 +163,101 @@ impl SidebarView {
             .h(px(40.0))
             .flex()
             .items_center()
-            .px(px(12.0))
-            .gap(px(12.0))
+            .justify_center()
+            .px(px(if collapsed { 0.0 } else { 12.0 }))
+            .w_full()
             .cursor_pointer()
             .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, move |_event, _window, _cx| {
-                // Collapse toggle will be wired to state toggle
+            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                v.update(cx, |this, cx| {
+                    this.state.sidebar.toggle_collapsed();
+                    cx.notify();
+                });
             })
             .child(
                 div()
                     .text_size(px(16.0))
                     .font_family(UiConstants::FONT_ICONS)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child("\u{E700}"), // GlobalNavigationButton (Hamburger)
-            )
-            .child(
-                div()
-                    .text_size(px(UiConstants::ITEM_FONT_SIZE_RAW as f32))
-                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child("Files"),
+                    .child("\u{E700}"), // Hamburger
             )
     }
+
+    // ─── Home item ────────────────────────────────────────────────────────
+
+    fn render_home_item(
+        collapsed: bool,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v = view.clone();
+        let icon = "\u{E10F}"; // Home glyph (MDL2)
+
+        if collapsed {
+            // Just the icon, no text
+            div()
+                .id("sidebar-home")
+                .h(px(COLLAPSED_SECTION_ICON_SIZE))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.navigate_home(cx);
+                    });
+                })
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(icon),
+                )
+        } else {
+            // Icon + text
+            div()
+                .id("sidebar-home")
+                .h(px(SECTION_ITEM_HEIGHT))
+                .mx(px(8.0))
+                .flex()
+                .items_center()
+                .px(px(8.0))
+                .gap(px(12.0))
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.navigate_home(cx);
+                    });
+                })
+                .child(
+                    div()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(16.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(icon),
+                )
+                .child(
+                    div()
+                        .flex_grow()
+                        .overflow_hidden()
+                        .text_size(px(UiConstants::ITEM_FONT_SIZE_RAW as f32))
+                        .font_weight(FontWeight(600.0))
+                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                        .child("Home"),
+                )
+        }
+    }
+
+    // ─── Expanded section ─────────────────────────────────────────────────
 
     fn render_section(
         section: &SidebarSectionData,
@@ -89,41 +266,12 @@ impl SidebarView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let collapsed = section.collapsed;
-        let title = section.title.clone();
 
         div()
-            .id(ElementId::from(section_idx))
+            .id(SharedString::from(format!("sidebar-section-{}", section_idx)))
             .flex_col()
-            .mb(px(8.0))
-            // Header
-            .child(
-                div()
-                    .id(ElementId::from(section_idx * 1000 + 1))
-                    .h(px(32.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(16.0))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, {
-                        let view = view.clone();
-                        let section_id = section.id;
-                        move |_ev, _win, cx| {
-                            view.update(cx, |this, cx| {
-                                this.state.sidebar.toggle_section(section_id);
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight(600.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child(title.to_string()),
-                    )
-            )
-            // Items (hidden when collapsed)
+            .mb(px(SECTION_MARGIN_BOTTOM))
+            .child(Self::render_section_header(section, section_idx, view.clone()))
             .children(if collapsed {
                 vec![]
             } else {
@@ -135,6 +283,226 @@ impl SidebarView {
                     .collect::<Vec<_>>()
             })
     }
+
+    fn render_section_header(
+        section: &SidebarSectionData,
+        section_idx: usize,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let title = section.title.clone();
+        let item_count = section.items.len();
+        let section_id = section.id;
+
+        div()
+            .id(SharedString::from(format!(
+                "sidebar-section-header-{}",
+                section_idx
+            )))
+            .h(px(SECTION_HEADER_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(px(16.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |ev: &MouseDownEvent, _win, cx| {
+                    let y: f32 = ev.position.y.into();
+                    view.update(cx, |this, _cx| {
+                        this.state.sidebar.toggle_section(section_id);
+                        this.state.sidebar.drag_section_current_y = y;
+                        this.state.sidebar.start_section_drag(section_idx);
+                    });
+                }
+            })
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight(600.0))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(title.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                    .child(item_count.to_string()),
+            )
+    }
+
+    // ─── Collapsed section (icon only) ────────────────────────────────────
+
+    fn render_collapsed_section(
+        section: &SidebarSectionData,
+        section_idx: usize,
+        state: &SidebarState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let section_id = section.id;
+        let icon = section_icon(section.id);
+        let is_tooltip_open = state.tooltip_section == Some(section_id);
+
+        div()
+            .id(SharedString::from(format!(
+                "sidebar-section-collapsed-{}",
+                section_idx
+            )))
+            .h(px(COLLAPSED_SECTION_ICON_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .rounded(px(4.0))
+            .mx(px(6.0))
+            .bg(if is_tooltip_open {
+                rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+            } else {
+                rgba(0x00000000u32)
+            })
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |_ev, _win, cx| {
+                    view.update(cx, |this, cx| {
+                        let state = &mut this.state.sidebar;
+                        if state.tooltip_section == Some(section_id) {
+                            state.set_tooltip(None);
+                        } else {
+                            state.set_tooltip(Some(section_id));
+                        }
+                        cx.notify();
+                    });
+                }
+            })
+            .child(
+                div()
+                    .text_size(px(16.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(icon),
+            )
+    }
+
+    // ─── Tooltip / flyout for collapsed mode ──────────────────────────────
+
+    pub fn render_tooltip(
+        section: &SidebarSectionData,
+        top_offset: f32,
+        sidebar_width: Pixels,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v_close = view.clone();
+        let tooltip_left = sidebar_width + px(4.0);
+
+        div()
+            .id("sidebar-tooltip")
+            .absolute()
+            .left(tooltip_left)
+            .top(px(top_offset.max(0.0)))
+            .w(px(TOOLTIP_WIDTH))
+            .bg(rgb(0x2C2C2C)) // Slightly lighter than sidebar
+            .rounded(px(8.0))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+            .shadow_lg()
+            .flex_col()
+            .p(px(8.0))
+            // Tooltip header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .border_b(px(1.0))
+                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child(section.title.to_string()),
+                    )
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                v_close.update(cx, |this, _cx| {
+                                    this.state.sidebar.set_tooltip(None);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8BB}"), // Close X
+                            ),
+                    ),
+            )
+            // Tooltip items
+            .children(section.items.iter().enumerate().map(|(idx, item)| {
+                Self::render_tooltip_item(item, idx, view.clone())
+            }))
+    }
+
+    fn render_tooltip_item(
+        item: &SidebarItem,
+        idx: usize,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let icon_src = item.icon.clone();
+        let label = item.label.clone();
+        let item_id = item.id.clone();
+        let v_click = view.clone();
+
+        div()
+            .id(SharedString::from(format!("sidebar-tooltip-item-{}", idx)))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .px(px(8.0))
+            .gap(px(10.0))
+            .cursor_pointer()
+            .rounded(px(4.0))
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, {
+                let item_id = item_id.clone();
+                move |_event, _window, cx| {
+                    if let Some(path) = item_id.get_path() {
+                        v_click.update(cx, |this, cx| {
+                            this.navigate(path, cx);
+                            // Close tooltip after navigation
+                            this.state.sidebar.set_tooltip(None);
+                        });
+                    }
+                }
+            })
+            .child(
+                div()
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(icon_src),
+            )
+            .child(
+                div()
+                    .flex_grow()
+                    .overflow_hidden()
+                    .text_size(px(13.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(label.to_string()),
+            )
+    }
+
+    // ─── Normal item rendering (expanded mode) ────────────────────────────
 
     fn render_item(
         item: &SidebarItem,
@@ -149,8 +517,8 @@ impl SidebarView {
         let is_active = active_id.map_or(false, |id| *id == item_id);
 
         div()
-            .id(ElementId::from(10000 + idx))
-            .h(px(36.0))
+            .id(SharedString::from(format!("sidebar-item-{}", idx)))
+            .h(px(SECTION_ITEM_HEIGHT))
             .mx(px(8.0))
             .flex()
             .items_center()
@@ -180,7 +548,6 @@ impl SidebarView {
                     }
                 }
             })
-            // Accent indicator
             .child(
                 div()
                     .w(px(if is_active { 3.0 } else { 0.0 }))
@@ -190,7 +557,6 @@ impl SidebarView {
                     .absolute()
                     .left(px(0.0)),
             )
-            // Icon
             .child(
                 div()
                     .w(px(20.0))
@@ -207,7 +573,6 @@ impl SidebarView {
                     })
                     .child(icon_src),
             )
-            // Label
             .child(
                 div()
                     .flex_grow()
@@ -221,7 +586,6 @@ impl SidebarView {
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .child(label.to_string()),
             )
-            // Badge
             .children(item.badge.as_ref().map(|badge| Self::render_badge(badge)))
     }
 
@@ -265,17 +629,19 @@ impl SidebarView {
         }
     }
 
-    /// Render a fixed settings button at the bottom of the sidebar
-    fn render_settings_button(view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    // ─── Settings button ──────────────────────────────────────────────────
+
+    fn render_settings_button(collapsed: bool, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
         let v = view.clone();
-        div()
+        let mut btn = div()
             .id("sidebar-settings")
             .h(px(40.0))
             .w_full()
             .flex()
             .items_center()
             .gap(px(8.0))
-            .px(px(UiConstants::PADDING_BASE as f32))
+            .px(px(if collapsed { 0.0 } else { 12.0 }))
+            .justify_center()
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .cursor_pointer()
@@ -288,42 +654,67 @@ impl SidebarView {
             })
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(14.0)))
+                    .text_size(px(14.0))
                     .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child("\u{E713}"), // Gear/settings icon
-            )
-            .child(
+                    .child("\u{E713}"),
+            );
+
+        if !collapsed {
+            btn = btn.child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(UiConstants::ITEM_FONT_SIZE_RAW as f32)))
+                    .text_size(px(UiConstants::ITEM_FONT_SIZE_RAW as f32))
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .child("Settings"),
-            )
+            );
+        }
+
+        btn
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SidebarSplitter — draggable resize handle
+// SidebarSplitter
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct SidebarSplitter;
 
 impl SidebarSplitter {
-    pub fn build<F>(_on_resize: F) -> impl IntoElement
-    where
-        F: Fn(f32) + 'static,
-    {
+    pub fn build(sidebar: &SidebarState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+        let is_resizing = sidebar.resize_start_x.is_some();
+
         div()
             .id("sidebar-splitter")
-            .w(px(UiConstants::SPLITTER_WIDTH_RAW as f32))
+            .w(px(4.0))
             .h_full()
             .cursor_col_resize()
-            .bg(rgba(UiConstants::BG_TRANSPARENT_RGBA))
-            .on_mouse_down(MouseButton::Left, move |_event, _window, _cx| {
-                // In a real implementation, we would capture the mouse and
-                // track movement until MouseUp. For this scaffold, we'll
-                // trigger a basic resize or log the event.
-                tracing::info!("Sidebar resize started");
+            .bg(if is_resizing {
+                rgba(UiConstants::ACCENT_RGBA)
+            } else {
+                rgba(UiConstants::BG_TRANSPARENT_RGBA)
+            })
+            .hover(|s| s.bg(rgba(0xFFFFFF11u32)))
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |event, _win, cx| {
+                    let x: f32 = event.position.x.into();
+                    view.update(cx, |this, _cx| {
+                        this.state.sidebar.start_resize_drag(x);
+                    });
+                }
             })
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn section_height(section: &SidebarSectionData) -> f32 {
+    let items_height = if section.collapsed {
+        0.0
+    } else {
+        section.items.len() as f32 * SECTION_ITEM_HEIGHT
+    };
+    SECTION_HEADER_HEIGHT + items_height + SECTION_MARGIN_BOTTOM
 }

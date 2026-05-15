@@ -3957,7 +3957,7 @@ impl MainView {
                 .h(px(UiConstants::GRID_ITEM_HEIGHT as f32))
                 .flex_col()
                 .items_center()
-                .justify_center()
+                .py(px(30.0))
                 .rounded(px(4.0))
                 .relative()
                 .border(px(if selected { 2.0 } else { 1.5 }))
@@ -4066,9 +4066,12 @@ impl MainView {
                         .rounded(px(4.0)),
                 )
                 .child(
-                    // Label
                     div()
+                        .w_full()
+                        .px(px(4.0))
                         .mt(px(4.0))
+                        .text_center()
+                        .overflow_hidden()
                         .text_size(px(11.0))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
@@ -4088,7 +4091,7 @@ impl MainView {
                 .h(px(UiConstants::GRID_ITEM_HEIGHT as f32))
                 .flex_col()
                 .items_center()
-                .justify_center()
+                .py(px(30.0))
                 .rounded(px(4.0))
                 .relative()
                 .border(px(if selected { 2.0 } else { 1.5 }))
@@ -4190,30 +4193,41 @@ impl MainView {
                     }
                 })
                 .child(
-                    // Icon: use cached shell icon if available (shows folder thumbnails on Windows),
-                    // otherwise MDL2 text glyph
-                    if let Some(icon_path) = &cached_icon_path {
-                        img(icon_path.clone())
-                            .w(px(48.0)).h(px(48.0))
-                            .object_fit(gpui::ObjectFit::Contain)
-                            .into_any_element()
-                    } else {
-                        div()
-                            .text_size(px(40.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(if is_dir {
-                                rgba(UiConstants::ACCENT_RGBA)
+                    // Centered icon
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .child(
+                            // Icon: use cached shell icon if available (shows folder thumbnails on Windows),
+                            // otherwise MDL2 text glyph
+                            if let Some(icon_path) = &cached_icon_path {
+                                img(icon_path.clone())
+                                    .w(px(48.0)).h(px(48.0))
+                                    .object_fit(gpui::ObjectFit::Contain)
+                                    .into_any_element()
                             } else {
-                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                            })
-                            .child(file_icon)
-                            .into_any_element()
-                    },
+                                div()
+                                    .text_size(px(40.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(if is_dir {
+                                        rgba(UiConstants::ACCENT_RGBA)
+                                    } else {
+                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                    })
+                                    .child(file_icon)
+                                    .into_any_element()
+                            },
+                        ),
                 )
                 .child(
-                    // Label
                     div()
+                        .w_full()
+                        .px(px(4.0))
                         .mt(px(4.0))
+                        .text_center()
+                        .overflow_hidden()
                         .text_size(px(11.0))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
