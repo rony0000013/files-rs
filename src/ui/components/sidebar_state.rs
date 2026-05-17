@@ -146,6 +146,14 @@ pub struct SidebarState {
     pub anim_version: u64,
     /// Width before collapsing (so we can animate back to it on expand)
     pub previous_width: f32,
+    /// Enable reorder mode for drag-and-drop section reordering
+    pub reorder_mode: bool,
+    /// Hidden sections (by SectionId) — sections that are not shown in the sidebar
+    pub hidden_sections: Vec<SectionId>,
+    /// Item reorder drag tracking — which item (section, index) is being dragged
+    pub drag_item: Option<(SectionId, usize)>,
+    /// Backup of section collapsed states before entering reorder mode
+    pub reorder_collapsed_backup: Option<Vec<(SectionId, bool)>>,
 }
 
 impl SidebarState {
@@ -200,6 +208,35 @@ impl SidebarState {
             self.sections = reordered;
         }
 
+        // Apply saved hidden sections
+        if let Some(hidden) = &config.sidebar.hidden_sections {
+            let name_to_id: std::collections::HashMap<&str, SectionId> = [
+                ("Favorites", SectionId::Favorites),
+                ("Tags", SectionId::Tags),
+                ("Libraries", SectionId::Libraries),
+                ("ThisPc", SectionId::ThisPc),
+                ("CloudDrives", SectionId::CloudDrives),
+                ("Network", SectionId::Network),
+                ("Wsl", SectionId::Wsl),
+            ].iter().cloned().collect();
+            self.hidden_sections.clear();
+            for name in hidden {
+                if let Some(&sid) = name_to_id.get(name.as_str()) {
+                    self.hidden_sections.push(sid);
+                }
+            }
+        }
+
+        // Apply saved collapsed state of sections
+        if let Some(collapsed_map) = &config.sidebar.section_collapsed {
+            for section in &mut self.sections {
+                let key = format!("{:?}", section.id);
+                if let Some(&collapsed) = collapsed_map.get(&key) {
+                    section.collapsed = collapsed;
+                }
+            }
+        }
+
         // Update display order to match current section order
         self.section_display_order = self.sections.iter().map(|s| s.id).collect();
     }
@@ -224,7 +261,19 @@ impl SidebarState {
     pub fn toggle_section(&mut self, section: SectionId) {
         if let Some(s) = self.sections.iter_mut().find(|s| s.id == section) {
             s.collapsed = !s.collapsed;
+            self.save_section_collapsed();
         }
+    }
+
+    /// Save the collapsed state of a section to config persistence.
+    pub fn save_section_collapsed(&self) {
+        let mut config = AppConfig::load();
+        let mut map = std::collections::HashMap::new();
+        for section in &self.sections {
+            map.insert(format!("{:?}", section.id), section.collapsed);
+        }
+        config.sidebar.section_collapsed = Some(map);
+        let _ = config.save();
     }
 
     pub fn set_collapsed(&mut self, collapsed: bool) {
@@ -408,6 +457,89 @@ impl SidebarState {
         self.resize_start_x = None;
         self.resize_start_width = None;
         self.save_width();
+    }
+    /// Enter reorder mode for drag-and-drop section reordering.
+    /// Enables visual indication and interacts with UI to allow reordering.
+    /// Collapses all non-draggable sections, keeps Favorites and Tags expanded for item reordering.
+    pub fn enter_reorder_mode(&mut self) {
+        self.reorder_mode = true;
+        // Backup current collapsed states so we can restore on exit
+        let mut backup = Vec::new();
+        for section in &self.sections {
+            backup.push((section.id, section.collapsed));
+        }
+        self.reorder_collapsed_backup = Some(backup);
+        // Collapse all sections that don't have draggable items (Favorites & Tags are draggable)
+        for section in &mut self.sections {
+            match section.id {
+                SectionId::Favorites | SectionId::Tags => {
+                    section.collapsed = false; // Keep expanded for item reordering
+                }
+                _ => {
+                    section.collapsed = true; // Collapse non-draggable sections
+                }
+            }
+        }
+    }
+    /// Exit reorder mode.
+    /// Disables reordering and resets any temporary state.
+    /// Restores section collapsed states from backup.
+    pub fn exit_reorder_mode(&mut self) {
+        self.reorder_mode = false;
+        // Restore collapsed states from backup
+        if let Some(backup) = self.reorder_collapsed_backup.take() {
+            for (section_id, collapsed) in backup {
+                if let Some(section) = self.sections.iter_mut().find(|s| s.id == section_id) {
+                    section.collapsed = collapsed;
+                }
+            }
+        }
+        // Reset drag state if needed
+        self.drag_section_idx = None;
+        self.drag_section_current_y = 0.0;
+        self.drag_item = None;
+    }
+
+    /// Hide a section (remove it from visible sidebar).
+    pub fn hide_section(&mut self, section: SectionId) {
+        if !self.hidden_sections.contains(&section) {
+            self.hidden_sections.push(section);
+            self.save_hidden_sections();
+        }
+    }
+
+    /// Unhide a section (restore it to visible sidebar).
+    pub fn unhide_section(&mut self, section: SectionId) {
+        self.hidden_sections.retain(|s| *s != section);
+        self.save_hidden_sections();
+    }
+
+    /// Save hidden sections to config.
+    fn save_hidden_sections(&self) {
+        let mut config = AppConfig::load();
+        config.sidebar.hidden_sections = Some(
+            self.hidden_sections.iter().map(|s| format!("{:?}", s)).collect()
+        );
+        let _ = config.save();
+    }
+
+    /// Start dragging a sidebar item (pinned location or tag) for reordering.
+    pub fn start_item_drag(&mut self, section_id: SectionId, item_idx: usize) {
+        self.drag_item = Some((section_id, item_idx));
+    }
+
+    /// End item drag.
+    pub fn end_item_drag(&mut self) {
+        self.drag_item = None;
+    }
+
+    /// Swap two items within a section during reorder.
+    pub fn swap_items(&mut self, section_id: SectionId, from_idx: usize, to_idx: usize) {
+        if let Some(section) = self.sections.iter_mut().find(|s| s.id == section_id) {
+            if from_idx < section.items.len() && to_idx < section.items.len() {
+                section.items.swap(from_idx, to_idx);
+            }
+        }
     }
 }
 

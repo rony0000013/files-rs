@@ -24,6 +24,8 @@ const SECTION_ITEM_HEIGHT: f32 = 36.0;
 const SECTION_MARGIN_BOTTOM: f32 = 8.0;
 const COLLAPSED_SECTION_ICON_SIZE: f32 = 36.0;
 const TOOLTIP_WIDTH: f32 = 220.0;
+/// Estimated max height of the context menu, used for flip-up positioning
+const SIDEBAR_MENU_HEIGHT: f32 = 300.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icon lookup for sections (used in collapsed mode)
@@ -54,6 +56,7 @@ impl SidebarView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let collapsed = state.collapsed;
+        let reorder_mode = state.reorder_mode;
         let width = if collapsed {
             px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32)
         } else {
@@ -65,6 +68,7 @@ impl SidebarView {
             state
                 .sections
                 .iter()
+                .filter(|s| !state.hidden_sections.contains(&s.id))
                 .scan(0.0f32, |offset, _| {
                     let start = *offset;
                     *offset += COLLAPSED_SECTION_ICON_SIZE + 4.0;
@@ -75,6 +79,7 @@ impl SidebarView {
             state
                 .sections
                 .iter()
+                .filter(|s| !state.hidden_sections.contains(&s.id))
                 .scan(COLLAPSED_SECTION_ICON_SIZE + 4.0, |offset, section| {
                     let h = section_height(section);
                     let start = *offset;
@@ -90,6 +95,7 @@ impl SidebarView {
             state
                 .sections
                 .iter()
+                .filter(|s| !state.hidden_sections.contains(&s.id))
                 .position(|s| s.id == sid)
                 .and_then(|idx| section_offsets.get(idx))
                 .copied()
@@ -101,7 +107,7 @@ impl SidebarView {
             px(state.get_display_width())
         };
 
-        div()
+        let mut sidebar_el = div()
             .id("sidebar")
             .w(width)
             .h_full()
@@ -113,6 +119,47 @@ impl SidebarView {
             .border_r(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .relative() // For absolute-positioned tooltip
+            .on_mouse_down(MouseButton::Right, {
+                let view = view.clone();
+                move |event, win, cx| {
+                    cx.stop_propagation();
+                    let position = event.position;
+let flip_up: f32 = position.y.into();
+                    let win_h: f32 = win.viewport_size().height.into();
+                    let bottom_y = if flip_up > (win_h - SIDEBAR_MENU_HEIGHT) {
+                        win_h - flip_up
+                    } else {
+                        0.0
+                    };
+                    view.update(cx, |this, cx| {
+                        let reorder_mode = this.state.sidebar.reorder_mode;
+                        let hidden_sections = this.state.sidebar.hidden_sections.clone();
+                        this.state.active_dialog = Some(DialogType::SidebarContextMenu {
+                            target: crate::ui::components::dialogs::SidebarMenuTarget::Background,
+                            position,
+                            reorder_mode,
+                            hidden_sections,
+                            bottom_y,
+                        });
+                        cx.notify();
+                    });
+                }
+            })
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |_event, _win, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.state.sidebar.reorder_mode {
+                            this.state.sidebar.exit_reorder_mode();
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            // Collapse toggle at top
+            .child(Self::render_collapse_toggle(state, view.clone()))
+            // Home item
+            .child(Self::render_home_item(collapsed, state, view.clone()))
             // Scrollable sections area
             .child(
                 div()
@@ -128,6 +175,7 @@ impl SidebarView {
                         state
                             .sections
                             .iter()
+                            .filter(|s| !state.hidden_sections.contains(&s.id))
                             .enumerate()
                             .map(|(idx, section)| {
                                 if collapsed {
@@ -139,7 +187,7 @@ impl SidebarView {
                                     Self::render_section(
                                         section,
                                         idx,
-                                        state.active_item.as_ref(),
+                                        state,
                                         view.clone(),
                                     )
                                     .into_any_element()
@@ -148,7 +196,28 @@ impl SidebarView {
                     ),
             )
             // Settings button (pinned to bottom)
-            .child(Self::render_settings_button(collapsed, view.clone()))
+            .child(Self::render_settings_button(collapsed, state, view.clone()));
+
+        if reorder_mode {
+            // During drag-and-drop reorder, we listen for mouse up globally on the sidebar
+            sidebar_el = sidebar_el.on_mouse_up(MouseButton::Left, {
+                let view = view.clone();
+                move |_, win, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.state.sidebar.drag_section_idx.is_some() {
+                            this.state.sidebar.end_section_drag();
+                            cx.notify();
+                        }
+                        if this.state.sidebar.drag_item.is_some() {
+                            this.state.sidebar.end_item_drag();
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+        }
+
+        sidebar_el
     }
 
     fn render_collapse_toggle(
@@ -157,8 +226,9 @@ impl SidebarView {
     ) -> impl IntoElement {
         let v = view.clone();
         let collapsed = state.collapsed;
+        let reorder_mode = state.reorder_mode;
 
-        div()
+        let mut toggle = div()
             .id("sidebar-collapse-toggle")
             .h(px(40.0))
             .flex()
@@ -166,33 +236,45 @@ impl SidebarView {
             .justify_center()
             .px(px(if collapsed { 0.0 } else { 12.0 }))
             .w_full()
-            .cursor_pointer()
-            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                v.update(cx, |this, cx| {
-                    this.state.sidebar.toggle_collapsed();
-                    cx.notify();
-                });
-            })
             .child(
                 div()
                     .text_size(px(16.0))
                     .font_family(UiConstants::FONT_ICONS)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child("\u{E700}"), // Hamburger
-            )
+            );
+
+        if reorder_mode {
+            toggle = toggle
+                .opacity(0.4)
+                .cursor_not_allowed();
+        } else {
+            toggle = toggle
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.state.sidebar.toggle_collapsed();
+                        cx.notify();
+                    });
+                });
+        }
+
+        toggle
     }
 
     // ─── Home item ────────────────────────────────────────────────────────
 
     fn render_home_item(
         collapsed: bool,
+        state: &SidebarState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v = view.clone();
         let icon = "\u{E10F}"; // Home glyph (MDL2)
+        let reorder_mode = state.reorder_mode;
 
-        if collapsed {
+        let mut item = if collapsed {
             // Just the icon, no text
             div()
                 .id("sidebar-home")
@@ -200,14 +282,7 @@ impl SidebarView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .cursor_pointer()
                 .rounded(px(4.0))
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.navigate_home(cx);
-                    });
-                })
                 .child(
                     div()
                         .text_size(px(16.0))
@@ -225,14 +300,7 @@ impl SidebarView {
                 .items_center()
                 .px(px(8.0))
                 .gap(px(12.0))
-                .cursor_pointer()
                 .rounded(px(4.0))
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.navigate_home(cx);
-                    });
-                })
                 .child(
                     div()
                         .w(px(20.0))
@@ -254,7 +322,24 @@ impl SidebarView {
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .child("Home"),
                 )
+        };
+
+        if reorder_mode {
+            item = item
+                .opacity(0.4)
+                .cursor_not_allowed();
+        } else {
+            item = item
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.navigate_home(cx);
+                    });
+                });
         }
+
+        item
     }
 
     // ─── Expanded section ─────────────────────────────────────────────────
@@ -262,7 +347,7 @@ impl SidebarView {
     fn render_section(
         section: &SidebarSectionData,
         section_idx: usize,
-        active_id: Option<&SidebarItemId>,
+        state: &SidebarState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let collapsed = section.collapsed;
@@ -271,7 +356,7 @@ impl SidebarView {
             .id(SharedString::from(format!("sidebar-section-{}", section_idx)))
             .flex_col()
             .mb(px(SECTION_MARGIN_BOTTOM))
-            .child(Self::render_section_header(section, section_idx, view.clone()))
+            .child(Self::render_section_header(section, section_idx, state, view.clone()))
             .children(if collapsed {
                 vec![]
             } else {
@@ -279,7 +364,7 @@ impl SidebarView {
                     .items
                     .iter()
                     .enumerate()
-                    .map(|(idx, item)| Self::render_item(item, idx, active_id, view.clone()))
+                    .map(|(idx, item)| Self::render_item(item, idx, section, state, view.clone()))
                     .collect::<Vec<_>>()
             })
     }
@@ -287,13 +372,16 @@ impl SidebarView {
     fn render_section_header(
         section: &SidebarSectionData,
         section_idx: usize,
+        state: &SidebarState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let title = section.title.clone();
         let item_count = section.items.len();
         let section_id = section.id;
+        let reorder_mode = state.reorder_mode;
+        let is_dragging_this = state.drag_section_idx == Some(section_idx);
 
-        div()
+        let mut header = div()
             .id(SharedString::from(format!(
                 "sidebar-section-header-{}",
                 section_idx
@@ -303,19 +391,6 @@ impl SidebarView {
             .items_center()
             .justify_between()
             .px(px(16.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, {
-                let view = view.clone();
-                move |ev: &MouseDownEvent, _win, cx| {
-                    let y: f32 = ev.position.y.into();
-                    view.update(cx, |this, _cx| {
-                        this.state.sidebar.toggle_section(section_id);
-                        this.state.sidebar.drag_section_current_y = y;
-                        this.state.sidebar.start_section_drag(section_idx);
-                    });
-                }
-            })
             .child(
                 div()
                     .text_size(px(12.0))
@@ -328,7 +403,90 @@ impl SidebarView {
                     .text_size(px(10.0))
                     .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
                     .child(item_count.to_string()),
-            )
+            );
+
+        if reorder_mode {
+            header = header
+                .cursor_row_resize()
+                .bg(if is_dragging_this {
+                    rgba(0xFFFFFF20u32)
+                } else {
+                    rgba(0x00000000u32)
+                })
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, {
+                    let view = view.clone();
+                    move |ev: &MouseDownEvent, _win, cx| {
+                        cx.stop_propagation();
+                        let y: f32 = ev.position.y.into();
+                        view.update(cx, |this, cx| {
+                            this.state.sidebar.drag_section_current_y = y;
+                            this.state.sidebar.start_section_drag(section_idx);
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_mouse_move({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            if let Some(dragged_idx) = this.state.sidebar.drag_section_idx {
+                                if dragged_idx != section_idx {
+                                    this.state.sidebar.swap_sections(dragged_idx, section_idx);
+                                    this.state.sidebar.drag_section_idx = Some(section_idx);
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    }
+                });
+        } else {
+            header = header
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, {
+                    let view = view.clone();
+                    move |_ev: &MouseDownEvent, _win, cx| {
+                        cx.stop_propagation();
+                        view.update(cx, |this, cx| {
+                            this.state.sidebar.toggle_section(section_id);
+                            cx.notify();
+                        });
+                    }
+                });
+        }
+
+// Right-click context menu on group header
+        header = header.on_mouse_down(MouseButton::Right, {
+            let view = view.clone();
+            move |event, win, cx| {
+                cx.stop_propagation();
+                let position = event.position;
+                let flip_up: f32 = position.y.into();
+                let win_h: f32 = win.viewport_size().height.into();
+                let bottom_y = if flip_up > (win_h - SIDEBAR_MENU_HEIGHT) {
+                    win_h - flip_up
+                } else {
+                    0.0
+                };
+                view.update(cx, |this, cx| {
+                    let reorder_mode = this.state.sidebar.reorder_mode;
+                    let hidden_sections = this.state.sidebar.hidden_sections.clone();
+                    this.state.active_dialog = Some(DialogType::SidebarContextMenu {
+                        target: crate::ui::components::dialogs::SidebarMenuTarget::Group {
+                            section_id,
+                        },
+                        position,
+                        reorder_mode,
+                        hidden_sections,
+                        bottom_y,
+                    });
+                    cx.notify();
+                });
+            }
+        });
+
+        header
     }
 
     // ─── Collapsed section (icon only) ────────────────────────────────────
@@ -343,7 +501,7 @@ impl SidebarView {
         let icon = section_icon(section.id);
         let is_tooltip_open = state.tooltip_section == Some(section_id);
 
-        div()
+        let mut collapsed_sec = div()
             .id(SharedString::from(format!(
                 "sidebar-section-collapsed-{}",
                 section_idx
@@ -352,7 +510,6 @@ impl SidebarView {
             .flex()
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .rounded(px(4.0))
             .mx(px(6.0))
             .bg(if is_tooltip_open {
@@ -360,28 +517,69 @@ impl SidebarView {
             } else {
                 rgba(0x00000000u32)
             })
-            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, {
-                let view = view.clone();
-                move |_ev, _win, cx| {
-                    view.update(cx, |this, cx| {
-                        let state = &mut this.state.sidebar;
-                        if state.tooltip_section == Some(section_id) {
-                            state.set_tooltip(None);
-                        } else {
-                            state.set_tooltip(Some(section_id));
-                        }
-                        cx.notify();
-                    });
-                }
-            })
             .child(
                 div()
                     .text_size(px(16.0))
                     .font_family(UiConstants::FONT_ICONS)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(icon),
-            )
+            );
+
+        if state.reorder_mode {
+            collapsed_sec = collapsed_sec
+                .opacity(0.4)
+                .cursor_not_allowed();
+        } else {
+            collapsed_sec = collapsed_sec
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, {
+                    let view = view.clone();
+                    move |_ev, _win, cx| {
+                        view.update(cx, |this, cx| {
+                            let state = &mut this.state.sidebar;
+                            if state.tooltip_section == Some(section_id) {
+                                state.set_tooltip(None);
+                            } else {
+                                state.set_tooltip(Some(section_id));
+                            }
+                            cx.notify();
+                        });
+                    }
+                });
+        }
+
+        // Right-click context menu on collapsed section
+        collapsed_sec = collapsed_sec.on_mouse_down(MouseButton::Right, {
+            let view = view.clone();
+            move |event, win, cx| {
+                cx.stop_propagation();
+                let position = event.position;
+                let flip_up: f32 = position.y.into();
+                let win_h: f32 = win.viewport_size().height.into();
+                let bottom_y = if flip_up > (win_h - SIDEBAR_MENU_HEIGHT) {
+                    win_h - flip_up
+                } else {
+                    0.0
+                };
+                view.update(cx, |this, cx| {
+                    let reorder_mode = this.state.sidebar.reorder_mode;
+                    let hidden_sections = this.state.sidebar.hidden_sections.clone();
+                    this.state.active_dialog = Some(DialogType::SidebarContextMenu {
+                        target: crate::ui::components::dialogs::SidebarMenuTarget::Group {
+                            section_id,
+                        },
+                        position,
+                        reorder_mode,
+                        hidden_sections,
+                        bottom_y,
+                    });
+                    cx.notify();
+                });
+            }
+        });
+
+        collapsed_sec
     }
 
     // ─── Tooltip / flyout for collapsed mode ──────────────────────────────
@@ -507,47 +705,31 @@ impl SidebarView {
     fn render_item(
         item: &SidebarItem,
         idx: usize,
-        active_id: Option<&SidebarItemId>,
+        section: &SidebarSectionData,
+        state: &SidebarState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let icon_src = item.icon.clone();
         let label = item.label.clone();
         let item_id = item.id.clone();
         let v_click = view.clone();
-        let is_active = active_id.map_or(false, |id| *id == item_id);
+        let is_active = state.active_item.as_ref().map_or(false, |id| *id == item_id);
+        let reorder_mode = state.reorder_mode;
+        
+        // Pinned locations and Tags are draggable/reorderable!
+        let is_draggable = section.id == SectionId::Favorites || section.id == SectionId::Tags;
+        
+        let is_dragging_this = state.drag_item == Some((section.id, idx));
 
-        div()
-            .id(SharedString::from(format!("sidebar-item-{}", idx)))
+        let mut item_el = div()
+            .id(SharedString::from(format!("sidebar-item-{:?}-{}", section.id, idx)))
             .h(px(SECTION_ITEM_HEIGHT))
             .mx(px(8.0))
             .flex()
             .items_center()
             .px(px(8.0))
             .gap(px(12.0))
-            .cursor_pointer()
             .rounded(px(4.0))
-            .bg(if is_active {
-                rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-            } else {
-                rgba(0x00000000u32)
-            })
-            .hover(|style| {
-                style.bg(if is_active {
-                    rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
-                } else {
-                    rgba(UiConstants::BG_ITEM_HOVER_RGBA)
-                })
-            })
-            .on_mouse_down(MouseButton::Left, {
-                let item_id = item_id.clone();
-                move |_event, _window, cx| {
-                    if let Some(path) = item_id.get_path() {
-                        v_click.update(cx, |this, cx| {
-                            this.navigate(path, cx);
-                        });
-                    }
-                }
-            })
             .child(
                 div()
                     .w(px(if is_active { 3.0 } else { 0.0 }))
@@ -586,7 +768,124 @@ impl SidebarView {
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .child(label.to_string()),
             )
-            .children(item.badge.as_ref().map(|badge| Self::render_badge(badge)))
+            .children(item.badge.as_ref().map(|badge| Self::render_badge(badge)));
+
+        if reorder_mode {
+            if is_draggable {
+                // Draggable: grab cursor, swap on mouse enter, start drag on mouse down
+                item_el = item_el
+                    .cursor_row_resize()
+                    .bg(if is_dragging_this {
+                        rgba(0xFFFFFF20u32)
+                    } else if is_active {
+                        rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                    } else {
+                        rgba(0x00000000u32)
+                    })
+                    .hover(|style| {
+                        style.bg(if is_active {
+                            rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
+                        } else {
+                            rgba(UiConstants::BG_ITEM_HOVER_RGBA)
+                        })
+                    })
+                    .on_mouse_down(MouseButton::Left, {
+                        let view = view.clone();
+                        let section_id = section.id;
+                        move |ev, win, cx| {
+                            cx.stop_propagation();
+                            view.update(cx, |this, cx| {
+                                this.state.sidebar.start_item_drag(section_id, idx);
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_mouse_move({
+                        let view = view.clone();
+                        let section_id = section.id;
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                if let Some((drag_sect, drag_idx)) = this.state.sidebar.drag_item {
+                                    if drag_sect == section_id && drag_idx != idx {
+                                        this.state.sidebar.swap_items(section_id, drag_idx, idx);
+                                        this.state.sidebar.drag_item = Some((section_id, idx));
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        }
+                    });
+            } else {
+                // Non-draggable item during reorder phase: greyish and non-interactable
+                item_el = item_el
+                    .opacity(0.4)
+                    .cursor_not_allowed();
+            }
+        } else {
+            // Normal interaction mode
+            item_el = item_el
+                .cursor_pointer()
+                .bg(if is_active {
+                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
+                .hover(|style| {
+                    style.bg(if is_active {
+                        rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
+                    } else {
+                        rgba(UiConstants::BG_ITEM_HOVER_RGBA)
+                    })
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let item_id = item_id.clone();
+                    move |_event, _window, cx| {
+                        cx.stop_propagation();
+                        if let Some(path) = item_id.get_path() {
+                            v_click.update(cx, |this, cx| {
+                                this.navigate(path, cx);
+                            });
+                        }
+                    }
+                });
+        }
+
+        // Right click context menu on item (always available outside and inside reorder mode)
+        let is_pinned = matches!(item_id, SidebarItemId::Pinned(_));
+        let path_str = item_id.get_path().map(|p| p.to_string_lossy().into_owned());
+        item_el = item_el.on_mouse_down(MouseButton::Right, {
+            let view = view.clone();
+            let label = label.clone();
+            move |event, win, cx| {
+                cx.stop_propagation();
+                let position = event.position;
+                let flip_up: f32 = position.y.into();
+                let win_h: f32 = win.viewport_size().height.into();
+                let bottom_y = if flip_up > (win_h - SIDEBAR_MENU_HEIGHT) {
+                    win_h - flip_up
+                } else {
+                    0.0
+                };
+                view.update(cx, |this, cx| {
+                    let reorder_mode = this.state.sidebar.reorder_mode;
+                    let hidden_sections = this.state.sidebar.hidden_sections.clone();
+                    this.state.active_dialog = Some(DialogType::SidebarContextMenu {
+                        target: crate::ui::components::dialogs::SidebarMenuTarget::Item {
+                            label: label.clone(),
+                            path: path_str.clone(),
+                            is_pinned,
+                        },
+                        position,
+                        reorder_mode,
+                        hidden_sections,
+                        bottom_y,
+                    });
+                    cx.notify();
+                });
+            }
+        });
+
+        item_el
     }
 
     fn render_badge(badge: &SidebarBadge) -> impl IntoElement {
@@ -631,8 +930,9 @@ impl SidebarView {
 
     // ─── Settings button ──────────────────────────────────────────────────
 
-    fn render_settings_button(collapsed: bool, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    fn render_settings_button(collapsed: bool, state: &SidebarState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
         let v = view.clone();
+        let reorder_mode = state.reorder_mode;
         let mut btn = div()
             .id("sidebar-settings")
             .h(px(40.0))
@@ -644,14 +944,6 @@ impl SidebarView {
             .justify_center()
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                v.update(cx, |this, cx| {
-                    this.state.active_dialog = Some(DialogType::Settings);
-                    cx.notify();
-                });
-            })
             .child(
                 div()
                     .text_size(px(14.0))
@@ -667,6 +959,22 @@ impl SidebarView {
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .child("Settings"),
             );
+        }
+
+        if reorder_mode {
+            btn = btn
+                .opacity(0.4)
+                .cursor_not_allowed();
+        } else {
+            btn = btn
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.state.active_dialog = Some(DialogType::Settings);
+                        cx.notify();
+                    });
+                });
         }
 
         btn

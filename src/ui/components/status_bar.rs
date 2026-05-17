@@ -11,6 +11,10 @@ use gpui::*;
 pub struct StatusBarState {
     /// Total items in current directory
     pub total_count: usize,
+    /// Number of folders
+    pub folder_count: usize,
+    /// Number of files
+    pub file_count: usize,
     /// Number of selected items
     pub selected_count: usize,
     /// Total size of selected files (in bytes) — only for files, not folders
@@ -33,8 +37,10 @@ impl StatusBarState {
     }
 
     /// Update from individual fields instead of &AppState to avoid borrow conflicts.
-    pub fn sync(&mut self, item_count: usize) {
+    pub fn sync(&mut self, item_count: usize, folder_count: usize, file_count: usize) {
         self.total_count = item_count;
+        self.folder_count = folder_count;
+        self.file_count = file_count;
         self.selected_count = 0;
         self.selected_size_bytes = 0;
         self.free_bytes = 0;
@@ -68,127 +74,13 @@ impl StatusBarView {
     /// Build the status bar per DESIGN_SPEC.md 9.
     /// Height: 32px, padding: 8px left.
     /// 3-column grid: [LEFT: info] [CENTER: git actions] [RIGHT: branch]
-    pub fn build(state: &StatusBarState, _app: &AppState) -> impl IntoElement {
-        // Build LEFT section: item count + selection info
-        let left_content = div()
-            .flex()
-            .items_center()
-            .gap(px(UiConstants::PADDING_SMALL_RAW as f32))
-            .child(
-                div()
-                    .text_size(AbsoluteLength::Pixels(px(
-                        UiConstants::TEXT_SIZE_STATUS_BAR as f32,
-                    )))
-                    .font_family(UiConstants::FONT_MAIN)
-                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child(format!(
-                        "{} item{}",
-                        state.total_count,
-                        if state.total_count == 1 { "" } else { "s" }
-                    )),
-            );
-
-        // Selection info if items are selected
-        let selection_info = if state.selected_count > 0 {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(UiConstants::PADDING_SMALL_RAW as f32))
-                .child(
-                    div()
-                        .w_px()
-                        .h(px(18.0))
-                        .mx(px(UiConstants::PADDING_SMALL_RAW as f32))
-                        .bg(rgba(UiConstants::DIVIDER_RGBA)),
-                )
-                .child(
-                    div()
-                        .text_size(AbsoluteLength::Pixels(px(
-                            UiConstants::TEXT_SIZE_STATUS_BAR as f32,
-                        )))
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGB))
-                        .child(format!("{} selected", state.selected_count)),
-                )
-                .child(
-                    div()
-                        .text_size(AbsoluteLength::Pixels(px(
-                            UiConstants::TEXT_SIZE_STATUS_BAR as f32,
-                        )))
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGB))
-                        .child(format!(", {}", format_size(state.selected_size_bytes))),
-                )
-        } else {
-            div()
-        };
-
-        // RIGHT section: drive space (if available)
-        let right_content = if state.total_bytes > 0 {
-            let free_str = format_size(state.free_bytes);
-            let total_str = format_size(state.total_bytes);
-            let usage_ratio = 1.0 - (state.free_bytes as f64 / state.total_bytes as f64);
-            let bar_color = if usage_ratio > 0.9 {
-                rgb(UiConstants::SYSTEM_FILL_COLOR_CRITICAL_RGB)
-            } else {
-                rgb(UiConstants::ACCENT_COLOR_RGB)
-            };
-
-            div()
-                .flex()
-                .items_center()
-                .gap(px(UiConstants::PADDING_SMALL_RAW as f32))
-                .child(
-                    div()
-                        .text_size(AbsoluteLength::Pixels(px(
-                            UiConstants::TEXT_SIZE_STATUS_BAR as f32,
-                        )))
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGB))
-                        .child(format!("{} free of {}", free_str, total_str)),
-                )
-                .child(
-                    div()
-                        .w(px(50.0))
-                        .h(px(4.0))
-                        .rounded(px(2.0))
-                        .bg(rgba(UiConstants::DIVIDER_RGBA))
-                        .child(
-                            div()
-                                .w(px((50.0 * usage_ratio.max(0.0).min(1.0)) as f32))
-                                .h_px()
-                                .rounded(px(2.0))
-                                .bg(bar_color),
-                        ),
-                )
-        } else {
-            div()
-        };
-
-        // Git branch indicator (shown when in a repo)
-        let git_indicator = if state.show_git_actions {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(UiConstants::PADDING_SMALL_RAW as f32))
-                .child(
-                    div()
-                        .w_px()
-                        .h(px(18.0))
-                        .mx(px(UiConstants::PADDING_SMALL_RAW as f32))
-                        .bg(rgba(UiConstants::DIVIDER_RGBA)),
-                )
-                .child(
-                    div()
-                        .text_size(AbsoluteLength::Pixels(px(
-                            UiConstants::TEXT_SIZE_STATUS_BAR as f32,
-                        )))
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGB))
-                        .child(format!(
-                            "\u{E8EC} {}",
-                            state.git_branch.as_deref().unwrap_or("main")
-                        )),
-                )
-        } else {
-            div()
-        };
+    pub fn build(state: &StatusBarState, _app: &AppState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+        use crate::ui::views::main_view::{zoom_mode_icon, zoom_mode_name};
+        let view_mode = &_app.main_view.view_mode;
+        let mode_name = zoom_mode_name(view_mode);
+        let mode_icon = zoom_mode_icon(view_mode);
+        let zoom_pct = (_app.main_view.zoom_level * 100.0) as u32;
+        let v = view.clone();
 
         div()
             .id("status-bar")
@@ -202,19 +94,50 @@ impl StatusBarView {
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .child(
+                // LEFT: folder count + file count
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.0))
+                    .gap(px(16.0))
+                    // Folder count
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child(format!(
-                                "{} item{}",
-                                state.total_count,
-                                if state.total_count == 1 { "" } else { "s" }
-                            )),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8B7}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(state.folder_count.to_string()),
+                            )
+                    )
+                    // File count
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8A5}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(state.file_count.to_string()),
+                            )
                     )
                     .children(if state.selected_count > 0 {
                         Some(div()
@@ -227,9 +150,8 @@ impl StatusBarView {
                                     .text_size(px(12.0))
                                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                                     .child(format!(
-                                        "{} selected  {}",
-                                        state.selected_count,
-                                        format_size(state.selected_size_bytes)
+                                        "{} selected",
+                                        state.selected_count
                                     ))
                             )
                         )
@@ -238,62 +160,120 @@ impl StatusBarView {
                     })
             )
             .child(
+                // RIGHT: zoom mode button + zoom percentage
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(16.0))
-                    .children(if state.show_git_actions {
-                        Some(div()
+                    .gap(px(4.0))
+                    // Lock icon for per-directory view/zoom memory
+                    .child(
+                        div()
+                            .id("status-view-lock")
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
+                            .justify_center()
+                            .cursor_pointer()
+                            .rounded(px(4.0))
+                            .px(px(6.0))
+                            .py(px(4.0))
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .bg(if _app.main_view.view_lock_enabled { rgba(0x005FB830u32) } else { rgba(0x00000000u32) })
+                            .on_mouse_down(MouseButton::Left, {
+                                let v = v.clone();
+                                move |_, _, cx| {
+                                    v.update(cx, |this, cx| {
+                                        this.toggle_view_lock(cx);
+                                    });
+                                }
+                            })
                             .child(
                                 div()
                                     .text_size(px(14.0))
-                                    .font_family(UiConstants::FONT_ICONS)
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E8EC}")
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(state.git_branch.clone().unwrap_or_else(|| "main".to_string()))
-                            )
-                        )
-                    } else {
-                        None
-                    })
-                    .children(if state.total_bytes > 0 {
-                        let usage_ratio = 1.0 - (state.free_bytes as f64 / state.total_bytes as f64);
-                        Some(div()
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(if _app.main_view.view_lock_enabled {
+                                        rgb(UiConstants::ACCENT_COLOR_RGB)
+                                    } else {
+                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                    })
+                                    .child(if _app.main_view.view_lock_enabled { "\u{E73E}" } else { "\u{E785}" }),
+                            ),
+                    )
+                    // Separator before view options
+                    .child(div().w(px(1.0)).h(px(16.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).mx(px(8.0)))
+                    // View Mode Button
+                    .child(
+                        div()
+                            .id("status-zoom-controls")
                             .flex()
                             .items_center()
-                            .gap(px(12.0))
+                            .gap(px(8.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .rounded(px(4.0))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .on_mouse_down(MouseButton::Left, {
+                                let v = v.clone();
+                                move |event, _win, cx| {
+                                    v.update(cx, |this, cx| {
+                                        // Open dialog above the button
+                                        let mut pos = event.position;
+                                        pos.y -= px(320.0); // Offset upwards
+                                        pos.x -= px(260.0); // Offset left to prevent overflow
+                                        this.open_zoom_slider(pos, cx);
+                                    });
+                                }
+                            })
                             .child(
                                 div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(format!("{} free of {}", format_size(state.free_bytes), format_size(state.total_bytes)))
-                            )
-                            .child(
-                                div()
-                                    .w(px(60.0))
-                                    .h(px(4.0))
-                                    .rounded(px(2.0))
-                                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
                                     .child(
                                         div()
-                                            .h_full()
-                                            .w(px((60.0 * usage_ratio) as f32))
-                                            .rounded(px(2.0))
-                                            .bg(rgba(if usage_ratio > 0.9 { UiConstants::DANGER_RGBA } else { UiConstants::ACCENT_RGBA }))
+                                            .text_size(px(16.0))
+                                            .font_family(UiConstants::FONT_MDL2)
+                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                            .child(mode_icon),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                            .child(mode_name),
                                     )
                             )
-                        )
-                    } else {
-                        None
-                    })
+                            .child(
+                                // Percentage badge with progress bar behind it
+                                div()
+                                    .min_w(px(46.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .relative()
+                                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
+                                    .rounded(px(4.0))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .overflow_hidden()
+                                    .child(
+                                        // Progress bar fill (clamped so it never exceeds badge width visually)
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .w(px((zoom_pct as f32 * 0.46).clamp(4.0, 46.0)))
+                                            .h_full()
+                                            .bg(rgba(0x005FB840u32)) // accent at 25% opacity
+                                            .rounded(px(4.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                            .child(format!("{}%", zoom_pct)),
+                                    ),
+                            ),
+                    )
             )
     }
 }

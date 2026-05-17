@@ -105,6 +105,12 @@ pub struct SidebarConfig {
     /// None = use default order from build_all_sections()
     #[serde(default)]
     pub section_order: Option<Vec<String>>,
+    /// List of SectionId names that are hidden
+    #[serde(default)]
+    pub hidden_sections: Option<Vec<String>>,
+    /// Persisted collapsed state of sections (SectionId -> collapsed bool)
+    #[serde(default)]
+    pub section_collapsed: Option<std::collections::HashMap<String, bool>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,8 +132,6 @@ pub enum ViewMode {
     Grid,
     Details,
     Columns,
-    Cards,
-    Tiles,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -171,6 +175,7 @@ pub enum GroupColumn {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FolderPreferences {
     pub view_mode: ViewMode,
+    pub zoom_level: f32,
     pub sort_by: SortBy,
     pub sort_ascending: bool,
     pub folder_on_top: bool,
@@ -252,11 +257,18 @@ impl AppConfig {
             .cloned()
             .unwrap_or_else(|| FolderPreferences {
                 view_mode: self.view.default_view_mode.clone(),
+                zoom_level: 0.5,
                 sort_by: self.view.sort_by.clone(),
                 sort_ascending: self.view.sort_ascending,
                 folder_on_top: self.view.folder_on_top,
                 group_by: self.view.group_by,
             })
+    }
+
+    /// Save layout preferences for a specific folder.
+    pub fn set_folder_preferences(&mut self, path: &FilesPath, prefs: FolderPreferences) {
+        let key = path.to_string_lossy().into_owned();
+        self.folder_preferences.insert(key, prefs);
     }
 
     /// Load settings from disk, or return default if not found.

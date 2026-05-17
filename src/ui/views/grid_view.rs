@@ -1,0 +1,613 @@
+//! Grid View - Icon/grid/tile display with dynamic zoom and uniform_list for performance
+//!
+//! This view consolidates what were previously separate grid, cards, and tiles views
+//! into a single view with dynamic zoom level (0.0 = compact tiles, 0.5 = medium grid,
+//! 1.0 = large cards). Uses GPUI's uniform_list for efficient rendering.
+
+use crate::config::config::GroupColumn;
+use crate::storage::storage::FileType;
+use crate::ui::components::icon_renderer::is_thumbnail_image;
+use crate::ui::constants::UiConstants;
+use crate::ui::views::main_view::{
+    get_extension, get_file_type_icon, FileItems, GroupedGridItem,
+    MainViewState, SelectionMode,
+};
+use gpui::*;
+
+impl MainViewState {
+    /// Render grid view with dynamic zoom (0–1 mapping compact tiles → large cards)
+    pub fn render_grid_view(
+        &self,
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> AnyElement {
+        let visible = self.visible_items();
+
+        if self.group_by != GroupColumn::None {
+            return self
+                .render_grid_view_grouped(&visible, file_items, view)
+                .into_any_element();
+        }
+
+        self.grid_view_flat(&visible, file_items, view)
+            .into_any_element()
+    }
+
+    /// Compute grid layout parameters from zoom_level
+    fn grid_layout_params(zoom: f32) -> GridLayoutParams {
+        // zoom: 0.0 = compact tiles, 0.5 = medium grid, 1.0 = large cards
+        let items_per_row = if zoom < 0.33 {
+            8
+        } else if zoom < 0.66 {
+            6
+        } else {
+            4
+        };
+
+        // Tile size: small (compact) to large (cards)
+        let item_width = 60.0 + zoom * 140.0; // 60 → 200
+        let item_height = item_width + 24.0;
+        let row_height = item_height + 8.0;
+        let icon_size = item_width * 0.6;
+        let gap = if zoom < 0.33 { 6.0 } else if zoom < 0.66 { 8.0 } else { 12.0 };
+        let rounded = if zoom < 0.33 { 2.0 } else if zoom < 0.66 { 4.0 } else { 8.0 };
+        let text_size = (item_width / 8.0).clamp(9.0, 13.0);
+        let padding = if zoom < 0.33 { 8.0 } else { 12.0 };
+
+        GridLayoutParams {
+            items_per_row,
+            item_width,
+            item_height,
+            row_height,
+            icon_size,
+            gap,
+            rounded,
+            text_size,
+            padding,
+        }
+    }
+
+    /// Flat grid view using uniform_list for maximum performance
+    fn grid_view_flat(
+        &self,
+        visible: &[usize],
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let visible_clone = visible.to_vec();
+        let zoom = self.zoom_level;
+        let params = Self::grid_layout_params(zoom);
+        let items_per_row = params.items_per_row;
+        let row_count = (visible.len() + items_per_row - 1) / items_per_row;
+
+        div()
+            .flex_col()
+            .w_full()
+            .flex_grow()
+            // NO overflow_hidden() - would block child scroll events
+            .id("grid-container")
+            .on_mouse_down(MouseButton::Right, {
+                let v = view.clone();
+                move |event, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.show_context_menu(None, event.position, cx);
+                    });
+                }
+            })
+            .child(
+                uniform_list("grid-scroll", row_count, {
+                    let view = view.clone();
+                    move |range, _win, cx| {
+                        let fi = file_items.read(cx);
+                        let app_state = view.read(cx);
+                        let main_state = &app_state.state.main_view;
+                        let icon_paths = &main_state.icon_paths;
+                        let zoom = main_state.zoom_level;
+                        let params = MainViewState::grid_layout_params(zoom);
+                        let selected = main_state.selected_indices.clone();
+                        let sel_mode = main_state.selection_mode.clone();
+                        let compact = main_state.compact_mode;
+
+                        range
+                            .map(|row_idx| {
+                                let start = row_idx * params.items_per_row;
+                                let end = (start + params.items_per_row).min(visible_clone.len());
+
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .h(px(params.row_height))
+                                    .gap(px(params.gap))
+                                    .px(px(params.padding))
+                                    .children((start..end).map(|i| {
+                                        let idx = visible_clone[i];
+                                        let item = &fi.items[idx];
+                                        let is_selected = selected.contains(&idx);
+                                        Self::grid_item(
+                                            item,
+                                            idx,
+                                            is_selected,
+                                            sel_mode.clone(),
+                                            view.clone(),
+                                            icon_paths,
+                                            &params,
+                                            compact,
+                                        )
+                                        .into_any_element()
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .track_scroll(self.uniform_list_scroll_handle.clone()),
+            )
+    }
+
+    /// Grouped grid view with collapsible group headers
+    fn render_grid_view_grouped(
+        &self,
+        visible: &[usize],
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let zoom = self.zoom_level;
+        let params = Self::grid_layout_params(zoom);
+        let items_per_row = params.items_per_row;
+        let flattened = self.flatten_grouped_grid_items(visible, items_per_row);
+        let item_count = flattened.len();
+
+        div()
+            .flex_col()
+            .w_full()
+            .flex_grow()
+            // NO h_full() + overflow_hidden() - conflict with flex_grow and block scroll
+            .child(
+                uniform_list("grid-grouped-scroll", item_count, {
+                    let view = view.clone();
+                    let visible_clone = visible.to_vec();
+                    move |range, _win, cx| {
+                        let fi = file_items.read(cx);
+                        let app_state = view.read(cx);
+                        let main_state = &app_state.state.main_view;
+                        let icon_paths = &main_state.icon_paths;
+                        let zoom = main_state.zoom_level;
+                        let params = MainViewState::grid_layout_params(zoom);
+                        let sel_mode = main_state.selection_mode.clone();
+                        let collapsed_groups = main_state.collapsed_groups.clone();
+                        let compact = main_state.compact_mode;
+
+                        range
+                            .map(|i| match &flattened[i] {
+                                GroupedGridItem::Header {
+                                    key,
+                                    label,
+                                    count,
+                                } => {
+                                    let group_height =
+                                        if main_state.compact_mode { 24.0 } else { 32.0 };
+                                    let key_clone = key.clone();
+                                    let v = view.clone();
+
+                                    div()
+                                        .id(ElementId::from(60000 + i))
+                                        .flex()
+                                        .flex_row()
+                                        .h(px(group_height))
+                                        .items_center()
+                                        .px(px(params.padding))
+                                        .bg(rgba(0x0A000000u32))
+                                        .cursor_pointer()
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            v.update(cx, |this, cx| {
+                                                this.toggle_group_collapse(key_clone.clone(), cx);
+                                            });
+                                        })
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .font_family(UiConstants::FONT_MDL2)
+                                                .text_color(rgba(
+                                                    UiConstants::TEXT_SECONDARY_RGBA,
+                                                ))
+                                                .child(if collapsed_groups.contains(key) {
+                                                    "\u{E76C}"
+                                                } else {
+                                                    "\u{E76B}"
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .ml(px(6.0))
+                                                .text_size(px(13.0))
+                                                .font_weight(FontWeight(600.0))
+                                                .text_color(rgba(
+                                                    UiConstants::TEXT_PRIMARY_RGBA,
+                                                ))
+                                                .child(label.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .ml(px(8.0))
+                                                .text_size(px(11.0))
+                                                .text_color(rgba(
+                                                    UiConstants::TEXT_SECONDARY_RGBA,
+                                                ))
+                                                .child(format!(
+                                                    "{} item{}",
+                                                    count,
+                                                    if *count == 1 { "" } else { "s" }
+                                                )),
+                                        )
+                                        .into_any_element()
+                                }
+                                GroupedGridItem::Row(indices) => {
+                                    let indices = indices.clone();
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .gap(px(params.gap))
+                                        .px(px(params.padding))
+                                        .py(px(params.gap * 0.5))
+                                        .children(indices.into_iter().map(|idx| {
+                                            let item = &fi.items[idx];
+                                            let selected = fi.selected_indices.contains(&idx);
+                                            Self::grid_item(
+                                                item,
+                                                idx,
+                                                selected,
+                                                sel_mode.clone(),
+                                                view.clone(),
+                                                icon_paths,
+                                                &params,
+                                                compact,
+                                            )
+                                        }))
+                                        .into_any_element()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .track_scroll(self.uniform_list_scroll_handle.clone()),
+            )
+    }
+
+    /// Render a single grid item (icon + name), sized dynamically by zoom
+    fn grid_item(
+        item: &crate::domain::metadata::FileItem,
+        index: usize,
+        selected: bool,
+        selection_mode: SelectionMode,
+        view: Entity<crate::app::AppWindow>,
+        icon_paths: &std::collections::HashMap<
+            crate::core::path_util::FilesPath,
+            std::path::PathBuf,
+        >,
+        params: &GridLayoutParams,
+        compact: bool,
+    ) -> impl IntoElement {
+        let v_click = view.clone();
+        let v_hover = view.clone();
+        let v_timer = view.clone();
+        let v_checkbox = view.clone();
+        let is_dir = matches!(item.file_type, FileType::Directory);
+        let extension = get_extension(&item.name);
+        let is_thumbnail = !is_dir && is_thumbnail_image(&extension);
+        let show_checkbox = selection_mode == SelectionMode::Checkbox;
+        let is_hover_select = selection_mode == SelectionMode::HoverSelect;
+        let item_path = item.path.clone();
+        let item_name = item.name.clone();
+        let cached_icon_path: Option<std::path::PathBuf> =
+            icon_paths.get(&item_path).cloned();
+
+        let item_width = params.item_width;
+        let item_height = if compact {
+            params.item_height - 8.0
+        } else {
+            params.item_height
+        };
+        let icon_size_val = params.icon_size;
+        let rounded = params.rounded;
+        let text_size = params.text_size;
+
+        if is_thumbnail {
+            // Show image thumbnail with optional checkbox
+            let mut item_div = div()
+                .id(ElementId::from(70000 + index))
+                .w(px(item_width))
+                .h(px(item_height))
+                .flex_col()
+                .items_center()
+                .py(px(item_width * 0.25))
+                .rounded(px(rounded))
+                .relative()
+                .border(px(if selected { 2.0 } else { 1.5 }))
+                .border_color(if selected {
+                    rgba(UiConstants::ACCENT_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
+                .bg(rgba(0x00000000u32))
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
+
+            if show_checkbox {
+                item_div = item_div.child(
+                    div()
+                        .absolute()
+                        .top(px(4.0))
+                        .left(px(4.0))
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_checkbox.update(cx, |this, cx| {
+                                this.toggle_checkbox_selection(index, cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .border(px(1.5))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(3.0))
+                                .bg(if selected {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .child(if selected {
+                                    div()
+                                        .text_size(px(9.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("\u{E73E}")
+                                } else {
+                                    div()
+                                }),
+                        ),
+                );
+            }
+
+            let path_clone = item_path.clone();
+            item_div
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    cx.stop_propagation();
+                    v_click.update(cx, |this, cx| {
+                        if event.click_count == 2 {
+                            if is_dir {
+                                this.navigate(path_clone.clone(), cx);
+                            } else {
+                                this.open_item(index, cx);
+                            }
+                        } else {
+                            this.select_item(index, false, false, cx);
+                        }
+                    });
+                })
+                .on_mouse_down(MouseButton::Right, {
+                    let v = view.clone();
+                    move |event, _, cx| {
+                        cx.stop_propagation();
+                        v.update(cx, |this, cx| {
+                            this.show_context_menu(Some(index), event.position, cx);
+                        });
+                    }
+                })
+                .on_mouse_move({
+                    let v_hover = v_hover.clone();
+                    let v_timer = v_timer.clone();
+                    move |_, _, cx| {
+                        if is_hover_select {
+                            v_hover.update(cx, |this, cx| {
+                                this.handle_item_hover(index, cx);
+                            });
+                        } else if is_dir {
+                            v_timer.update(cx, |this, cx| {
+                                this.start_hover_timer(index, cx);
+                            });
+                        }
+                    }
+                })
+                .on_mouse_up_out(MouseButton::Left, {
+                    let v_timer = v_timer.clone();
+                    move |_, _, cx| {
+                        v_timer.update(cx, |this, cx| {
+                            this.stop_hover_timer();
+                        });
+                    }
+                })
+                .child(
+                    img(item_path.as_path().to_path_buf())
+                        .w(px(icon_size_val))
+                        .h(px(icon_size_val))
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .rounded(px(rounded)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .px(px(4.0))
+                        .mt(px(4.0))
+                        .text_center()
+                        .overflow_hidden()
+                        .text_size(px(text_size))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                        .child(item_name.clone()),
+                )
+        } else {
+            // Show icon for directories and non-image files
+            let file_icon = if is_dir {
+                "\u{E8B7}".to_string()
+            } else {
+                get_file_type_icon(&extension).to_string()
+            };
+
+            // Also show file size badge when zoom > 0.5 (cards mode)
+            let show_size_badge = false; // TODO: determine from state
+
+            let mut item_div = div()
+                .id(ElementId::from(70000 + index))
+                .w(px(item_width))
+                .h(px(item_height))
+                .flex_col()
+                .items_center()
+                .py(px(item_width * 0.25))
+                .rounded(px(rounded))
+                .relative()
+                .border(px(if selected { 2.0 } else { 1.5 }))
+                .border_color(if selected {
+                    rgba(UiConstants::ACCENT_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
+                .bg(rgba(0x00000000u32))
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
+
+            if show_checkbox {
+                item_div = item_div.child(
+                    div()
+                        .absolute()
+                        .top(px(4.0))
+                        .left(px(4.0))
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            let v = v_checkbox.clone();
+                            v.update(cx, |this, cx| {
+                                this.toggle_checkbox_selection(index, cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .border(px(1.5))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(3.0))
+                                .bg(if selected {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .child(if selected {
+                                    div()
+                                        .text_size(px(9.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("\u{E73E}")
+                                } else {
+                                    div()
+                                }),
+                        ),
+                );
+            }
+
+            let path_clone = item_path.clone();
+            item_div
+                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                    cx.stop_propagation();
+                    v_click.update(cx, |this, cx| {
+                        if event.click_count == 2 {
+                            if is_dir {
+                                this.navigate(path_clone.clone(), cx);
+                            } else {
+                                this.open_item(index, cx);
+                            }
+                        } else {
+                            this.select_item(index, false, false, cx);
+                        }
+                    });
+                })
+                .on_mouse_down(MouseButton::Right, {
+                    let v = view.clone();
+                    move |event, _, cx| {
+                        cx.stop_propagation();
+                        v.update(cx, |this, cx| {
+                            this.show_context_menu(Some(index), event.position, cx);
+                        });
+                    }
+                })
+                .on_mouse_move({
+                    let v_hover = v_hover.clone();
+                    let v_timer = v_timer.clone();
+                    move |_, _, cx| {
+                        if is_hover_select {
+                            v_hover.update(cx, |this, cx| {
+                                this.handle_item_hover(index, cx);
+                            });
+                        } else if is_dir {
+                            v_timer.update(cx, |this, cx| {
+                                this.start_hover_timer(index, cx);
+                            });
+                        }
+                    }
+                })
+                .on_mouse_up_out(MouseButton::Left, {
+                    let v_timer = v_timer.clone();
+                    move |_, _, cx| {
+                        v_timer.update(cx, |this, cx| {
+                            this.stop_hover_timer();
+                        });
+                    }
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .child(if let Some(icon_path) = &cached_icon_path {
+                            img(icon_path.clone())
+                                .w(px(icon_size_val))
+                                .h(px(icon_size_val))
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .into_any_element()
+                        } else {
+                            div()
+                                .text_size(px(icon_size_val * 0.8))
+                                .font_family(UiConstants::FONT_MDL2)
+                                .text_color(if is_dir {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                })
+                                .child(file_icon)
+                                .into_any_element()
+                        }),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .px(px(2.0))
+                        .text_center()
+                        .text_size(px(text_size))
+                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                        .overflow_hidden()
+                        .child(item_name.clone()),
+                )
+        }
+    }
+}
+
+/// Layout parameters computed from zoom level
+pub struct GridLayoutParams {
+    pub items_per_row: usize,
+    pub item_width: f32,
+    pub item_height: f32,
+    pub row_height: f32,
+    pub icon_size: f32,
+    pub gap: f32,
+    pub rounded: f32,
+    pub text_size: f32,
+    pub padding: f32,
+}

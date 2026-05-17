@@ -16,7 +16,7 @@ use crate::ui::components::status_bar::{StatusBarState, StatusBarView};
 use crate::ui::components::tab_bar::TabBarView;
 use crate::ui::components::toolbar::ToolbarView;
 use crate::ui::constants::UiConstants;
-use crate::ui::views::main_view::{MainView, MainViewState, DetailsPaneCache, GroupDragState, FileItems};
+use crate::ui::views::main_view::{MainView, MainViewState, DetailsPaneCache, GroupDragState, FileItems, ColumnWidths, ColumnResizeState};
 use crate::domain::metadata::FileItem;
 use crate::domain::extended_metadata::ExtendedMetadataExtractor;
 use crate::domain::git_service::GitService;
@@ -144,6 +144,11 @@ pub struct AppWindow {
     hover_item_index: Option<usize>,
     /// Drag state for sidebar pinned item reordering
     sidebar_pinned_drag: Option<SidebarPinnedDragState>,
+    /// Whether the zoom slider is currently being dragged.
+    /// Stores (initial_click_y, initial_zoom_at_start_of_drag)
+    pub zoom_drag_start: Option<(f32, f32)>,
+    /// Column resize drag state (for Details view column headers)
+    pub column_resize: Option<ColumnResizeState>,
 }
 
 impl AppWindow {
@@ -157,6 +162,8 @@ impl AppWindow {
             state,
             hover_item_index: None,
             sidebar_pinned_drag: None,
+            zoom_drag_start: None,
+            column_resize: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
         window_view.navigate(initial_path, cx);
@@ -231,7 +238,9 @@ impl AppWindow {
         // Sync sidebar active item and status bar
         #[cfg(windows)]
         self.state.sidebar.set_active(&path);
-        self.state.status_bar.sync(self.state.main_view.items.len());
+        let folder_count = self.state.main_view.items.iter().filter(|i| matches!(i.file_type, FileType::Directory)).count();
+        let file_count = self.state.main_view.items.len() - folder_count;
+        self.state.status_bar.sync(self.state.main_view.items.len(), folder_count, file_count);
 
         // Update git info in status bar
         self.state.status_bar.show_git_actions = GitService::is_repo(&path);
@@ -244,7 +253,14 @@ impl AppWindow {
         let settings_model = self.state.settings.read(cx);
 
         let prefs = settings_model.config().get_folder_preferences(&path);
-        self.state.main_view.view_mode = active_tab.view_mode.clone();
+
+        // If view lock is enabled, restore saved per-directory view mode and zoom
+        if self.state.main_view.view_lock_enabled {
+            self.state.main_view.view_mode = prefs.view_mode.clone();
+            self.state.main_view.zoom_level = prefs.zoom_level;
+        } else {
+            self.state.main_view.view_mode = active_tab.view_mode.clone();
+        }
 
         // Load folder background from desktop.ini
         if let Some(desktop_ini) = crate::storage::desktop_ini::DesktopIni::load(path.as_path()) {
@@ -321,7 +337,9 @@ impl AppWindow {
                             this.state.main_view.primary_path = path_clone.clone();
                             this.state.nav_bar.update_path(path_clone.clone());
                             this.state.sidebar.set_active(&path_clone);
-                            this.state.status_bar.sync(this.state.main_view.items.len());
+                            let folder_count = this.state.main_view.items.iter().filter(|i| matches!(i.file_type, FileType::Directory)).count();
+                            let file_count = this.state.main_view.items.len() - folder_count;
+                            this.state.status_bar.sync(this.state.main_view.items.len(), folder_count, file_count);
                             // Update git info in status bar after loading items
                             this.state.status_bar.show_git_actions = GitService::is_repo(&path_clone);
                             this.state.status_bar.git_branch = GitService::get_branch(&path_clone);
@@ -1525,6 +1543,12 @@ impl AppWindow {
         self.state.status_bar.selected_count = self.state.main_view.selected_indices.len();
         self.state.status_bar.selected_size_bytes = selected_size;
 
+        // Sync file_items model for uniform_list closures
+        self.state.file_items.update(cx, |m, _| {
+            m.items = self.state.main_view.items.clone();
+            m.selected_indices = self.state.main_view.selected_indices.clone();
+        });
+
         cx.notify();
     }
 
@@ -1552,6 +1576,12 @@ impl AppWindow {
         self.state.status_bar.selected_count = 0;
         self.state.status_bar.selected_size_bytes = 0;
         self.state.main_view.preview_text = None;
+        
+        // Sync file_items model
+        self.state.file_items.update(cx, |m, _| {
+            m.selected_indices.clear();
+        });
+
         cx.notify();
     }
 
@@ -1574,7 +1604,55 @@ impl AppWindow {
             .map(|item| item.size)
             .sum();
         self.state.status_bar.selected_size_bytes = selected_size;
+
+        // Sync file_items model
+        self.state.file_items.update(cx, |m, _| {
+            m.selected_indices = self.state.main_view.selected_indices.clone();
+        });
+
         cx.notify();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Column resize handling (Details view column header drag-to-resize)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Start a column resize operation. Called from resize handle on_mouse_down.
+    pub fn start_column_resize(&mut self, column: String, start_x: f32, cx: &mut Context<Self>) {
+        let widths = self.state.main_view.column_widths;
+        let initial_width = match column.as_str() {
+            "name" => widths.name,
+            "date" => widths.date,
+            "type" => widths.type_col,
+            "size" => widths.size,
+            _ => return,
+        };
+        self.column_resize = Some(ColumnResizeState {
+            column,
+            start_x,
+            initial_width,
+            original_widths: widths,
+        });
+    }
+
+    /// Update column width during a resize drag. Called from on_mouse_move.
+    pub fn update_column_resize(&mut self, current_x: f32) {
+        if let Some(ref resize) = self.column_resize.clone() {
+            let delta = current_x - resize.start_x;
+            let new_width = (resize.initial_width + delta).max(40.0); // min 40px
+            match resize.column.as_str() {
+                "name" => self.state.main_view.column_widths.name = new_width,
+                "date" => self.state.main_view.column_widths.date = new_width,
+                "type" => self.state.main_view.column_widths.type_col = new_width,
+                "size" => self.state.main_view.column_widths.size = new_width,
+                _ => {}
+            }
+        }
+    }
+
+    /// End a column resize operation. Called from on_mouse_up.
+    pub fn end_column_resize(&mut self) {
+        self.column_resize = None;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2637,6 +2715,49 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         cx.notify();
     }
 
+    pub fn open_zoom_slider(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        use crate::ui::components::dialogs::DialogType;
+        // Reset any stale drag state from a previous incomplete drag
+        self.zoom_drag_start = None;
+        let current_zoom = self.state.main_view.zoom_level;
+        let current_mode = self.state.main_view.view_mode.clone();
+        self.state.active_dialog = Some(DialogType::ZoomSlider { position, current_zoom, current_mode });
+        cx.notify();
+    }
+
+    pub fn end_zoom_drag(&mut self, _cx: &mut Context<Self>) {
+        self.zoom_drag_start = None;
+    }
+
+    pub fn set_zoom_level(&mut self, level: f32, cx: &mut Context<Self>) {
+        let level = level.clamp(0.0, 1.0);
+        self.state.main_view.zoom_level = level;
+
+        // Keep dialog snapshots in sync so re-renders use live values
+        if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider { ref mut current_zoom, .. }) = self.state.active_dialog {
+            *current_zoom = level;
+        }
+
+        // Save to per-directory preferences if lock is enabled
+        if self.state.main_view.view_lock_enabled {
+            let path = self.state.main_view.primary_path.clone();
+            let view_mode = self.state.main_view.view_mode.clone();
+            let settings = self.state.settings.clone();
+            settings.update(cx, move |s, _cx| {
+                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
+                    view_mode,
+                    zoom_level: level,
+                    sort_by: s.config.view.sort_by.clone(),
+                    sort_ascending: s.config.view.sort_ascending,
+                    folder_on_top: s.config.view.folder_on_top,
+                    group_by: s.config.view.group_by,
+                });
+            });
+        }
+
+        cx.notify();
+    }
+
     pub fn dismiss_splash(&mut self, cx: &mut Context<Self>) {
         self.state.splash_state.visible = false;
         cx.notify();
@@ -2683,7 +2804,7 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                         }
                     }
 
-                    let size = ThumbnailSize::Medium;
+                    let size = ThumbnailSize::Large;
                     if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, size) {
                         use image::{ImageBuffer, Rgba};
                         let w = thumb.width;
@@ -2843,8 +2964,43 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         cx.notify();
     }
 
-    pub fn open_in_new_window(&mut self, path: FilesPath, _cx: &mut Context<Self>) {
-        tracing::info!("Open in New Window: {:?} (stub)", path);
+    pub fn open_in_new_window(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        // Use the existing new_window function but set the initial path
+        let progress_engine = self.state.progress_engine.clone();
+        // Create a new database for the new window (shared same file)
+        let db_path = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Files-Rust")
+            .join("files-rs.db");
+        let db = Arc::new(crate::core::database::Database::new(db_path).unwrap_or_else(|_| {
+            crate::core::database::Database::new(std::path::PathBuf::from(":memory:")).expect("Failed to create in-memory database")
+        }));
+        let fi_res = cx.reserve_entity();
+        let file_items = cx.insert_entity(fi_res, |_| crate::ui::views::main_view::FileItems::default());
+        let app_state = AppState::new(
+            path.clone(), // Use the provided path as initial path
+            file_items,
+            self.state.settings.clone(),
+            self.state.localization.clone(),
+            self.state.navigation.clone(),
+            progress_engine.clone(),
+            db,
+            cx,
+        );
+
+        let options = gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                origin: Default::default(),
+                size: gpui::size(gpui::Pixels::from(1280.0), gpui::Pixels::from(800.0)),
+            })),
+            ..gpui::WindowOptions::default()
+        };
+
+        cx.open_window(options, move |window, cx| {
+            let rx = progress_engine.subscribe();
+            cx.new(|cx| AppWindow::new(app_state, rx, window, cx))
+        })
+        .expect("Failed to open window");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2971,9 +3127,20 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        // Pre-read selection data to avoid view.read(cx) crash during dialog render
+        let selected_indices = &self.state.main_view.selected_indices;
+        let has_selection = !selected_indices.is_empty();
+        let selected_path = selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|item| item.path.clone());
+
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
             position,
+            has_selection,
+            selected_path,
         });
         cx.notify();
     }
@@ -3060,8 +3227,51 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
     pub fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
         self.state.main_view.view_mode = mode.clone();
         self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.active_tab_mut().view_mode = mode;
+            nav.tabs.active_tab_mut().view_mode = mode.clone();
         });
+
+        // Save to per-directory preferences if lock is enabled
+        if self.state.main_view.view_lock_enabled {
+            let path = self.state.main_view.primary_path.clone();
+            let zoom_level = self.state.main_view.zoom_level;
+            let settings = self.state.settings.clone();
+            settings.update(cx, move |s, _cx| {
+                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
+                    view_mode: mode,
+                    zoom_level,
+                    sort_by: s.config.view.sort_by.clone(),
+                    sort_ascending: s.config.view.sort_ascending,
+                    folder_on_top: s.config.view.folder_on_top,
+                    group_by: s.config.view.group_by,
+                });
+            });
+        }
+
+        cx.notify();
+    }
+
+    /// Toggle the per-directory view/zoom lock on/off
+    pub fn toggle_view_lock(&mut self, cx: &mut Context<Self>) {
+        self.state.main_view.view_lock_enabled = !self.state.main_view.view_lock_enabled;
+
+        // If enabling the lock, save current directory's prefs immediately
+        if self.state.main_view.view_lock_enabled {
+            let path = self.state.main_view.primary_path.clone();
+            let view_mode = self.state.main_view.view_mode.clone();
+            let zoom_level = self.state.main_view.zoom_level;
+            let settings = self.state.settings.clone();
+            settings.update(cx, move |s, _cx| {
+                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
+                    view_mode,
+                    zoom_level,
+                    sort_by: s.config.view.sort_by.clone(),
+                    sort_ascending: s.config.view.sort_ascending,
+                    folder_on_top: s.config.view.folder_on_top,
+                    group_by: s.config.view.group_by,
+                });
+            });
+        }
+
         cx.notify();
     }
 
@@ -3555,34 +3765,52 @@ impl Render for AppWindow {
                                     .flex()
                                     .flex_col()
                                     .flex_grow()
+                                    .h_full()
+                                    .w_full()
+                                    .overflow_hidden()
                                     .child(
-                                        // TabBar
+                                        // TabBar (fixed height)
                                         div()
+                                            .flex_shrink_0()
                                             .w_full()
                                             .child(TabBarView::build(&state.navigation.read(cx), cx.entity())),
                                     )
                                     .child(
-                                        // Navigation Bar
-                                        div().w_full().child(NavigationBarView::build(
-                                            &state.nav_bar,
-                                            can_go_back,
-                                            can_go_forward,
-                                            cx.entity(),
-                                        )),
+                                        // Navigation Bar (fixed height)
+                                        div()
+                                            .flex_shrink_0()
+                                            .w_full()
+                                            .child(NavigationBarView::build(
+                                                &state.nav_bar,
+                                                can_go_back,
+                                                can_go_forward,
+                                                cx.entity(),
+                                            )),
                                     )
                                     .child({
                                         let view = cx.entity();
-                                        let mut row = div().flex().flex_row().flex_grow().overflow_hidden()
+                                        let mut row = div()
+                                            .flex()
+                                            .flex_row()
+                                            .overflow_hidden()
+                                            .flex_grow()
+                                            .w_full()
                                             // Track mouse moves ANYWHERE in this row during sidebar resize
                                             .on_mouse_move({
                                                 let view = view.clone();
-                                                move |event, _win, cx| {
+                                                move |event, win, cx| {
                                                     view.update(cx, |this, cx| {
                                                         if this.state.sidebar.resize_start_x.is_some() {
-                                                            let x: f32 = event.position.x.into();
+                                                            let x: f32 = win.mouse_position().x.into();
                                                             if this.state.sidebar.update_resize_drag(x) {
                                                                 cx.notify();
                                                             }
+                                                        }
+                                                        // Handle column resize drag
+                                                        if this.column_resize.is_some() {
+                                                            let x: f32 = win.mouse_position().x.into();
+                                                            this.update_column_resize(x);
+                                                            cx.notify();
                                                         }
                                                     });
                                                 }
@@ -3593,6 +3821,9 @@ impl Render for AppWindow {
                                                     view.update(cx, |this, _cx| {
                                                         if this.state.sidebar.resize_start_x.is_some() {
                                                             this.state.sidebar.end_resize_drag();
+                                                        }
+                                                        if this.column_resize.is_some() {
+                                                            this.end_column_resize();
                                                         }
                                                     });
                                                 }
@@ -3610,29 +3841,46 @@ impl Render for AppWindow {
                                                 .flex()
                                                 .flex_col()
                                                 .flex_grow()
+                                                .w_full()
                                                 .overflow_hidden()
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let view = cx.entity();
+                                                    move |_event, _window, cx| {
+                                                        view.update(cx, |this, cx| {
+                                                            if this.state.sidebar.reorder_mode {
+                                                                this.state.sidebar.exit_reorder_mode();
+                                                                cx.notify();
+                                                            }
+                                                        });
+                                                    }
+                                                })
                                                 .child(
-                                                    // Toolbar
-                                                    div().w_full().child(ToolbarView::build(
-                                                        &state.main_view.view_mode,
-                                                        &state.main_view.toolbar_customization,
-                                                        cx.entity(),
-                                                    ))
+                                                    // Toolbar (fixed height)
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .w_full()
+                                                        .child(ToolbarView::build(
+                                                            &state.main_view.view_mode,
+                                                            &state.main_view.toolbar_customization,
+                                                            cx.entity(),
+                                                        ))
                                                 )
                                                 .child(
-                                                    // Main Content
+                                                    // Main Content (flex_grow to fill remaining space)
                                                     div()
+                                                        .flex()
+                                                        .flex_col()
                                                         .flex_grow()
                                                         .w_full()
-                                                        .overflow_hidden()
                                                         .child(MainView::build(&state.main_view, state.file_items.clone(), cx.entity()))
                                                 )
                                                 .child(
-                                                    // Status bar
+                                                    // Status bar (fixed height at bottom)
                                                     div()
+                                                        .flex_shrink_0()
                                                         .w_full()
                                                         .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW as f32))
-                                                        .child(StatusBarView::build(&state.status_bar, state))
+                                                        .child(StatusBarView::build(&state.status_bar, state, cx.entity()))
                                                 ),
                                         )
                                     }),

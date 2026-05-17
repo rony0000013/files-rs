@@ -103,47 +103,6 @@ impl ToolbarView {
             toolbar = toolbar.child(ToolbarDivider::build());
         }
 
-        // View mode buttons group
-        if toolbar_customization.is_visible("details_view") || toolbar_customization.is_visible("grid_view") || toolbar_customization.is_visible("columns_view") {
-            let mut view_group = div()
-                .flex()
-                .items_center()
-                .gap(Pixels::from(2.0))
-                .bg(rgba(UiConstants::BG_BADGE_RGBA)) // Subtle highlight for the group
-                .rounded(Pixels::from(6.0))
-                .p(Pixels::from(2.0));
-
-            if toolbar_customization.is_visible("details_view") {
-                view_group = view_group.child(ViewModeButton::build(
-                    "\u{E8FD}",
-                    "Details",
-                    ViewMode::Details,
-                    view_mode,
-                    view.clone(),
-                ));
-            }
-            if toolbar_customization.is_visible("grid_view") {
-                view_group = view_group.child(ViewModeButton::build(
-                    "\u{E80A}",
-                    "Grid",
-                    ViewMode::Grid,
-                    view_mode,
-                    view.clone(),
-                ));
-            }
-            if toolbar_customization.is_visible("columns_view") {
-                view_group = view_group.child(ViewModeButton::build(
-                    "\u{E8A8}",
-                    "Columns",
-                    ViewMode::Columns,
-                    view_mode,
-                    view.clone(),
-                ));
-            }
-            toolbar = toolbar.child(view_group);
-            toolbar = toolbar.child(ToolbarDivider::build());
-        }
-
         // Preview Pane button
         if toolbar_customization.is_visible("preview_pane") {
             toolbar = toolbar.child({

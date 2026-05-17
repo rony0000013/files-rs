@@ -134,7 +134,53 @@ impl ThumbnailService {
 
         let (cx, cy) = size.dimensions();
 
-        // Use SHGetFileInfo to get the associated icon
+        // Try SHGetImageList + SHIL_JUMBO for native high-resolution icon (256×256, no upscaling).
+        // This gives the actual high-res icon from the executable's icon resource.
+        #[cfg(windows)]
+        {
+            use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
+            use windows::Win32::UI::Shell::SHGFI_SYSICONINDEX;
+
+            let mut sys_info = unsafe { std::mem::zeroed::<windows::Win32::UI::Shell::SHFILEINFOW>() };
+            let sys_ret = unsafe {
+                windows::Win32::UI::Shell::SHGetFileInfoW(
+                    windows::core::PCWSTR(wide_path.as_ptr()),
+                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(file_info.dwFileAttributes),
+                    Some(&mut sys_info),
+                    std::mem::size_of_val(&sys_info) as u32,
+                    windows::Win32::UI::Shell::SHGFI_SYSICONINDEX | windows::Win32::UI::Shell::SHGFI_USEFILEATTRIBUTES,
+                )
+            };
+
+            if sys_ret != 0 {
+                // Get the 256×256 system image list (SHIL_JUMBO)
+                if let Ok(image_list) = unsafe {
+                    windows::Win32::UI::Shell::SHGetImageList::<IImageList>(
+                        windows::Win32::UI::Shell::SHIL_JUMBO as i32,
+                    )
+                } {
+                    // Get the HICON at native 256×256 resolution
+                    if let Ok(hicon) = unsafe { image_list.GetIcon(sys_info.iIcon, ILD_TRANSPARENT.0) } {
+                        if !hicon.is_invalid() {
+                            if let Some(pixels) = unsafe { Self::extract_icon_pixels(hicon, cx, cy) } {
+                                unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon); }
+                                if pixels.len() >= (cx * cy * 4) as usize {
+                                    return Ok(ThumbnailResult {
+                                        data: pixels,
+                                        width: cx,
+                                        height: cy,
+                                        format: ImageFormat::Bmp,
+                                    });
+                                }
+                            }
+                            unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: Use SHGetFileInfoW with SHGFI_ICON to get a smaller icon
         let mut info = unsafe { std::mem::zeroed::<windows::Win32::UI::Shell::SHFILEINFOW>() };
         let shgfi = windows::Win32::UI::Shell::SHGFI_ICON
             | windows::Win32::UI::Shell::SHGFI_LARGEICON
@@ -266,23 +312,26 @@ impl ThumbnailService {
                                 if bmp_width == width && bmp_height == height {
                                     return Some(pixel_data);
                                 } else {
-                                    // Simple nearest-neighbor resize
-                                    let mut resized = vec![0u8; (width * height * 4) as usize];
-                                    for y in 0..height {
-                                        for x in 0..width {
-                                            let src_x = (x * bmp_width / width).min(bmp_width - 1);
-                                            let src_y = (y * bmp_height / height).min(bmp_height - 1);
-                                            let src_idx = ((src_y * bmp_width + src_x) * 4) as usize;
-                                            let dst_idx = ((y * width + x) * 4) as usize;
-                                            if src_idx + 3 < pixel_data.len() && dst_idx + 3 < resized.len() {
-                                                resized[dst_idx] = pixel_data[src_idx];     // B
-                                                resized[dst_idx + 1] = pixel_data[src_idx + 1]; // G
-                                                resized[dst_idx + 2] = pixel_data[src_idx + 2]; // R
-                                                resized[dst_idx + 3] = pixel_data[src_idx + 3]; // A
-                                            }
-                                        }
+                                    // Bilinear interpolation via the image crate (much smoother than nearest-neighbor)
+                                    use image::imageops::FilterType;
+                                    // Source data is BGRA (from GetDIBits); swap to RGBA for the image crate
+                                    for chunk in pixel_data.chunks_exact_mut(4) {
+                                        chunk.swap(0, 2);
                                     }
-                                    return Some(resized);
+                                    let src_img = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                                        bmp_width, bmp_height, pixel_data
+                                    );
+                                    if let Some(src_img) = src_img {
+                                        let mut resized_img = image::imageops::resize(
+                                            &src_img, width, height, FilterType::Nearest
+                                        );
+                                        // Swap back to BGRA for the rest of the pipeline
+                                        for chunk in resized_img.chunks_exact_mut(4) {
+                                            chunk.swap(0, 2);
+                                        }
+                                        let resized = resized_img.into_raw();
+                                        return Some(resized);
+                                    }
                                 }
                             }
                         }
