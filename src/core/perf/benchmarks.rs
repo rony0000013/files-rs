@@ -144,7 +144,12 @@ mod tests {
     #[test]
     fn test_print_comparison_no_panic() {
         let j = BenchResult::new("jwalk", Path::new("/tmp"), 100, Duration::from_millis(200));
-        let s = BenchResult::new("std::fs", Path::new("/tmp"), 100, Duration::from_millis(300));
+        let s = BenchResult::new(
+            "std::fs",
+            Path::new("/tmp"),
+            100,
+            Duration::from_millis(300),
+        );
         // Just verify no panic
         print_comparison(&j, &s);
     }

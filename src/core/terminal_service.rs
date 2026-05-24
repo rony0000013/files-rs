@@ -112,44 +112,44 @@ impl TerminalService {
         let path_str = path.to_string_lossy().into_owned();
 
         match terminal {
-            TerminalType::Cmd => {
-                ("cmd.exe".to_string(), vec!["/K".to_string(), format!("cd /d {}", path_str)])
-            }
-            TerminalType::PowerShell => {
-                (
-                    "powershell.exe".to_string(),
-                    vec![
-                        "-NoExit".to_string(),
-                        "-Command".to_string(),
-                        format!("cd '{}'", path_str.replace('\'', "''")),
-                    ],
-                )
-            }
-            TerminalType::PowerShell7Core => {
-                (
-                    "pwsh.exe".to_string(),
-                    vec![
-                        "-NoExit".to_string(),
-                        "-Command".to_string(),
-                        format!("cd '{}'", path_str.replace('\'', "''")),
-                    ],
-                )
-            }
+            TerminalType::Cmd => (
+                "cmd.exe".to_string(),
+                vec!["/K".to_string(), format!("cd /d {}", path_str)],
+            ),
+            TerminalType::PowerShell => (
+                "powershell.exe".to_string(),
+                vec![
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    format!("cd '{}'", path_str.replace('\'', "''")),
+                ],
+            ),
+            TerminalType::PowerShell7Core => (
+                "pwsh.exe".to_string(),
+                vec![
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    format!("cd '{}'", path_str.replace('\'', "''")),
+                ],
+            ),
             TerminalType::WindowsTerminal => {
                 ("wt.exe".to_string(), vec!["-d".to_string(), path_str])
             }
-            TerminalType::GitBash => {
-                (
-                    r"C:\Program Files\Git\bin\bash.exe".to_string(),
-                    vec!["--cd".to_string(), path_str],
-                )
-            }
-            TerminalType::Wsl => {
-                (
-                    "wsl.exe".to_string(),
-                    vec!["--cd".to_string(), path_str.clone(), "-e".to_string(), "bash".to_string(), "-c".to_string(), format!("cd '{}' && exec bash", path_str.replace('\'', "'\\''"))],
-                )
-            }
+            TerminalType::GitBash => (
+                r"C:\Program Files\Git\bin\bash.exe".to_string(),
+                vec!["--cd".to_string(), path_str],
+            ),
+            TerminalType::Wsl => (
+                "wsl.exe".to_string(),
+                vec![
+                    "--cd".to_string(),
+                    path_str.clone(),
+                    "-e".to_string(),
+                    "bash".to_string(),
+                    "-c".to_string(),
+                    format!("cd '{}' && exec bash", path_str.replace('\'', "'\\''")),
+                ],
+            ),
         }
     }
 
@@ -265,8 +265,14 @@ mod tests {
     fn test_terminal_type_display() {
         assert_eq!(format!("{}", TerminalType::Cmd), "Command Prompt");
         assert_eq!(format!("{}", TerminalType::PowerShell), "PowerShell");
-        assert_eq!(format!("{}", TerminalType::PowerShell7Core), "PowerShell 7 Core");
-        assert_eq!(format!("{}", TerminalType::WindowsTerminal), "Windows Terminal");
+        assert_eq!(
+            format!("{}", TerminalType::PowerShell7Core),
+            "PowerShell 7 Core"
+        );
+        assert_eq!(
+            format!("{}", TerminalType::WindowsTerminal),
+            "Windows Terminal"
+        );
         assert_eq!(format!("{}", TerminalType::GitBash), "Git Bash");
         assert_eq!(format!("{}", TerminalType::Wsl), "WSL");
     }

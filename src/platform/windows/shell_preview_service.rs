@@ -29,11 +29,38 @@ impl ShellPreviewService {
         // Common previewable types
         matches!(
             ext.as_str(),
-            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt"
-            | "rtf" | "csv" | "xml" | "html" | "htm" | "md" | "json"
-            | "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "webp"
-            | "mp3" | "wav" | "flac" | "ogg" | "mp4" | "avi" | "mkv"
-            | "zip" | "rar" | "7z"
+            "pdf"
+                | "doc"
+                | "docx"
+                | "xls"
+                | "xlsx"
+                | "ppt"
+                | "pptx"
+                | "txt"
+                | "rtf"
+                | "csv"
+                | "xml"
+                | "html"
+                | "htm"
+                | "md"
+                | "json"
+                | "jpg"
+                | "jpeg"
+                | "png"
+                | "gif"
+                | "bmp"
+                | "tiff"
+                | "webp"
+                | "mp3"
+                | "wav"
+                | "flac"
+                | "ogg"
+                | "mp4"
+                | "avi"
+                | "mkv"
+                | "zip"
+                | "rar"
+                | "7z"
         )
     }
 
@@ -58,7 +85,10 @@ impl ShellPreviewService {
             .unwrap_or("")
             .to_lowercase();
 
-        matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "webp" | "svg")
+        matches!(
+            ext.as_str(),
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "webp" | "svg"
+        )
     }
 
     /// Check if a file type is a video
@@ -70,7 +100,10 @@ impl ShellPreviewService {
             .unwrap_or("")
             .to_lowercase();
 
-        matches!(ext.as_str(), "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm")
+        matches!(
+            ext.as_str(),
+            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm"
+        )
     }
 
     /// Check if a file type is audio
@@ -82,7 +115,10 @@ impl ShellPreviewService {
             .unwrap_or("")
             .to_lowercase();
 
-        matches!(ext.as_str(), "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma")
+        matches!(
+            ext.as_str(),
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma"
+        )
     }
 
     /// Check if a file type is a document
@@ -96,8 +132,20 @@ impl ShellPreviewService {
 
         matches!(
             ext.as_str(),
-            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt"
-            | "rtf" | "csv" | "md" | "json" | "xml" | "html"
+            "pdf"
+                | "doc"
+                | "docx"
+                | "xls"
+                | "xlsx"
+                | "ppt"
+                | "pptx"
+                | "txt"
+                | "rtf"
+                | "csv"
+                | "md"
+                | "json"
+                | "xml"
+                | "html"
         )
     }
 
@@ -173,7 +221,10 @@ impl ShellPreviewService {
 
     #[cfg(not(windows))]
     pub async fn get_preview_info(&self, path: &FilesPath) -> Result<PreviewInfo> {
-        Err(anyhow!("Shell preview is only available on Windows: {:?}", path))
+        Err(anyhow!(
+            "Shell preview is only available on Windows: {:?}",
+            path
+        ))
     }
 
     /// Classify file for preview
@@ -198,8 +249,8 @@ impl ShellPreviewService {
         use std::fs::File;
         use std::io::{Read, Seek, SeekFrom};
 
-        let mut file = File::open(path.as_path())
-            .map_err(|e| anyhow!("Failed to open image: {}", e))?;
+        let mut file =
+            File::open(path.as_path()).map_err(|e| anyhow!("Failed to open image: {}", e))?;
 
         // Read first 32 bytes to get image dimensions (BMP height is at bytes 22-25)
         let mut header = [0u8; 32];
@@ -280,22 +331,22 @@ mod tests {
     #[test]
     fn test_previewable_extensions() {
         let service = ShellPreviewService::new();
-        
+
         // Documents
         assert!(service.is_previewable(&FilesPath::new("test.pdf")));
         assert!(service.is_previewable(&FilesPath::new("test.docx")));
         assert!(service.is_previewable(&FilesPath::new("test.txt")));
         assert!(service.is_previewable(&FilesPath::new("test.md")));
         assert!(service.is_previewable(&FilesPath::new("test.json")));
-        
+
         // Images
         assert!(service.is_previewable(&FilesPath::new("test.jpg")));
         assert!(service.is_previewable(&FilesPath::new("test.png")));
-        
+
         // Audio/Video
         assert!(service.is_previewable(&FilesPath::new("test.mp3")));
         assert!(service.is_previewable(&FilesPath::new("test.mp4")));
-        
+
         // Archives
         assert!(service.is_previewable(&FilesPath::new("test.zip")));
     }
@@ -310,13 +361,31 @@ mod tests {
     #[test]
     fn test_file_classification() {
         let service = ShellPreviewService::new();
-        
-        assert_eq!(service.classify_file(&FilesPath::new("photo.png")), PreviewType::Image);
-        assert_eq!(service.classify_file(&FilesPath::new("video.mp4")), PreviewType::Video);
-        assert_eq!(service.classify_file(&FilesPath::new("music.mp3")), PreviewType::Audio);
-        assert_eq!(service.classify_file(&FilesPath::new("doc.pdf")), PreviewType::Document);
-        assert_eq!(service.classify_file(&FilesPath::new("archive.zip")), PreviewType::Archive);
-        assert_eq!(service.classify_file(&FilesPath::new("file.xyz")), PreviewType::Unknown);
+
+        assert_eq!(
+            service.classify_file(&FilesPath::new("photo.png")),
+            PreviewType::Image
+        );
+        assert_eq!(
+            service.classify_file(&FilesPath::new("video.mp4")),
+            PreviewType::Video
+        );
+        assert_eq!(
+            service.classify_file(&FilesPath::new("music.mp3")),
+            PreviewType::Audio
+        );
+        assert_eq!(
+            service.classify_file(&FilesPath::new("doc.pdf")),
+            PreviewType::Document
+        );
+        assert_eq!(
+            service.classify_file(&FilesPath::new("archive.zip")),
+            PreviewType::Archive
+        );
+        assert_eq!(
+            service.classify_file(&FilesPath::new("file.xyz")),
+            PreviewType::Unknown
+        );
     }
 
     #[test]

@@ -68,19 +68,13 @@ impl InstallService {
         let package_type = Self::get_package_type(path);
 
         match package_type {
-            PackageType::Msix | PackageType::Appx => {
-                self.install_appx(path).await
-            }
-            PackageType::Inf => {
-                self.install_inf(path).await
-            }
-            PackageType::Unknown => {
-                Ok(InstallResult {
-                    success: false,
-                    package_type,
-                    error_message: Some("Unknown package type".to_string()),
-                })
-            }
+            PackageType::Msix | PackageType::Appx => self.install_appx(path).await,
+            PackageType::Inf => self.install_inf(path).await,
+            PackageType::Unknown => Ok(InstallResult {
+                success: false,
+                package_type,
+                error_message: Some("Unknown package type".to_string()),
+            }),
         }
     }
 
@@ -257,22 +251,34 @@ mod tests {
     #[test]
     fn test_get_package_type_from_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let msix_path = temp_dir.path().join("package.msix");
         let appx_path = temp_dir.path().join("app.appx");
         let inf_path = temp_dir.path().join("driver.inf");
         let txt_path = temp_dir.path().join("readme.txt");
 
-        assert_eq!(InstallService::get_package_type(&msix_path), PackageType::Msix);
-        assert_eq!(InstallService::get_package_type(&appx_path), PackageType::Appx);
-        assert_eq!(InstallService::get_package_type(&inf_path), PackageType::Inf);
-        assert_eq!(InstallService::get_package_type(&txt_path), PackageType::Unknown);
+        assert_eq!(
+            InstallService::get_package_type(&msix_path),
+            PackageType::Msix
+        );
+        assert_eq!(
+            InstallService::get_package_type(&appx_path),
+            PackageType::Appx
+        );
+        assert_eq!(
+            InstallService::get_package_type(&inf_path),
+            PackageType::Inf
+        );
+        assert_eq!(
+            InstallService::get_package_type(&txt_path),
+            PackageType::Unknown
+        );
     }
 
     #[test]
     fn test_is_supported_package() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         let msix_path = temp_dir.path().join("package.msix");
         let txt_path = temp_dir.path().join("readme.txt");
 

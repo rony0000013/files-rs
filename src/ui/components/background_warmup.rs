@@ -72,7 +72,8 @@ impl WarmupTask {
     /// Returns the processing duration if completed.
     pub fn processing_duration(&self) -> Option<Duration> {
         self.started_at.and_then(|started| {
-            self.completed_at.map(|completed| completed.duration_since(started))
+            self.completed_at
+                .map(|completed| completed.duration_since(started))
         })
     }
 

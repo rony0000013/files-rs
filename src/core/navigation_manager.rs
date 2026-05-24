@@ -862,4 +862,3 @@ mod tests {
         assert_eq!(PaneFocus::Secondary, PaneFocus::Secondary);
     }
 }
-

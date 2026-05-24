@@ -17,7 +17,10 @@ pub enum TabDragState {
     /// Dragging started, contains source tab id.
     Dragging { source_tab_id: u64 },
     /// Dragging over a target window.
-    OverTarget { target_window_id: u64, insert_position: InsertPosition },
+    OverTarget {
+        target_window_id: u64,
+        insert_position: InsertPosition,
+    },
     /// Drop completed.
     Dropped,
     /// Drag cancelled.
@@ -174,7 +177,9 @@ impl TabDragService {
 
     /// Start dragging a tab.
     pub fn start_drag(&mut self, tab_id: u64) {
-        self.state = TabDragState::Dragging { source_tab_id: tab_id };
+        self.state = TabDragState::Dragging {
+            source_tab_id: tab_id,
+        };
     }
 
     /// Update mouse position during drag.
@@ -351,7 +356,10 @@ mod tests {
 
     #[test]
     fn test_tab_scroll_behavior_default() {
-        assert_eq!(TabScrollBehavior::default(), TabScrollBehavior::HorizontalOnly);
+        assert_eq!(
+            TabScrollBehavior::default(),
+            TabScrollBehavior::HorizontalOnly
+        );
     }
 
     #[test]

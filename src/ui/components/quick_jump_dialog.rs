@@ -218,7 +218,12 @@ impl QuickJumpDialog {
                 }
 
                 let path = PathBuf::from(input);
-                if path.exists() || PathBuf::from(input).parent().map(|p| p.exists()).unwrap_or(false) {
+                if path.exists()
+                    || PathBuf::from(input)
+                        .parent()
+                        .map(|p| p.exists())
+                        .unwrap_or(false)
+                {
                     // Add to history
                     self.add_to_history(path.clone());
 
@@ -473,7 +478,10 @@ mod tests {
         // Should only have 3 entries
         assert_eq!(dialog.history().len(), 3);
         // First entry should have been removed
-        assert!(!dialog.history().iter().any(|e| e.path == PathBuf::from("C:\\test1")));
+        assert!(!dialog
+            .history()
+            .iter()
+            .any(|e| e.path == PathBuf::from("C:\\test1")));
     }
 
     #[test]
@@ -523,7 +531,10 @@ mod tests {
         dialog.remove_from_history(Path::new("C:\\test1"));
 
         assert_eq!(dialog.history().len(), 1);
-        assert!(!dialog.history().iter().any(|e| e.path == PathBuf::from("C:\\test1")));
+        assert!(!dialog
+            .history()
+            .iter()
+            .any(|e| e.path == PathBuf::from("C:\\test1")));
     }
 
     #[test]

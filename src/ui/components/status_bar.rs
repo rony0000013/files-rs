@@ -74,7 +74,11 @@ impl StatusBarView {
     /// Build the status bar per DESIGN_SPEC.md 9.
     /// Height: 32px, padding: 8px left.
     /// 3-column grid: [LEFT: info] [CENTER: git actions] [RIGHT: branch]
-    pub fn build(state: &StatusBarState, _app: &AppState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    pub fn build(
+        state: &StatusBarState,
+        _app: &AppState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         use crate::ui::views::main_view::{zoom_mode_icon, zoom_mode_name};
         let view_mode = &_app.main_view.view_mode;
         let mode_name = zoom_mode_name(view_mode);
@@ -117,7 +121,7 @@ impl StatusBarView {
                                     .text_size(px(12.0))
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                     .child(state.folder_count.to_string()),
-                            )
+                            ),
                     )
                     // File count
                     .child(
@@ -137,27 +141,30 @@ impl StatusBarView {
                                     .text_size(px(12.0))
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                     .child(state.file_count.to_string()),
-                            )
+                            ),
                     )
                     .children(if state.selected_count > 0 {
-                        Some(div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .child(div().w(px(1.0)).h(px(14.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(format!(
-                                        "{} selected",
-                                        state.selected_count
-                                    ))
-                            )
+                        Some(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.0))
+                                .child(
+                                    div()
+                                        .w(px(1.0))
+                                        .h(px(14.0))
+                                        .bg(rgba(UiConstants::DIVIDER_RGBA)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                        .child(format!("{} selected", state.selected_count)),
+                                ),
                         )
                     } else {
                         None
-                    })
+                    }),
             )
             .child(
                 // RIGHT: zoom mode button + zoom percentage
@@ -177,7 +184,11 @@ impl StatusBarView {
                             .px(px(6.0))
                             .py(px(4.0))
                             .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .bg(if _app.main_view.view_lock_enabled { rgba(0x005FB830u32) } else { rgba(0x00000000u32) })
+                            .bg(if _app.main_view.view_lock_enabled {
+                                rgba(0x005FB830u32)
+                            } else {
+                                rgba(0x00000000u32)
+                            })
                             .on_mouse_down(MouseButton::Left, {
                                 let v = v.clone();
                                 move |_, _, cx| {
@@ -195,11 +206,21 @@ impl StatusBarView {
                                     } else {
                                         rgba(UiConstants::TEXT_SECONDARY_RGBA)
                                     })
-                                    .child(if _app.main_view.view_lock_enabled { "\u{E73E}" } else { "\u{E785}" }),
+                                    .child(if _app.main_view.view_lock_enabled {
+                                        "\u{E73E}"
+                                    } else {
+                                        "\u{E785}"
+                                    }),
                             ),
                     )
                     // Separator before view options
-                    .child(div().w(px(1.0)).h(px(16.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).mx(px(8.0)))
+                    .child(
+                        div()
+                            .w(px(1.0))
+                            .h(px(16.0))
+                            .bg(rgba(UiConstants::DIVIDER_RGBA))
+                            .mx(px(8.0)),
+                    )
                     // View Mode Button
                     .child(
                         div()
@@ -241,7 +262,7 @@ impl StatusBarView {
                                             .text_size(px(12.0))
                                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                             .child(mode_name),
-                                    )
+                                    ),
                             )
                             .child(
                                 // Percentage badge with progress bar behind it
@@ -273,7 +294,7 @@ impl StatusBarView {
                                             .child(format!("{}%", zoom_pct)),
                                     ),
                             ),
-                    )
+                    ),
             )
     }
 }

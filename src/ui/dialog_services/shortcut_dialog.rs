@@ -159,7 +159,11 @@ impl CreateShortcutState {
         }
         // Check for invalid characters in name
         let invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
-        if self.shortcut_name.chars().any(|c| invalid_chars.contains(&c)) {
+        if self
+            .shortcut_name
+            .chars()
+            .any(|c| invalid_chars.contains(&c))
+        {
             return Err("Shortcut name contains invalid characters".to_string());
         }
         // Target path validation
@@ -167,7 +171,10 @@ impl CreateShortcutState {
             return Err("Target path is required".to_string());
         }
         if !self.target_path.exists() {
-            return Err(format!("Target does not exist: {}", self.target_path.display()));
+            return Err(format!(
+                "Target does not exist: {}",
+                self.target_path.display()
+            ));
         }
         // Directory validation
         if self.shortcut_directory.as_os_str().is_empty() {
@@ -249,7 +256,7 @@ mod tests {
         let mut state = CreateShortcutState::default();
         state.shortcut_directory = PathBuf::from("C:/test");
         state.shortcut_name = "MyApp".to_string();
-        
+
         let path = state.shortcut_path();
         let path_str = path.to_string_lossy().replace('\\', "/");
         assert_eq!(path_str, "C:/test/MyApp.lnk");
@@ -260,7 +267,7 @@ mod tests {
         let mut state = CreateShortcutState::default();
         state.shortcut_directory = PathBuf::from("C:/test");
         state.shortcut_name = "MyApp.lnk".to_string();
-        
+
         let path = state.shortcut_path();
         let path_str = path.to_string_lossy().replace('\\', "/");
         assert_eq!(path_str, "C:/test/MyApp.lnk");
@@ -271,7 +278,7 @@ mod tests {
         let mut state = CreateShortcutState::default();
         state.shortcut_directory = PathBuf::from("C:/test");
         state.shortcut_name = "".to_string();
-        
+
         let path = state.shortcut_path();
         let path_str = path.to_string_lossy().replace('\\', "/");
         assert_eq!(path_str, "C:/test/Shortcut.lnk");
@@ -403,7 +410,11 @@ mod tests {
             state.shortcut_name = name.to_string();
             let result = state.validate();
             assert!(result.is_err(), "Expected '{}' to be invalid", name);
-            assert!(result.as_ref().unwrap_err().contains("invalid characters"), "Expected invalid chars error, got: {:?}", result.unwrap_err());
+            assert!(
+                result.as_ref().unwrap_err().contains("invalid characters"),
+                "Expected invalid chars error, got: {:?}",
+                result.unwrap_err()
+            );
         }
     }
 
@@ -412,16 +423,16 @@ mod tests {
         let mut state = CreateShortcutState::default();
         state.shortcut_name = "".to_string();
         assert!(!state.has_valid_name());
-        
+
         state.shortcut_name = "valid_name.lnk".to_string();
         assert!(state.has_valid_name());
-        
+
         state.shortcut_name = "valid".to_string();
         assert!(state.has_valid_name());
-        
+
         state.shortcut_name = ".".to_string();
         assert!(!state.has_valid_name()); // Ends with dot
-        
+
         state.shortcut_name = "a".repeat(256); // Too long
         assert!(!state.has_valid_name());
     }
@@ -431,7 +442,7 @@ mod tests {
         let mut state = CreateShortcutState::default();
         state.shortcut_directory = PathBuf::from("C:\\test");
         state.shortcut_name = "MyApp".to_string();
-        
+
         let result = state.final_path();
         // Should fail because target doesn't exist
         assert!(result.is_err());

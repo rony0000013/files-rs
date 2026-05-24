@@ -72,7 +72,9 @@ impl StartMenuPinService {
     #[cfg(not(windows))]
     pub async fn unpin_from_start(_path: &FilesPath) -> Result<()> {
         tracing::warn!("Unpin from Start Menu is only implemented for Windows");
-        Err(anyhow!("Unpin from Start Menu is only available on Windows"))
+        Err(anyhow!(
+            "Unpin from Start Menu is only available on Windows"
+        ))
     }
 
     #[cfg(not(windows))]

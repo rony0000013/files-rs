@@ -146,7 +146,10 @@ pub struct DialogsView;
 pub struct SettingsPreReadData {
     pub active_tab: SettingsTab,
     pub config: crate::config::config::AppConfig,
-    pub action_pairs: Vec<(crate::core::action_registry::ActionKind, crate::core::action_registry::KeyCombination)>,
+    pub action_pairs: Vec<(
+        crate::core::action_registry::ActionKind,
+        crate::core::action_registry::KeyCombination,
+    )>,
     pub toolbar_new_folder: bool,
     pub toolbar_new_file: bool,
     pub toolbar_cut: bool,
@@ -203,9 +206,9 @@ impl DialogsView {
             DialogType::SiblingDropdown { parent_path } => {
                 Self::build_sibling_dropdown(parent_path, view.clone(), cx).into_any_element()
             }
-            DialogType::StatusCenter { active_operations, .. } => {
-                Self::build_status_center(active_operations, view.clone()).into_any_element()
-            }
+            DialogType::StatusCenter {
+                active_operations, ..
+            } => Self::build_status_center(active_operations, view.clone()).into_any_element(),
             DialogType::Dynamic { title, message } => {
                 Self::build_dynamic_dialog(title, message, view.clone()).into_any_element()
             }
@@ -281,9 +284,12 @@ impl DialogsView {
             DialogType::CloneRepo { state } => {
                 Self::build_clone_repo_dialog(state, view.clone()).into_any_element()
             }
-            DialogType::ZoomSlider { current_zoom, current_mode, .. } => {
-                Self::build_zoom_slider(*current_zoom, current_mode.clone(), view.clone(), cx).into_any_element()
-            }
+            DialogType::ZoomSlider {
+                current_zoom,
+                current_mode,
+                ..
+            } => Self::build_zoom_slider(*current_zoom, current_mode.clone(), view.clone(), cx)
+                .into_any_element(),
             DialogType::RestoreCrashedSession {
                 crash_count,
                 last_path,
@@ -325,7 +331,8 @@ impl DialogsView {
                         if let Some((start_y, initial_zoom)) = this.zoom_drag_start {
                             let current_y: f32 = event.position.y.into();
                             let delta_y = current_y - start_y;
-                            let new_zoom = (initial_zoom - delta_y / thumb_travel_total).clamp(0.0, 1.0);
+                            let new_zoom =
+                                (initial_zoom - delta_y / thumb_travel_total).clamp(0.0, 1.0);
                             this.set_zoom_level(new_zoom, cx);
                         }
                     });
@@ -371,7 +378,9 @@ impl DialogsView {
                     .left(position.x)
                     .w(px(280.0));
             }
-            DialogType::SidebarContextMenu { position, bottom_y, .. } => {
+            DialogType::SidebarContextMenu {
+                position, bottom_y, ..
+            } => {
                 if *bottom_y > 0.0 {
                     container = container
                         .absolute()
@@ -562,13 +571,19 @@ impl DialogsView {
                     .gap(px(8.0))
                     .child(Self::build_settings_row("Format", format_str))
                     .child(Self::build_settings_row("Compression Level", level_str))
-                    .child(Self::build_settings_row("Encryption", if state.encrypt { "Enabled" } else { "Disabled" }))
+                    .child(Self::build_settings_row(
+                        "Encryption",
+                        if state.encrypt { "Enabled" } else { "Disabled" },
+                    )),
             )
             .child(
                 div()
                     .text_size(AbsoluteLength::Pixels(px(12.0)))
                     .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                    .child(format!("Destination: {}", state.destination_path().display())),
+                    .child(format!(
+                        "Destination: {}",
+                        state.destination_path().display()
+                    )),
             )
             .child(
                 div()
@@ -579,9 +594,13 @@ impl DialogsView {
                     .child(Self::build_button("Cancel", false, move |_, _, cx| {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     }))
-                    .child(Self::build_button("Create Archive", true, move |_, _, cx| {
-                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
-                    })),
+                    .child(Self::build_button(
+                        "Create Archive",
+                        true,
+                        move |_, _, cx| {
+                            v_ok.update(cx, |this, cx| this.close_dialog(cx));
+                        },
+                    )),
             )
     }
 
@@ -591,7 +610,10 @@ impl DialogsView {
     ) -> impl IntoElement {
         let v_cancel = view.clone();
         let v_ok = view.clone();
-        let target_name = state.target_path.file_name().map_or("None", |s| s.to_str().unwrap_or("None"));
+        let target_name = state
+            .target_path
+            .file_name()
+            .map_or("None", |s| s.to_str().unwrap_or("None"));
 
         div()
             .flex_col()
@@ -609,7 +631,10 @@ impl DialogsView {
                     .gap(px(8.0))
                     .child(Self::build_settings_row("Target", target_name))
                     .child(Self::build_settings_row("Name", &state.shortcut_name))
-                    .child(Self::build_settings_row("Run as Admin", if state.run_as_admin { "Yes" } else { "No" }))
+                    .child(Self::build_settings_row(
+                        "Run as Admin",
+                        if state.run_as_admin { "Yes" } else { "No" },
+                    )),
             )
             .child(
                 div()
@@ -638,7 +663,10 @@ impl DialogsView {
     ) -> impl IntoElement {
         let v_cancel = view.clone();
         let v_ok = view.clone();
-        let archive_name = state.archive_path.file_name().map_or("Unknown", |s| s.to_str().unwrap_or("Unknown"));
+        let archive_name = state
+            .archive_path
+            .file_name()
+            .map_or("Unknown", |s| s.to_str().unwrap_or("Unknown"));
 
         div()
             .flex_col()
@@ -655,8 +683,14 @@ impl DialogsView {
                     .flex_col()
                     .gap(px(8.0))
                     .child(Self::build_settings_row("Archive", archive_name))
-                    .child(Self::build_settings_row("Selected Items", &format!("{} items", state.selected_count())))
-                    .child(Self::build_settings_row("Size", &crate::ui::components::status_bar::format_size(state.selected_size())))
+                    .child(Self::build_settings_row(
+                        "Selected Items",
+                        &format!("{} items", state.selected_count()),
+                    ))
+                    .child(Self::build_settings_row(
+                        "Size",
+                        &crate::ui::components::status_bar::format_size(state.selected_size()),
+                    )),
             )
             .child(
                 div()
@@ -1711,43 +1745,33 @@ impl DialogsView {
 
             // ── PRIMARY ITEMS (48px) ──
             // Open
-            menu = menu.child(
-                Self::context_menu_item_48px(
-                    "\u{E8DA}",
-                    "Open",
-                    {
-                        let path = selected_path.clone();
-                        move |_, _, cx| {
-                            if let Some(ref p) = path {
-                                let path = p.clone();
-                                v_open.update(cx, |this, cx| {
-                                    this.navigate(path, cx);
-                                    this.close_dialog(cx);
-                                });
-                            }
-                        }
-                    },
-                ),
-            );
+            menu = menu.child(Self::context_menu_item_48px("\u{E8DA}", "Open", {
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path = p.clone();
+                        v_open.update(cx, |this, cx| {
+                            this.navigate(path, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                }
+            }));
 
             // Open With - opens the Windows "Open With" dialog
-            menu = menu.child(Self::context_menu_item_48px(
-                "\u{E8DA}",
-                "Open With",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            let _ = std::process::Command::new("rundll32")
-                                .args(["shell32.dll,OpenAs_RunDLL", &path_str])
-                                .spawn();
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+            menu = menu.child(Self::context_menu_item_48px("\u{E8DA}", "Open With", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        let _ = std::process::Command::new("rundll32")
+                            .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                            .spawn();
                     }
-                },
-            ));
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
 
             // Open in New Tab
             menu = menu.child(Self::context_menu_item_48px(
@@ -1826,68 +1850,52 @@ impl DialogsView {
                 },
             ));
             // Pin to Start
-            menu = menu.child(Self::context_menu_item(
-                "\u{E77E}",
-                "Pin to Start",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            tracing::info!("Pin to Start: {}", path_str);
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+            menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        tracing::info!("Pin to Start: {}", path_str);
                     }
-                },
-            ));
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
 
             // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
 
             // ── CLIPBOARD SECTION (32px) ──
             // Cut
-            menu = menu.child(Self::context_menu_item(
-                "\u{E8C6}",
-                "Cut",
-                {
-                    let v = v_cut.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| this.cut_selected(cx));
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E8C6}", "Cut", {
+                let v = v_cut.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.cut_selected(cx));
+                }
+            }));
 
             // Copy
-            menu = menu.child(Self::context_menu_item(
-                "\u{E8C8}",
-                "Copy",
-                {
-                    let v = v_copy.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| this.copy_selected(cx));
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E8C8}", "Copy", {
+                let v = v_copy.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.copy_selected(cx));
+                }
+            }));
 
             // Copy as Path - copies the full path to the system clipboard
-            menu = menu.child(Self::context_menu_item(
-                "\u{E8C8}",
-                "Copy as Path",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "echo", &path_str, "|", "clip"])
-                                .spawn();
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+            menu = menu.child(Self::context_menu_item("\u{E8C8}", "Copy as Path", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "echo", &path_str, "|", "clip"])
+                            .spawn();
                     }
-                },
-            ));
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
 
             // Paste
             menu = menu.child(Self::context_menu_item("\u{E77F}", "Paste", {
@@ -1902,19 +1910,15 @@ impl DialogsView {
 
             // ── ACTIONS SECTION (32px) ──
             // Rename
-            menu = menu.child(Self::context_menu_item(
-                "\u{E8AC}",
-                "Rename",
-                {
-                    let v = v_rename.clone();
-                    let idx = item_index;
-                    move |_, _, cx| {
-                        if let Some(i) = idx {
-                            v.update(cx, |this, cx| this.start_rename(i, cx));
-                        }
+            menu = menu.child(Self::context_menu_item("\u{E8AC}", "Rename", {
+                let v = v_rename.clone();
+                let idx = item_index;
+                move |_, _, cx| {
+                    if let Some(i) = idx {
+                        v.update(cx, |this, cx| this.start_rename(i, cx));
                     }
-                },
-            ));
+                }
+            }));
 
             // Share - invokes the Windows Share dialog
             menu = menu.child(Self::context_menu_item(
@@ -1946,54 +1950,42 @@ impl DialogsView {
             ));
 
             // Delete
-            menu = menu.child(Self::context_menu_item(
-                "\u{E74D}",
-                "Delete",
-                {
-                    let v = v_delete.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| this.delete_selected(cx));
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete", {
+                let v = v_delete.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.delete_selected(cx));
+                }
+            }));
 
             // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
 
             // ── PROPERTIES (32px) ──
-            menu = menu.child(Self::context_menu_item(
-                "\u{E946}",
-                "Properties",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            let _ = std::process::Command::new("rundll32")
-                                .args(["shell32.dll,PropertiesDialogW", &path_str])
-                                .spawn();
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+            menu = menu.child(Self::context_menu_item("\u{E946}", "Properties", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        let _ = std::process::Command::new("rundll32")
+                            .args(["shell32.dll,PropertiesDialogW", &path_str])
+                            .spawn();
                     }
-                },
-            ));
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
 
             // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
 
             // ── BONUS SECTION (Files Community extras) ──
             // Delete Permanently
-            menu = menu.child(Self::context_menu_item(
-                "\u{E74D}",
-                "Delete Permanently",
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| this.delete_permanently(cx));
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.delete_permanently(cx));
+                }
+            }));
 
             // Create Shortcut
             menu = menu.child(Self::context_menu_item(
@@ -2104,62 +2096,56 @@ impl DialogsView {
             }
 
             // Open in VS Code (bonus)
-            menu = menu.child(Self::context_menu_item(
-                "\u{E8A7}",
-                "Open in VS Code",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.open_in_ide(path.clone(), cx);
-                            this.close_dialog(cx);
-                        });
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E8A7}", "Open in VS Code", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.open_in_ide(path.clone(), cx);
+                        this.close_dialog(cx);
+                    });
+                }
+            }));
 
             // Git Status (bonus)
-            menu = menu.child(Self::context_menu_item(
-                "\u{E896}",
-                "Git Status",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            let dir = std::path::Path::new(&path_str)
-                                .parent()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|| path_str.clone());
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "cmd", "/K", &format!("cd /d {} && git status", dir)])
-                                .spawn();
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+            menu = menu.child(Self::context_menu_item("\u{E896}", "Git Status", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        let dir = std::path::Path::new(&path_str)
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path_str.clone());
+                        let _ = std::process::Command::new("cmd")
+                            .args([
+                                "/C",
+                                "start",
+                                "cmd",
+                                "/K",
+                                &format!("cd /d {} && git status", dir),
+                            ])
+                            .spawn();
                     }
-                },
-            ));
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
         } else {
             // ═══════════════════════════════════════════════════════════
             // FILES COMMUNITY LAYOUT — Empty space/background context menu
             // ═══════════════════════════════════════════════════════════
 
             // Refresh - refreshes the current view
-            menu = menu.child(Self::context_menu_item(
-                "\u{E72C}",
-                "Refresh",
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.refresh(cx);
-                            this.close_dialog(cx);
-                        });
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E72C}", "Refresh", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.refresh(cx);
+                        this.close_dialog(cx);
+                    });
+                }
+            }));
 
             // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
@@ -2306,35 +2292,35 @@ impl DialogsView {
 
             // ── NEW SECTION (48px primary) ──
             // New Folder
-            menu = menu.child(Self::context_menu_item_48px(
-                "\u{E8F4}",
-                "New Folder",
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
-                            let mut folder_name = "New Folder".to_string();
-                            let mut counter = 1;
-                            while current_dir.join(&folder_name).exists() {
-                                folder_name = format!("New Folder ({})", counter);
-                                counter += 1;
+            menu = menu.child(Self::context_menu_item_48px("\u{E8F4}", "New Folder", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
+                        let mut folder_name = "New Folder".to_string();
+                        let mut counter = 1;
+                        while current_dir.join(&folder_name).exists() {
+                            folder_name = format!("New Folder ({})", counter);
+                            counter += 1;
+                        }
+                        let new_folder_path = current_dir.join(&folder_name);
+                        match std::fs::create_dir(&new_folder_path) {
+                            Ok(_) => {
+                                tracing::info!("Created folder: {:?}", new_folder_path);
+                                this.refresh(cx);
                             }
-                            let new_folder_path = current_dir.join(&folder_name);
-                            match std::fs::create_dir(&new_folder_path) {
-                                Ok(_) => {
-                                    tracing::info!("Created folder: {:?}", new_folder_path);
-                                    this.refresh(cx);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to create folder {:?}: {}", new_folder_path, e);
-                                }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create folder {:?}: {}",
+                                    new_folder_path,
+                                    e
+                                );
                             }
-                            cx.notify();
-                        });
-                    }
-                },
-            ));
+                        }
+                        cx.notify();
+                    });
+                }
+            }));
 
             // New File - creates a new empty text file at the current path
             menu = menu.child(Self::context_menu_item_48px(
@@ -2344,7 +2330,8 @@ impl DialogsView {
                     let v = v_close.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
+                            let current_dir =
+                                this.state.main_view.primary_path.as_path().to_path_buf();
                             let mut file_name = "New Text Document.txt".to_string();
                             let mut counter = 1;
                             while current_dir.join(&file_name).exists() {
@@ -2358,7 +2345,11 @@ impl DialogsView {
                                     this.refresh(cx);
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to create file {:?}: {}", new_file_path, e);
+                                    tracing::error!(
+                                        "Failed to create file {:?}: {}",
+                                        new_file_path,
+                                        e
+                                    );
                                 }
                             }
                             cx.notify();
@@ -2371,40 +2362,42 @@ impl DialogsView {
             menu = menu.child(Self::context_menu_separator());
 
             // Properties (for current folder)
-            menu = menu.child(Self::context_menu_item(
-                "\u{E946}",
-                "Properties",
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            let path_str = this.state.main_view.primary_path.to_string_lossy().to_string();
-                            let _ = std::process::Command::new("rundll32")
-                                .args(["shell32.dll,PropertiesDialogW", &path_str])
-                                .spawn();
-                            this.close_dialog(cx);
-                        });
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E946}", "Properties", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        let path_str = this
+                            .state
+                            .main_view
+                            .primary_path
+                            .to_string_lossy()
+                            .to_string();
+                        let _ = std::process::Command::new("rundll32")
+                            .args(["shell32.dll,PropertiesDialogW", &path_str])
+                            .spawn();
+                        this.close_dialog(cx);
+                    });
+                }
+            }));
 
             // Open in Terminal - opens Windows Terminal at the current directory
-            menu = menu.child(Self::context_menu_item(
-                "\u{E756}",
-                "Open in Terminal",
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            let path_str = this.state.main_view.primary_path.to_string_lossy().to_string();
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "wt", "-d", &path_str])
-                                .spawn();
-                            this.close_dialog(cx);
-                        });
-                    }
-                },
-            ));
+            menu = menu.child(Self::context_menu_item("\u{E756}", "Open in Terminal", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        let path_str = this
+                            .state
+                            .main_view
+                            .primary_path
+                            .to_string_lossy()
+                            .to_string();
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "start", "wt", "-d", &path_str])
+                            .spawn();
+                        this.close_dialog(cx);
+                    });
+                }
+            }));
         }
         menu
     }
@@ -2443,17 +2436,12 @@ impl DialogsView {
 
         if common_tags.is_empty() {
             container = container.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .px(px(12.0))
-                    .py(px(4.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                            .child("No tags available"),
-                    ),
+                div().flex().items_center().px(px(12.0)).py(px(4.0)).child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                        .child("No tags available"),
+                ),
             );
         } else {
             for (tag_name, tag_state) in &common_tags {
@@ -2575,18 +2563,13 @@ impl DialogsView {
 
     /// Section header label for grouped context menu sections (e.g. "Sort By", "View")
     fn context_menu_section_header(label: &str) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .px(px(12.0))
-            .py(px(6.0))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(rgba(0xFFFFFF60u32))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(label.to_string()),
-            )
+        div().flex().items_center().px(px(12.0)).py(px(6.0)).child(
+            div()
+                .text_size(px(11.0))
+                .text_color(rgba(0xFFFFFF60u32))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label.to_string()),
+        )
     }
 
     /// Build the "Unhide Sections" dialog showing hidden groups with checkboxes.
@@ -2626,77 +2609,67 @@ impl DialogsView {
                             ),
                     ),
             )
-            .child(
+            .child(div().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
+            .children(hidden_sections.iter().map(|section| {
+                let v_unhide = view.clone();
+                let label = format!("{:?}", section);
+                let section_id = *section;
                 div()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
-            )
-            .children(
-                hidden_sections.iter().map(|section| {
-                    let v_unhide = view.clone();
-                    let label = format!("{:?}", section);
-                    let section_id = *section;
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_unhide.update(cx, |this, cx| {
+                            this.state.sidebar.unhide_section(section_id);
+                            this.close_dialog(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_family(UiConstants::FONT_MDL2)
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child("\u{E7B3}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .child(label.to_string()),
+                    )
+            }))
+            .child(
+                div().flex().justify_center().mt(px(8.0)).child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(12.0))
-                        .py(px(8.0))
+                        .px(px(16.0))
+                        .py(px(6.0))
+                        .bg(rgba(0xFFFFFF10u32))
+                        .rounded(px(4.0))
                         .cursor_pointer()
-                        .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            v_unhide.update(cx, |this, cx| {
-                                this.state.sidebar.unhide_section(section_id);
-                                this.close_dialog(cx);
-                            });
+                        .hover(|s| s.bg(rgba(0xFFFFFF20u32)))
+                        .on_mouse_down(MouseButton::Left, {
+                            let v = view.clone();
+                            let all_hidden: Vec<_> = hidden_sections.to_vec();
+                            move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    for sid in &all_hidden {
+                                        this.state.sidebar.unhide_section(*sid);
+                                    }
+                                    this.close_dialog(cx);
+                                });
+                            }
                         })
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_family(UiConstants::FONT_MDL2)
-                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                .child("\u{E7B3}"),
-                        )
                         .child(
                             div()
                                 .text_size(px(13.0))
                                 .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                .child(label.to_string()),
-                        )
-                }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .mt(px(8.0))
-                    .child(
-                        div()
-                            .px(px(16.0))
-                            .py(px(6.0))
-                            .bg(rgba(0xFFFFFF10u32))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(0xFFFFFF20u32)))
-                            .on_mouse_down(MouseButton::Left, {
-                                let v = view.clone();
-                                let all_hidden: Vec<_> = hidden_sections.to_vec();
-                                move |_, _, cx| {
-                                    v.update(cx, |this, cx| {
-                                        for sid in &all_hidden {
-                                            this.state.sidebar.unhide_section(*sid);
-                                        }
-                                        this.close_dialog(cx);
-                                    });
-                                }
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                    .child("Unhide All"),
-                            ),
-                    ),
+                                .child("Unhide All"),
+                        ),
+                ),
             )
     }
 
@@ -2720,7 +2693,11 @@ impl DialogsView {
         let v_hide = view.clone();
 
         match target {
-            SidebarMenuTarget::Item { label, path, is_pinned } => {
+            SidebarMenuTarget::Item {
+                label,
+                path,
+                is_pinned,
+            } => {
                 let path_for_open = path.clone();
                 let path_for_tab = path.clone();
                 let path_for_window = path.clone();
@@ -2729,9 +2706,7 @@ impl DialogsView {
 
                 let reorder_active = reorder_mode;
 
-                let mut list = div()
-                    .flex_col()
-                    .py(px(4.0));
+                let mut list = div().flex_col().py(px(4.0));
 
                 if reorder_active {
                     list = list.child(Self::context_menu_item(
@@ -2846,15 +2821,13 @@ impl DialogsView {
                 list
             }
             SidebarMenuTarget::Group { section_id } => {
-let sid = *section_id;
+                let sid = *section_id;
                 let reorder_active = reorder_mode;
                 let v_reorder_group = view.clone();
 
-                let mut list = div()
-                    .flex_col()
-                    .py(px(4.0));
+                let mut list = div().flex_col().py(px(4.0));
 
-if reorder_active {
+                if reorder_active {
                     list = list.child(Self::context_menu_item(
                         "\u{E711}",
                         "Exit Reorder Mode",
@@ -2894,7 +2867,8 @@ if reorder_active {
                                 let v = view.clone();
                                 v.update(cx, |this, cx| {
                                     // This will trigger the reorder items dialog
-                                    this.state.active_dialog = Some(DialogType::ReorderSidebarItems);
+                                    this.state.active_dialog =
+                                        Some(DialogType::ReorderSidebarItems);
                                     this.close_dialog(cx);
                                 });
                             },
@@ -2905,9 +2879,7 @@ if reorder_active {
             SidebarMenuTarget::Background => {
                 let reorder_active = reorder_mode;
 
-                let mut list = div()
-                    .flex_col()
-                    .py(px(4.0));
+                let mut list = div().flex_col().py(px(4.0));
 
                 if reorder_active {
                     list = list.child(Self::context_menu_item(
@@ -2927,10 +2899,10 @@ if reorder_active {
                         move |_, _, cx| {
                             v_reorder.update(cx, |this, cx| {
                                 this.state.sidebar.enter_reorder_mode();
-                                    this.close_dialog(cx);
+                                this.close_dialog(cx);
                             });
                         },
-));
+                    ));
 
                     // Add "Show Hidden Groups..." button (always visible)
                     let hidden_sections = hidden_sections.clone();
@@ -2943,7 +2915,7 @@ if reorder_active {
                                 .my(px(4.0)),
                         );
 
-for section in &hidden_sections {
+                        for section in &hidden_sections {
                             let v_unhide = view.clone();
                             let section_id = *section;
                             let label = format!("Show {:?}", section);
@@ -3159,8 +3131,8 @@ for section in &hidden_sections {
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        use crate::ui::views::main_view::{zoom_mode_icon, zoom_mode_name};
         use crate::config::config::ViewMode;
+        use crate::ui::views::main_view::{zoom_mode_icon, zoom_mode_name};
 
         struct MenuItem {
             name: &'static str,
@@ -3178,10 +3150,46 @@ for section in &hidden_sections {
         }
 
         let items = vec![
-            MenuItem { name: "Details", icon: "\u{E783}", mode: ViewMode::Details, default_zoom: 0.15, item_py: 6.0, icon_size: 16.0, text_size: 12.0, divider_after: true },
-            MenuItem { name: "List", icon: "\u{E77B}", mode: ViewMode::List,     default_zoom: 0.30, item_py: 6.0, icon_size: 16.0, text_size: 12.0, divider_after: true },
-            MenuItem { name: "Columns", icon: "\u{E8A8}", mode: ViewMode::Columns, default_zoom: 0.50, item_py: 6.0, icon_size: 16.0, text_size: 12.0, divider_after: true },
-            MenuItem { name: "Grid", icon: "\u{E80A}", mode: ViewMode::Grid,     default_zoom: 0.75, item_py: 6.0, icon_size: 16.0, text_size: 12.0, divider_after: false },
+            MenuItem {
+                name: "Details",
+                icon: "\u{E783}",
+                mode: ViewMode::Details,
+                default_zoom: 0.15,
+                item_py: 6.0,
+                icon_size: 16.0,
+                text_size: 12.0,
+                divider_after: true,
+            },
+            MenuItem {
+                name: "List",
+                icon: "\u{E77B}",
+                mode: ViewMode::List,
+                default_zoom: 0.30,
+                item_py: 6.0,
+                icon_size: 16.0,
+                text_size: 12.0,
+                divider_after: true,
+            },
+            MenuItem {
+                name: "Columns",
+                icon: "\u{E8A8}",
+                mode: ViewMode::Columns,
+                default_zoom: 0.50,
+                item_py: 6.0,
+                icon_size: 16.0,
+                text_size: 12.0,
+                divider_after: true,
+            },
+            MenuItem {
+                name: "Grid",
+                icon: "\u{E80A}",
+                mode: ViewMode::Grid,
+                default_zoom: 0.75,
+                item_py: 6.0,
+                icon_size: 16.0,
+                text_size: 12.0,
+                divider_after: false,
+            },
         ];
 
         // Fixed dialog height
@@ -3230,19 +3238,21 @@ for section in &hidden_sections {
                                         rgba(0x00000000u32)
                                     })
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(if is_active {
-                                        rgba(UiConstants::ACCENT_RGBA)
-                                    } else {
-                                        rgba(0xFFFFFF10u32)
-                                    }))
+                                    .hover(|s| {
+                                        s.bg(if is_active {
+                                            rgba(UiConstants::ACCENT_RGBA)
+                                        } else {
+                                            rgba(0xFFFFFF10u32)
+                                        })
+                                    })
                                     .on_mouse_down(MouseButton::Left, {
                                         let v_btn = v_btn.clone();
                                         move |_, _, cx| {
                                             let mode = mode.clone();
-                                                    v_btn.update(cx, |this, cx| {
-                                                        this.state.main_view.view_mode = mode.clone();
-                                                        this.state.main_view.zoom_level = default_zoom;
-                                                        this.close_dialog(cx);
+                                            v_btn.update(cx, |this, cx| {
+                                                this.state.main_view.view_mode = mode.clone();
+                                                this.state.main_view.zoom_level = default_zoom;
+                                                this.close_dialog(cx);
                                             });
                                         }
                                     })
@@ -3260,7 +3270,11 @@ for section in &hidden_sections {
                                     .child(
                                         div()
                                             .text_size(px(text_size))
-                                            .font_weight(if is_active { FontWeight(600.0) } else { FontWeight::default() })
+                                            .font_weight(if is_active {
+                                                FontWeight(600.0)
+                                            } else {
+                                                FontWeight::default()
+                                            })
                                             .text_color(if is_active {
                                                 rgb(0xFFFFFF)
                                             } else {
@@ -3270,11 +3284,17 @@ for section in &hidden_sections {
                                     ),
                             )
                             .children(if divider_after {
-                                Some(div().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).mx(px(8.0)).my(px(2.0)))
+                                Some(
+                                    div()
+                                        .h(px(1.0))
+                                        .bg(rgba(UiConstants::DIVIDER_RGBA))
+                                        .mx(px(8.0))
+                                        .my(px(2.0)),
+                                )
                             } else {
                                 None
                             })
-                    }))
+                    })),
             )
             .child(
                 // RIGHT: Vertical slider — whole 30px column is clickable
@@ -3325,8 +3345,8 @@ for section in &hidden_sections {
                                     .bg(rgba(UiConstants::ACCENT_RGBA))
                                     .shadow_md()
                                     .cursor_pointer()
-                            })
-                    )
+                            }),
+                    ),
             )
     }
 
@@ -3818,14 +3838,19 @@ for section in &hidden_sections {
             .px(px(10.0))
             .py(px(8.0))
             .rounded(px(6.0))
-            .bg(if active { rgba(0xFFFFFF15u32) } else { rgba(0x00000000u32) })
+            .bg(if active {
+                rgba(0xFFFFFF15u32)
+            } else {
+                rgba(0x00000000u32)
+            })
             .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 view.update(cx, |this, cx| {
                     // The state lives in DialogType::CustomProperties
-                    if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                        this.state.active_dialog
+                    if let Some(crate::ui::components::dialogs::DialogType::CustomProperties {
+                        ref mut state,
+                    }) = this.state.active_dialog
                     {
                         state.set_tab(tab);
                         cx.notify();
@@ -3903,7 +3928,10 @@ for section in &hidden_sections {
             } else {
                 div().into_any_element()
             })
-            .child(Self::build_settings_row("Attributes", &state.attribute_summary()))
+            .child(Self::build_settings_row(
+                "Attributes",
+                &state.attribute_summary(),
+            ))
     }
 
     // ────────── Security Tab ──────────
@@ -3926,13 +3954,40 @@ for section in &hidden_sections {
             } else {
                 div().into_any_element()
             })
-            .child(Self::build_settings_row("Permissions", &sec.permissions_summary))
-            .child(Self::properties_checkbox("Readable", sec.can_read, |_, _, _| {}))
-            .child(Self::properties_checkbox("Writable", sec.can_write, |_, _, _| {}))
-            .child(Self::properties_checkbox("Deletable", sec.can_delete, |_, _, _| {}))
-            .child(Self::properties_checkbox("Read-only", sec.is_readonly, |_, _, _| {}))
-            .child(Self::properties_checkbox("Hidden", sec.is_hidden, |_, _, _| {}))
-            .child(Self::properties_checkbox("System", sec.is_system, |_, _, _| {}))
+            .child(Self::build_settings_row(
+                "Permissions",
+                &sec.permissions_summary,
+            ))
+            .child(Self::properties_checkbox(
+                "Readable",
+                sec.can_read,
+                |_, _, _| {},
+            ))
+            .child(Self::properties_checkbox(
+                "Writable",
+                sec.can_write,
+                |_, _, _| {},
+            ))
+            .child(Self::properties_checkbox(
+                "Deletable",
+                sec.can_delete,
+                |_, _, _| {},
+            ))
+            .child(Self::properties_checkbox(
+                "Read-only",
+                sec.is_readonly,
+                |_, _, _| {},
+            ))
+            .child(Self::properties_checkbox(
+                "Hidden",
+                sec.is_hidden,
+                |_, _, _| {},
+            ))
+            .child(Self::properties_checkbox(
+                "System",
+                sec.is_system,
+                |_, _, _| {},
+            ))
     }
 
     // ────────── Customization Tab ──────────
@@ -3965,7 +4020,10 @@ for section in &hidden_sections {
             } else {
                 div().into_any_element()
             })
-            .child(Self::build_settings_row("Opacity", &format!("{}%", cust.folder_background_opacity)))
+            .child(Self::build_settings_row(
+                "Opacity",
+                &format!("{}%", cust.folder_background_opacity),
+            ))
             .child(if let Some(ref ftype) = cust.folder_type {
                 Self::build_settings_row("Folder Type", ftype).into_any_element()
             } else {
@@ -3998,7 +4056,9 @@ for section in &hidden_sections {
                     .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
                     .child("Computing hashes...")
             } else {
-                div().flex_col().gap(px(4.0))
+                div()
+                    .flex_col()
+                    .gap(px(4.0))
                     .child(Self::build_hash_row("MD5", hashes.md5.as_deref()))
                     .child(Self::build_hash_row("SHA-1", hashes.sha1.as_deref()))
                     .child(Self::build_hash_row("SHA-256", hashes.sha256.as_deref()))
@@ -4063,144 +4123,186 @@ for section in &hidden_sections {
                     .child("Compatibility"),
             )
             // Run as administrator checkbox
-            .child(
-                Self::properties_checkbox("Run this program as an administrator", compat.run_as_admin, {
+            .child(Self::properties_checkbox(
+                "Run this program as an administrator",
+                compat.run_as_admin,
+                {
                     let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::CustomProperties {
+                                    ref mut state,
+                                },
+                            ) = this.state.active_dialog
                             {
-                                state.compatibility.run_as_admin = !state.compatibility.run_as_admin;
+                                state.compatibility.run_as_admin =
+                                    !state.compatibility.run_as_admin;
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
             // Reduced color mode checkbox
-            .child(
-                Self::properties_checkbox("Reduced color mode", compat.color_mode.is_some(), {
+            .child(Self::properties_checkbox(
+                "Reduced color mode",
+                compat.color_mode.is_some(),
+                {
                     let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::CustomProperties {
+                                    ref mut state,
+                                },
+                            ) = this.state.active_dialog
                             {
-                                state.compatibility.color_mode = if state.compatibility.color_mode.is_some() {
-                                    None
-                                } else {
-                                    Some("256-color".to_string())
-                                };
+                                state.compatibility.color_mode =
+                                    if state.compatibility.color_mode.is_some() {
+                                        None
+                                    } else {
+                                        Some("256-color".to_string())
+                                    };
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
             // Disable theming checkbox
-            .child(
-                Self::properties_checkbox("Disable visual themes", compat.disable_theming, {
+            .child(Self::properties_checkbox(
+                "Disable visual themes",
+                compat.disable_theming,
+                {
                     let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::CustomProperties {
+                                    ref mut state,
+                                },
+                            ) = this.state.active_dialog
                             {
-                                state.compatibility.disable_theming = !state.compatibility.disable_theming;
+                                state.compatibility.disable_theming =
+                                    !state.compatibility.disable_theming;
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
             // Disable desktop composition checkbox
-            .child(
-                Self::properties_checkbox("Disable desktop composition", compat.disable_visual_features, {
+            .child(Self::properties_checkbox(
+                "Disable desktop composition",
+                compat.disable_visual_features,
+                {
                     let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::CustomProperties {
+                                    ref mut state,
+                                },
+                            ) = this.state.active_dialog
                             {
-                                state.compatibility.disable_visual_features = !state.compatibility.disable_visual_features;
+                                state.compatibility.disable_visual_features =
+                                    !state.compatibility.disable_visual_features;
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
             // Run in 640x480 screen resolution checkbox
-            .child(
-                Self::properties_checkbox("Run in 640×480 screen resolution", false, |_, _, _| {}),
-            )
+            .child(Self::properties_checkbox(
+                "Run in 640×480 screen resolution",
+                false,
+                |_, _, _| {},
+            ))
             // Override high DPI scaling behavior
             .child(
-                div()
-                    .mt(px(8.0))
-                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Override high DPI scaling behavior:")),
+                div().mt(px(8.0)).child(
+                    div()
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                        .child("Override high DPI scaling behavior:"),
+                ),
             )
             // Emulation mode dropdown
             .child(
-                div()
-                    .mt(px(4.0))
-                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Run this program in compatibility mode for:")),
-            )
-            .child(
-                Self::properties_dropdown(
-                    emulation_options.iter().map(|(l, v)| (*l, *v)).collect(),
-                    compat.emulation_mode.as_deref().unwrap_or(""),
-                    {
-                        let v = view.clone();
-                        let val = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-                        let val_clone = val.clone();
-                        move |selected_value: &str| {
-                            let v = v.clone();
-                            let new_val = if selected_value.is_empty() { None } else { Some(selected_value.to_string()) };
-                            *val_clone.lock().unwrap() = new_val;
-                            // The dropdown callback runs in GPUI event context; state will be read on next render
-                        }
-                    },
+                div().mt(px(4.0)).child(
+                    div()
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                        .child("Run this program in compatibility mode for:"),
                 ),
             )
+            .child(Self::properties_dropdown(
+                emulation_options.iter().map(|(l, v)| (*l, *v)).collect(),
+                compat.emulation_mode.as_deref().unwrap_or(""),
+                {
+                    let v = view.clone();
+                    let val = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                    let val_clone = val.clone();
+                    move |selected_value: &str| {
+                        let v = v.clone();
+                        let new_val = if selected_value.is_empty() {
+                            None
+                        } else {
+                            Some(selected_value.to_string())
+                        };
+                        *val_clone.lock().unwrap() = new_val;
+                        // The dropdown callback runs in GPUI event context; state will be read on next render
+                    }
+                },
+            ))
             // DPI settings dropdown
             .child(
-                div()
-                    .mt(px(8.0))
-                    .child(div().text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("Change high DPI settings:")),
-            )
-            .child(
-                Self::properties_dropdown(
-                    dpi_options.iter().map(|(l, v)| (*l, *v)).collect(),
-                    compat.dpi_settings.as_deref().unwrap_or(""),
-                    {
-                        let v = view.clone();
-                        let val = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-                        let val_clone = val.clone();
-                        move |selected_value: &str| {
-                            let v = v.clone();
-                            let new_val = if selected_value.is_empty() { None } else { Some(selected_value.to_string()) };
-                            *val_clone.lock().unwrap() = new_val;
-                        }
-                    },
+                div().mt(px(8.0)).child(
+                    div()
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                        .child("Change high DPI settings:"),
                 ),
             )
+            .child(Self::properties_dropdown(
+                dpi_options.iter().map(|(l, v)| (*l, *v)).collect(),
+                compat.dpi_settings.as_deref().unwrap_or(""),
+                {
+                    let v = view.clone();
+                    let val = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                    let val_clone = val.clone();
+                    move |selected_value: &str| {
+                        let v = v.clone();
+                        let new_val = if selected_value.is_empty() {
+                            None
+                        } else {
+                            Some(selected_value.to_string())
+                        };
+                        *val_clone.lock().unwrap() = new_val;
+                    }
+                },
+            ))
             // Run in sandbox checkbox
-            .child(
-                Self::properties_checkbox("Run this program in a sandbox", compat.run_in_sandbox, {
+            .child(Self::properties_checkbox(
+                "Run this program in a sandbox",
+                compat.run_in_sandbox,
+                {
                     let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::CustomProperties { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::CustomProperties {
+                                    ref mut state,
+                                },
+                            ) = this.state.active_dialog
                             {
-                                state.compatibility.run_in_sandbox = !state.compatibility.run_in_sandbox;
+                                state.compatibility.run_in_sandbox =
+                                    !state.compatibility.run_in_sandbox;
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
     }
 
     // ────────── Signatures Tab ──────────
@@ -4418,7 +4520,11 @@ for section in &hidden_sections {
                     .border(px(1.0))
                     .border_color(rgba(UiConstants::STROKE_RGBA))
                     .rounded(px(3.0))
-                    .bg(if checked { rgba(UiConstants::ACCENT_RGBA) } else { rgba(0x12FFFFFFu32) })
+                    .bg(if checked {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    } else {
+                        rgba(0x12FFFFFFu32)
+                    })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -4446,7 +4552,9 @@ for section in &hidden_sections {
         on_select: impl Fn(&str) + 'static,
     ) -> impl IntoElement + 'a {
         let v_on_select = std::sync::Arc::new(on_select);
-        let display = options.iter().find(|(_, v)| *v == current_value)
+        let display = options
+            .iter()
+            .find(|(_, v)| *v == current_value)
             .map(|(l, _)| (*l).to_string())
             .unwrap_or_else(|| "None".to_string());
         div()
@@ -4587,7 +4695,7 @@ for section in &hidden_sections {
                                         state.destination_path.to_string_lossy().to_string()
                                     }),
                             ),
-                    )
+                    ),
             )
             .child(
                 div()
@@ -4672,8 +4780,9 @@ for section in &hidden_sections {
                     .gap(px(8.0))
                     .child(Self::build_button("Replace", true, move |_, _, cx| {
                         v_replace.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::Conflict { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(crate::ui::components::dialogs::DialogType::Conflict {
+                                ref mut state,
+                            }) = this.state.active_dialog
                             {
                                 state.choose(ConflictResolution::Replace);
                                 cx.notify();
@@ -4682,8 +4791,9 @@ for section in &hidden_sections {
                     }))
                     .child(Self::build_button("Skip", false, move |_, _, cx| {
                         v_skip.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::Conflict { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(crate::ui::components::dialogs::DialogType::Conflict {
+                                ref mut state,
+                            }) = this.state.active_dialog
                             {
                                 state.choose(ConflictResolution::Skip);
                                 cx.notify();
@@ -4692,8 +4802,9 @@ for section in &hidden_sections {
                     }))
                     .child(Self::build_button("Rename", false, move |_, _, cx| {
                         v_rename.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::Conflict { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(crate::ui::components::dialogs::DialogType::Conflict {
+                                ref mut state,
+                            }) = this.state.active_dialog
                             {
                                 state.choose(ConflictResolution::Rename);
                                 cx.notify();
@@ -4702,21 +4813,24 @@ for section in &hidden_sections {
                     })),
             )
             // "Apply to all" checkbox
-            .child(
-                Self::properties_checkbox("Apply to all conflicts", state.apply_to_all, {
+            .child(Self::properties_checkbox(
+                "Apply to all conflicts",
+                state.apply_to_all,
+                {
                     let v = v_toggle.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            if let Some(crate::ui::components::dialogs::DialogType::Conflict { ref mut state }) =
-                                this.state.active_dialog
+                            if let Some(crate::ui::components::dialogs::DialogType::Conflict {
+                                ref mut state,
+                            }) = this.state.active_dialog
                             {
                                 state.toggle_apply_to_all();
                                 cx.notify();
                             }
                         });
                     }
-                }),
-            )
+                },
+            ))
             // Cancel button
             .child(
                 div()

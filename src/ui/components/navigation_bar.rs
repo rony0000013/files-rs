@@ -107,7 +107,7 @@ impl NavigationBarView {
             div()
                 .text_size(px(14.0))
                 .font_family(UiConstants::FONT_ICONS)
-                .child(icon)
+                .child(icon),
         )
     }
 
@@ -137,7 +137,7 @@ impl NavigationBarView {
             .w_full()
             .px(Pixels::from(12.0))
             .gap(px(8.0))
-            .bg(rgb(UiConstants::BG_MAIN_RGB))   // Same surface as tab bar
+            .bg(rgb(UiConstants::BG_MAIN_RGB)) // Same surface as tab bar
             .border_b(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             // Navigation controls (Back, Forward, Up, Refresh)
@@ -146,18 +146,34 @@ impl NavigationBarView {
                     .flex()
                     .items_center()
                     .gap(px(2.0))
-                    .child(Self::render_nav_btn("\u{E72B}", can_go_back, move |_, cx| {
-                        v_back.update(cx, |this, cx| { let _ = this.navigate_back(cx); });
-                    }))
-                    .child(Self::render_nav_btn("\u{E72A}", can_go_forward, move |_, cx| {
-                        v_forward.update(cx, |this, cx| { let _ = this.navigate_forward(cx); });
-                    }))
+                    .child(Self::render_nav_btn(
+                        "\u{E72B}",
+                        can_go_back,
+                        move |_, cx| {
+                            v_back.update(cx, |this, cx| {
+                                let _ = this.navigate_back(cx);
+                            });
+                        },
+                    ))
+                    .child(Self::render_nav_btn(
+                        "\u{E72A}",
+                        can_go_forward,
+                        move |_, cx| {
+                            v_forward.update(cx, |this, cx| {
+                                let _ = this.navigate_forward(cx);
+                            });
+                        },
+                    ))
                     .child(Self::render_nav_btn("\u{E197}", true, move |_, cx| {
-                        v_up.update(cx, |this, cx| { let _ = this.navigate_up(cx); });
+                        v_up.update(cx, |this, cx| {
+                            let _ = this.navigate_up(cx);
+                        });
                     }))
                     .child(Self::render_nav_btn("\u{E72C}", true, move |_, cx| {
-                        v_refresh.update(cx, |this, cx| { let _ = this.refresh(cx); });
-                    }))
+                        v_refresh.update(cx, |this, cx| {
+                            let _ = this.refresh(cx);
+                        });
+                    })),
             )
             // Address bar container — styled like Files-community rounded pill
             .child(
@@ -166,10 +182,10 @@ impl NavigationBarView {
                     .items_center()
                     .flex_grow()
                     .h(Pixels::from(32.0))
-                    .bg(rgba(0xFFFFFF0Au32))  // ~4% white fill on Mica
-                    .rounded(px(20.0))         // Fully pill-shaped
+                    .bg(rgba(0xFFFFFF0Au32)) // ~4% white fill on Mica
+                    .rounded(px(20.0)) // Fully pill-shaped
                     .border(px(1.0))
-                    .border_color(rgba(0xFFFFFF20u32))  // ~12% white border
+                    .border_color(rgba(0xFFFFFF20u32)) // ~12% white border
                     .px(px(4.0))
                     .children(state.breadcrumbs.iter().enumerate().map(|(i, crumb_path)| {
                         let is_last = i == state.breadcrumbs.len() - 1;
@@ -181,7 +197,12 @@ impl NavigationBarView {
                                 s.split(':').next().unwrap_or(&s).to_string() // Drive letter
                             }
                         } else {
-                            crumb_path.as_path().file_name().unwrap_or_default().to_string_lossy().to_string()
+                            crumb_path
+                                .as_path()
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string()
                         };
 
                         let path = crumb_path.clone();
@@ -210,26 +231,38 @@ impl NavigationBarView {
                                     .child(
                                         div()
                                             .text_size(px(13.0))
-                                            .font_family(if i == 0 && label == "\u{E80F}" { UiConstants::FONT_ICONS } else { UiConstants::FONT_FAMILY_DEFAULT })
-                                            .text_color(if is_last { rgba(UiConstants::TEXT_PRIMARY_RGBA) } else { rgba(UiConstants::TEXT_SECONDARY_RGBA) })
-                                            .font_weight(if is_last { FontWeight(600.0) } else { FontWeight::default() })
-                                            .child(label)
-                                    )
+                                            .font_family(if i == 0 && label == "\u{E80F}" {
+                                                UiConstants::FONT_ICONS
+                                            } else {
+                                                UiConstants::FONT_FAMILY_DEFAULT
+                                            })
+                                            .text_color(if is_last {
+                                                rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                                            } else {
+                                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                            })
+                                            .font_weight(if is_last {
+                                                FontWeight(600.0)
+                                            } else {
+                                                FontWeight::default()
+                                            })
+                                            .child(label),
+                                    ),
                             )
                             .children(if !is_last {
-                                Some(div()
-                                    .px(px(2.0))
-                                    .child(
+                                Some(
+                                    div().px(px(2.0)).child(
                                         div()
                                             .text_size(px(10.0))
                                             .font_family(UiConstants::FONT_ICONS)
                                             .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                                            .child("\u{E974}") // ChevronRight
-                                    ))
+                                            .child("\u{E974}"), // ChevronRight
+                                    ),
+                                )
                             } else {
                                 None
                             })
-                    }))
+                    })),
             )
             // Search / Status indicator
             .child(
@@ -255,16 +288,16 @@ impl NavigationBarView {
                                 div()
                                     .text_size(px(13.0))
                                     .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                                    .child("Search...")
+                                    .child("Search..."),
                             )
                             .child(
                                 div()
                                     .text_size(px(14.0))
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E721}") // Search icon
-                            )
-                    )
+                                    .child("\u{E721}"), // Search icon
+                            ),
+                    ),
             )
     }
 }

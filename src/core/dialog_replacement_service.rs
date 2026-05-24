@@ -87,7 +87,10 @@ impl FileFilter {
 
     /// Common filter: Image Files
     pub fn image_files() -> Self {
-        Self::new("Image Files (*.png;*.jpg;*.gif;*.bmp)", "*.png;*.jpg;*.gif;*.bmp")
+        Self::new(
+            "Image Files (*.png;*.jpg;*.gif;*.bmp)",
+            "*.png;*.jpg;*.gif;*.bmp",
+        )
     }
 }
 
@@ -175,10 +178,7 @@ impl DialogReplacementService {
         #[cfg(target_os = "windows")]
         {
             let guid = Self::dialog_handler_guid();
-            let clsid_path = format!(
-                r"Software\Classes\CLSID\{}",
-                guid
-            );
+            let clsid_path = format!(r"Software\Classes\CLSID\{}", guid);
 
             // Register the dialog handler via registry
             let result = Self::write_registry_string(
@@ -216,10 +216,7 @@ impl DialogReplacementService {
                 return Ok(());
             }
             let guid = Self::dialog_handler_guid();
-            let clsid_path = format!(
-                r"Software\Classes\CLSID\{}\TreatAs",
-                guid
-            );
+            let clsid_path = format!(r"Software\Classes\CLSID\{}\TreatAs", guid);
 
             match Self::delete_registry_key(&clsid_path) {
                 Ok(()) => {
@@ -287,12 +284,19 @@ impl DialogReplacementService {
 
     /// Get preferences for a specific dialog type.
     pub fn get_preferences(&self, dialog_type: DialogType) -> Option<&DialogPreferences> {
-        self.preferences.iter().find(|p| p.dialog_type == dialog_type)
+        self.preferences
+            .iter()
+            .find(|p| p.dialog_type == dialog_type)
     }
 
     /// Get mutable preferences for a specific dialog type.
-    pub fn get_preferences_mut(&mut self, dialog_type: DialogType) -> Option<&mut DialogPreferences> {
-        self.preferences.iter_mut().find(|p| p.dialog_type == dialog_type)
+    pub fn get_preferences_mut(
+        &mut self,
+        dialog_type: DialogType,
+    ) -> Option<&mut DialogPreferences> {
+        self.preferences
+            .iter_mut()
+            .find(|p| p.dialog_type == dialog_type)
     }
 
     /// Update the last directory for a dialog type.
@@ -476,20 +480,13 @@ mod tests {
         svc.update_last_directory(DialogType::Open, r"C:\Users\Public");
 
         let prefs = svc.get_preferences(DialogType::Open).unwrap();
-        assert_eq!(
-            prefs.last_directory,
-            Some(r"C:\Users\Public".to_string())
-        );
+        assert_eq!(prefs.last_directory, Some(r"C:\Users\Public".to_string()));
     }
 
     #[test]
     fn test_show_open_dialog_on_non_windows() {
         let svc = DialogReplacementService::new();
-        let result = svc.show_open_dialog(
-            "Open File",
-            &[FileFilter::all_files()],
-            None,
-        );
+        let result = svc.show_open_dialog("Open File", &[FileFilter::all_files()], None);
         assert!(!result.confirmed);
     }
 
@@ -569,9 +566,6 @@ mod tests {
         assert!(result.confirmed);
         assert!(result.path.is_some());
         assert_eq!(result.filter_index, 1);
-        assert_eq!(
-            result.path.unwrap(),
-            r"C:\Users\file.txt"
-        );
+        assert_eq!(result.path.unwrap(), r"C:\Users\file.txt");
     }
 }

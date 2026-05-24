@@ -81,8 +81,10 @@ impl SystemTrayManager {
                 .args([
                     "-NoProfile",
                     "-NonInteractive",
-                    "-WindowStyle", "Hidden",
-                    "-ExecutionPolicy", "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
                     "-File",
                     &script_path.to_string_lossy(),
                 ])
@@ -115,7 +117,13 @@ impl SystemTrayManager {
             }
             // Kill any powershell tray processes
             let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "powershell.exe", "/FI", "WindowTitle eq Files-Rust Tray"])
+                .args([
+                    "/F",
+                    "/IM",
+                    "powershell.exe",
+                    "/FI",
+                    "WindowTitle eq Files-Rust Tray",
+                ])
                 .output();
             tracing::info!("System tray icon removed");
         }

@@ -118,7 +118,7 @@ impl ShortcutService {
         {
             Self::create_shortcut_impl(options)
         }
-        
+
         #[cfg(not(windows))]
         {
             ShortcutResult {
@@ -133,32 +133,29 @@ impl ShortcutService {
     #[cfg(windows)]
     fn create_shortcut_impl(options: ShortcutOptions) -> ShortcutResult {
         use std::process::Command;
-        
+
         let target_path = options.target_path.as_path().to_string_lossy();
         let shortcut_path = options.shortcut_path.as_path().to_string_lossy();
-        
-        tracing::info!("Creating shortcut from {} to {}", shortcut_path, target_path);
-        
+
+        tracing::info!(
+            "Creating shortcut from {} to {}",
+            shortcut_path,
+            target_path
+        );
+
         // Try using PowerShell to create the shortcut (most reliable without COM)
         let ps_script = Self::build_powershell_script(&options);
-        
+
         let output = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &ps_script,
-            ])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
             .output();
-            
+
         match output {
-            Ok(out) if out.status.success() => {
-                ShortcutResult {
-                    success: true,
-                    shortcut_path: options.shortcut_path,
-                    error: None,
-                }
-            }
+            Ok(out) if out.status.success() => ShortcutResult {
+                success: true,
+                shortcut_path: options.shortcut_path,
+                error: None,
+            },
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 ShortcutResult {
@@ -167,49 +164,61 @@ impl ShortcutService {
                     error: Some(format!("PowerShell shortcut creation failed: {}", stderr)),
                 }
             }
-            Err(e) => {
-                ShortcutResult {
-                    success: false,
-                    shortcut_path: options.shortcut_path,
-                    error: Some(format!("Failed to execute PowerShell: {}", e)),
-                }
-            }
+            Err(e) => ShortcutResult {
+                success: false,
+                shortcut_path: options.shortcut_path,
+                error: Some(format!("Failed to execute PowerShell: {}", e)),
+            },
         }
     }
 
     /// Build PowerShell script for shortcut creation
     #[cfg(windows)]
     fn build_powershell_script(options: &ShortcutOptions) -> String {
-        let target = options.target_path.as_path().to_string_lossy().replace("'", "''");
-        let shortcut = options.shortcut_path.as_path().to_string_lossy().replace("'", "''");
-        
+        let target = options
+            .target_path
+            .as_path()
+            .to_string_lossy()
+            .replace("'", "''");
+        let shortcut = options
+            .shortcut_path
+            .as_path()
+            .to_string_lossy()
+            .replace("'", "''");
+
         let mut script = format!(
             "$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('{}'); $sc.TargetPath = '{}'; ",
             shortcut, target
         );
-        
+
         // Add description
         if let Some(ref desc) = options.description {
-            script.push_str(&format!("$sc.Description = '{}'; ", desc.replace("'", "''")));
+            script.push_str(&format!(
+                "$sc.Description = '{}'; ",
+                desc.replace("'", "''")
+            ));
         }
-        
+
         // Add working directory
         if let Some(ref work_dir) = options.working_directory {
             let dir = work_dir.as_path().to_string_lossy().replace("'", "''");
             script.push_str(&format!("$sc.WorkingDirectory = '{}'; ", dir));
         }
-        
+
         // Add arguments
         if let Some(ref args) = options.arguments {
             script.push_str(&format!("$sc.Arguments = '{}'; ", args.replace("'", "''")));
         }
-        
+
         // Add icon
         if let Some(ref icon_path) = options.icon_path {
             let icon = icon_path.as_path().to_string_lossy().replace("'", "''");
-            script.push_str(&format!("$sc.IconLocation = '{},{}'; ", icon, options.icon_index));
+            script.push_str(&format!(
+                "$sc.IconLocation = '{},{}'; ",
+                icon, options.icon_index
+            ));
         }
-        
+
         // Add window style
         let window_style = match options.window_style {
             WindowStyle::Minimized => 7, // SW_SHOWMINIMIZED
@@ -217,10 +226,12 @@ impl ShortcutService {
             WindowStyle::Normal => 1,    // SW_SHOWNORMAL
         };
         script.push_str(&format!("$sc.WindowStyle = {}; ", window_style));
-        
+
         // Save
-        script.push_str(&format!("$sc.Save(); Write-Host 'Shortcut created successfully';"));
-        
+        script.push_str(&format!(
+            "$sc.Save(); Write-Host 'Shortcut created successfully';"
+        ));
+
         script
     }
 
@@ -231,15 +242,14 @@ impl ShortcutService {
 
     /// Create a shortcut to a directory
     pub fn create_for_directory(target_dir: FilesPath, shortcut: FilesPath) -> ShortcutResult {
-        let options = ShortcutOptions::new(target_dir, shortcut)
-            .with_description("Shortcut to folder");
+        let options =
+            ShortcutOptions::new(target_dir, shortcut).with_description("Shortcut to folder");
         Self::create_shortcut(options)
     }
 
     /// Create a shortcut with arguments
     pub fn create_with_args(target: FilesPath, shortcut: FilesPath, args: &str) -> ShortcutResult {
-        let options = ShortcutOptions::new(target, shortcut)
-            .with_arguments(args);
+        let options = ShortcutOptions::new(target, shortcut).with_arguments(args);
         Self::create_shortcut(options)
     }
 
@@ -247,8 +257,7 @@ impl ShortcutService {
     pub fn delete(shortcut_path: &FilesPath) -> Result<(), String> {
         let path = shortcut_path.as_path();
         if path.exists() && path.extension().map(|e| e == "lnk").unwrap_or(false) {
-            std::fs::remove_file(path)
-                .map_err(|e| format!("Failed to delete shortcut: {}", e))
+            std::fs::remove_file(path).map_err(|e| format!("Failed to delete shortcut: {}", e))
         } else {
             Err("File does not exist or is not a shortcut".to_string())
         }
@@ -267,24 +276,19 @@ impl ShortcutService {
         #[cfg(windows)]
         {
             use std::process::Command;
-            
+
             let path_str = shortcut_path.as_path().to_string_lossy().replace("'", "''");
-            
+
             let ps_command = format!(
                 "$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('{}'); Write-Output $sc.TargetPath",
                 path_str
             );
-            
+
             let output = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &ps_command,
-                ])
+                .args(["-NoProfile", "-NonInteractive", "-Command", &ps_command])
                 .output()
                 .map_err(|e| format!("Failed to execute PowerShell: {}", e))?;
-                
+
             if output.status.success() {
                 let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 Ok(FilesPath::from(target.as_str()))
@@ -292,7 +296,7 @@ impl ShortcutService {
                 Err("Failed to get shortcut target".to_string())
             }
         }
-        
+
         #[cfg(not(windows))]
         {
             Err("Get target is only available on Windows".to_string())
@@ -310,12 +314,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target = temp_dir.path().join("target.txt");
         let shortcut = temp_dir.path().join("shortcut.lnk");
-        
+
         let options = ShortcutOptions::new(
             FilesPath::from(target.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
         );
-        
+
         assert_eq!(options.icon_index, 0);
         assert!(!options.run_as_admin);
         assert_eq!(options.window_style, WindowStyle::Normal);
@@ -328,7 +332,7 @@ mod tests {
         let shortcut = temp_dir.path().join("app.lnk");
         let work_dir = temp_dir.path().join("work");
         let icon = temp_dir.path().join("icon.ico");
-        
+
         let options = ShortcutOptions::new(
             FilesPath::from(target.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
@@ -339,10 +343,14 @@ mod tests {
         .with_icon(FilesPath::from(icon.to_str().unwrap()), 1)
         .with_run_as_admin()
         .with_window_style(WindowStyle::Maximized);
-        
+
         assert_eq!(options.description, Some("My Application".to_string()));
-        assert_eq!(options.working_directory.map(|p| p.as_path().to_string_lossy().to_string()),
-                   Some(work_dir.to_string_lossy().to_string()));
+        assert_eq!(
+            options
+                .working_directory
+                .map(|p| p.as_path().to_string_lossy().to_string()),
+            Some(work_dir.to_string_lossy().to_string())
+        );
         assert_eq!(options.arguments, Some("--flag value".to_string()));
         assert_eq!(options.icon_index, 1);
         assert!(options.run_as_admin);
@@ -357,10 +365,10 @@ mod tests {
     #[test]
     fn test_is_shortcut() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         let lnk_path = FilesPath::from(temp_dir.path().join("test.lnk").to_str().unwrap());
         let txt_path = FilesPath::from(temp_dir.path().join("test.txt").to_str().unwrap());
-        
+
         assert!(ShortcutService::is_shortcut(&lnk_path));
         assert!(!ShortcutService::is_shortcut(&txt_path));
     }
@@ -368,10 +376,10 @@ mod tests {
     #[test]
     fn test_is_shortcut_case_insensitive() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         let upper = FilesPath::from(temp_dir.path().join("test.LNK").to_str().unwrap());
         let lower = FilesPath::from(temp_dir.path().join("test.lnk").to_str().unwrap());
-        
+
         assert!(ShortcutService::is_shortcut(&upper));
         assert!(ShortcutService::is_shortcut(&lower));
     }
@@ -381,29 +389,33 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target = temp_dir.path().join("target.txt");
         let shortcut = temp_dir.path().join("shortcut.lnk");
-        
+
         std::fs::write(&target, "content").unwrap();
-        
+
         let result = ShortcutService::create(
             FilesPath::from(target.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
         );
-        
+
         // Result should be returned (success or failure)
-        assert!(result.shortcut_path.as_path().to_string_lossy().contains("shortcut.lnk"));
+        assert!(result
+            .shortcut_path
+            .as_path()
+            .to_string_lossy()
+            .contains("shortcut.lnk"));
     }
 
     #[test]
     fn test_shortcut_result_debug() {
         let temp_dir = TempDir::new().unwrap();
         let shortcut = temp_dir.path().join("shortcut.lnk");
-        
+
         let result = ShortcutResult {
             success: true,
             shortcut_path: FilesPath::from(shortcut.to_str().unwrap()),
             error: None,
         };
-        
+
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("ShortcutResult"));
         assert!(debug_str.contains("success"));
@@ -413,7 +425,7 @@ mod tests {
     fn test_delete_nonexistent_shortcut() {
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.lnk");
-        
+
         let result = ShortcutService::delete(&FilesPath::from(nonexistent.to_str().unwrap()));
         assert!(result.is_err());
     }
@@ -423,15 +435,19 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target_dir = temp_dir.path().join("myfolder");
         let shortcut = temp_dir.path().join("folder shortcut.lnk");
-        
+
         std::fs::create_dir(&target_dir).unwrap();
-        
+
         let result = ShortcutService::create_for_directory(
             FilesPath::from(target_dir.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
         );
-        
-        assert!(result.shortcut_path.as_path().to_string_lossy().contains("folder shortcut.lnk"));
+
+        assert!(result
+            .shortcut_path
+            .as_path()
+            .to_string_lossy()
+            .contains("folder shortcut.lnk"));
     }
 
     #[test]
@@ -439,23 +455,27 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target = temp_dir.path().join("app.exe");
         let shortcut = temp_dir.path().join("app.lnk");
-        
+
         std::fs::write(&target, "").unwrap();
-        
+
         let result = ShortcutService::create_with_args(
             FilesPath::from(target.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
             "--config config.ini",
         );
-        
-        assert!(result.shortcut_path.as_path().to_string_lossy().contains("app.lnk"));
+
+        assert!(result
+            .shortcut_path
+            .as_path()
+            .to_string_lossy()
+            .contains("app.lnk"));
     }
 
     #[test]
     fn test_get_target_returns_error_on_non_windows() {
         let temp_dir = TempDir::new().unwrap();
         let shortcut = temp_dir.path().join("test.lnk");
-        
+
         // On non-Windows, this should return an error
         let result = ShortcutService::get_target(&FilesPath::from(shortcut.to_str().unwrap()));
         #[cfg(not(windows))]
@@ -469,18 +489,22 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target = temp_dir.path().join("target.exe");
         let shortcut = temp_dir.path().join("options.lnk");
-        
+
         std::fs::write(&target, "").unwrap();
-        
+
         let options = ShortcutOptions::new(
             FilesPath::from(target.to_str().unwrap()),
             FilesPath::from(shortcut.to_str().unwrap()),
         )
         .with_description("Test application")
         .with_window_style(WindowStyle::Minimized);
-        
+
         let result = ShortcutService::create_shortcut(options);
-        
-        assert!(result.shortcut_path.as_path().to_string_lossy().contains("options.lnk"));
+
+        assert!(result
+            .shortcut_path
+            .as_path()
+            .to_string_lossy()
+            .contains("options.lnk"));
     }
 }

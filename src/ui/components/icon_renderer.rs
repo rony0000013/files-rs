@@ -117,32 +117,45 @@ impl IconRenderer {
             "doc" | "docx" | "odt" | "rtf" => Lucide::FileText,
             "xls" | "xlsx" | "csv" | "ods" => Lucide::Table,
             "ppt" | "pptx" | "odp" => Lucide::Presentation,
-            "txt" | "md" | "log" | "ini" | "cfg" | "yaml" | "yml" | "toml" | "json" | "xml" => Lucide::FileText,
+            "txt" | "md" | "log" | "ini" | "cfg" | "yaml" | "yml" | "toml" | "json" | "xml" => {
+                Lucide::FileText
+            }
             "epub" | "mobi" | "azw" | "azw3" => Lucide::BookOpen,
 
             // Images
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg" | "raw" | "psd" | "ai" | "eps" | "tga" | "exr" | "hdr" => Lucide::Image,
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+            | "raw" | "psd" | "ai" | "eps" | "tga" | "exr" | "hdr" => Lucide::Image,
             "heic" | "heif" => Lucide::Image,
 
             // Audio
-            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => Lucide::Music,
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => {
+                Lucide::Music
+            }
 
             // Video
-            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg" | "3gp" | "flv" | "vob" => Lucide::Film,
+            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg" | "3gp"
+            | "flv" | "vob" => Lucide::Film,
 
             // Archives
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "lz" | "lzma" | "cab" | "iso" | "dmg" => Lucide::Archive,
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "lz" | "lzma" | "cab" | "iso"
+            | "dmg" => Lucide::Archive,
 
             // Code / Dev
-            "rs" | "js" | "ts" | "jsx" | "tsx" | "py" | "java" | "c" | "cpp" | "h" | "hpp" | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua" | "perl" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "dockerfile" | "makefile" => Lucide::Code,
+            "rs" | "js" | "ts" | "jsx" | "tsx" | "py" | "java" | "c" | "cpp" | "h" | "hpp"
+            | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua" | "perl"
+            | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "dockerfile"
+            | "makefile" => Lucide::Code,
             "css" | "scss" | "sass" | "less" | "stylus" => Lucide::Palette,
             "html" | "htm" | "xhtml" | "ejs" | "hbs" | "handlebars" => Lucide::FileCode,
             "sql" | "db" | "sqlite" | "mdb" | "accdb" => Lucide::Database,
             "markdown" | "rst" => Lucide::FileText,
-            "gitignore" | "gitattributes" | "editorconfig" | "prettierrc" | "eslintrc" | "npmrc" | "yarnrc" => Lucide::Settings,
+            "gitignore" | "gitattributes" | "editorconfig" | "prettierrc" | "eslintrc"
+            | "npmrc" | "yarnrc" => Lucide::Settings,
 
             // Executables
-            "exe" | "msi" | "jar" | "app" | "pkg" | "deb" | "rpm" | "apk" | "xap" => Lucide::AppWindow,
+            "exe" | "msi" | "jar" | "app" | "pkg" | "deb" | "rpm" | "apk" | "xap" => {
+                Lucide::AppWindow
+            }
 
             // Fonts
             "ttf" | "otf" | "woff" | "woff2" | "eot" => Lucide::Type,

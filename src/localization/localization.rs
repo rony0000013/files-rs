@@ -1,4 +1,4 @@
-use fluent::{FluentBundle, FluentResource, FluentArgs, FluentValue};
+use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use std::collections::HashMap;
 
 /// Wrapper for localized strings that may contain arguments.

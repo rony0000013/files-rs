@@ -1,33 +1,36 @@
 use crate::config::config::{SortBy, ViewMode};
-use crate::ui::components::app_background::AppBackground;
 use crate::config::settings_model::SettingsModel;
 use crate::core::navigation_manager::{NavigationState, PaneLayout};
 use crate::core::navigation_service::NavigationService;
 use crate::core::path_util::FilesPath;
+use crate::domain::extended_metadata::ExtendedMetadataExtractor;
+use crate::domain::git_service::GitService;
+use crate::domain::metadata::FileItem;
 use crate::storage::storage::{FileType, LocalFileSystem, StorageService};
+use crate::ui::components::app_background::AppBackground;
 use crate::ui::components::dialogs::{DialogType, DialogsView, SettingsTab};
 use crate::ui::components::navigation_bar::{NavigationBarState, NavigationBarView};
-use crate::ui::components::sidebar_state::SidebarItemId;
 #[cfg(windows)]
 use crate::ui::components::sidebar::{SidebarSplitter, SidebarView};
+use crate::ui::components::sidebar_state::SidebarItemId;
 use crate::ui::components::sidebar_state::SidebarState;
 use crate::ui::components::splash_screen::SplashState;
 use crate::ui::components::status_bar::{StatusBarState, StatusBarView};
 use crate::ui::components::tab_bar::TabBarView;
 use crate::ui::components::toolbar::ToolbarView;
 use crate::ui::constants::UiConstants;
-use crate::ui::views::main_view::{MainView, MainViewState, DetailsPaneCache, GroupDragState, FileItems, ColumnWidths, ColumnResizeState};
-use crate::domain::metadata::FileItem;
-use crate::domain::extended_metadata::ExtendedMetadataExtractor;
-use crate::domain::git_service::GitService;
+use crate::ui::views::main_view::{
+    ColumnResizeState, ColumnWidths, DetailsPaneCache, FileItems, GroupDragState, MainView,
+    MainViewState,
+};
 use gpui::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::ui::components::clipboard_manager::{ClipboardItem, ClipboardOperation, ClipboardState};
 use crate::platform::windows::recycle_bin_service::RecycleBinService;
 use crate::platform::windows::thumbnail_service::{ThumbnailService, ThumbnailSize};
+use crate::ui::components::clipboard_manager::{ClipboardItem, ClipboardOperation, ClipboardState};
 
 /// Directory for cached icon PNG files
 fn icons_cache_dir() -> std::path::PathBuf {
@@ -108,12 +111,16 @@ impl AppState {
             active_dialog: None,
             active_settings_tab: SettingsTab::General,
             is_fullscreen: false,
-            action_registry: config.config().action_bindings.clone()
+            action_registry: config
+                .config()
+                .action_bindings
+                .clone()
                 .unwrap_or_else(crate::core::action_registry::ActionRegistry::new),
             show_shortcut_overlay: false,
             splash_state: SplashState::new(),
             session_service: {
-                let session_path = crate::core::session_service::SessionService::default_session_path();
+                let session_path =
+                    crate::core::session_service::SessionService::default_session_path();
                 crate::core::session_service::SessionService::new(session_path)
             },
             thumbnail_service: Arc::new(ThumbnailService::new()),
@@ -182,7 +189,6 @@ impl AppWindow {
         window_view.state.session_service.start_session();
 
         // Splash auto-dismiss timer removed (splash disabled)
-        
 
         // Progress listener removed (prevents entity lease conflicts)
         // let this_weak = cx.weak_entity();
@@ -238,9 +244,17 @@ impl AppWindow {
         // Sync sidebar active item and status bar
         #[cfg(windows)]
         self.state.sidebar.set_active(&path);
-        let folder_count = self.state.main_view.items.iter().filter(|i| matches!(i.file_type, FileType::Directory)).count();
+        let folder_count = self
+            .state
+            .main_view
+            .items
+            .iter()
+            .filter(|i| matches!(i.file_type, FileType::Directory))
+            .count();
         let file_count = self.state.main_view.items.len() - folder_count;
-        self.state.status_bar.sync(self.state.main_view.items.len(), folder_count, file_count);
+        self.state
+            .status_bar
+            .sync(self.state.main_view.items.len(), folder_count, file_count);
 
         // Update git info in status bar
         self.state.status_bar.show_git_actions = GitService::is_repo(&path);
@@ -260,16 +274,20 @@ impl AppWindow {
             self.state.main_view.zoom_level = prefs.zoom_level;
         } else {
             self.state.main_view.view_mode = active_tab.view_mode.clone();
+            self.state.main_view.zoom_level = settings_model.config().view.last_zoom_level;
         }
 
         // Load folder background from desktop.ini
         if let Some(desktop_ini) = crate::storage::desktop_ini::DesktopIni::load(path.as_path()) {
-            self.state.main_view.folder_background.image_path = desktop_ini.background_image.map(|s| crate::core::path_util::FilesPath::new(s));
+            self.state.main_view.folder_background.image_path = desktop_ini
+                .background_image
+                .map(|s| crate::core::path_util::FilesPath::new(s));
             if let Some(opacity) = desktop_ini.background_opacity {
                 self.state.main_view.folder_background.opacity = opacity;
             }
         } else {
-            self.state.main_view.folder_background = crate::ui::views::main_view::FolderBackground::default();
+            self.state.main_view.folder_background =
+                crate::ui::views::main_view::FolderBackground::default();
         }
 
         // Sync preferences to main view
@@ -337,19 +355,33 @@ impl AppWindow {
                             this.state.main_view.primary_path = path_clone.clone();
                             this.state.nav_bar.update_path(path_clone.clone());
                             this.state.sidebar.set_active(&path_clone);
-                            let folder_count = this.state.main_view.items.iter().filter(|i| matches!(i.file_type, FileType::Directory)).count();
+                            let folder_count = this
+                                .state
+                                .main_view
+                                .items
+                                .iter()
+                                .filter(|i| matches!(i.file_type, FileType::Directory))
+                                .count();
                             let file_count = this.state.main_view.items.len() - folder_count;
-                            this.state.status_bar.sync(this.state.main_view.items.len(), folder_count, file_count);
+                            this.state.status_bar.sync(
+                                this.state.main_view.items.len(),
+                                folder_count,
+                                file_count,
+                            );
                             // Update git info in status bar after loading items
-                            this.state.status_bar.show_git_actions = GitService::is_repo(&path_clone);
+                            this.state.status_bar.show_git_actions =
+                                GitService::is_repo(&path_clone);
                             this.state.status_bar.git_branch = GitService::get_branch(&path_clone);
-                            
+
                             // Trigger icon extraction for the new items
                             this.load_icons(cx);
-                            
+
                             cx.notify();
                             // Sync cached icon paths for img() rendering
-                            this.state.main_view.icon_paths = this.state.icon_cache.lock()
+                            this.state.main_view.icon_paths = this
+                                .state
+                                .icon_cache
+                                .lock()
                                 .map(|cache| cache.clone())
                                 .unwrap_or_default();
                         })
@@ -363,13 +395,17 @@ impl AppWindow {
         // Schedule a deferred re-render to pick up extracted icons (after ~5 seconds)
         let timer_weak = cx.weak_entity();
         let mut timer_cx = cx.to_async();
-        let timer = cx.background_executor().timer(std::time::Duration::from_secs(5));
-        cx.foreground_executor().spawn(async move {
-            timer.await;
-            let _ = timer_weak.update(&mut timer_cx, |this, cx| {
-                cx.notify();
-            });
-        }).detach();
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_secs(5));
+        cx.foreground_executor()
+            .spawn(async move {
+                timer.await;
+                let _ = timer_weak.update(&mut timer_cx, |this, cx| {
+                    cx.notify();
+                });
+            })
+            .detach();
 
         // Update Jump List (recent folders)
         let path_str = path.to_string_lossy().into_owned();
@@ -438,7 +474,9 @@ impl AppWindow {
     /// Save the current active path to the session service for crash recovery.
     pub fn save_session_path(&mut self, cx: &mut Context<Self>) {
         let path = self.state.navigation.read(cx).active_pane_path();
-        self.state.session_service.set_last_path(path.to_string_lossy().as_ref());
+        self.state
+            .session_service
+            .set_last_path(path.to_string_lossy().as_ref());
     }
 
     /// Open the documentation URL in the default browser.
@@ -453,9 +491,7 @@ impl AppWindow {
         }
         #[cfg(not(windows))]
         {
-            let _ = std::process::Command::new("xdg-open")
-                .arg(url)
-                .spawn();
+            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
         }
     }
 
@@ -725,7 +761,7 @@ impl AppWindow {
         cx.notify();
     }
 
-/// Navigate to the root of the current drive/path
+    /// Navigate to the root of the current drive/path
     pub fn navigate_to_root(&mut self, cx: &mut Context<Self>) {
         let path = self.state.main_view.primary_path.clone();
         // Get root by climbing up until we hit a drive letter or "/"
@@ -775,7 +811,11 @@ impl AppWindow {
         }
 
         // Get selected items
-        let items: Vec<_> = self.state.main_view.selected_indices.iter()
+        let items: Vec<_> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
             .filter_map(|&i| self.state.main_view.items.get(i))
             .collect();
 
@@ -784,7 +824,10 @@ impl AppWindow {
         }
 
         // For now, just log the intent - recycle bin not yet implemented
-        tracing::info!("Delete {} items (recycle bin not yet implemented)", items.len());
+        tracing::info!(
+            "Delete {} items (recycle bin not yet implemented)",
+            items.len()
+        );
 
         // Clear selection after delete
         self.clear_selection(cx);
@@ -798,7 +841,11 @@ impl AppWindow {
         }
 
         // Get selected item paths
-        let paths: Vec<_> = self.state.main_view.selected_indices.iter()
+        let paths: Vec<_> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
             .filter_map(|&i| self.state.main_view.items.get(i))
             .map(|item| item.path.clone())
             .collect();
@@ -935,13 +982,17 @@ impl AppWindow {
 
     /// Get tags for a file at the given path
     pub fn get_file_tags(&self, path: &FilesPath) -> Vec<String> {
-        self.state.tag_service.get_tags(path.as_path().to_string_lossy().as_ref())
+        self.state
+            .tag_service
+            .get_tags(path.as_path().to_string_lossy().as_ref())
             .unwrap_or_default()
     }
 
     /// Get tags for currently selected items
     pub fn get_selected_items_tags(&self) -> Vec<(usize, Vec<String>)> {
-        self.state.main_view.selected_indices
+        self.state
+            .main_view
+            .selected_indices
             .iter()
             .filter_map(|&idx| {
                 self.state.main_view.items.get(idx).map(|item| {
@@ -988,10 +1039,11 @@ impl AppWindow {
     pub fn add_tag_to_selected(&self, tag: String, cx: &mut Context<Self>) {
         for &idx in &self.state.main_view.selected_indices {
             if let Some(item) = self.state.main_view.items.get(idx) {
-                if let Err(e) = self.state.tag_service.add_tag(
-                    item.path.as_path().to_string_lossy().as_ref(),
-                    &tag
-                ) {
+                if let Err(e) = self
+                    .state
+                    .tag_service
+                    .add_tag(item.path.as_path().to_string_lossy().as_ref(), &tag)
+                {
                     tracing::error!("Failed to add tag {} to {:?}: {}", tag, item.path, e);
                 }
             }
@@ -1003,10 +1055,11 @@ impl AppWindow {
     pub fn remove_tag_from_selected(&self, tag: &str, cx: &mut Context<Self>) {
         for &idx in &self.state.main_view.selected_indices {
             if let Some(item) = self.state.main_view.items.get(idx) {
-                if let Err(e) = self.state.tag_service.remove_tag(
-                    item.path.as_path().to_string_lossy().as_ref(),
-                    tag
-                ) {
+                if let Err(e) = self
+                    .state
+                    .tag_service
+                    .remove_tag(item.path.as_path().to_string_lossy().as_ref(), tag)
+                {
                     tracing::error!("Failed to remove tag {} from {:?}: {}", tag, item.path, e);
                 }
             }
@@ -1016,10 +1069,11 @@ impl AppWindow {
 
     /// Add a tag to a specific file
     pub fn add_tag_to_file(&self, path: &FilesPath, tag: String, cx: &mut Context<Self>) {
-        if let Err(e) = self.state.tag_service.add_tag(
-            path.as_path().to_string_lossy().as_ref(),
-            &tag
-        ) {
+        if let Err(e) = self
+            .state
+            .tag_service
+            .add_tag(path.as_path().to_string_lossy().as_ref(), &tag)
+        {
             tracing::error!("Failed to add tag {} to {:?}: {}", tag, path, e);
         }
         cx.notify();
@@ -1027,7 +1081,9 @@ impl AppWindow {
 
     /// Get all files with a specific tag
     pub fn get_files_with_tag(&self, tag: &str) -> Vec<String> {
-        self.state.tag_service.get_files_with_tag(tag)
+        self.state
+            .tag_service
+            .get_files_with_tag(tag)
             .unwrap_or_default()
     }
 
@@ -1056,9 +1112,7 @@ impl AppWindow {
                     {
                         use std::process::Command;
                         let path_s = path.as_path().to_string_lossy();
-                        let _ = Command::new("xdg-open")
-                            .arg(path_s.as_ref())
-                            .spawn();
+                        let _ = Command::new("xdg-open").arg(path_s.as_ref()).spawn();
                     }
                 }
             }
@@ -1128,8 +1182,16 @@ impl AppWindow {
             // Calculate target position based on Y coordinate
             // This would need item heights and group header positions for proper calculation
             // For now, we estimate based on average row height
-            let row_height = if self.state.main_view.compact_mode { 28.0 } else { 36.0 };
-            let header_height = if self.state.main_view.compact_mode { 24.0 } else { 32.0 };
+            let row_height = if self.state.main_view.compact_mode {
+                28.0
+            } else {
+                36.0
+            };
+            let header_height = if self.state.main_view.compact_mode {
+                24.0
+            } else {
+                32.0
+            };
             let base_y = header_height; // Approximate first group header position
             let relative_y = current_y - base_y;
 
@@ -1144,10 +1206,13 @@ impl AppWindow {
     pub fn group_drag_end(&mut self, _cx: &mut Context<Self>) {
         let drag = &self.state.main_view.group_drag_state;
         if drag.is_dragging {
-            if let (Some(source_idx), Some(target_pos)) = (drag.dragged_index, drag.insert_position) {
+            if let (Some(source_idx), Some(target_pos)) = (drag.dragged_index, drag.insert_position)
+            {
                 if target_pos != source_idx {
                     // Reorder the item within its group
-                    self.state.main_view.reorder_item_within_group(source_idx, target_pos);
+                    self.state
+                        .main_view
+                        .reorder_item_within_group(source_idx, target_pos);
                 }
             }
         }
@@ -1216,16 +1281,25 @@ impl AppWindow {
 
     /// Check if currently dragging a pinned item
     pub fn is_sidebar_dragging(&self) -> bool {
-        self.sidebar_pinned_drag.as_ref().map_or(false, |d| d.is_dragging)
+        self.sidebar_pinned_drag
+            .as_ref()
+            .map_or(false, |d| d.is_dragging)
     }
 
     /// Get the current drop target index during drag
     pub fn get_sidebar_drop_target(&self) -> Option<usize> {
-        self.sidebar_pinned_drag.as_ref().and_then(|d| d.drop_target_index)
+        self.sidebar_pinned_drag
+            .as_ref()
+            .and_then(|d| d.drop_target_index)
     }
 
     /// Reorder pinned items: move item at source_index to target_index
-    fn reorder_pinned_items(&mut self, source_index: usize, target_index: usize, cx: &mut Context<Self>) {
+    fn reorder_pinned_items(
+        &mut self,
+        source_index: usize,
+        target_index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let settings_entity = self.state.settings.clone();
         let entity_id = settings_entity.entity_id();
 
@@ -1294,13 +1368,21 @@ impl AppWindow {
             return;
         }
 
-        let indices: Vec<usize> = self.state.main_view.selected_indices.iter().copied().collect();
+        let indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .copied()
+            .collect();
         let items: Vec<(usize, FilesPath, String)> = indices
             .iter()
             .filter_map(|&idx| {
-                self.state.main_view.items.get(idx).map(|item| {
-                    (idx, item.path.clone(), item.name.clone())
-                })
+                self.state
+                    .main_view
+                    .items
+                    .get(idx)
+                    .map(|item| (idx, item.path.clone(), item.name.clone()))
             })
             .collect();
 
@@ -1332,12 +1414,18 @@ impl AppWindow {
 
         cx.foreground_executor()
             .spawn(async move {
-                let job_id = progress_engine.start_job(format!("Bulk Rename ({} files)", total)).await;
+                let job_id = progress_engine
+                    .start_job(format!("Bulk Rename ({} files)", total))
+                    .await;
 
                 for (i, (old_path, new_path)) in items_to_rename.into_iter().enumerate() {
                     match std::fs::rename(&old_path, &new_path) {
                         Ok(_) => {
-                            tracing::info!("Renamed: {} -> {}", old_path.display(), new_path.display());
+                            tracing::info!(
+                                "Renamed: {} -> {}",
+                                old_path.display(),
+                                new_path.display()
+                            );
                         }
                         Err(e) => {
                             tracing::error!("Failed to rename {}: {}", old_path.display(), e);
@@ -1346,15 +1434,19 @@ impl AppWindow {
 
                     // Update progress
                     let progress = (i + 1) as f32 / total as f32;
-                    progress_engine.update_progress(job_id, progress, (i + 1) as u64, total as u64).await;
+                    progress_engine
+                        .update_progress(job_id, progress, (i + 1) as u64, total as u64)
+                        .await;
                 }
 
                 progress_engine.complete_job(job_id).await;
 
                 // Refresh the view
-                this_weak.update(&mut async_cx, |this, cx| {
-                    this.refresh(cx);
-                }).ok();
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        this.refresh(cx);
+                    })
+                    .ok();
             })
             .detach();
 
@@ -1362,13 +1454,21 @@ impl AppWindow {
     }
 
     pub fn cut_selected(&mut self, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self.state.main_view.selected_indices.iter().copied().collect();
+        let indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .copied()
+            .collect();
         let items: Vec<ClipboardItem> = indices
             .iter()
             .filter_map(|&idx| {
-                self.state.main_view.items.get(idx).map(|item| {
-                    ClipboardItem::new(item.path.as_path().to_path_buf())
-                })
+                self.state
+                    .main_view
+                    .items
+                    .get(idx)
+                    .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
             })
             .collect();
 
@@ -1380,13 +1480,21 @@ impl AppWindow {
     }
 
     pub fn copy_selected(&mut self, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self.state.main_view.selected_indices.iter().copied().collect();
+        let indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .copied()
+            .collect();
         let items: Vec<ClipboardItem> = indices
             .iter()
             .filter_map(|&idx| {
-                self.state.main_view.items.get(idx).map(|item| {
-                    ClipboardItem::new(item.path.as_path().to_path_buf())
-                })
+                self.state
+                    .main_view
+                    .items
+                    .get(idx)
+                    .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
             })
             .collect();
 
@@ -1423,37 +1531,55 @@ impl AppWindow {
 
         cx.foreground_executor()
             .spawn(async move {
-                let job_id = progress_engine.start_job(format!("{} ({} items)", op_type, total)).await;
+                let job_id = progress_engine
+                    .start_job(format!("{} ({} items)", op_type, total))
+                    .await;
 
                 for (i, item) in clipboard_items.iter().enumerate() {
-                    let file_name = item.path.file_name()
+                    let file_name = item
+                        .path
+                        .file_name()
                         .map(|n| std::path::Path::new(n).to_path_buf())
                         .unwrap_or_else(|| "unknown".into());
                     let dest_path = target_path.join(&file_name);
 
                     if is_cut {
                         match std::fs::rename(&item.path, &dest_path) {
-                            Ok(_) => tracing::info!("Moved: {} -> {}", item.path.display(), dest_path.display()),
-                            Err(e) => tracing::error!("Failed to move {}: {}", item.path.display(), e),
+                            Ok(_) => tracing::info!(
+                                "Moved: {} -> {}",
+                                item.path.display(),
+                                dest_path.display()
+                            ),
+                            Err(e) => {
+                                tracing::error!("Failed to move {}: {}", item.path.display(), e)
+                            }
                         }
                     } else {
                         if let Err(e) = Self::copy_recursive(&item.path, &dest_path) {
                             tracing::error!("Failed to copy {}: {}", item.path.display(), e);
                         } else {
-                            tracing::info!("Copied: {} -> {}", item.path.display(), dest_path.display());
+                            tracing::info!(
+                                "Copied: {} -> {}",
+                                item.path.display(),
+                                dest_path.display()
+                            );
                         }
                     }
 
                     let progress = (i + 1) as f32 / total as f32;
-                    progress_engine.update_progress(job_id, progress, (i + 1) as u64, total as u64).await;
+                    progress_engine
+                        .update_progress(job_id, progress, (i + 1) as u64, total as u64)
+                        .await;
                 }
 
                 progress_engine.complete_job(job_id).await;
 
-                this_weak.update(&mut async_cx, |this, cx| {
-                    this.state.clipboard = ClipboardState::Empty;
-                    this.refresh(cx);
-                }).ok();
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        this.state.clipboard = ClipboardState::Empty;
+                        this.refresh(cx);
+                    })
+                    .ok();
             })
             .detach();
     }
@@ -1518,7 +1644,8 @@ impl AppWindow {
                 if is_file {
                     self.load_preview_content(item_path.clone(), cx);
                 } else {
-                    self.state.main_view.preview_text = Some("Loading folder contents...".to_string());
+                    self.state.main_view.preview_text =
+                        Some("Loading folder contents...".to_string());
                     self.load_folder_preview(item_path.clone(), cx);
                 }
 
@@ -1527,7 +1654,8 @@ impl AppWindow {
             }
         } else {
             self.state.main_view.preview_text = None;
-            self.state.main_view.preview_content = crate::ui::views::main_view::PreviewContent::default();
+            self.state.main_view.preview_content =
+                crate::ui::views::main_view::PreviewContent::default();
             self.state.main_view.details_cache = DetailsPaneCache::default();
         }
 
@@ -1576,7 +1704,7 @@ impl AppWindow {
         self.state.status_bar.selected_count = 0;
         self.state.status_bar.selected_size_bytes = 0;
         self.state.main_view.preview_text = None;
-        
+
         // Sync file_items model
         self.state.file_items.update(cx, |m, _| {
             m.selected_indices.clear();
@@ -1661,11 +1789,17 @@ impl AppWindow {
 
     /// Start dragging selected items from the given position.
     pub fn start_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self.state.main_view.selected_indices.iter().cloned().collect();
+        let indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .cloned()
+            .collect();
         if indices.is_empty() {
             return;
         }
-        
+
         use gpui::Point;
         self.state.main_view.drag_start(indices, Point::new(x, y));
         cx.notify();
@@ -1685,13 +1819,13 @@ impl AppWindow {
         use gpui::Point;
         let point = Point::new(x, y);
         let visible = self.state.main_view.visible_items();
-        
+
         // Check if we're over a valid drop target (directory)
         if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
             if let Some(target_item) = self.state.main_view.items.get(target_idx) {
                 let indices = self.state.main_view.drag_state.indices.clone();
                 let is_copy = self.state.main_view.drag_state.is_copy;
-                
+
                 // Perform the move/copy operation
                 for &idx in &indices {
                     if let Some(source_item) = self.state.main_view.items.get(idx) {
@@ -1707,7 +1841,7 @@ impl AppWindow {
                 }
             }
         }
-        
+
         self.state.main_view.drag_end();
         cx.notify();
     }
@@ -1738,7 +1872,11 @@ impl AppWindow {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Set the selection mode (Normal, Checkbox, or HoverSelect)
-    pub fn set_selection_mode(&mut self, mode: crate::ui::views::main_view::SelectionMode, cx: &mut Context<Self>) {
+    pub fn set_selection_mode(
+        &mut self,
+        mode: crate::ui::views::main_view::SelectionMode,
+        cx: &mut Context<Self>,
+    ) {
         self.state.main_view.selection_mode = mode;
         cx.notify();
     }
@@ -1762,7 +1900,10 @@ impl AppWindow {
 
     /// Handle item hover for hover selection mode
     pub fn handle_item_hover(&mut self, index: usize, cx: &mut Context<Self>) {
-        if matches!(self.state.main_view.selection_mode, crate::ui::views::main_view::SelectionMode::HoverSelect) {
+        if matches!(
+            self.state.main_view.selection_mode,
+            crate::ui::views::main_view::SelectionMode::HoverSelect
+        ) {
             self.state.main_view.selected_indices.clear();
             self.state.main_view.selected_indices.insert(index);
             self.state.status_bar.selected_count = 1;
@@ -1775,7 +1916,10 @@ impl AppWindow {
 
     /// Toggle checkbox selection for an item
     pub fn toggle_checkbox_selection(&mut self, index: usize, cx: &mut Context<Self>) {
-        if matches!(self.state.main_view.selection_mode, crate::ui::views::main_view::SelectionMode::Checkbox) {
+        if matches!(
+            self.state.main_view.selection_mode,
+            crate::ui::views::main_view::SelectionMode::Checkbox
+        ) {
             if self.state.main_view.selected_indices.contains(&index) {
                 self.state.main_view.selected_indices.remove(&index);
             } else {
@@ -1796,9 +1940,19 @@ impl AppWindow {
     }
 
     /// Select item by index, respecting current selection mode
-    pub fn select_item_mode_aware(&mut self, index: usize, shift: bool, ctrl: bool, cx: &mut Context<Self>) {
+    pub fn select_item_mode_aware(
+        &mut self,
+        index: usize,
+        shift: bool,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) {
         // If in checkbox mode and ctrl not held, clear selection first
-        if matches!(self.state.main_view.selection_mode, crate::ui::views::main_view::SelectionMode::Checkbox) && !ctrl {
+        if matches!(
+            self.state.main_view.selection_mode,
+            crate::ui::views::main_view::SelectionMode::Checkbox
+        ) && !ctrl
+        {
             self.state.main_view.selected_indices.clear();
         }
         self.select_item(index, shift, ctrl, cx);
@@ -1814,7 +1968,10 @@ impl AppWindow {
         }
 
         // Determine new index based on current last_clicked_index
-        let current = self.state.main_view.last_clicked_index
+        let current = self
+            .state
+            .main_view
+            .last_clicked_index
             .unwrap_or(0)
             .min(item_count.saturating_sub(1));
 
@@ -1825,8 +1982,7 @@ impl AppWindow {
             // End: last item
             item_count.saturating_sub(1)
         } else {
-            (current as isize + delta)
-                .clamp(0, item_count.saturating_sub(1) as isize) as usize
+            (current as isize + delta).clamp(0, item_count.saturating_sub(1) as isize) as usize
         };
 
         self.select_item(new_idx, extend, false, cx);
@@ -1836,17 +1992,17 @@ impl AppWindow {
     /// Update the details pane cache with tags and extended properties from path
     fn update_details_cache_from_path(&mut self, path: &FilesPath, _cx: &mut Context<Self>) {
         let mut cache = DetailsPaneCache::default();
-        
+
         // Get tags from TagService
         cache.tags = self.get_file_tags(path);
-        
+
         // Get extended properties for media files
         if let Ok(ext_props) = ExtendedMetadataExtractor::extract(path) {
             // Dimensions (images/video)
             if let Some((w, h)) = ext_props.dimensions {
                 cache.exif_dimensions = Some(format!("{}x{}", w, h));
             }
-            
+
             // Duration (audio/video)
             if let Some(dur) = ext_props.duration {
                 let total_secs = dur.as_secs();
@@ -1856,7 +2012,7 @@ impl AppWindow {
                 cache.video_duration = Some(format!("{}:{:02}", mins, secs));
             }
         }
-        
+
         self.state.main_view.details_cache = cache;
     }
 
@@ -1877,14 +2033,22 @@ impl AppWindow {
 
         // Perform immediate name search in current items
         let search_service = crate::domain::search::SearchService::new();
-        let item_names: Vec<String> = self.state.main_view.items.iter().map(|i| i.name.clone()).collect();
+        let item_names: Vec<String> = self
+            .state
+            .main_view
+            .items
+            .iter()
+            .map(|i| i.name.clone())
+            .collect();
         let matching_indices = search_service.filter_items(&query, &item_names);
 
         self.state.main_view.search_state.results = matching_indices;
         self.state.main_view.search_state.loading = false;
 
         // If query contains special chars, might be a deep search
-        if query.len() > 2 && (query.contains('/') || query.contains("\\") || query.starts_with('*')) {
+        if query.len() > 2
+            && (query.contains('/') || query.contains("\\") || query.starts_with('*'))
+        {
             // Trigger deep recursive search with cancellation support
             let cancel_flag = Arc::new(AtomicBool::new(false));
             self.state.main_view.search_state.cancel_token = Some(cancel_flag.clone());
@@ -1906,7 +2070,11 @@ impl AppWindow {
     }
 
     /// Perform a deep recursive search in a folder (blocking, called from async context)
-    fn do_deep_search(base_path: FilesPath, query: String, cancel_flag: Arc<AtomicBool>) -> Vec<crate::ui::views::main_view::SearchResult> {
+    fn do_deep_search(
+        base_path: FilesPath,
+        query: String,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Vec<crate::ui::views::main_view::SearchResult> {
         use crate::ui::views::main_view::SearchResult;
 
         let mut results = Vec::new();
@@ -1924,64 +2092,85 @@ impl AppWindow {
                 name.to_lowercase().contains(&query.to_lowercase())
             }
         }
-        
-        fn scan_dir(dir: &std::path::Path, query: &str, results: &mut Vec<SearchResult>, depth: usize, cancel_flag: &AtomicBool) {
-            if depth > 10 { return; } // Limit recursion depth
-            if cancel_flag.load(Ordering::Relaxed) { return; } // Check cancellation
-            
-            let Ok(entries) = std::fs::read_dir(dir) else { return; };
-            
+
+        fn scan_dir(
+            dir: &std::path::Path,
+            query: &str,
+            results: &mut Vec<SearchResult>,
+            depth: usize,
+            cancel_flag: &AtomicBool,
+        ) {
+            if depth > 10 {
+                return;
+            } // Limit recursion depth
+            if cancel_flag.load(Ordering::Relaxed) {
+                return;
+            } // Check cancellation
+
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+
             for entry in entries.flatten() {
-                let Ok(metadata) = entry.metadata() else { continue; };
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
                 let name = entry.file_name().to_string_lossy().to_string();
-                
+
                 if is_match(&name, query) {
                     let path = entry.path();
-                    let modified = metadata.modified().ok()
-                        .and_then(|t| {
-                            // Format: YYYY-MM-DD HH:MM
-                            let duration = t.duration_since(std::time::UNIX_EPOCH).ok()?;
-                            let secs = duration.as_secs();
-                            let days_since_epoch = secs / 86400;
-                            let seconds_in_day = secs % 86400;
-                            let hours = seconds_in_day / 3600;
-                            let minutes = (seconds_in_day % 3600) / 60;
-                            
-                            // Simple year calculation
-                            let mut year = 1970i64;
-                            let mut remaining_days = days_since_epoch as i64;
-                            while remaining_days > 365 {
-                                let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-                                if remaining_days >= days_in_year {
-                                    remaining_days -= days_in_year;
-                                    year += 1;
+                    let modified = metadata.modified().ok().and_then(|t| {
+                        // Format: YYYY-MM-DD HH:MM
+                        let duration = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+                        let secs = duration.as_secs();
+                        let days_since_epoch = secs / 86400;
+                        let seconds_in_day = secs % 86400;
+                        let hours = seconds_in_day / 3600;
+                        let minutes = (seconds_in_day % 3600) / 60;
+
+                        // Simple year calculation
+                        let mut year = 1970i64;
+                        let mut remaining_days = days_since_epoch as i64;
+                        while remaining_days > 365 {
+                            let days_in_year =
+                                if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                                    366
                                 } else {
-                                    break;
-                                }
-                            }
-                            
-                            // Get month/day
-                            let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-                            let days_in_months: [u64; 12] = if is_leap {
-                                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                                    365
+                                };
+                            if remaining_days >= days_in_year {
+                                remaining_days -= days_in_year;
+                                year += 1;
                             } else {
-                                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                            };
-                            let mut month = 1u64;
-                            for days in days_in_months.iter() {
-                                if remaining_days < *days as i64 {
-                                    break;
-                                }
-                                remaining_days -= *days as i64;
-                                month += 1;
+                                break;
                             }
-                            let day = remaining_days + 1;
-                            
-                            Some(format!("{:04}-{:02}-{:02} {:02}:{:02}", year, month, day, hours, minutes))
-                        });
+                        }
+
+                        // Get month/day
+                        let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                        let days_in_months: [u64; 12] = if is_leap {
+                            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                        } else {
+                            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                        };
+                        let mut month = 1u64;
+                        for days in days_in_months.iter() {
+                            if remaining_days < *days as i64 {
+                                break;
+                            }
+                            remaining_days -= *days as i64;
+                            month += 1;
+                        }
+                        let day = remaining_days + 1;
+
+                        Some(format!(
+                            "{:04}-{:02}-{:02} {:02}:{:02}",
+                            year, month, day, hours, minutes
+                        ))
+                    });
                     let is_dir = metadata.is_dir();
                     let size = if is_dir { 0 } else { metadata.len() };
-                    
+
                     results.push(SearchResult {
                         path: FilesPath::new(path.clone()),
                         name,
@@ -1991,7 +2180,7 @@ impl AppWindow {
                         modified,
                     });
                 }
-                
+
                 // Recurse into directories
                 if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
                     if let Ok(child_dir) = entry.path().canonicalize() {
@@ -2000,8 +2189,14 @@ impl AppWindow {
                 }
             }
         }
-        
-        scan_dir(base_path.as_path(), &query_lower, &mut results, 0, &cancel_flag);
+
+        scan_dir(
+            base_path.as_path(),
+            &query_lower,
+            &mut results,
+            0,
+            &cancel_flag,
+        );
         results
     }
 
@@ -2041,10 +2236,8 @@ impl AppWindow {
         };
 
         let path_buf = path.as_path().to_path_buf();
-        let (cmd, args) = crate::core::terminal_service::TerminalService::get_command(
-            &terminal_type,
-            &path_buf,
-        );
+        let (cmd, args) =
+            crate::core::terminal_service::TerminalService::get_command(&terminal_type, &path_buf);
 
         let result = Command::new(&cmd).args(&args).spawn();
 
@@ -2062,15 +2255,15 @@ impl AppWindow {
     #[cfg(windows)]
     pub fn open_terminal_as_admin(&mut self, path: &FilesPath, _cx: &mut Context<Self>) {
         use std::process::Command;
-        
+
         let path_str = path.as_path().to_string_lossy();
-        
+
         // Use PowerShell's Start-Process with -Verb RunAs to elevate
         let ps_command = format!(
             "Start-Process powershell.exe -ArgumentList '-NoExit','cd \\'{}\\'' -Verb RunAs",
             path_str.replace('\'', "''")
         );
-        
+
         let result = Command::new("powershell")
             .args(["-Command", &ps_command])
             .spawn();
@@ -2103,10 +2296,8 @@ impl AppWindow {
         };
 
         let path_buf = path.as_path().to_path_buf();
-        let (cmd, args) = crate::core::terminal_service::TerminalService::get_command(
-            &terminal_type,
-            &path_buf,
-        );
+        let (cmd, args) =
+            crate::core::terminal_service::TerminalService::get_command(&terminal_type, &path_buf);
 
         let result = Command::new(&cmd).args(&args).spawn();
 
@@ -2125,369 +2316,414 @@ impl AppWindow {
         tracing::warn!("Open elevated terminal not implemented for this platform");
     }
 
-/// Load preview content for a file based on its type.
-/// Handles text, PDF, audio/video, and archive previews.
-fn load_preview_content(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-    use crate::ui::views::main_view::PreviewContent;
-    use crate::storage::archive_service::ArchiveService;
-    use crate::storage::preview_service;
+    /// Load preview content for a file based on its type.
+    /// Handles text, PDF, audio/video, and archive previews.
+    fn load_preview_content(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        use crate::storage::archive_service::ArchiveService;
+        use crate::storage::preview_service;
+        use crate::ui::views::main_view::PreviewContent;
 
-    // Detect file type from extension
-    let ext = path.as_path()
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
+        // Detect file type from extension
+        let ext = path
+            .as_path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
 
-    // Determine preview type and load appropriate content
-    match ext.as_str() {
-        // Markdown files
-        "md" | "markdown" | "rst" => {
-            self.state.main_view.preview_content = PreviewContent::Markdown;
-            self.load_text_preview(path, cx);
-        }
+        // Determine preview type and load appropriate content
+        match ext.as_str() {
+            // Markdown files
+            "md" | "markdown" | "rst" => {
+                self.state.main_view.preview_content = PreviewContent::Markdown;
+                self.load_text_preview(path, cx);
+            }
 
-        // HTML files
-        "html" | "htm" => {
-            self.state.main_view.preview_content = PreviewContent::Html;
-            self.load_text_preview(path, cx);
-        }
+            // HTML files
+            "html" | "htm" => {
+                self.state.main_view.preview_content = PreviewContent::Html;
+                self.load_text_preview(path, cx);
+            }
 
-        // RTF files — rich text with plain text extraction
-        "rtf" => {
-            self.state.main_view.preview_content = PreviewContent::RichText;
-            self.load_text_preview(path, cx);
-        }
+            // RTF files — rich text with plain text extraction
+            "rtf" => {
+                self.state.main_view.preview_content = PreviewContent::RichText;
+                self.load_text_preview(path, cx);
+            }
 
-        // Code files with language detection
-        "rs" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "rust".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "py" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "python".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "js" | "jsx" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "javascript".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "ts" | "tsx" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "typescript".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "css" | "scss" | "sass" | "less" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "css".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "json" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "json".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "xml" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "xml".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "yaml" | "yml" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "yaml".to_string() };
-            self.load_text_preview(path, cx);
-        }
-        "toml" | "ini" | "cfg" | "conf" | "config" => {
-            self.state.main_view.preview_content = PreviewContent::Code { language: "toml".to_string() };
-            self.load_text_preview(path, cx);
-        }
+            // Code files with language detection
+            "rs" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "rust".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "py" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "python".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "js" | "jsx" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "javascript".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "ts" | "tsx" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "typescript".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "css" | "scss" | "sass" | "less" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "css".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "json" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "json".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "xml" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "xml".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "yaml" | "yml" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "yaml".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
+            "toml" | "ini" | "cfg" | "conf" | "config" => {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: "toml".to_string(),
+                };
+                self.load_text_preview(path, cx);
+            }
 
-        // Other text-based files (code, config, etc.)
-        "txt" | "log"
-        | "java" | "c" | "cpp" | "h" | "hpp"
-        | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua"
-        | "perl" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
-        | "dockerfile" | "makefile" | "gitignore"
-        | "env" | "properties" | "sql" | "csv" => {
-            self.load_text_preview(path, cx);
-            self.state.main_view.preview_content = PreviewContent::None;
-        }
+            // Other text-based files (code, config, etc.)
+            "txt" | "log" | "java" | "c" | "cpp" | "h" | "hpp" | "cs" | "go" | "rb" | "php"
+            | "swift" | "kt" | "scala" | "r" | "lua" | "perl" | "sh" | "bash" | "zsh" | "fish"
+            | "ps1" | "bat" | "cmd" | "dockerfile" | "makefile" | "gitignore" | "env"
+            | "properties" | "sql" | "csv" => {
+                self.load_text_preview(path, cx);
+                self.state.main_view.preview_content = PreviewContent::None;
+            }
 
-        // PDF files - extract metadata using lopdf
-        "pdf" => {
-            self.state.main_view.preview_text = Some("Loading PDF metadata...".to_string());
-            self.state.main_view.preview_content = PreviewContent::Pdf(
-                crate::ui::views::main_view::PdfPreviewInfo::default()
-            );
+            // PDF files - extract metadata using lopdf
+            "pdf" => {
+                self.state.main_view.preview_text = Some("Loading PDF metadata...".to_string());
+                self.state.main_view.preview_content =
+                    PreviewContent::Pdf(crate::ui::views::main_view::PdfPreviewInfo::default());
 
-            let mut async_cx = cx.to_async();
-            let this_weak = cx.weak_entity();
-            let path_clone = path.clone();
-            cx.foreground_executor()
-                .spawn(async move {
-                    match preview_service::extract_pdf_metadata(&path_clone) {
-                        Ok(info) => {
-                            let mut content_lines = vec![
-                                format!("PDF Document"),
-                                format!("Pages: {}", info.page_count),
-                            ];
-                            if let Some(ref title) = info.title {
-                                content_lines.push(format!("Title: {}", title));
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                cx.foreground_executor()
+                    .spawn(async move {
+                        match preview_service::extract_pdf_metadata(&path_clone) {
+                            Ok(info) => {
+                                let mut content_lines = vec![
+                                    format!("PDF Document"),
+                                    format!("Pages: {}", info.page_count),
+                                ];
+                                if let Some(ref title) = info.title {
+                                    content_lines.push(format!("Title: {}", title));
+                                }
+                                if let Some(ref author) = info.author {
+                                    content_lines.push(format!("Author: {}", author));
+                                }
+                                if let Some(ref subject) = info.subject {
+                                    content_lines.push(format!("Subject: {}", subject));
+                                }
+                                if let Some(ref creator) = info.creator {
+                                    content_lines.push(format!("Creator: {}", creator));
+                                }
+
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text =
+                                            Some(content_lines.join("\n"));
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Pdf(info);
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
-                            if let Some(ref author) = info.author {
-                                content_lines.push(format!("Author: {}", author));
+                            Err(e) => {
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text = Some(format!(
+                                            "PDF Preview\n\nFailed to read PDF metadata: {}",
+                                            e
+                                        ));
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
-                            if let Some(ref subject) = info.subject {
-                                content_lines.push(format!("Subject: {}", subject));
-                            }
-                            if let Some(ref creator) = info.creator {
-                                content_lines.push(format!("Creator: {}", creator));
-                            }
-
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(content_lines.join("\n"));
-                                this.state.main_view.preview_content = PreviewContent::Pdf(info);
-                                cx.notify();
-                            }).ok();
                         }
-                        Err(e) => {
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(
-                                    format!("PDF Preview\n\nFailed to read PDF metadata: {}", e)
-                                );
-                                cx.notify();
-                            }).ok();
+                    })
+                    .detach();
+            }
+
+            // Image files - no text preview needed (images shown in Details pane)
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+            | "raw" | "psd" | "ai" | "eps" | "heic" | "heif" => {
+                self.state.main_view.preview_text = None;
+                self.state.main_view.preview_content = PreviewContent::None;
+                cx.notify();
+            }
+
+            // Audio files - extract metadata using id3
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => {
+                self.state.main_view.preview_text = Some("Loading audio metadata...".to_string());
+                self.state.main_view.preview_content =
+                    PreviewContent::Audio(crate::ui::views::main_view::MediaPreviewInfo::default());
+
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let ext_clone = ext.clone();
+                cx.foreground_executor()
+                    .spawn(async move {
+                        match preview_service::extract_audio_metadata(&path_clone, &ext_clone) {
+                            Ok(info) => {
+                                let mut content_lines = vec![format!("Audio File")];
+                                if let Some(ref format) = info.format {
+                                    content_lines.push(format!("Format: {}", format));
+                                }
+                                if let Some(duration) = info.duration_secs {
+                                    let mins = (duration / 60.0) as u64;
+                                    let secs = (duration % 60.0) as u64;
+                                    content_lines.push(format!("Duration: {}:{:02}", mins, secs));
+                                }
+                                if let Some(bitrate) = info.bitrate_kbps {
+                                    content_lines.push(format!("Bitrate: {} kbps", bitrate));
+                                }
+                                if let Some(ref codec) = info.codec {
+                                    content_lines.push(format!("Artist: {}", codec));
+                                }
+
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text =
+                                            Some(content_lines.join("\n"));
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Audio(info);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }
+                            Err(e) => {
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text = Some(format!(
+                                            "Audio Preview\n\nFailed to read metadata: {}",
+                                            e
+                                        ));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }
                         }
-                    }
-                })
-                .detach();
-        }
+                    })
+                    .detach();
+            }
 
-        // Image files - no text preview needed (images shown in Details pane)
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif"
-        | "svg" | "raw" | "psd" | "ai" | "eps" | "heic" | "heif" => {
-            self.state.main_view.preview_text = None;
-            self.state.main_view.preview_content = PreviewContent::None;
-            cx.notify();
-        }
+            // Video files - extract metadata
+            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg" | "3gp"
+            | "flv" | "vob" | "ogv" => {
+                self.state.main_view.preview_text = Some("Loading video metadata...".to_string());
+                self.state.main_view.preview_content =
+                    PreviewContent::Video(crate::ui::views::main_view::MediaPreviewInfo::default());
 
-        // Audio files - extract metadata using id3
-        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => {
-            self.state.main_view.preview_text = Some("Loading audio metadata...".to_string());
-            self.state.main_view.preview_content = PreviewContent::Audio(
-                crate::ui::views::main_view::MediaPreviewInfo::default()
-            );
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let ext_clone = ext.clone();
+                cx.foreground_executor()
+                    .spawn(async move {
+                        match preview_service::extract_video_metadata(&path_clone, &ext_clone) {
+                            Ok(info) => {
+                                let mut content_lines = vec![format!("Video File")];
+                                if let Some(ref format) = info.format {
+                                    content_lines.push(format!("Format: {}", format));
+                                }
+                                if let Some(duration) = info.duration_secs {
+                                    let mins = (duration / 60.0) as u64;
+                                    let secs = (duration % 60.0) as u64;
+                                    content_lines.push(format!("Duration: {}:{:02}", mins, secs));
+                                }
+                                if let Some(bitrate) = info.bitrate_kbps {
+                                    content_lines
+                                        .push(format!("Bitrate: {} kbps (estimated)", bitrate));
+                                }
+                                if let (Some(w), Some(h)) = (info.width, info.height) {
+                                    content_lines.push(format!("Resolution: {}x{}", w, h));
+                                }
 
-            let mut async_cx = cx.to_async();
-            let this_weak = cx.weak_entity();
-            let path_clone = path.clone();
-            let ext_clone = ext.clone();
-            cx.foreground_executor()
-                .spawn(async move {
-                    match preview_service::extract_audio_metadata(&path_clone, &ext_clone) {
-                        Ok(info) => {
-                            let mut content_lines = vec![
-                                format!("Audio File"),
-                            ];
-                            if let Some(ref format) = info.format {
-                                content_lines.push(format!("Format: {}", format));
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text =
+                                            Some(content_lines.join("\n"));
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Video(info);
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
-                            if let Some(duration) = info.duration_secs {
-                                let mins = (duration / 60.0) as u64;
-                                let secs = (duration % 60.0) as u64;
-                                content_lines.push(format!("Duration: {}:{:02}", mins, secs));
+                            Err(e) => {
+                                this_weak
+                                    .update(&mut async_cx, |this, cx| {
+                                        this.state.main_view.preview_text = Some(format!(
+                                            "Video Preview\n\nFailed to read metadata: {}",
+                                            e
+                                        ));
+                                        cx.notify();
+                                    })
+                                    .ok();
                             }
-                            if let Some(bitrate) = info.bitrate_kbps {
-                                content_lines.push(format!("Bitrate: {} kbps", bitrate));
-                            }
-                            if let Some(ref codec) = info.codec {
-                                content_lines.push(format!("Artist: {}", codec));
-                            }
-
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(content_lines.join("\n"));
-                                this.state.main_view.preview_content = PreviewContent::Audio(info);
-                                cx.notify();
-                            }).ok();
                         }
-                        Err(e) => {
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(
-                                    format!("Audio Preview\n\nFailed to read metadata: {}", e)
-                                );
-                                cx.notify();
-                            }).ok();
-                        }
-                    }
-                })
-                .detach();
-        }
+                    })
+                    .detach();
+            }
 
-        // Video files - extract metadata
-        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg"
-        | "3gp" | "flv" | "vob" | "ogv" => {
-            self.state.main_view.preview_text = Some("Loading video metadata...".to_string());
-            self.state.main_view.preview_content = PreviewContent::Video(
-                crate::ui::views::main_view::MediaPreviewInfo::default()
-            );
+            // Archive files - list contents
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" => {
+                self.load_archive_preview(path, cx);
+            }
 
-            let mut async_cx = cx.to_async();
-            let this_weak = cx.weak_entity();
-            let path_clone = path.clone();
-            let ext_clone = ext.clone();
-            cx.foreground_executor()
-                .spawn(async move {
-                    match preview_service::extract_video_metadata(&path_clone, &ext_clone) {
-                        Ok(info) => {
-                            let mut content_lines = vec![
-                                format!("Video File"),
-                            ];
-                            if let Some(ref format) = info.format {
-                                content_lines.push(format!("Format: {}", format));
-                            }
-                            if let Some(duration) = info.duration_secs {
-                                let mins = (duration / 60.0) as u64;
-                                let secs = (duration % 60.0) as u64;
-                                content_lines.push(format!("Duration: {}:{:02}", mins, secs));
-                            }
-                            if let Some(bitrate) = info.bitrate_kbps {
-                                content_lines.push(format!("Bitrate: {} kbps (estimated)", bitrate));
-                            }
-                            if let (Some(w), Some(h)) = (info.width, info.height) {
-                                content_lines.push(format!("Resolution: {}x{}", w, h));
-                            }
-
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(content_lines.join("\n"));
-                                this.state.main_view.preview_content = PreviewContent::Video(info);
-                                cx.notify();
-                            }).ok();
-                        }
-                        Err(e) => {
-                            this_weak.update(&mut async_cx, |this, cx| {
-                                this.state.main_view.preview_text = Some(
-                                    format!("Video Preview\n\nFailed to read metadata: {}", e)
-                                );
-                                cx.notify();
-                            }).ok();
-                        }
-                    }
-                })
-                .detach();
-        }
-
-        // Archive files - list contents
-        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" => {
-            self.load_archive_preview(path, cx);
-        }
-
-        // Shortcut files - show target info (basic stub)
-        "lnk" => {
-            self.state.main_view.preview_text = Some(
+            // Shortcut files - show target info (basic stub)
+            "lnk" => {
+                self.state.main_view.preview_text = Some(
                 "Shortcut Preview\n\nTarget: (requires shell integration)\nArguments: (requires shell integration)".to_string()
             );
-            self.state.main_view.preview_content = PreviewContent::None;
-            cx.notify();
-        }
+                self.state.main_view.preview_content = PreviewContent::None;
+                cx.notify();
+            }
 
-        // Unknown or unsupported - no preview
-        _ => {
-            self.state.main_view.preview_text = None;
-            self.state.main_view.preview_content = PreviewContent::None;
-            cx.notify();
+            // Unknown or unsupported - no preview
+            _ => {
+                self.state.main_view.preview_text = None;
+                self.state.main_view.preview_content = PreviewContent::None;
+                cx.notify();
+            }
         }
     }
-}
 
-/// Load text preview content for a file (existing behavior, limited to 10k chars)
-fn load_text_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-    self.state.main_view.preview_text = Some("Loading preview...".to_string());
+    /// Load text preview content for a file (existing behavior, limited to 10k chars)
+    fn load_text_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        self.state.main_view.preview_text = Some("Loading preview...".to_string());
 
-    let mut async_cx = cx.to_async();
-    let this_weak = cx.weak_entity();
-    let path_clone = path.clone();
-    cx.foreground_executor()
-        .spawn(async move {
-            let result = std::fs::read_to_string(path_clone.as_path());
-            this_weak
-                .update(&mut async_cx, |this, cx| {
-                    match result {
-                        Ok(text) => {
-                            // Limit to 10k chars as per TODO
-                            let preview = if text.len() > 10000 {
-                                format!("{}\n\n[Preview truncated at 10,000 characters]", &text[..10000])
-                            } else {
-                                text
-                            };
-                            this.state.main_view.preview_text = Some(preview);
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let path_clone = path.clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                let result = std::fs::read_to_string(path_clone.as_path());
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        match result {
+                            Ok(text) => {
+                                // Limit to 10k chars as per TODO
+                                let preview = if text.len() > 10000 {
+                                    format!(
+                                        "{}\n\n[Preview truncated at 10,000 characters]",
+                                        &text[..10000]
+                                    )
+                                } else {
+                                    text
+                                };
+                                this.state.main_view.preview_text = Some(preview);
+                            }
+                            Err(_) => {
+                                this.state.main_view.preview_text =
+                                    Some("Unable to load preview.".to_string());
+                            }
                         }
-                        Err(_) => {
-                            this.state.main_view.preview_text = Some("Unable to load preview.".to_string());
-                        }
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    /// Load archive preview - list contents without extracting
+    fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        use crate::storage::archive_service::ArchiveService;
+        use crate::ui::views::main_view::{ArchivePreviewInfo, PreviewContent};
+
+        self.state.main_view.preview_content =
+            PreviewContent::Archive(ArchivePreviewInfo::default());
+        self.state.main_view.preview_text = Some("Loading archive contents...".to_string());
+
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let path_clone = path.clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                // Try to list archive contents
+                match ArchiveService::list_contents(&path_clone) {
+                    Ok(entries) => {
+                        let entry_count = entries.len();
+                        let display_entries: Vec<String> = entries.into_iter().take(100).collect();
+                        let has_more = entry_count > 100;
+
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                let content = if has_more {
+                                    format!(
+                                        "Archive Contents ({})\n\n{}\n\n... and {} more entries",
+                                        entry_count,
+                                        display_entries.join("\n"),
+                                        entry_count - 100
+                                    )
+                                } else {
+                                    format!(
+                                        "Archive Contents ({})\n\n{}",
+                                        entry_count,
+                                        display_entries.join("\n")
+                                    )
+                                };
+                                this.state.main_view.preview_text = Some(content);
+                                this.state.main_view.preview_content =
+                                    PreviewContent::Archive(ArchivePreviewInfo {
+                                        entry_count,
+                                        entries: display_entries,
+                                        uncompressed_size: None,
+                                        compression_ratio: None,
+                                    });
+                                cx.notify();
+                            })
+                            .ok();
                     }
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
-}
-
-/// Load archive preview - list contents without extracting
-fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-    use crate::ui::views::main_view::{PreviewContent, ArchivePreviewInfo};
-    use crate::storage::archive_service::ArchiveService;
-
-    self.state.main_view.preview_content = PreviewContent::Archive(ArchivePreviewInfo::default());
-    self.state.main_view.preview_text = Some("Loading archive contents...".to_string());
-
-    let mut async_cx = cx.to_async();
-    let this_weak = cx.weak_entity();
-    let path_clone = path.clone();
-    cx.foreground_executor()
-        .spawn(async move {
-            // Try to list archive contents
-            match ArchiveService::list_contents(&path_clone) {
-                Ok(entries) => {
-                    let entry_count = entries.len();
-                    let display_entries: Vec<String> = entries.into_iter().take(100).collect();
-                    let has_more = entry_count > 100;
-
-                    this_weak.update(&mut async_cx, |this, cx| {
-                        let content = if has_more {
-                            format!(
-                                "Archive Contents ({})\n\n{}\n\n... and {} more entries",
-                                entry_count,
-                                display_entries.join("\n"),
-                                entry_count - 100
-                            )
-                        } else {
-                            format!(
-                                "Archive Contents ({})\n\n{}",
-                                entry_count,
-                                display_entries.join("\n")
-                            )
-                        };
-                        this.state.main_view.preview_text = Some(content);
-                        this.state.main_view.preview_content = PreviewContent::Archive(ArchivePreviewInfo {
-                            entry_count,
-                            entries: display_entries,
-                            uncompressed_size: None,
-                            compression_ratio: None,
-                        });
-                        cx.notify();
-                    }).ok();
+                    Err(e) => {
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                this.state.main_view.preview_text = Some(format!(
+                                    "Archive Preview\n\nUnable to list archive contents:\n{}",
+                                    e
+                                ));
+                                cx.notify();
+                            })
+                            .ok();
+                    }
                 }
-                Err(e) => {
-                    this_weak.update(&mut async_cx, |this, cx| {
-                        this.state.main_view.preview_text = Some(
-                            format!("Archive Preview\n\nUnable to list archive contents:\n{}", e)
-                        );
-                        cx.notify();
-                    }).ok();
-                }
-            }
-        })
-        .detach();
+            })
+            .detach();
     }
 
     /// Check which third-party preview handler is available on this system.
     /// Returns: Peek (PowerToys), QuickLook, SeerPro, or None.
-    pub fn check_third_party_preview_handler(&self) -> crate::ui::views::main_view::ThirdPartyHandler {
+    pub fn check_third_party_preview_handler(
+        &self,
+    ) -> crate::ui::views::main_view::ThirdPartyHandler {
         use crate::ui::views::main_view::ThirdPartyHandler;
         use std::process::Command;
 
@@ -2512,13 +2748,19 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
     /// Invoke third-party preview for the currently selected file.
     /// Opens PowerToys Peek, QuickLook, or SeerPro to preview the file.
     pub fn invoke_third_party_preview(&mut self, cx: &mut Context<Self>) {
-        use crate::ui::views::main_view::{ThirdPartyHandler, PreviewContent, ThirdPartyPreviewInfo};
+        use crate::ui::views::main_view::{
+            PreviewContent, ThirdPartyHandler, ThirdPartyPreviewInfo,
+        };
         use std::process::Command;
 
         // Get the selected file path
         let selected_path = {
             if let Some(&idx) = self.state.main_view.selected_indices.iter().next() {
-                self.state.main_view.items.get(idx).map(|item| item.path.clone())
+                self.state
+                    .main_view
+                    .items
+                    .get(idx)
+                    .map(|item| item.path.clone())
             } else {
                 None
             }
@@ -2550,9 +2792,10 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     }
                     Err(e) => {
                         tracing::error!("Failed to invoke Peek: {}", e);
-                        self.state.main_view.preview_text = Some(
-                            format!("PowerToys Peek is not available or failed to start.\n\nError: {}", e)
-                        );
+                        self.state.main_view.preview_text = Some(format!(
+                            "PowerToys Peek is not available or failed to start.\n\nError: {}",
+                            e
+                        ));
                     }
                 }
             }
@@ -2564,9 +2807,10 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     }
                     Err(e) => {
                         tracing::error!("Failed to invoke QuickLook: {}", e);
-                        self.state.main_view.preview_text = Some(
-                            format!("QuickLook is not available or failed to start.\n\nError: {}", e)
-                        );
+                        self.state.main_view.preview_text = Some(format!(
+                            "QuickLook is not available or failed to start.\n\nError: {}",
+                            e
+                        ));
                     }
                 }
             }
@@ -2578,24 +2822,28 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     }
                     Err(e) => {
                         tracing::error!("Failed to invoke SeerPro: {}", e);
-                        self.state.main_view.preview_text = Some(
-                            format!("SeerPro is not available or failed to start.\n\nError: {}", e)
-                        );
+                        self.state.main_view.preview_text = Some(format!(
+                            "SeerPro is not available or failed to start.\n\nError: {}",
+                            e
+                        ));
                     }
                 }
             }
             ThirdPartyHandler::None => {
                 // Fall back to built-in shell preview for text-based files
-                let ext = path.as_path()
+                let ext = path
+                    .as_path()
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_lowercase();
 
                 match ext.as_str() {
-                    "txt" | "md" | "markdown" | "csv" | "json" | "xml" | "rtf" | "log" | "html" | "htm" => {
+                    "txt" | "md" | "markdown" | "csv" | "json" | "xml" | "rtf" | "log" | "html"
+                    | "htm" => {
                         // Load text preview using the shell preview service
-                        self.state.main_view.preview_text = Some("Loading shell preview...".to_string());
+                        self.state.main_view.preview_text =
+                            Some("Loading shell preview...".to_string());
                         let mut async_cx = cx.to_async();
                         let this_weak = cx.weak_entity();
                         let path_clone = path.clone();
@@ -2628,7 +2876,11 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     }
                     "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" => {
                         // Log that shell preview would be used
-                        tracing::info!("Shell preview (IPreviewHandler) would be used for .{} file: {}", ext, path_str);
+                        tracing::info!(
+                            "Shell preview (IPreviewHandler) would be used for .{} file: {}",
+                            ext,
+                            path_str
+                        );
                         self.state.main_view.preview_text = Some(
                             format!(
                                 "Shell Preview (IPreviewHandler)\n\nFile type: .{}\n\nThe Windows IPreviewHandler COM interface would render this file, but the implementation is in progress.\n\nThis message will be replaced with the actual preview once the COM interop is complete.",
@@ -2721,7 +2973,11 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         self.zoom_drag_start = None;
         let current_zoom = self.state.main_view.zoom_level;
         let current_mode = self.state.main_view.view_mode.clone();
-        self.state.active_dialog = Some(DialogType::ZoomSlider { position, current_zoom, current_mode });
+        self.state.active_dialog = Some(DialogType::ZoomSlider {
+            position,
+            current_zoom,
+            current_mode,
+        });
         cx.notify();
     }
 
@@ -2734,26 +2990,39 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         self.state.main_view.zoom_level = level;
 
         // Keep dialog snapshots in sync so re-renders use live values
-        if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider { ref mut current_zoom, .. }) = self.state.active_dialog {
+        if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider {
+            ref mut current_zoom,
+            ..
+        }) = self.state.active_dialog
+        {
             *current_zoom = level;
         }
 
-        // Save to per-directory preferences if lock is enabled
-        if self.state.main_view.view_lock_enabled {
-            let path = self.state.main_view.primary_path.clone();
-            let view_mode = self.state.main_view.view_mode.clone();
-            let settings = self.state.settings.clone();
-            settings.update(cx, move |s, _cx| {
-                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
-                    view_mode,
-                    zoom_level: level,
-                    sort_by: s.config.view.sort_by.clone(),
-                    sort_ascending: s.config.view.sort_ascending,
-                    folder_on_top: s.config.view.folder_on_top,
-                    group_by: s.config.view.group_by,
-                });
-            });
-        }
+        // Save last used zoom (always) + per-directory preferences if lock is enabled
+        let path = self.state.main_view.primary_path.clone();
+        let view_mode = self.state.main_view.view_mode.clone();
+        let view_lock = self.state.main_view.view_lock_enabled;
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            // Always persist as the global "last used" zoom level
+            s.config.view.last_zoom_level = level;
+
+            // Save to per-directory preferences if lock is enabled
+            if view_lock {
+                s.config.set_folder_preferences(
+                    &path,
+                    crate::config::config::FolderPreferences {
+                        view_mode,
+                        zoom_level: level,
+                        sort_by: s.config.view.sort_by.clone(),
+                        sort_ascending: s.config.view.sort_ascending,
+                        folder_on_top: s.config.view.folder_on_top,
+                        group_by: s.config.view.group_by,
+                    },
+                );
+            }
+            let _ = s.config.save();
+        });
 
         cx.notify();
     }
@@ -2783,59 +3052,68 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
-            cx.foreground_executor().spawn(async move {
-                // Initialize COM for Shell extraction
-                let _com_init = unsafe {
-                    windows::Win32::System::Com::CoInitializeEx(
-                        None,
-                        windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                    )
-                };
+            cx.foreground_executor()
+                .spawn(async move {
+                    // Initialize COM for Shell extraction
+                    let _com_init = unsafe {
+                        windows::Win32::System::Com::CoInitializeEx(
+                            None,
+                            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                        )
+                    };
 
-                let mut extracted_any = false;
-                for item in items.iter().take(50) {
-                    let path = &item.path;
-                    
-                    {
-                        if let Ok(cache) = icon_cache.lock() {
-                            if cache.contains_key(path) {
-                                continue;
+                    let mut extracted_any = false;
+                    for item in items.iter().take(50) {
+                        let path = &item.path;
+
+                        {
+                            if let Ok(cache) = icon_cache.lock() {
+                                if cache.contains_key(path) {
+                                    continue;
+                                }
                             }
                         }
-                    }
 
-                    let size = ThumbnailSize::Large;
-                    if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, size) {
-                        use image::{ImageBuffer, Rgba};
-                        let w = thumb.width;
-                        let h = thumb.height;
-                        if w > 0 && h > 0 && thumb.data.len() as u32 >= w * h * 4 {
-                            let mut rgba_data = thumb.data.clone();
-                            for chunk in rgba_data.chunks_exact_mut(4) {
-                                chunk.swap(0, 2);
-                            }
-                            if let Some(img) = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data) {
-                                let sanitized = path.to_string_lossy().replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '_', "_");
-                                let cache_path = icon_dir.join(format!("{}.png", sanitized));
-                                if img.save(&cache_path).is_ok() {
-                                    if let Ok(mut cache) = icon_cache.lock() {
-                                        cache.insert(path.clone(), cache_path);
-                                        extracted_any = true;
+                        let size = ThumbnailSize::Large;
+                        if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, size) {
+                            use image::{ImageBuffer, Rgba};
+                            let w = thumb.width;
+                            let h = thumb.height;
+                            if w > 0 && h > 0 && thumb.data.len() as u32 >= w * h * 4 {
+                                let mut rgba_data = thumb.data.clone();
+                                for chunk in rgba_data.chunks_exact_mut(4) {
+                                    chunk.swap(0, 2);
+                                }
+                                if let Some(img) =
+                                    ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data)
+                                {
+                                    let sanitized = path.to_string_lossy().replace(
+                                        |c: char| !c.is_alphanumeric() && c != '.' && c != '_',
+                                        "_",
+                                    );
+                                    let cache_path = icon_dir.join(format!("{}.png", sanitized));
+                                    if img.save(&cache_path).is_ok() {
+                                        if let Ok(mut cache) = icon_cache.lock() {
+                                            cache.insert(path.clone(), cache_path);
+                                            extracted_any = true;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                if extracted_any {
-                    let _ = weak_entity.update(&mut async_cx, |_this, cx| {
-                        cx.notify();
-                    });
-                }
+                    if extracted_any {
+                        let _ = weak_entity.update(&mut async_cx, |_this, cx| {
+                            cx.notify();
+                        });
+                    }
 
-                unsafe { windows::Win32::System::Com::CoUninitialize(); }
-            }).detach();
+                    unsafe {
+                        windows::Win32::System::Com::CoUninitialize();
+                    }
+                })
+                .detach();
         }
         #[cfg(not(windows))]
         {
@@ -2885,7 +3163,10 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     shelf_items.push(crate::ui::views::main_view::ShelfItem {
                         path: item.path.clone(),
                         name: item.name.clone(),
-                        is_dir: matches!(item.file_type, crate::storage::storage::FileType::Directory),
+                        is_dir: matches!(
+                            item.file_type,
+                            crate::storage::storage::FileType::Directory
+                        ),
                         size: item.size,
                     });
                 }
@@ -2916,11 +3197,16 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("Files-Rust")
             .join("files-rs.db");
-        let db = Arc::new(crate::core::database::Database::new(db_path).unwrap_or_else(|_| {
-            crate::core::database::Database::new(std::path::PathBuf::from(":memory:")).expect("Failed to create in-memory database")
-        }));
+        let db = Arc::new(
+            crate::core::database::Database::new(db_path).unwrap_or_else(|_| {
+                crate::core::database::Database::new(std::path::PathBuf::from(":memory:"))
+                    .expect("Failed to create in-memory database")
+            }),
+        );
         let fi_res = cx.reserve_entity();
-        let file_items = cx.insert_entity(fi_res, |_| crate::ui::views::main_view::FileItems::default());
+        let file_items = cx.insert_entity(fi_res, |_| {
+            crate::ui::views::main_view::FileItems::default()
+        });
         let app_state = AppState::new(
             self.state.main_view.primary_path.clone(),
             file_items,
@@ -2972,11 +3258,16 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("Files-Rust")
             .join("files-rs.db");
-        let db = Arc::new(crate::core::database::Database::new(db_path).unwrap_or_else(|_| {
-            crate::core::database::Database::new(std::path::PathBuf::from(":memory:")).expect("Failed to create in-memory database")
-        }));
+        let db = Arc::new(
+            crate::core::database::Database::new(db_path).unwrap_or_else(|_| {
+                crate::core::database::Database::new(std::path::PathBuf::from(":memory:"))
+                    .expect("Failed to create in-memory database")
+            }),
+        );
         let fi_res = cx.reserve_entity();
-        let file_items = cx.insert_entity(fi_res, |_| crate::ui::views::main_view::FileItems::default());
+        let file_items = cx.insert_entity(fi_res, |_| {
+            crate::ui::views::main_view::FileItems::default()
+        });
         let app_state = AppState::new(
             path.clone(), // Use the provided path as initial path
             file_items,
@@ -3014,7 +3305,10 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
     /// Calling this again with a different index cancels the previous timer.
     pub fn start_hover_timer(&mut self, index: usize, cx: &mut Context<Self>) {
         // Don't start timer if in hover selection mode (that uses a different mechanism)
-        if matches!(self.state.main_view.selection_mode, crate::ui::views::main_view::SelectionMode::HoverSelect) {
+        if matches!(
+            self.state.main_view.selection_mode,
+            crate::ui::views::main_view::SelectionMode::HoverSelect
+        ) {
             return;
         }
 
@@ -3039,7 +3333,9 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         // Store the item index and start a new timer
         self.hover_item_index = Some(index);
 
-        let timer = cx.background_executor().timer(std::time::Duration::from_millis(Self::HOVER_OPEN_DELAY_MS));
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_millis(Self::HOVER_OPEN_DELAY_MS));
         let this_weak = cx.weak_entity();
         let mut async_cx = cx.to_async();
         let item_path_clone = item_path.clone();
@@ -3230,22 +3526,32 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
             nav.tabs.active_tab_mut().view_mode = mode.clone();
         });
 
-        // Save to per-directory preferences if lock is enabled
-        if self.state.main_view.view_lock_enabled {
-            let path = self.state.main_view.primary_path.clone();
-            let zoom_level = self.state.main_view.zoom_level;
-            let settings = self.state.settings.clone();
-            settings.update(cx, move |s, _cx| {
-                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
-                    view_mode: mode,
-                    zoom_level,
-                    sort_by: s.config.view.sort_by.clone(),
-                    sort_ascending: s.config.view.sort_ascending,
-                    folder_on_top: s.config.view.folder_on_top,
-                    group_by: s.config.view.group_by,
-                });
-            });
-        }
+        // Save last used view mode (always) + per-directory preferences if lock is enabled
+        let path = self.state.main_view.primary_path.clone();
+        let zoom_level = self.state.main_view.zoom_level;
+        let view_lock = self.state.main_view.view_lock_enabled;
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            // Always persist as the global "last used" view mode
+            s.config.view.last_view_mode = mode.clone();
+            s.config.view.last_zoom_level = zoom_level;
+
+            // Save to per-directory preferences if lock is enabled
+            if view_lock {
+                s.config.set_folder_preferences(
+                    &path,
+                    crate::config::config::FolderPreferences {
+                        view_mode: mode,
+                        zoom_level,
+                        sort_by: s.config.view.sort_by.clone(),
+                        sort_ascending: s.config.view.sort_ascending,
+                        folder_on_top: s.config.view.folder_on_top,
+                        group_by: s.config.view.group_by,
+                    },
+                );
+            }
+            let _ = s.config.save();
+        });
 
         cx.notify();
     }
@@ -3261,14 +3567,17 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
             let zoom_level = self.state.main_view.zoom_level;
             let settings = self.state.settings.clone();
             settings.update(cx, move |s, _cx| {
-                s.config.set_folder_preferences(&path, crate::config::config::FolderPreferences {
-                    view_mode,
-                    zoom_level,
-                    sort_by: s.config.view.sort_by.clone(),
-                    sort_ascending: s.config.view.sort_ascending,
-                    folder_on_top: s.config.view.folder_on_top,
-                    group_by: s.config.view.group_by,
-                });
+                s.config.set_folder_preferences(
+                    &path,
+                    crate::config::config::FolderPreferences {
+                        view_mode,
+                        zoom_level,
+                        sort_by: s.config.view.sort_by.clone(),
+                        sort_ascending: s.config.view.sort_ascending,
+                        folder_on_top: s.config.view.folder_on_top,
+                        group_by: s.config.view.group_by,
+                    },
+                );
             });
         }
 
@@ -3306,12 +3615,8 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                 "mica_enabled" => {
                     s.config.appearance.mica_enabled = !s.config.appearance.mica_enabled
                 }
-                "mica_alt" => {
-                    s.config.appearance.mica_alt = !s.config.appearance.mica_alt
-                }
-                "folder_on_top" => {
-                    s.config.view.folder_on_top = !s.config.view.folder_on_top
-                }
+                "mica_alt" => s.config.appearance.mica_alt = !s.config.appearance.mica_alt,
+                "folder_on_top" => s.config.view.folder_on_top = !s.config.view.folder_on_top,
                 _ => {}
             }
             let _ = s.config.save();
@@ -3326,7 +3631,7 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
 
     /// Load folder preview — reads first 12 entries for thumbnail grid
     fn load_folder_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        use crate::ui::views::main_view::{PreviewContent, FolderPreviewItem};
+        use crate::ui::views::main_view::{FolderPreviewItem, PreviewContent};
 
         let mut async_cx = cx.to_async();
         let this_weak = cx.weak_entity();
@@ -3346,12 +3651,15 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     }
                 }
 
-                this_weak.update(&mut async_cx, |this, cx| {
-                    let display_count = items.len();
-                    this.state.main_view.preview_content = PreviewContent::Folder(items);
-                    this.state.main_view.preview_text = Some(format!("Folder contents: {} items shown", display_count));
-                    cx.notify();
-                }).ok();
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        let display_count = items.len();
+                        this.state.main_view.preview_content = PreviewContent::Folder(items);
+                        this.state.main_view.preview_text =
+                            Some(format!("Folder contents: {} items shown", display_count));
+                        cx.notify();
+                    })
+                    .ok();
             })
             .detach();
     }
@@ -3423,7 +3731,11 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
 
     /// Dispatch an action from the keyboard shortcut system.
     /// Returns true if the action was handled.
-    pub fn dispatch_action(&mut self, action: crate::core::action_registry::ActionKind, cx: &mut Context<Self>) -> bool {
+    pub fn dispatch_action(
+        &mut self,
+        action: crate::core::action_registry::ActionKind,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match action {
             crate::core::action_registry::ActionKind::NavigateBack => self.navigate_back(cx),
             crate::core::action_registry::ActionKind::NavigateForward => self.navigate_forward(cx),
@@ -3465,12 +3777,16 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                     self.set_filter_text(String::new(), cx);
                 }
             }
-            crate::core::action_registry::ActionKind::ToggleHiddenFiles => self.toggle_setting("show_hidden_files", cx),
+            crate::core::action_registry::ActionKind::ToggleHiddenFiles => {
+                self.toggle_setting("show_hidden_files", cx)
+            }
             crate::core::action_registry::ActionKind::EditPath => {
                 // Set focus to path bar for editing - placeholder
                 tracing::debug!("Edit path requested (Ctrl+L)");
             }
-            crate::core::action_registry::ActionKind::OpenPreviewPane => self.invoke_third_party_preview(cx),
+            crate::core::action_registry::ActionKind::OpenPreviewPane => {
+                self.invoke_third_party_preview(cx)
+            }
             crate::core::action_registry::ActionKind::CommandPalette => {
                 // Toggle shortcut overlay / command palette
                 self.toggle_shortcut_overlay(cx);
@@ -3504,44 +3820,74 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         let pairs = registry.iter();
 
         // Group actions by category
-        let navigation: Vec<_> = pairs.iter().filter(|(a, _)| matches!(a,
-            crate::core::action_registry::ActionKind::NavigateBack |
-            crate::core::action_registry::ActionKind::NavigateForward |
-            crate::core::action_registry::ActionKind::NavigateUp |
-            crate::core::action_registry::ActionKind::NavigateToRoot
-        )).cloned().collect();
+        let navigation: Vec<_> = pairs
+            .iter()
+            .filter(|(a, _)| {
+                matches!(
+                    a,
+                    crate::core::action_registry::ActionKind::NavigateBack
+                        | crate::core::action_registry::ActionKind::NavigateForward
+                        | crate::core::action_registry::ActionKind::NavigateUp
+                        | crate::core::action_registry::ActionKind::NavigateToRoot
+                )
+            })
+            .cloned()
+            .collect();
 
-        let selection: Vec<_> = pairs.iter().filter(|(a, _)| matches!(a,
-            crate::core::action_registry::ActionKind::SelectAll |
-            crate::core::action_registry::ActionKind::InvertSelection |
-            crate::core::action_registry::ActionKind::Copy |
-            crate::core::action_registry::ActionKind::Cut |
-            crate::core::action_registry::ActionKind::Paste |
-            crate::core::action_registry::ActionKind::Rename |
-            crate::core::action_registry::ActionKind::Delete |
-            crate::core::action_registry::ActionKind::PermanentDelete |
-            crate::core::action_registry::ActionKind::ClearSelection
-        )).cloned().collect();
+        let selection: Vec<_> = pairs
+            .iter()
+            .filter(|(a, _)| {
+                matches!(
+                    a,
+                    crate::core::action_registry::ActionKind::SelectAll
+                        | crate::core::action_registry::ActionKind::InvertSelection
+                        | crate::core::action_registry::ActionKind::Copy
+                        | crate::core::action_registry::ActionKind::Cut
+                        | crate::core::action_registry::ActionKind::Paste
+                        | crate::core::action_registry::ActionKind::Rename
+                        | crate::core::action_registry::ActionKind::Delete
+                        | crate::core::action_registry::ActionKind::PermanentDelete
+                        | crate::core::action_registry::ActionKind::ClearSelection
+                )
+            })
+            .cloned()
+            .collect();
 
-        let view_actions: Vec<_> = pairs.iter().filter(|(a, _)| matches!(a,
-            crate::core::action_registry::ActionKind::Refresh |
-            crate::core::action_registry::ActionKind::Search |
-            crate::core::action_registry::ActionKind::ClearFilter |
-            crate::core::action_registry::ActionKind::ToggleHiddenFiles |
-            crate::core::action_registry::ActionKind::EditPath |
-            crate::core::action_registry::ActionKind::OpenPreviewPane
-        )).cloned().collect();
+        let view_actions: Vec<_> = pairs
+            .iter()
+            .filter(|(a, _)| {
+                matches!(
+                    a,
+                    crate::core::action_registry::ActionKind::Refresh
+                        | crate::core::action_registry::ActionKind::Search
+                        | crate::core::action_registry::ActionKind::ClearFilter
+                        | crate::core::action_registry::ActionKind::ToggleHiddenFiles
+                        | crate::core::action_registry::ActionKind::EditPath
+                        | crate::core::action_registry::ActionKind::OpenPreviewPane
+                )
+            })
+            .cloned()
+            .collect();
 
-        let tabs: Vec<_> = pairs.iter().filter(|(a, _)| matches!(a,
-            crate::core::action_registry::ActionKind::NewTab |
-            crate::core::action_registry::ActionKind::CloseTab |
-            crate::core::action_registry::ActionKind::ReopenClosedTab |
-            crate::core::action_registry::ActionKind::NewWindow
-        )).cloned().collect();
+        let tabs: Vec<_> = pairs
+            .iter()
+            .filter(|(a, _)| {
+                matches!(
+                    a,
+                    crate::core::action_registry::ActionKind::NewTab
+                        | crate::core::action_registry::ActionKind::CloseTab
+                        | crate::core::action_registry::ActionKind::ReopenClosedTab
+                        | crate::core::action_registry::ActionKind::NewWindow
+                )
+            })
+            .cloned()
+            .collect();
 
-        let others: Vec<_> = pairs.iter().filter(|(a, _)| matches!(a,
-            crate::core::action_registry::ActionKind::CommandPalette
-        )).cloned().collect();
+        let others: Vec<_> = pairs
+            .iter()
+            .filter(|(a, _)| matches!(a, crate::core::action_registry::ActionKind::CommandPalette))
+            .cloned()
+            .collect();
 
         let view = cx.entity().clone();
 
@@ -3579,49 +3925,98 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                         }
                     })
                     .child(
-                        div().flex_col().gap(px(16.0)).h_full().overflow_hidden()
+                        div()
+                            .flex_col()
+                            .gap(px(16.0))
+                            .h_full()
+                            .overflow_hidden()
                             .child(
-                                div().flex().items_center().justify_between()
-                                    .child(div().font_weight(FontWeight(700.0)).text_size(px(18.0)).child("Keyboard Shortcuts"))
-                                    .child(div().text_size(px(13.0)).text_color(rgba(0xFFFFFF99u32)).child("Press Escape to close"))
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight(700.0))
+                                            .text_size(px(18.0))
+                                            .child("Keyboard Shortcuts"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .text_color(rgba(0xFFFFFF99u32))
+                                            .child("Press Escape to close"),
+                                    ),
                             )
                             .child(div().h(px(1.0)).w_full().bg(rgba(0xFFFFFF30u32)))
                             .child({
                                 // Build sections as Vec to handle different types
                                 let mut sections: Vec<AnyElement> = Vec::new();
                                 if !navigation.is_empty() {
-                                    sections.push(Self::shortcut_section("Navigation", &navigation).into_any_element());
+                                    sections.push(
+                                        Self::shortcut_section("Navigation", &navigation)
+                                            .into_any_element(),
+                                    );
                                 }
                                 if !selection.is_empty() {
-                                    sections.push(Self::shortcut_section("Selection & Editing", &selection).into_any_element());
+                                    sections.push(
+                                        Self::shortcut_section("Selection & Editing", &selection)
+                                            .into_any_element(),
+                                    );
                                 }
                                 if !view_actions.is_empty() {
-                                    sections.push(Self::shortcut_section("View", &view_actions).into_any_element());
+                                    sections.push(
+                                        Self::shortcut_section("View", &view_actions)
+                                            .into_any_element(),
+                                    );
                                 }
                                 if !tabs.is_empty() {
-                                    sections.push(Self::shortcut_section("Tabs & Windows", &tabs).into_any_element());
+                                    sections.push(
+                                        Self::shortcut_section("Tabs & Windows", &tabs)
+                                            .into_any_element(),
+                                    );
                                 }
                                 if !others.is_empty() {
-                                    sections.push(Self::shortcut_section("Commands", &others).into_any_element());
+                                    sections.push(
+                                        Self::shortcut_section("Commands", &others)
+                                            .into_any_element(),
+                                    );
                                 }
-                                div().flex_col().gap(px(12.0)).flex_grow().overflow_hidden()
+                                div()
+                                    .flex_col()
+                                    .gap(px(12.0))
+                                    .flex_grow()
+                                    .overflow_hidden()
                                     .children(sections)
-                            })
-                    )
+                            }),
+                    ),
             )
     }
 
     fn shortcut_section<'a>(
         title: &'a str,
-        items: &'a [(crate::core::action_registry::ActionKind, crate::core::action_registry::KeyCombination)],
+        items: &'a [(
+            crate::core::action_registry::ActionKind,
+            crate::core::action_registry::KeyCombination,
+        )],
     ) -> impl IntoElement + 'a {
         if items.is_empty() {
             return div().into_any_element();
         }
-        div().flex_col().gap(px(6.0))
-            .child(div().font_weight(FontWeight(600.0)).text_size(px(14.0)).text_color(rgba(0xFFFFFFCCu32)).child(title.to_string()))
+        div()
+            .flex_col()
+            .gap(px(6.0))
             .child(
-                div().flex_col().gap(px(2.0))
+                div()
+                    .font_weight(FontWeight(600.0))
+                    .text_size(px(14.0))
+                    .text_color(rgba(0xFFFFFFCCu32))
+                    .child(title.to_string()),
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .gap(px(2.0))
                     .children(items.iter().map(|(action, key)| {
                         div()
                             .flex()
@@ -3637,9 +4032,9 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
                                     .py(px(2.0))
                                     .rounded(px(4.0))
                                     .text_size(px(12.0))
-                                    .child(key.to_string())
+                                    .child(key.to_string()),
                             )
-                    }))
+                    })),
             )
             .into_any_element()
     }
@@ -3648,7 +4043,7 @@ fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
 impl Render for AppWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // file_items is synced in the background task update callback, not during render
-        
+
         // Sync icon_paths from icon_cache (cheap: Mutex lock + HashMap clone)
         // This makes extracted Windows Shell icons visible on the next render cycle
         if let Ok(cache) = self.state.icon_cache.lock() {
@@ -3671,9 +4066,22 @@ impl Render for AppWindow {
         let state = &self.state;
         let _nav = state.navigation.read(cx);
 
-        let mica_enabled = self.state.settings.read(cx).config().appearance.mica_enabled;
+        let mica_enabled = self
+            .state
+            .settings
+            .read(cx)
+            .config()
+            .appearance
+            .mica_enabled;
         let mica_alt = self.state.settings.read(cx).config().appearance.mica_alt;
-        let font_family = self.state.settings.read(cx).config().appearance.font_family.clone();
+        let font_family = self
+            .state
+            .settings
+            .read(cx)
+            .config()
+            .appearance
+            .font_family
+            .clone();
         let font_size = self.state.settings.read(cx).config().appearance.font_size;
 
         let main_content = AppBackground::build(
@@ -3697,11 +4105,18 @@ impl Render for AppWindow {
                             .text_size(px(font_size as f32))
                             .on_key_down({
                                 let view = cx.entity().clone();
-                                move |event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut App| {
+                                move |event: &gpui::KeyDownEvent,
+                                      _window: &mut Window,
+                                      cx: &mut App| {
                                     let keystroke = &event.keystroke;
-                                    let key_combo = crate::core::action_registry::from_gpui_keystroke(keystroke);
+                                    let key_combo =
+                                        crate::core::action_registry::from_gpui_keystroke(
+                                            keystroke,
+                                        );
                                     view.update(cx, |this, cx| {
-                                        if let Some(action) = this.state.action_registry.lookup(&key_combo) {
+                                        if let Some(action) =
+                                            this.state.action_registry.lookup(&key_combo)
+                                        {
                                             this.dispatch_action(action, cx);
                                         } else {
                                             if !keystroke.modifiers.modified() {
@@ -3709,47 +4124,110 @@ impl Render for AppWindow {
                                                     "escape" | "Escape" => {
                                                         if this.state.splash_state.visible {
                                                             this.dismiss_splash(cx);
-                                                        } else if this.state.main_view.search_state.is_searching {
+                                                        } else if this
+                                                            .state
+                                                            .main_view
+                                                            .search_state
+                                                            .is_searching
+                                                        {
                                                             this.clear_search(cx);
-                                                        } else if !this.state.main_view.filter_text.is_empty() {
+                                                        } else if !this
+                                                            .state
+                                                            .main_view
+                                                            .filter_text
+                                                            .is_empty()
+                                                        {
                                                             this.set_filter_text(String::new(), cx);
-                                                        } else if !this.state.main_view.selected_indices.is_empty() {
+                                                        } else if !this
+                                                            .state
+                                                            .main_view
+                                                            .selected_indices
+                                                            .is_empty()
+                                                        {
                                                             this.clear_selection(cx);
                                                         }
                                                     }
                                                     "ArrowDown" => {
                                                         let len = this.state.main_view.items.len();
-                                                        let current = this.state.main_view.last_clicked_index.unwrap_or(0).min(len.saturating_sub(1));
-                                                        let next = (current + 1).min(len.saturating_sub(1));
-                                                        this.select_item(next, event.keystroke.modifiers.shift, false, cx);
-                                                        this.state.main_view.last_clicked_index = Some(next);
+                                                        let current = this
+                                                            .state
+                                                            .main_view
+                                                            .last_clicked_index
+                                                            .unwrap_or(0)
+                                                            .min(len.saturating_sub(1));
+                                                        let next = (current + 1)
+                                                            .min(len.saturating_sub(1));
+                                                        this.select_item(
+                                                            next,
+                                                            event.keystroke.modifiers.shift,
+                                                            false,
+                                                            cx,
+                                                        );
+                                                        this.state.main_view.last_clicked_index =
+                                                            Some(next);
                                                     }
                                                     "ArrowUp" => {
-                                                        let current = this.state.main_view.last_clicked_index.unwrap_or(0);
+                                                        let current = this
+                                                            .state
+                                                            .main_view
+                                                            .last_clicked_index
+                                                            .unwrap_or(0);
                                                         let prev = current.saturating_sub(1);
-                                                        this.select_item(prev, event.keystroke.modifiers.shift, false, cx);
-                                                        this.state.main_view.last_clicked_index = Some(prev);
+                                                        this.select_item(
+                                                            prev,
+                                                            event.keystroke.modifiers.shift,
+                                                            false,
+                                                            cx,
+                                                        );
+                                                        this.state.main_view.last_clicked_index =
+                                                            Some(prev);
                                                     }
                                                     "Home" => {
                                                         if !this.state.main_view.items.is_empty() {
-                                                            this.select_item(0, event.keystroke.modifiers.shift, false, cx);
-                                                            this.state.main_view.last_clicked_index = Some(0);
+                                                            this.select_item(
+                                                                0,
+                                                                event.keystroke.modifiers.shift,
+                                                                false,
+                                                                cx,
+                                                            );
+                                                            this.state
+                                                                .main_view
+                                                                .last_clicked_index = Some(0);
                                                         }
                                                     }
                                                     "End" => {
-                                                        let last = this.state.main_view.items.len().saturating_sub(1);
-                                                        this.select_item(last, event.keystroke.modifiers.shift, false, cx);
-                                                        this.state.main_view.last_clicked_index = Some(last);
+                                                        let last = this
+                                                            .state
+                                                            .main_view
+                                                            .items
+                                                            .len()
+                                                            .saturating_sub(1);
+                                                        this.select_item(
+                                                            last,
+                                                            event.keystroke.modifiers.shift,
+                                                            false,
+                                                            cx,
+                                                        );
+                                                        this.state.main_view.last_clicked_index =
+                                                            Some(last);
                                                     }
                                                     _ => {}
                                                 }
                                             }
                                             let key = keystroke.key.as_str();
-                                            if keystroke.modifiers.control && (key == "a" || key == "A") {
+                                            if keystroke.modifiers.control
+                                                && (key == "a" || key == "A")
+                                            {
                                                 this.select_all(cx);
                                             }
                                             if key == "enter" || key == "return" {
-                                                if let Some(&idx) = this.state.main_view.selected_indices.iter().next() {
+                                                if let Some(&idx) = this
+                                                    .state
+                                                    .main_view
+                                                    .selected_indices
+                                                    .iter()
+                                                    .next()
+                                                {
                                                     this.open_item(idx, cx);
                                                 }
                                             }
@@ -3770,22 +4248,21 @@ impl Render for AppWindow {
                                     .overflow_hidden()
                                     .child(
                                         // TabBar (fixed height)
-                                        div()
-                                            .flex_shrink_0()
-                                            .w_full()
-                                            .child(TabBarView::build(&state.navigation.read(cx), cx.entity())),
+                                        div().flex_shrink_0().w_full().child(TabBarView::build(
+                                            &state.navigation.read(cx),
+                                            cx.entity(),
+                                        )),
                                     )
                                     .child(
                                         // Navigation Bar (fixed height)
-                                        div()
-                                            .flex_shrink_0()
-                                            .w_full()
-                                            .child(NavigationBarView::build(
+                                        div().flex_shrink_0().w_full().child(
+                                            NavigationBarView::build(
                                                 &state.nav_bar,
                                                 can_go_back,
                                                 can_go_forward,
                                                 cx.entity(),
-                                            )),
+                                            ),
+                                        ),
                                     )
                                     .child({
                                         let view = cx.entity();
@@ -3794,21 +4271,33 @@ impl Render for AppWindow {
                                             .flex_row()
                                             .overflow_hidden()
                                             .flex_grow()
+                                            .h_full()
                                             .w_full()
                                             // Track mouse moves ANYWHERE in this row during sidebar resize
                                             .on_mouse_move({
                                                 let view = view.clone();
                                                 move |event, win, cx| {
                                                     view.update(cx, |this, cx| {
-                                                        if this.state.sidebar.resize_start_x.is_some() {
-                                                            let x: f32 = win.mouse_position().x.into();
-                                                            if this.state.sidebar.update_resize_drag(x) {
+                                                        if this
+                                                            .state
+                                                            .sidebar
+                                                            .resize_start_x
+                                                            .is_some()
+                                                        {
+                                                            let x: f32 =
+                                                                win.mouse_position().x.into();
+                                                            if this
+                                                                .state
+                                                                .sidebar
+                                                                .update_resize_drag(x)
+                                                            {
                                                                 cx.notify();
                                                             }
                                                         }
                                                         // Handle column resize drag
                                                         if this.column_resize.is_some() {
-                                                            let x: f32 = win.mouse_position().x.into();
+                                                            let x: f32 =
+                                                                win.mouse_position().x.into();
                                                             this.update_column_resize(x);
                                                             cx.notify();
                                                         }
@@ -3819,7 +4308,12 @@ impl Render for AppWindow {
                                                 let view = view.clone();
                                                 move |_event, _win, cx| {
                                                     view.update(cx, |this, _cx| {
-                                                        if this.state.sidebar.resize_start_x.is_some() {
+                                                        if this
+                                                            .state
+                                                            .sidebar
+                                                            .resize_start_x
+                                                            .is_some()
+                                                        {
                                                             this.state.sidebar.end_resize_drag();
                                                         }
                                                         if this.column_resize.is_some() {
@@ -3832,8 +4326,15 @@ impl Render for AppWindow {
                                             #[cfg(windows)]
                                             {
                                                 row = row
-                                                    .child(SidebarView::build(&state.sidebar, state, cx.entity()))
-                                                    .child(SidebarSplitter::build(&state.sidebar, cx.entity()));
+                                                    .child(SidebarView::build(
+                                                        &state.sidebar,
+                                                        state,
+                                                        cx.entity(),
+                                                    ))
+                                                    .child(SidebarSplitter::build(
+                                                        &state.sidebar,
+                                                        cx.entity(),
+                                                    ));
                                             }
                                         }
                                         row.child(
@@ -3842,13 +4343,16 @@ impl Render for AppWindow {
                                                 .flex_col()
                                                 .flex_grow()
                                                 .w_full()
+                                                .h_full()
                                                 .overflow_hidden()
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let view = cx.entity();
                                                     move |_event, _window, cx| {
                                                         view.update(cx, |this, cx| {
                                                             if this.state.sidebar.reorder_mode {
-                                                                this.state.sidebar.exit_reorder_mode();
+                                                                this.state
+                                                                    .sidebar
+                                                                    .exit_reorder_mode();
                                                                 cx.notify();
                                                             }
                                                         });
@@ -3856,14 +4360,13 @@ impl Render for AppWindow {
                                                 })
                                                 .child(
                                                     // Toolbar (fixed height)
-                                                    div()
-                                                        .flex_shrink_0()
-                                                        .w_full()
-                                                        .child(ToolbarView::build(
+                                                    div().flex_shrink_0().w_full().child(
+                                                        ToolbarView::build(
                                                             &state.main_view.view_mode,
                                                             &state.main_view.toolbar_customization,
                                                             cx.entity(),
-                                                        ))
+                                                        ),
+                                                    ),
                                                 )
                                                 .child(
                                                     // Main Content (flex_grow to fill remaining space)
@@ -3872,24 +4375,38 @@ impl Render for AppWindow {
                                                         .flex_col()
                                                         .flex_grow()
                                                         .w_full()
-                                                        .child(MainView::build(&state.main_view, state.file_items.clone(), cx.entity()))
+                                                        .h_full()
+                                                        .child(MainView::build(
+                                                            &state.main_view,
+                                                            state.file_items.clone(),
+                                                            cx.entity(),
+                                                        )),
                                                 )
                                                 .child(
                                                     // Status bar (fixed height at bottom)
                                                     div()
                                                         .flex_shrink_0()
                                                         .w_full()
-                                                        .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW as f32))
-                                                        .child(StatusBarView::build(&state.status_bar, state, cx.entity()))
+                                                        .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW
+                                                            as f32))
+                                                        .child(StatusBarView::build(
+                                                            &state.status_bar,
+                                                            state,
+                                                            cx.entity(),
+                                                        )),
                                                 ),
                                         )
                                     }),
-                            )).into_any_element(),
+                            ),
+                    )
+                    .into_any_element(),
             ],
         );
 
         if state.sidebar_visible && state.sidebar.anim_start_time.is_some() {
-            if state.sidebar.anim_start_time.unwrap().elapsed() < std::time::Duration::from_millis(200) {
+            if state.sidebar.anim_start_time.unwrap().elapsed()
+                < std::time::Duration::from_millis(200)
+            {
                 _window.request_animation_frame();
             }
         }
@@ -3898,14 +4415,22 @@ impl Render for AppWindow {
         if let Some(dialog) = &state.active_dialog {
             // Pre-read settings dialog data to avoid BorrowMutError during render tree construction
             let settings_data = match dialog {
-                crate::ui::components::dialogs::DialogType::Settings => {
-                    Some(crate::ui::components::dialogs::DialogsView::pre_read_settings_data(&self.state, cx))
-                }
+                crate::ui::components::dialogs::DialogType::Settings => Some(
+                    crate::ui::components::dialogs::DialogsView::pre_read_settings_data(
+                        &self.state,
+                        cx,
+                    ),
+                ),
                 _ => None,
             };
-            base = base
-                .child(main_content)
-                .child(crate::ui::components::dialogs::DialogsView::build(dialog, cx.entity(), cx, settings_data));
+            base =
+                base.child(main_content)
+                    .child(crate::ui::components::dialogs::DialogsView::build(
+                        dialog,
+                        cx.entity(),
+                        cx,
+                        settings_data,
+                    ));
         } else {
             base = base.child(main_content);
         }
@@ -3914,14 +4439,11 @@ impl Render for AppWindow {
         if state.sidebar.collapsed {
             if let Some(sid) = state.sidebar.tooltip_section {
                 // Find the section index in the current display order to compute Y offset
-                let section_idx = state
-                    .sidebar
-                    .sections
-                    .iter()
-                    .position(|s| s.id == sid);
-                if let (Some(idx), Some(section)) =
-                    (section_idx, state.sidebar.sections.iter().find(|s| s.id == sid))
-                {
+                let section_idx = state.sidebar.sections.iter().position(|s| s.id == sid);
+                if let (Some(idx), Some(section)) = (
+                    section_idx,
+                    state.sidebar.sections.iter().find(|s| s.id == sid),
+                ) {
                     // Y offset: 40px home toggle + 12px scroll padding + idx * 36px per collapsed icon
                     let tooltip_y = 52.0 + idx as f32 * 36.0;
                     base = base.child({

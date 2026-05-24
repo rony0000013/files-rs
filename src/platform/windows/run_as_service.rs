@@ -54,9 +54,7 @@ impl RunAsAnotherUserService {
         arguments: &[&str],
         working_directory: Option<&Path>,
     ) -> Result<RunAsResult> {
-        let path_str = path
-            .to_str()
-            .context("Invalid path string")?;
+        let path_str = path.to_str().context("Invalid path string")?;
 
         let args_string = arguments.join(" ");
 
@@ -71,11 +69,7 @@ impl RunAsAnotherUserService {
             cmd.current_dir(cwd);
         }
 
-        tracing::info!(
-            "Launching as different user: {} {:?}",
-            path_str,
-            arguments
-        );
+        tracing::info!("Launching as different user: {} {:?}", path_str, arguments);
 
         match cmd.spawn() {
             Ok(child) => Ok(RunAsResult {
@@ -122,9 +116,7 @@ impl RunAsAnotherUserService {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 
-        let path_str = path
-            .to_str()
-            .context("Invalid path string")?;
+        let path_str = path.to_str().context("Invalid path string")?;
 
         let args_string = arguments.join(" ");
 
@@ -216,12 +208,18 @@ mod tests {
 
     #[test]
     fn test_impersonation_mode_default() {
-        assert_eq!(ImpersonationMode::default(), ImpersonationMode::AsDifferentUser);
+        assert_eq!(
+            ImpersonationMode::default(),
+            ImpersonationMode::AsDifferentUser
+        );
     }
 
     #[test]
     fn test_impersonation_mode_variants() {
-        let modes = [ImpersonationMode::SpecificUser, ImpersonationMode::AsDifferentUser];
+        let modes = [
+            ImpersonationMode::SpecificUser,
+            ImpersonationMode::AsDifferentUser,
+        ];
         for mode in modes {
             let debug_str = format!("{:?}", mode);
             assert!(!debug_str.is_empty());

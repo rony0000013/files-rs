@@ -26,7 +26,7 @@ impl IDEType {
     /// Detects IDE type from the path
     pub fn from_path(path: &Path) -> Self {
         let path_str = path.to_string_lossy().to_lowercase();
-        
+
         if path_str.contains("rider") {
             IDEType::Rider
         } else if path_str.contains("visual studio") || path_str.contains("devenv") {
@@ -108,17 +108,15 @@ impl OpenInIDEService {
         if let Some(default_path) = ide_type.default_install_path() {
             return Path::new(&default_path).exists();
         }
-        
+
         // Also check PATH for the executable
         let exe_name = match ide_type.executable() {
             Some(name) => name,
             None => return false,
         };
 
-        let output = Command::new("where")
-            .arg(exe_name)
-            .output();
-        
+        let output = Command::new("where").arg(exe_name).output();
+
         matches!(output, Ok(o) if o.status.success())
     }
 
@@ -130,15 +128,25 @@ impl OpenInIDEService {
 
     /// Opens a path in the detected or preferred IDE
     #[cfg(windows)]
-    pub async fn open(&self, path: &Path, preferred_ide: Option<IDEType>) -> Result<OpenInIDEResult> {
+    pub async fn open(
+        &self,
+        path: &Path,
+        preferred_ide: Option<IDEType>,
+    ) -> Result<OpenInIDEResult> {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 
         let path_str = path.to_string_lossy();
-        tracing::info!("Opening in IDE: {} (preferred: {:?})", path_str, preferred_ide);
+        tracing::info!(
+            "Opening in IDE: {} (preferred: {:?})",
+            path_str,
+            preferred_ide
+        );
 
         // Determine which IDE to use
-        let ide = preferred_ide.or_else(Self::find_installed_ide).unwrap_or(IDEType::VSCode);
+        let ide = preferred_ide
+            .or_else(Self::find_installed_ide)
+            .unwrap_or(IDEType::VSCode);
 
         let ide_path = match ide.default_install_path() {
             Some(p) if Path::new(&p).exists() => p,
@@ -192,7 +200,10 @@ impl OpenInIDEService {
                 error_message: if success {
                     None
                 } else {
-                    Some(format!("Failed to open {} in IDE (error code: {})", path_str, result.0))
+                    Some(format!(
+                        "Failed to open {} in IDE (error code: {})",
+                        path_str, result.0
+                    ))
                 },
             })
         }
@@ -200,7 +211,11 @@ impl OpenInIDEService {
 
     /// Opens a path in IDE (non-Windows stub)
     #[cfg(not(windows))]
-    pub async fn open(&self, path: &Path, preferred_ide: Option<IDEType>) -> Result<OpenInIDEResult> {
+    pub async fn open(
+        &self,
+        path: &Path,
+        preferred_ide: Option<IDEType>,
+    ) -> Result<OpenInIDEResult> {
         let _ = path;
         let _ = preferred_ide;
         Ok(OpenInIDEResult {
@@ -237,18 +252,18 @@ impl OpenInIDEService {
     /// Checks if a path looks like a project (contains project files)
     pub fn is_project_path(path: &Path) -> bool {
         let project_markers = [
-            "Cargo.toml",      // Rust
-            "package.json",    // Node.js
+            "Cargo.toml",       // Rust
+            "package.json",     // Node.js
             "requirements.txt", // Python
-            "go.mod",          // Go
-            "pom.xml",         // Java/Maven
-            "build.gradle",    // Java/Gradle
-            "*.sln",           // Visual Studio
-            "*.csproj",        // C#
-            "*.pyproj",        // Python
-            ".code-workspace", // VS Code workspace
-            ".idea",           // JetBrains
-            "CMakeLists.txt",  // C/C++
+            "go.mod",           // Go
+            "pom.xml",          // Java/Maven
+            "build.gradle",     // Java/Gradle
+            "*.sln",            // Visual Studio
+            "*.csproj",         // C#
+            "*.pyproj",         // Python
+            ".code-workspace",  // VS Code workspace
+            ".idea",            // JetBrains
+            "CMakeLists.txt",   // C/C++
         ];
 
         if path.is_dir() {
@@ -301,7 +316,8 @@ mod tests {
     #[test]
     fn test_ide_type_from_path() {
         let vscode_path = Path::new("C:\\Program Files\\Microsoft VS Code\\Code.exe");
-        let rider_path = Path::new("C:\\Program Files\\JetBrains\\JetBrains Rider\\bin\\rider64.exe");
+        let rider_path =
+            Path::new("C:\\Program Files\\JetBrains\\JetBrains Rider\\bin\\rider64.exe");
         let unknown_path = Path::new("C:\\Program Files\\SomeApp\\app.exe");
 
         assert_eq!(OpenInIDEService::detect_ide(vscode_path), IDEType::VSCode);
@@ -377,7 +393,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
         std::fs::write(&cargo_toml, "[package]").unwrap();
-        
+
         assert!(OpenInIDEService::is_project_path(&temp_dir.path()));
     }
 
@@ -386,7 +402,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let package_json = temp_dir.path().join("package.json");
         std::fs::write(&package_json, "{}").unwrap();
-        
+
         assert!(OpenInIDEService::is_project_path(&temp_dir.path()));
     }
 
@@ -395,7 +411,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let readme = temp_dir.path().join("README.txt");
         std::fs::write(&readme, "Just a text file").unwrap();
-        
+
         assert!(!OpenInIDEService::is_project_path(&temp_dir.path()));
     }
 
@@ -404,14 +420,16 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let sln_file = temp_dir.path().join("MyProject.sln");
         std::fs::write(&sln_file, "").unwrap();
-        
+
         assert!(OpenInIDEService::is_project_path(&sln_file));
     }
 
     #[tokio::test]
     async fn test_open_with_nonexistent_path() {
         let service = OpenInIDEService::new();
-        let result = service.open(Path::new("C:\\nonexistent\\folder"), None).await;
+        let result = service
+            .open(Path::new("C:\\nonexistent\\folder"), None)
+            .await;
         assert!(result.is_ok());
     }
 

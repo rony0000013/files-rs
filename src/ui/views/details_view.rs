@@ -26,7 +26,7 @@ div()
             .flex_col()
             .w_full()
             .flex_grow()
-            // NO overflow_hidden() - would block child scroll events
+            .h_full()
             .child(Self::column_header(state, view.clone()))
             .child(
                 div()
@@ -34,7 +34,7 @@ div()
                     .flex_col()
                     .w_full()
                     .flex_grow()
-                    // NO overflow_hidden() - would block child scroll events
+                    .h_full()
                     .relative()
                     .on_mouse_down(MouseButton::Right, {
                         let v = view.clone();
@@ -102,6 +102,7 @@ div()
                             let widths = main_state.column_widths;
                             let zoom = main_state.zoom_level;
                             let show_extensions = main_state.show_extensions;
+                            let icon_paths = &main_state.icon_paths;
 
                             range.map(|i| {
                                 let idx = visible_clone[i];
@@ -179,8 +180,18 @@ div()
                                         .gap(px(8.0))
                                         .children([
                                             div().w(px(icon_size)).h(px(icon_size)).flex().items_center().justify_center()
-                                                .child(div().text_size(px(icon_size * 0.5)).text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                                                    .child(if matches!(item.file_type, FileType::Directory) { "\u{E8B7}" } else { "\u{E8A5}" })),
+                                                .child(
+                                                    if let Some(icon_path) = icon_paths.get(&item.path) {
+                                                        img(icon_path.clone())
+                                                            .w(px(icon_size))
+                                                            .h(px(icon_size))
+                                                            .into_any_element()
+                                                    } else {
+                                                        div().text_size(px(icon_size * 0.5)).text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                                            .child(if matches!(item.file_type, FileType::Directory) { "\u{E8B7}" } else { "\u{E8A5}" })
+                                                            .into_any_element()
+                                                    }
+                                                ),
                                             div().w(px(widths.name)).overflow_hidden().text_size(px(text_size)).text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)).child(display_name),
                                         ]),
                                     div().w(px(widths.date)).text_center().text_size(px(text_size_sm)).text_color(rgb(UiConstants::TEXT_SECONDARY_RGB)).child("\u{2014}"),
@@ -189,6 +200,7 @@ div()
                                 ]).into_any_element()
                             }).collect::<Vec<_>>()
                         })
+                        .h_full()
                         .track_scroll(state.uniform_list_scroll_handle.clone())
                     )
                     .child(if let Some(ref lasso) = state.lasso_state {

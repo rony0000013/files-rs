@@ -150,7 +150,10 @@ impl CompactOverlayService {
     }
 
     /// Gets a configuration preset based on position.
-    pub fn get_config_for_position(&self, position: CompactOverlayPosition) -> CompactOverlayConfig {
+    pub fn get_config_for_position(
+        &self,
+        position: CompactOverlayPosition,
+    ) -> CompactOverlayConfig {
         match position {
             CompactOverlayPosition::TopLeft
             | CompactOverlayPosition::TopRight

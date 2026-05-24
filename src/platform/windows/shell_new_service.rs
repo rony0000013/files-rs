@@ -74,17 +74,17 @@ impl ShellNewService {
 
         // Also check known file type associations
         let known_types = [
-            ".txt", ".rtf", ".docx", ".xlsx", ".pptx",
-            ".bmp", ".jpg", ".png", ".gif", ".ico",
-            ".zip", ".7z", ".rar",
-            ".html", ".css", ".js", ".json", ".xml",
-            ".pdf", ".psd", ".ai",
+            ".txt", ".rtf", ".docx", ".xlsx", ".pptx", ".bmp", ".jpg", ".png", ".gif", ".ico",
+            ".zip", ".7z", ".rar", ".html", ".css", ".js", ".json", ".xml", ".pdf", ".psd", ".ai",
         ];
 
         for ext in known_types {
             if let Ok(ext_templates) = self.get_extension_shellnew(&hkcr, ext) {
                 for template in ext_templates {
-                    if !templates.iter().any(|t: &ShellNewTemplate| t.extension == template.extension) {
+                    if !templates
+                        .iter()
+                        .any(|t: &ShellNewTemplate| t.extension == template.extension)
+                    {
                         templates.push(template);
                     }
                 }
@@ -105,7 +105,11 @@ impl ShellNewService {
     }
 
     #[cfg(windows)]
-    fn get_extension_shellnew(&self, hkcr: &RegKey, extension: &str) -> Result<Vec<ShellNewTemplate>> {
+    fn get_extension_shellnew(
+        &self,
+        hkcr: &RegKey,
+        extension: &str,
+    ) -> Result<Vec<ShellNewTemplate>> {
         use std::io;
 
         let mut templates = Vec::new();
@@ -143,7 +147,10 @@ impl ShellNewService {
             // Read ShellNew values
             let template_path: Option<String> = shellnew_key.get_value("FileName").ok();
             let null_file: bool = shellnew_key.get_value::<u32, _>("NullFile").unwrap_or(0) != 0;
-            let icon_index: Option<i32> = shellnew_key.get_value::<u32, _>("IconIndex").ok().map(|v| v as i32);
+            let icon_index: Option<i32> = shellnew_key
+                .get_value::<u32, _>("IconIndex")
+                .ok()
+                .map(|v| v as i32);
 
             // Data value is binary template - skip for now as winreg requires complex handling
             // The template_path or null_file is sufficient for most use cases
@@ -172,20 +179,33 @@ impl ShellNewService {
 
     /// Create a new file from a ShellNew template
     #[cfg(windows)]
-    pub async fn create_from_template(&self, parent_dir: &FilesPath, template: &ShellNewTemplate) -> Result<FilesPath> {
+    pub async fn create_from_template(
+        &self,
+        parent_dir: &FilesPath,
+        template: &ShellNewTemplate,
+    ) -> Result<FilesPath> {
         use tokio::fs::File;
         use tokio::io::AsyncWriteExt;
 
-        let file_name = format!("New {}", &template.name.replace(" Document", "").replace(" Image", "").replace(" File", ""));
+        let file_name = format!(
+            "New {}",
+            &template
+                .name
+                .replace(" Document", "")
+                .replace(" Image", "")
+                .replace(" File", "")
+        );
         let mut file_path = parent_dir.as_path().join(&file_name);
-        
+
         // Ensure unique filename
         let mut counter = 1;
-        let stem = file_path.file_stem()
+        let stem = file_path
+            .file_stem()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| file_name.clone());
-        let ext = file_path.extension()
+        let ext = file_path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_string();
@@ -194,7 +214,9 @@ impl ShellNewService {
             file_path = if ext.is_empty() {
                 parent_dir.as_path().join(format!("{} ({})", stem, counter))
             } else {
-                parent_dir.as_path().join(format!("{} ({}).{}", stem, counter, ext))
+                parent_dir
+                    .as_path()
+                    .join(format!("{} ({}).{}", stem, counter, ext))
             };
             counter += 1;
         }
@@ -219,13 +241,22 @@ impl ShellNewService {
 
     /// Create from template (non-Windows stub)
     #[cfg(not(windows))]
-    pub async fn create_from_template(&self, _parent_dir: &FilesPath, template: &ShellNewTemplate) -> Result<FilesPath> {
-        Err(anyhow!("ShellNew is only available on Windows: {}", template.extension))
+    pub async fn create_from_template(
+        &self,
+        _parent_dir: &FilesPath,
+        template: &ShellNewTemplate,
+    ) -> Result<FilesPath> {
+        Err(anyhow!(
+            "ShellNew is only available on Windows: {}",
+            template.extension
+        ))
     }
 
     /// Get template by extension
     pub fn get_template_by_extension(&self, extension: &str) -> Option<ShellNewTemplate> {
-        self.get_templates().ok()?.into_iter()
+        self.get_templates()
+            .ok()?
+            .into_iter()
             .find(|t| t.extension.eq_ignore_ascii_case(extension))
     }
 

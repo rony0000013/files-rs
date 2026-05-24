@@ -13,7 +13,9 @@ impl TagService {
 
     pub fn add_tag(&self, path: &str, tag: &str) -> anyhow::Result<()> {
         let conn = self.db.get_conn();
-        let conn = conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
             "INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?1, ?2)",
             params![path, tag],
@@ -23,7 +25,9 @@ impl TagService {
 
     pub fn remove_tag(&self, path: &str, tag: &str) -> anyhow::Result<()> {
         let conn = self.db.get_conn();
-        let conn = conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         conn.execute(
             "DELETE FROM file_tags WHERE path = ?1 AND tag = ?2",
             params![path, tag],
@@ -33,25 +37,33 @@ impl TagService {
 
     pub fn get_tags(&self, path: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.db.get_conn();
-        let conn = conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare("SELECT tag FROM file_tags WHERE path = ?1")?;
-        let tags = stmt.query_map(params![path], |row| row.get(0))?
+        let tags = stmt
+            .query_map(params![path], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
         Ok(tags)
     }
 
     pub fn get_files_with_tag(&self, tag: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.db.get_conn();
-        let conn = conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare("SELECT path FROM file_tags WHERE tag = ?1")?;
-        let paths = stmt.query_map(params![tag], |row| row.get(0))?
+        let paths = stmt
+            .query_map(params![tag], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
         Ok(paths)
     }
 
     pub fn get_all_tags(&self) -> anyhow::Result<Vec<(String, i64)>> {
         let conn = self.db.get_conn();
-        let conn = conn.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT tag, COUNT(*) as count FROM file_tags GROUP BY tag ORDER BY count DESC, tag ASC"
         )?;
@@ -122,10 +134,19 @@ mod tests {
         let mut archive_found = false;
         for (tag, count) in &all_tags {
             match tag.as_str() {
-                "work" => { assert_eq!(*count, 2); work_found = true; }
-                "personal" => { assert_eq!(*count, 2); personal_found = true; }
-                "archive" => { assert_eq!(*count, 1); archive_found = true; }
-                _ => { }
+                "work" => {
+                    assert_eq!(*count, 2);
+                    work_found = true;
+                }
+                "personal" => {
+                    assert_eq!(*count, 2);
+                    personal_found = true;
+                }
+                "archive" => {
+                    assert_eq!(*count, 1);
+                    archive_found = true;
+                }
+                _ => {}
             }
         }
         assert!(work_found, "work tag not found");
@@ -169,7 +190,8 @@ mod tests {
             (2, tags_c.clone()),
         ];
         let total = selected_tags.len();
-        let tagged_count = selected_tags.iter()
+        let tagged_count = selected_tags
+            .iter()
             .filter(|(_, tags)| tags.contains(&"work".to_string()))
             .count();
         assert_eq!(tagged_count, total, "All items should have 'work' tag");
@@ -194,17 +216,16 @@ mod tests {
         assert!(tags_c.contains(&"urgent".to_string()));
 
         // Simulate Some state: only some selected files have the tag
-        let selected_tags = vec![
-            (0, tags_a),
-            (1, tags_b),
-            (2, tags_c),
-        ];
+        let selected_tags = vec![(0, tags_a), (1, tags_b), (2, tags_c)];
         let total = selected_tags.len();
-        let tagged_count = selected_tags.iter()
+        let tagged_count = selected_tags
+            .iter()
             .filter(|(_, tags)| tags.contains(&"urgent".to_string()))
             .count();
-        assert!(tagged_count > 0 && tagged_count < total,
-                "Some (but not all) items should have 'urgent' tag");
+        assert!(
+            tagged_count > 0 && tagged_count < total,
+            "Some (but not all) items should have 'urgent' tag"
+        );
     }
 
     #[test]
@@ -221,12 +242,9 @@ mod tests {
         let tags_c = service.get_tags("/path/c.txt").unwrap();
 
         // None of the selected files should have "archive"
-        let selected_tags = vec![
-            (0, tags_a),
-            (1, tags_b),
-            (2, tags_c),
-        ];
-        let tagged_count = selected_tags.iter()
+        let selected_tags = vec![(0, tags_a), (1, tags_b), (2, tags_c)];
+        let tagged_count = selected_tags
+            .iter()
             .filter(|(_, tags)| tags.contains(&"archive".to_string()))
             .count();
         assert_eq!(tagged_count, 0, "No items should have 'archive' tag");
@@ -253,7 +271,11 @@ mod tests {
 
         // Helper to find count by name
         let count_for = |name: &str| -> i64 {
-            all_tags.iter().find(|(t, _)| t == name).map(|(_, c)| *c).unwrap_or(0)
+            all_tags
+                .iter()
+                .find(|(t, _)| t == name)
+                .map(|(_, c)| *c)
+                .unwrap_or(0)
         };
         assert_eq!(count_for("work"), 3);
         assert_eq!(count_for("personal"), 2);
@@ -261,26 +283,31 @@ mod tests {
 
         // Now simulate get_common_tags_for_selected logic:
         // Selected files: a.txt, b.txt
-        let tags_a = service.get_tags("/path/a.txt").unwrap();  // [work, urgent]
-        let tags_b = service.get_tags("/path/b.txt").unwrap();  // [work, personal]
+        let tags_a = service.get_tags("/path/a.txt").unwrap(); // [work, urgent]
+        let tags_b = service.get_tags("/path/b.txt").unwrap(); // [work, personal]
 
-        let selected_tags: Vec<(usize, Vec<String>)> = vec![
-            (0, tags_a),
-            (1, tags_b),
-        ];
+        let selected_tags: Vec<(usize, Vec<String>)> = vec![(0, tags_a), (1, tags_b)];
         let total_selected = selected_tags.len();
 
         for (tag_name, _count) in &all_tags {
-            let tagged_count = selected_tags.iter()
+            let tagged_count = selected_tags
+                .iter()
                 .filter(|(_, tags)| tags.contains(tag_name))
                 .count();
 
             match tag_name.as_str() {
-                "work" => assert_eq!(tagged_count, total_selected, "work should be on ALL selected"),
-                "personal" => assert!(tagged_count > 0 && tagged_count < total_selected,
-                    "personal should be on SOME selected (only b.txt)"),
-                "urgent" => assert!(tagged_count > 0 && tagged_count < total_selected,
-                    "urgent should be on SOME selected (only a.txt)"),
+                "work" => assert_eq!(
+                    tagged_count, total_selected,
+                    "work should be on ALL selected"
+                ),
+                "personal" => assert!(
+                    tagged_count > 0 && tagged_count < total_selected,
+                    "personal should be on SOME selected (only b.txt)"
+                ),
+                "urgent" => assert!(
+                    tagged_count > 0 && tagged_count < total_selected,
+                    "urgent should be on SOME selected (only a.txt)"
+                ),
                 _ => panic!("Unexpected tag: {}", tag_name),
             }
         }

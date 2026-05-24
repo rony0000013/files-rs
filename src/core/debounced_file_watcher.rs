@@ -27,9 +27,7 @@ impl DebouncedFileWatcher {
     ///
     /// # Returns
     /// A new DebouncedFileWatcher instance and a receiver for batches of events
-    pub fn new(
-        debounce_duration: Duration,
-    ) -> Result<(Self, mpsc::Receiver<Vec<Event>>)> {
+    pub fn new(debounce_duration: Duration) -> Result<(Self, mpsc::Receiver<Vec<Event>>)> {
         let (batch_sender, batch_receiver) = mpsc::channel(100);
         let (path_sender, mut path_receiver) = mpsc::channel::<PathBuf>(1000);
 
@@ -172,8 +170,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let debounce_duration = Duration::from_millis(50);
 
-        let (mut watcher, mut receiver) =
-            DebouncedFileWatcher::new(debounce_duration).unwrap();
+        let (mut watcher, mut receiver) = DebouncedFileWatcher::new(debounce_duration).unwrap();
 
         watcher
             .watch(temp_dir.path(), true)
@@ -212,8 +209,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let debounce_duration = Duration::from_millis(100);
 
-        let (mut watcher, mut receiver) =
-            DebouncedFileWatcher::new(debounce_duration).unwrap();
+        let (mut watcher, mut receiver) = DebouncedFileWatcher::new(debounce_duration).unwrap();
 
         watcher
             .watch(temp_dir.path(), true)
@@ -259,8 +255,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let debounce_duration = Duration::from_millis(50);
 
-        let (mut watcher, _receiver) =
-            DebouncedFileWatcher::new(debounce_duration).unwrap();
+        let (mut watcher, _receiver) = DebouncedFileWatcher::new(debounce_duration).unwrap();
 
         // Watch should succeed
         watcher
@@ -278,8 +273,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let debounce_duration = Duration::from_millis(50);
 
-        let (mut watcher, _receiver) =
-            DebouncedFileWatcher::new(debounce_duration).unwrap();
+        let (mut watcher, _receiver) = DebouncedFileWatcher::new(debounce_duration).unwrap();
 
         watcher
             .watch(temp_dir.path(), true)
@@ -301,8 +295,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let debounce_duration = Duration::from_millis(50);
 
-        let (_watcher, mut receiver) =
-            DebouncedFileWatcher::new(debounce_duration).unwrap();
+        let (_watcher, mut receiver) = DebouncedFileWatcher::new(debounce_duration).unwrap();
 
         // Don't generate any events, just check that we can receive (should timeout)
         let result = timeout(Duration::from_millis(100), receiver.recv()).await;

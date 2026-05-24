@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn test_credential_state_cycle_save_option() {
         let mut state = CredentialState::default();
-        
+
         assert_eq!(state.save_option, CredentialSaveOption::None);
         state.cycle_save_option();
         assert_eq!(state.save_option, CredentialSaveOption::Remember);
@@ -264,7 +264,7 @@ mod tests {
         let mut state = CredentialState::default();
         state.username = "user1".to_string();
         assert_eq!(state.full_username(), "user1");
-        
+
         state.set_domain(Some("DOMAIN".to_string()));
         assert_eq!(state.full_username(), "DOMAIN\\user1");
     }
@@ -274,7 +274,7 @@ mod tests {
         let mut state = CredentialState::default();
         state.server = "server.example.com".to_string();
         assert_eq!(state.target(), "server.example.com");
-        
+
         state.share = Some("shared".to_string());
         assert_eq!(state.target(), "server.example.com\\shared");
     }
@@ -309,7 +309,7 @@ mod tests {
     fn test_credential_state_has_credentials() {
         let mut state = CredentialState::default();
         assert!(!state.has_credentials());
-        
+
         state.username = "user1".to_string();
         assert!(state.has_credentials());
     }

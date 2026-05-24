@@ -48,17 +48,15 @@ impl SidebarItemId {
     pub fn get_path(&self) -> Option<FilesPath> {
         match self {
             Self::Pinned(path) => Some(path.clone()),
-            Self::Library(name) => {
-                match name.as_str() {
-                    "Desktop" => Some(FilesPath::from(dirs::desktop_dir()?)),
-                    "Documents" => Some(FilesPath::from(dirs::document_dir()?)),
-                    "Downloads" => Some(FilesPath::from(dirs::download_dir()?)),
-                    "Pictures" => Some(FilesPath::from(dirs::picture_dir()?)),
-                    "Music" => Some(FilesPath::from(dirs::audio_dir()?)),
-                    "Videos" => Some(FilesPath::from(dirs::video_dir()?)),
-                    _ => None,
-                }
-            }
+            Self::Library(name) => match name.as_str() {
+                "Desktop" => Some(FilesPath::from(dirs::desktop_dir()?)),
+                "Documents" => Some(FilesPath::from(dirs::document_dir()?)),
+                "Downloads" => Some(FilesPath::from(dirs::download_dir()?)),
+                "Pictures" => Some(FilesPath::from(dirs::picture_dir()?)),
+                "Music" => Some(FilesPath::from(dirs::audio_dir()?)),
+                "Videos" => Some(FilesPath::from(dirs::video_dir()?)),
+                _ => None,
+            },
             #[cfg(windows)]
             Self::Drive { root, .. } => Some(root.clone()),
             Self::RecycleBin => {
@@ -183,11 +181,15 @@ impl SidebarState {
                 ("CloudDrives", SectionId::CloudDrives),
                 ("Network", SectionId::Network),
                 ("Wsl", SectionId::Wsl),
-            ].iter().cloned().collect();
+            ]
+            .iter()
+            .cloned()
+            .collect();
 
             // Build sections in the configured order
             let mut reordered: Vec<SidebarSectionData> = Vec::new();
-            let mut remaining: std::collections::HashSet<SectionId> = self.sections.iter().map(|s| s.id).collect();
+            let mut remaining: std::collections::HashSet<SectionId> =
+                self.sections.iter().map(|s| s.id).collect();
 
             for name in order {
                 if let Some(&sid) = name_to_id.get(name.as_str()) {
@@ -218,7 +220,10 @@ impl SidebarState {
                 ("CloudDrives", SectionId::CloudDrives),
                 ("Network", SectionId::Network),
                 ("Wsl", SectionId::Wsl),
-            ].iter().cloned().collect();
+            ]
+            .iter()
+            .cloned()
+            .collect();
             self.hidden_sections.clear();
             for name in hidden {
                 if let Some(&sid) = name_to_id.get(name.as_str()) {
@@ -518,7 +523,10 @@ impl SidebarState {
     fn save_hidden_sections(&self) {
         let mut config = AppConfig::load();
         config.sidebar.hidden_sections = Some(
-            self.hidden_sections.iter().map(|s| format!("{:?}", s)).collect()
+            self.hidden_sections
+                .iter()
+                .map(|s| format!("{:?}", s))
+                .collect(),
         );
         let _ = config.save();
     }
@@ -676,7 +684,12 @@ fn resolve_lnk_target(lnk_path: &std::path::Path) -> Option<FilesPath> {
     if offset + 4 > data.len() {
         return None;
     }
-    let link_info_size = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+    let link_info_size = u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as usize;
     if link_info_size < 0x1C || offset + link_info_size > data.len() {
         return None;
     }
@@ -1279,14 +1292,12 @@ mod tests {
 
     #[test]
     fn test_sidebar_section_data_with_items() {
-        let items = vec![
-            SidebarItem {
-                id: SidebarItemId::Network,
-                label: "Network".to_string(),
-                icon: "\u{E802}".to_string(),
-                badge: None,
-            },
-        ];
+        let items = vec![SidebarItem {
+            id: SidebarItemId::Network,
+            label: "Network".to_string(),
+            icon: "\u{E802}".to_string(),
+            badge: None,
+        }];
         let section = SidebarSectionData {
             id: SectionId::Network,
             title: "Network".to_string(),
@@ -1337,21 +1348,17 @@ mod tests {
 
     #[test]
     fn test_sidebar_state_with_manual_sections() {
-        let sections = vec![
-            SidebarSectionData {
-                id: SectionId::Favorites,
-                title: "Favorites".to_string(),
-                items: vec![
-                    SidebarItem {
-                        id: SidebarItemId::RecycleBin,
-                        label: "Recycle Bin".to_string(),
-                        icon: "\u{E74D}".to_string(),
-                        badge: None,
-                    },
-                ],
-                collapsed: false,
-            },
-        ];
+        let sections = vec![SidebarSectionData {
+            id: SectionId::Favorites,
+            title: "Favorites".to_string(),
+            items: vec![SidebarItem {
+                id: SidebarItemId::RecycleBin,
+                label: "Recycle Bin".to_string(),
+                icon: "\u{E74D}".to_string(),
+                badge: None,
+            }],
+            collapsed: false,
+        }];
         let mut state = SidebarState {
             sections,
             active_item: None,

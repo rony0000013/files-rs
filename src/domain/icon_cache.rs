@@ -33,22 +33,22 @@ impl NtfsAttributes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconOverlay {
     None,
-    Shortcut,      // Link arrow overlay
-    Sync,          // Cloud sync status
-    BitLocker,     // Lock overlay for encrypted drives
-    Share,         // Shared folder overlay
-    Offline,       // Offline files overlay
+    Shortcut,  // Link arrow overlay
+    Sync,      // Cloud sync status
+    BitLocker, // Lock overlay for encrypted drives
+    Share,     // Shared folder overlay
+    Offline,   // Offline files overlay
 }
 
 impl IconOverlay {
     pub fn overlay_index(&self) -> i32 {
         match self {
             IconOverlay::None => 0,
-            IconOverlay::Shortcut => 1,    // System overlay index for shortcuts
-            IconOverlay::Sync => 2,         // Sync provider overlay
-            IconOverlay::BitLocker => 3,    // BitLocker/security overlay
-            IconOverlay::Share => 4,        // Shared overlay
-            IconOverlay::Offline => 5,      // Offline overlay
+            IconOverlay::Shortcut => 1, // System overlay index for shortcuts
+            IconOverlay::Sync => 2,     // Sync provider overlay
+            IconOverlay::BitLocker => 3, // BitLocker/security overlay
+            IconOverlay::Share => 4,    // Shared overlay
+            IconOverlay::Offline => 5,  // Offline overlay
         }
     }
 }
@@ -118,7 +118,7 @@ impl IconCacheService {
         use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Storage::FileSystem::{
             GetFileAttributesW, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_ENCRYPTED,
-            FILE_ATTRIBUTE_SPARSE_FILE, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE,
         };
 
         let wide_path: Vec<u16> = path
@@ -183,7 +183,9 @@ impl IconCacheService {
     fn get_volume_bitlocker_status(volume_path: &std::path::Path) -> Result<bool> {
         use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
         #[allow(unused_imports)]
         use windows::Win32::System::Wmi::{IWbemServices, WBEM_CONNECT_OPTIONS};
 
@@ -205,7 +207,7 @@ impl IconCacheService {
 
             // Simplified check: if the drive is NTFS and system has BitLocker, assume protected
             let attrs = windows::Win32::Storage::FileSystem::GetFileAttributesW(
-                windows::core::PCWSTR(wide_drive.as_ptr())
+                windows::core::PCWSTR(wide_drive.as_ptr()),
             );
 
             let _ = CoUninitialize();
@@ -221,7 +223,10 @@ impl IconCacheService {
         let path_str = path.as_path().to_string_lossy().to_lowercase();
 
         // OneDrive/SharePoint/Cloud files often have special extensions
-        if path_str.contains("onedrive") || path_str.contains("dropbox") || path_str.contains("googledrive") {
+        if path_str.contains("onedrive")
+            || path_str.contains("dropbox")
+            || path_str.contains("googledrive")
+        {
             return IconOverlay::Sync;
         }
 
@@ -286,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_operations() {
         let service = IconCacheService::new();
-        
+
         // Test clear
         service.clear().await;
         assert_eq!(service.cache_size().await, 0);

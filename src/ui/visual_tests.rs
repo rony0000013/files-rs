@@ -199,12 +199,9 @@ pub mod storage_controls_page {
         // Different storage usage levels
         for usage_percent in &[10u32, 50, 80, 95] {
             cases.push(
-                VisualRegressionTest::new(
-                    &format!("usage_{}", usage_percent),
-                    "storage_controls",
-                )
-                .with_viewport(250, 120)
-                .with_theme(TestTheme::Dark),
+                VisualRegressionTest::new(&format!("usage_{}", usage_percent), "storage_controls")
+                    .with_viewport(250, 120)
+                    .with_theme(TestTheme::Dark),
             );
         }
 
@@ -293,9 +290,8 @@ pub mod themed_icon_page {
     /// Icon names to test
     pub fn icon_names() -> Vec<&'static str> {
         vec![
-            "folder", "file", "document", "image", "video",
-            "audio", "archive", "code", "settings", "search",
-            "home", "back", "forward", "up", "refresh",
+            "folder", "file", "document", "image", "video", "audio", "archive", "code", "settings",
+            "search", "home", "back", "forward", "up", "refresh",
         ]
     }
 
@@ -389,7 +385,16 @@ pub mod toolbar_page {
     /// Generate button-specific test cases
     pub fn button_test_cases() -> Vec<(&'static str, ToolbarButtonState)> {
         let mut cases = Vec::new();
-        let buttons = vec!["new_folder", "cut", "copy", "paste", "delete", "rename", "sort", "view"];
+        let buttons = vec![
+            "new_folder",
+            "cut",
+            "copy",
+            "paste",
+            "delete",
+            "rename",
+            "sort",
+            "view",
+        ];
 
         for button in buttons {
             cases.push((button, ToolbarButtonState::Normal));

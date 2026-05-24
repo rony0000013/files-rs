@@ -34,7 +34,10 @@ impl ConflictResolution {
 
     /// Whether this resolution applies to all remaining conflicts
     pub fn applies_to_all(&self) -> bool {
-        matches!(self, ConflictResolution::ReplaceAll | ConflictResolution::SkipAll)
+        matches!(
+            self,
+            ConflictResolution::ReplaceAll | ConflictResolution::SkipAll
+        )
     }
 }
 
@@ -126,10 +129,7 @@ impl ConflictDialogState {
 
     /// Get the formatted destination file name (last component of path)
     pub fn dest_filename(&self) -> &str {
-        self.dest_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&self.dest_path)
+        self.dest_path.rsplit('/').next().unwrap_or(&self.dest_path)
     }
 
     /// Format a file size in human-readable form
@@ -231,7 +231,10 @@ mod tests {
         let state = ConflictDialogState::new(
             "/home/user/documents/file.txt".to_string(),
             "/backup/file.txt".to_string(),
-            0, 0, String::new(), String::new(),
+            0,
+            0,
+            String::new(),
+            String::new(),
         );
         assert_eq!(state.source_filename(), "file.txt");
     }
@@ -241,7 +244,10 @@ mod tests {
         let state = ConflictDialogState::new(
             "/src/file.txt".to_string(),
             "/backup/archive/file.txt".to_string(),
-            0, 0, String::new(), String::new(),
+            0,
+            0,
+            String::new(),
+            String::new(),
         );
         assert_eq!(state.dest_filename(), "file.txt");
     }

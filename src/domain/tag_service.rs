@@ -22,14 +22,14 @@ pub struct Tag {
 #[derive(Debug, Clone)]
 pub struct TaggedFile {
     pub path: String,
-    pub frn: Option<u64>,  // File Reference Number
+    pub frn: Option<u64>, // File Reference Number
     pub tags: Vec<Tag>,
 }
 
 /// Enhanced Tag Service with ADS and FRN support
 pub struct TagService {
     conn: Arc<Mutex<Connection>>,
-    use_ads: bool,  // Write tags to NTFS alternate data streams
+    use_ads: bool, // Write tags to NTFS alternate data streams
 }
 
 impl TagService {
@@ -78,12 +78,12 @@ impl TagService {
     #[cfg(windows)]
     pub fn get_file_frn(path: &FilesPath) -> Result<Option<u64>> {
         use std::os::windows::ffi::OsStrExt;
-use windows::Win32::Storage::FileSystem::{
-            CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS, FILE_BASIC_INFO,
-            GetFileInformationByHandle, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_MODE,
+        use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, GetFileInformationByHandle, FILE_BASIC_INFO, FILE_FLAGS_AND_ATTRIBUTES,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_MODE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         };
-        use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 
         let wide_path: Vec<u16> = path
             .as_path()
@@ -95,12 +95,12 @@ use windows::Win32::Storage::FileSystem::{
         unsafe {
             let handle = CreateFileW(
                 windows::core::PCWSTR(wide_path.as_ptr()),
- 0u32,                                   // dwDesiredAccess - 0 means query access
+                0u32, // dwDesiredAccess - 0 means query access
                 FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0), // dwShareMode
-                std::option::Option::None,              // lpSecurityAttributes
-                OPEN_EXISTING,                          // dwCreationDisposition
+                std::option::Option::None, // lpSecurityAttributes
+                OPEN_EXISTING, // dwCreationDisposition
                 FILE_FLAGS_AND_ATTRIBUTES(FILE_FLAG_BACKUP_SEMANTICS.0), // dwFlagsAndAttributes
-                None,                                   // hTemplateFile
+                None, // hTemplateFile
             );
 
             let handle = match handle {
@@ -109,10 +109,7 @@ use windows::Win32::Storage::FileSystem::{
             };
 
             let mut basic_info: FILE_BASIC_INFO = std::mem::zeroed();
-            let result = GetFileInformationByHandle(
-                handle,
-                &mut basic_info as *mut _ as *mut _,
-            );
+            let result = GetFileInformationByHandle(handle, &mut basic_info as *mut _ as *mut _);
 
             let _ = CloseHandle(handle);
 
@@ -148,10 +145,7 @@ use windows::Win32::Storage::FileSystem::{
 
         let file = fs::File::open(tags_path)?;
         let reader = BufReader::new(file);
-        let tags: Vec<String> = reader
-            .lines()
-            .filter_map(|line| line.ok())
-            .collect();
+        let tags: Vec<String> = reader.lines().filter_map(|line| line.ok()).collect();
 
         Ok(tags)
     }
@@ -325,7 +319,7 @@ use windows::Win32::Storage::FileSystem::{
              FROM file_tags ft
              LEFT JOIN tags t ON ft.tag = t.name
              WHERE ft.path = ?1
-             ORDER BY ft.tag"
+             ORDER BY ft.tag",
         )?;
         let tags = stmt
             .query_map(params![path.as_path().to_string_lossy()], |row| {
@@ -344,7 +338,7 @@ use windows::Win32::Storage::FileSystem::{
              FROM file_tags ft
              LEFT JOIN tags t ON ft.tag = t.name
              WHERE ft.frn = ?1
-             ORDER BY ft.tag"
+             ORDER BY ft.tag",
         )?;
         let tags = stmt
             .query_map(params![frn_i64], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -360,7 +354,7 @@ use windows::Win32::Storage::FileSystem::{
              FROM tags t
              LEFT JOIN file_tags ft ON t.name = ft.tag
              GROUP BY t.name
-             ORDER BY count DESC, t.name ASC"
+             ORDER BY count DESC, t.name ASC",
         )?;
         let tags = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?

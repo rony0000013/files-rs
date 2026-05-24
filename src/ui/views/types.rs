@@ -1,12 +1,12 @@
-use crate::core::path_util::FilesPath;
-use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::config::config::{GroupColumn, SortBy, ViewMode};
-use crate::domain::metadata::FileItem;
+use crate::core::path_util::FilesPath;
 use crate::domain::extended_metadata::ExtendedMetadataExtractor;
+use crate::domain::metadata::FileItem;
+use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::storage::storage::FileType;
 use crate::ui::components::dialogs::{DialogType, SettingsTab};
-use crate::ui::constants::UiConstants;
 use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, ThumbnailRenderer};
+use crate::ui::constants::UiConstants;
 use gpui::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -60,8 +60,8 @@ pub enum PaneType {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum DualPaneSplit {
     #[default]
-    Horizontal,  // side-by-side
-    Vertical,    // top-and-bottom
+    Horizontal, // side-by-side
+    Vertical, // top-and-bottom
 }
 
 /// Selection mode
@@ -69,8 +69,8 @@ pub enum DualPaneSplit {
 pub enum SelectionMode {
     #[default]
     Normal,
-    Checkbox,   // checkboxes on each row
-    HoverSelect,// hover triggers selection
+    Checkbox,    // checkboxes on each row
+    HoverSelect, // hover triggers selection
 }
 
 /// Fit mode for folder background images
@@ -93,7 +93,11 @@ pub struct FolderBackground {
 
 impl Default for FolderBackground {
     fn default() -> Self {
-        Self { image_path: None, opacity: 0.3, fit: BackgroundFit::Fill }
+        Self {
+            image_path: None,
+            opacity: 0.3,
+            fit: BackgroundFit::Fill,
+        }
     }
 }
 
@@ -137,10 +141,7 @@ impl LassoState {
         let max_x = self.start.x.max(self.current.x);
         let min_y = self.start.y.min(self.current.y);
         let max_y = self.start.y.max(self.current.y);
-        (
-            point(min_x, min_y),
-            point(max_x, max_y),
-        )
+        (point(min_x, min_y), point(max_x, max_y))
     }
 
     /// Check if the drag has exceeded the minimum threshold to be considered a lasso drag
@@ -394,13 +395,26 @@ impl Default for ToolbarCustomizationState {
     fn default() -> Self {
         let mut map = std::collections::HashMap::new();
         for id in &[
-            "new_folder", "new_file", "cut", "copy", "paste",
-            "delete", "rename", "details_view", "grid_view", "columns_view",
-            "preview_pane", "info_pane", "compact_mode", "search",
+            "new_folder",
+            "new_file",
+            "cut",
+            "copy",
+            "paste",
+            "delete",
+            "rename",
+            "details_view",
+            "grid_view",
+            "columns_view",
+            "preview_pane",
+            "info_pane",
+            "compact_mode",
+            "search",
         ] {
             map.insert(id.to_string(), true);
         }
-        Self { visible_buttons: map }
+        Self {
+            visible_buttons: map,
+        }
     }
 }
 
@@ -542,7 +556,8 @@ pub struct MainViewState {
     pub lasso_state: Option<LassoState>,
     /// Cached icon file paths for Windows Shell icons (populated by background extraction)
     #[serde(skip)]
-    pub icon_paths: std::collections::HashMap<crate::core::path_util::FilesPath, std::path::PathBuf>,
+    pub icon_paths:
+        std::collections::HashMap<crate::core::path_util::FilesPath, std::path::PathBuf>,
     /// Drag operation state (runtime-only, not persisted)
     #[serde(skip)]
     pub drag_state: DragState,

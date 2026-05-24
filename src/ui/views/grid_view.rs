@@ -83,7 +83,7 @@ impl MainViewState {
         div()
             .flex_col()
             .w_full()
-            .flex_grow()
+            .flex_1()
             // NO overflow_hidden() - would block child scroll events
             .id("grid-container")
             .on_mouse_down(MouseButton::Right, {
@@ -112,34 +112,53 @@ impl MainViewState {
                             .map(|row_idx| {
                                 let start = row_idx * params.items_per_row;
                                 let end = (start + params.items_per_row).min(visible_clone.len());
+                                let items_in_row = end - start;
+
+                                // Collect real grid items + add invisible fillers so every row has
+                                // the same number of children — prevents last-row flex-grow stretch
+                                let mut row_children: Vec<AnyElement> = (start..end).map(|i| {
+                                    let idx = visible_clone[i];
+                                    let item = &fi.items[idx];
+                                    let is_selected = selected.contains(&idx);
+                                    Self::grid_item(
+                                        item,
+                                        idx,
+                                        is_selected,
+                                        sel_mode.clone(),
+                                        view.clone(),
+                                        icon_paths,
+                                        &params,
+                                        compact,
+                                    )
+                                    .into_any_element()
+                                }).collect();
+
+                                // Add invisible filler items so all rows have equal children count
+                                for _ in items_in_row..params.items_per_row {
+                                    row_children.push(
+                                        div()
+                                            .min_w(px(params.item_width))
+                                            .flex_1()
+                                            .invisible()
+                                            .into_any_element(),
+                                    );
+                                }
 
                                 div()
+                                    .w_full()
                                     .flex()
                                     .flex_row()
                                     .h(px(params.row_height))
                                     .gap(px(params.gap))
                                     .px(px(params.padding))
-                                    .children((start..end).map(|i| {
-                                        let idx = visible_clone[i];
-                                        let item = &fi.items[idx];
-                                        let is_selected = selected.contains(&idx);
-                                        Self::grid_item(
-                                            item,
-                                            idx,
-                                            is_selected,
-                                            sel_mode.clone(),
-                                            view.clone(),
-                                            icon_paths,
-                                            &params,
-                                            compact,
-                                        )
-                                        .into_any_element()
-                                    }))
+                                    .children(row_children)
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()
                     }
                 })
+                .w_full()
+                .h_full()
                 .track_scroll(self.uniform_list_scroll_handle.clone()),
             )
     }
@@ -160,7 +179,7 @@ impl MainViewState {
         div()
             .flex_col()
             .w_full()
-            .flex_grow()
+            .flex_1()
             // NO h_full() + overflow_hidden() - conflict with flex_grow and block scroll
             .child(
                 uniform_list("grid-grouped-scroll", item_count, {
@@ -243,32 +262,53 @@ impl MainViewState {
                                 }
                                 GroupedGridItem::Row(indices) => {
                                     let indices = indices.clone();
+                                    let items_in_row = indices.len();
+
+                                    // Collect real grid items + add invisible fillers so every row has
+                                    // the same number of children — prevents last-row flex-grow stretch
+                                    let mut row_children: Vec<AnyElement> = indices.iter().map(|idx| {
+                                        let item = &fi.items[*idx];
+                                        let selected = fi.selected_indices.contains(idx);
+                                        Self::grid_item(
+                                            item,
+                                            *idx,
+                                            selected,
+                                            sel_mode.clone(),
+                                            view.clone(),
+                                            icon_paths,
+                                            &params,
+                                            compact,
+                                        )
+                                        .into_any_element()
+                                    }).collect();
+
+                                    // Add invisible filler items so all rows have equal children count
+                                    for _ in items_in_row..params.items_per_row {
+                                        row_children.push(
+                                            div()
+                                                .min_w(px(params.item_width))
+                                                .flex_1()
+                                                .invisible()
+                                                .into_any_element(),
+                                        );
+                                    }
+
                                     div()
+                                        .w_full()
                                         .flex()
                                         .flex_row()
                                         .gap(px(params.gap))
                                         .px(px(params.padding))
                                         .py(px(params.gap * 0.5))
-                                        .children(indices.into_iter().map(|idx| {
-                                            let item = &fi.items[idx];
-                                            let selected = fi.selected_indices.contains(&idx);
-                                            Self::grid_item(
-                                                item,
-                                                idx,
-                                                selected,
-                                                sel_mode.clone(),
-                                                view.clone(),
-                                                icon_paths,
-                                                &params,
-                                                compact,
-                                            )
-                                        }))
+                                        .children(row_children)
                                         .into_any_element()
                                 }
                             })
                             .collect::<Vec<_>>()
                     }
                 })
+                .w_full()
+                .h_full()
                 .track_scroll(self.uniform_list_scroll_handle.clone()),
             )
     }
@@ -315,7 +355,8 @@ impl MainViewState {
             // Show image thumbnail with optional checkbox
             let mut item_div = div()
                 .id(ElementId::from(70000 + index))
-                .w(px(item_width))
+                .min_w(px(item_width))
+                .flex_1()
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
@@ -453,7 +494,8 @@ impl MainViewState {
 
             let mut item_div = div()
                 .id(ElementId::from(70000 + index))
-                .w(px(item_width))
+                .min_w(px(item_width))
+                .flex_1()
                 .h(px(item_height))
                 .flex_col()
                 .items_center()

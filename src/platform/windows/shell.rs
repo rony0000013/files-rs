@@ -48,13 +48,18 @@ impl ContextMenuHost {
     ) -> Result<()> {
         tracing::info!(
             "Showing context menu at ({}, {}) for {} items, is_background={}",
-            x, y, selected_paths.len(), is_background
+            x,
+            y,
+            selected_paths.len(),
+            is_background
         );
 
         self.com_thread.execute(move || {
             tracing::info!(
                 "STA Thread: Displaying context menu for HWND {} at ({}, {})",
-                window_handle, x, y
+                window_handle,
+                x,
+                y
             );
         });
 
@@ -68,8 +73,8 @@ impl ContextMenuHost {
 
     #[cfg(windows)]
     fn add_recent_path(&self, path: FilesPath) {
-        use windows::Win32::UI::Shell::{SHAddToRecentDocs, SHARD_PATHW};
         use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::UI::Shell::{SHAddToRecentDocs, SHARD_PATHW};
 
         let mut recent = self.recent_paths.lock().unwrap();
         recent.retain(|p| p != &path);
@@ -164,13 +169,15 @@ impl ContextMenuHost {
 
     #[cfg(windows)]
     fn do_cut(&self, paths: &[FilesPath]) -> Result<()> {
-        use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Foundation::{BOOL, HANDLE};
         use windows::Win32::System::DataExchange::{
-            OpenClipboard, EmptyClipboard, SetClipboardData, CloseClipboard,
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows::Win32::System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
         };
         use windows::Win32::UI::Shell::DROPFILES;
-        use windows::Win32::Foundation::{BOOL, HANDLE};
-        use std::os::windows::ffi::OsStrExt;
 
         // CF_HDROP clipboard format = 15
         const CF_HDROP: u32 = 15;
@@ -178,7 +185,14 @@ impl ContextMenuHost {
         unsafe {
             let wide_paths: Vec<Vec<u16>> = paths
                 .iter()
-                .map(|p| p.as_path().as_os_str().to_os_string().encode_wide().chain(std::iter::once(0)).collect())
+                .map(|p| {
+                    p.as_path()
+                        .as_os_str()
+                        .to_os_string()
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect()
+                })
                 .collect();
 
             let mut total_size = std::mem::size_of::<DROPFILES>();
@@ -197,7 +211,11 @@ impl ContextMenuHost {
             let mut offset = std::mem::size_of::<DROPFILES>();
             for wp in &wide_paths {
                 let src = wp.as_slice();
-                std::ptr::copy_nonoverlapping(src.as_ptr(), (ptr as *mut u8).add(offset) as *mut u16, src.len());
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    (ptr as *mut u8).add(offset) as *mut u16,
+                    src.len(),
+                );
                 offset += src.len() * 2;
             }
             *(ptr as *mut u16).add(offset / 2) = 0;
@@ -206,7 +224,7 @@ impl ContextMenuHost {
             GlobalUnlock(hmem);
             OpenClipboard(None)?;
             EmptyClipboard()?;
-            
+
             let hdrop = HANDLE(hmem.0 as isize);
             let _ = SetClipboardData(CF_HDROP, hdrop);
             CloseClipboard()?;
@@ -248,7 +266,11 @@ impl ContextMenuHost {
 
     #[cfg(not(windows))]
     fn do_delete(&self, path: &FilesPath, permanent: bool) -> Result<()> {
-        tracing::warn!("Delete not implemented on non-Windows: {:?} permanent={}", path, permanent);
+        tracing::warn!(
+            "Delete not implemented on non-Windows: {:?} permanent={}",
+            path,
+            permanent
+        );
         Ok(())
     }
 
@@ -290,7 +312,11 @@ impl ContextMenuHost {
     fn do_custom_verb(&self, verb_id: u32, paths: &[FilesPath]) -> Result<()> {
         // Custom verbs are stored without callback - they would need to be invoked differently
         // For now, just log the attempt
-        tracing::warn!("Custom verb {} called for {} files (not fully implemented)", verb_id, paths.len());
+        tracing::warn!(
+            "Custom verb {} called for {} files (not fully implemented)",
+            verb_id,
+            paths.len()
+        );
         Ok(())
     }
 
@@ -386,7 +412,10 @@ impl ExtendedContextMenu {
     }
 
     pub fn get_items_at_position(&self, position: MenuPosition) -> Vec<&ExtendedMenuItem> {
-        self.extended_items.iter().filter(|item| item.position == position).collect()
+        self.extended_items
+            .iter()
+            .filter(|item| item.position == position)
+            .collect()
     }
 }
 
@@ -832,7 +861,9 @@ impl ShellProperties {
         None
     }
 
-    pub fn get_all_properties(_path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    pub fn get_all_properties(
+        _path: &std::path::Path,
+    ) -> std::collections::HashMap<String, String> {
         std::collections::HashMap::new()
     }
 

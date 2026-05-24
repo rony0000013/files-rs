@@ -51,9 +51,26 @@ impl PlayAllService {
 
         matches!(
             ext.as_str(),
-            "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "wma" | "ape" | "opus"
-                | "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" | "mpg"
-                | "mpeg" | "3gp"
+            "mp3"
+                | "wav"
+                | "flac"
+                | "aac"
+                | "m4a"
+                | "ogg"
+                | "wma"
+                | "ape"
+                | "opus"
+                | "mp4"
+                | "avi"
+                | "mkv"
+                | "mov"
+                | "wmv"
+                | "flv"
+                | "webm"
+                | "m4v"
+                | "mpg"
+                | "mpeg"
+                | "3gp"
         )
     }
 
@@ -68,11 +85,7 @@ impl PlayAllService {
 
     /// Plays all media files in the given selection using the default player
     #[cfg(windows)]
-    pub async fn play_all(
-        &self,
-        paths: &[FilesPath],
-        mode: PlaybackMode,
-    ) -> Result<PlayAllResult> {
+    pub async fn play_all(&self, paths: &[FilesPath], mode: PlaybackMode) -> Result<PlayAllResult> {
         use std::process::Command;
 
         // Filter to only media files
@@ -88,11 +101,7 @@ impl PlayAllService {
         }
 
         let file_count = media_files.len() as u32;
-        tracing::info!(
-            "Playing {} media files in {:?} mode",
-            file_count,
-            mode
-        );
+        tracing::info!("Playing {} media files in {:?} mode", file_count, mode);
 
         // On Windows, use PowerShell to play with Windows Media Player or VLC if installed
         // For a playlist, we can use mplayer's playlist feature or create a temporary m3u file
@@ -192,11 +201,7 @@ impl PlayAllService {
 
     /// Plays all media files (non-Windows stub)
     #[cfg(not(windows))]
-    pub async fn play_all(
-        &self,
-        paths: &[FilesPath],
-        mode: PlaybackMode,
-    ) -> Result<PlayAllResult> {
+    pub async fn play_all(&self, paths: &[FilesPath], mode: PlaybackMode) -> Result<PlayAllResult> {
         let _ = paths;
         let _ = mode;
 

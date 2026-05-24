@@ -75,10 +75,11 @@ impl MainViewState {
                     .child(
                         div()
                             .id("col1-content")
-                            .flex_grow()
+                            .flex_1()
+                            .h_full()
                             .flex_col()
                             .p(px(4.0))
-                            .overflow_y_scroll()
+                            .overflow_hidden()
                             .track_scroll(&self.scroll_handle)
                             .child(
                                 div()
@@ -106,6 +107,7 @@ impl MainViewState {
             .child(
                 div()
                     .w(px(240.0))
+                    .flex_1()
                     .h_full()
                     .flex_col()
                     .border_r(px(1.0))
@@ -222,6 +224,7 @@ impl MainViewState {
                                     }).collect::<Vec<_>>()
                             }
                         })
+                        .h_full()
                         .track_scroll(self.uniform_list_scroll_handle.clone()),
                     ),
             )
@@ -303,10 +306,11 @@ impl MainViewState {
                     .child(
                         div()
                             .id("col1-content")
-                            .flex_grow()
+                            .flex_1()
+                            .h_full()
                             .flex_col()
                             .p(px(4.0))
-                            .overflow_y_scroll()
+                            .overflow_hidden()
                             .track_scroll(&self.scroll_handle)
                             .child(
                                 div()
@@ -334,6 +338,7 @@ impl MainViewState {
             .child(
                 div()
                     .w(px(240.0))
+                    .flex_1()
                     .h_full()
                     .flex_col()
                     .border_r(px(1.0))
@@ -501,6 +506,7 @@ impl MainViewState {
                                     }).collect::<Vec<_>>()
                             }
                         })
+                        .h_full()
                         .track_scroll(self.uniform_list_scroll_handle.clone()),
                     ),
             )

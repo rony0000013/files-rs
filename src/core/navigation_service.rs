@@ -196,7 +196,10 @@ mod tests {
     #[test]
     fn test_can_go_back_true() {
         let mut state = make_state("/home/user/test");
-        state.tabs.active_tab_mut().navigate(make_path("/home/user"));
+        state
+            .tabs
+            .active_tab_mut()
+            .navigate(make_path("/home/user"));
 
         assert!(NavigationService::can_go_back(&state));
     }
@@ -210,7 +213,10 @@ mod tests {
     #[test]
     fn test_can_go_forward_true() {
         let mut state = make_state("/home/user/test");
-        state.tabs.active_tab_mut().navigate(make_path("/home/user"));
+        state
+            .tabs
+            .active_tab_mut()
+            .navigate(make_path("/home/user"));
         state.tabs.active_tab_mut().navigate_back();
 
         assert!(NavigationService::can_go_forward(&state));
@@ -225,7 +231,10 @@ mod tests {
     #[test]
     fn test_back_history() {
         let mut state = make_state("/home/user/test");
-        state.tabs.active_tab_mut().navigate(make_path("/home/user"));
+        state
+            .tabs
+            .active_tab_mut()
+            .navigate(make_path("/home/user"));
         state.tabs.active_tab_mut().navigate(make_path("/home"));
 
         let history = NavigationService::back_history(&state);
@@ -235,7 +244,10 @@ mod tests {
     #[test]
     fn test_forward_history() {
         let mut state = make_state("/home/user/test");
-        state.tabs.active_tab_mut().navigate(make_path("/home/user"));
+        state
+            .tabs
+            .active_tab_mut()
+            .navigate(make_path("/home/user"));
         state.tabs.active_tab_mut().navigate_back();
 
         let history = NavigationService::forward_history(&state);
@@ -262,7 +274,13 @@ mod tests {
         NavigationService::navigate_to_path(&mut state, make_path("/home/downloads"));
 
         assert_eq!(
-            state.tabs.active_tab().secondary_pane_path.as_ref().unwrap().as_path(),
+            state
+                .tabs
+                .active_tab()
+                .secondary_pane_path
+                .as_ref()
+                .unwrap()
+                .as_path(),
             PathBuf::from("/home/downloads")
         );
     }

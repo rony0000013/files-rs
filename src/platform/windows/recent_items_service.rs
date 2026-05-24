@@ -33,7 +33,10 @@ impl RecentItemsService {
     /// Refresh recent items from the Windows Recent folder
     pub async fn refresh_recent(&self) -> Result<Vec<RecentItem>> {
         let recent_path = if let Some(appdata) = std::env::var_os("APPDATA") {
-            PathBuf::from(appdata).join("Microsoft").join("Windows").join("Recent")
+            PathBuf::from(appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Recent")
         } else {
             return Err(anyhow!("Could not find Recent folder"));
         };
@@ -60,9 +63,7 @@ impl RecentItemsService {
 
             // Get file metadata for access time
             if let Ok(metadata) = entry.metadata() {
-                let accessed_at = metadata
-                    .accessed()
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let accessed_at = metadata.accessed().unwrap_or(SystemTime::UNIX_EPOCH);
 
                 // Skip items older than 30 days
                 let thirty_days = Duration::from_secs(30 * 24 * 60 * 60);
@@ -154,10 +155,7 @@ impl RecentItemsService {
                 if (c >= b'A' && c <= b'Z') || (c >= b'a' && c <= b'z') {
                     if wide_chars[i + 1] == b':' as u16 && wide_chars[i + 2] == b'\\' as u16 {
                         // Found a drive path - extract until null terminator
-                        let end = wide_chars[i..]
-                            .iter()
-                            .position(|&c| c == 0)
-                            .unwrap_or(100);
+                        let end = wide_chars[i..].iter().position(|&c| c == 0).unwrap_or(100);
                         let path_chars = &wide_chars[i..i + end];
                         if let Ok(path) = String::from_utf16(path_chars) {
                             if !path.is_empty() && path.contains('\\') {
@@ -218,7 +216,10 @@ impl RecentItemsService {
     /// Clear all recent items
     pub async fn clear_recent(&self) -> Result<()> {
         let recent_path = if let Some(appdata) = std::env::var_os("APPDATA") {
-            PathBuf::from(appdata).join("Microsoft").join("Windows").join("Recent")
+            PathBuf::from(appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Recent")
         } else {
             return Err(anyhow!("Could not find Recent folder"));
         };

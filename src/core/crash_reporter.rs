@@ -37,9 +37,7 @@ impl CrashReporter {
                 let guard = sentry::init((
                     dsn_str,
                     sentry::ClientOptions {
-                        release: Some(
-                            format!("files-rs@{}", env!("CARGO_PKG_VERSION")).into(),
-                        ),
+                        release: Some(format!("files-rs@{}", env!("CARGO_PKG_VERSION")).into()),
                         environment: Some(
                             std::env::var("SENTRY_ENVIRONMENT")
                                 .unwrap_or_else(|_| "production".to_string())
@@ -57,7 +55,9 @@ impl CrashReporter {
 
                 tracing::debug!("Sentry crash reporter initialized successfully");
 
-                Self { _guard: Some(guard) }
+                Self {
+                    _guard: Some(guard),
+                }
             }
             _ => {
                 tracing::debug!("SENTRY_DSN not set — crash reporter disabled");

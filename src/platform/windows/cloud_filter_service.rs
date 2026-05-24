@@ -16,11 +16,11 @@ pub enum CloudSyncStatus {
     Synced,          // File is synced and up-to-date
     Syncing,         // File is currently syncing
     PendingUpload,   // Local changes pending upload
-    PendingDownload,  // Remote changes pending download
+    PendingDownload, // Remote changes pending download
     PendingDelete,   // File pending deletion
     Conflict,        // Sync conflict detected
     Error,           // Sync error occurred
-    Excluded,         // File excluded from sync (e.g., selective sync)
+    Excluded,        // File excluded from sync (e.g., selective sync)
 }
 
 /// Information about a cloud storage provider
@@ -54,12 +54,13 @@ impl CloudFilterService {
     #[cfg(windows)]
     pub fn get_sync_status(path: &FilesPath) -> Result<CloudSyncStatus> {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Storage::FileSystem::{
-            CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_MODE,
-            GetFileAttributesExW, GetFileInformationByHandle, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, GetFileExInfoStandard, FILE_BASIC_INFO,
-        };
         use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandle,
+            FILE_BASIC_INFO, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+        };
 
         let wide_path: Vec<u16> = path
             .as_path()
@@ -71,12 +72,14 @@ impl CloudFilterService {
         unsafe {
             let handle = CreateFileW(
                 windows::core::PCWSTR(wide_path.as_ptr()),
-                0u32, // dwDesiredAccess
+                0u32,                                                    // dwDesiredAccess
                 FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0), // dwShareMode
-                std::option::Option::None, // lpSecurityAttributes
-                OPEN_EXISTING, // dwCreationDisposition
-                FILE_FLAGS_AND_ATTRIBUTES(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0), // dwFlagsAndAttributes
-                None, // hTemplateFile
+                std::option::Option::None,                               // lpSecurityAttributes
+                OPEN_EXISTING,                                           // dwCreationDisposition
+                FILE_FLAGS_AND_ATTRIBUTES(
+                    FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0,
+                ), // dwFlagsAndAttributes
+                None,                                                    // hTemplateFile
             );
 
             let handle = match handle {
@@ -85,10 +88,7 @@ impl CloudFilterService {
             };
 
             let mut basic_info: FILE_BASIC_INFO = std::mem::zeroed();
-            let result = GetFileInformationByHandle(
-                handle,
-                &mut basic_info as *mut _ as *mut _,
-            );
+            let result = GetFileInformationByHandle(handle, &mut basic_info as *mut _ as *mut _);
 
             let _ = CloseHandle(handle);
 
@@ -158,7 +158,9 @@ impl CloudFilterService {
 
         // Also check via WMI for registered cloud providers
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(shell_folders) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace") {
+        if let Ok(shell_folders) = hkcu.open_subkey(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace",
+        ) {
             for value_result in shell_folders.enum_values() {
                 if let Ok((name, _)) = value_result {
                     // Look for cloud provider GUIDs
@@ -200,10 +202,7 @@ impl CloudFilterService {
                 path_str.to_string()
             };
 
-            let wide_root: Vec<u16> = root
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_root: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
 
             unsafe {
                 let mut free_bytes: u64 = 0;
@@ -339,17 +338,38 @@ mod tests {
 
     #[test]
     fn test_sync_status_description() {
-        assert_eq!(CloudFilterService::get_sync_status_description(CloudSyncStatus::Synced), "Synced");
-        assert_eq!(CloudFilterService::get_sync_status_description(CloudSyncStatus::Syncing), "Syncing");
-        assert_eq!(CloudFilterService::get_sync_status_description(CloudSyncStatus::Conflict), "Conflict");
+        assert_eq!(
+            CloudFilterService::get_sync_status_description(CloudSyncStatus::Synced),
+            "Synced"
+        );
+        assert_eq!(
+            CloudFilterService::get_sync_status_description(CloudSyncStatus::Syncing),
+            "Syncing"
+        );
+        assert_eq!(
+            CloudFilterService::get_sync_status_description(CloudSyncStatus::Conflict),
+            "Conflict"
+        );
     }
 
     #[test]
     fn test_detect_provider_name() {
-        assert_eq!(CloudFilterService::detect_provider_name("C:\\Users\\Test\\OneDrive\\Docs"), "OneDrive");
-        assert_eq!(CloudFilterService::detect_provider_name("D:\\Dropbox\\Files"), "Dropbox");
-        assert_eq!(CloudFilterService::detect_provider_name("E:\\Google Drive"), "Google Drive");
-        assert_eq!(CloudFilterService::detect_provider_name("C:\\Random\\Folder"), "Cloud Storage");
+        assert_eq!(
+            CloudFilterService::detect_provider_name("C:\\Users\\Test\\OneDrive\\Docs"),
+            "OneDrive"
+        );
+        assert_eq!(
+            CloudFilterService::detect_provider_name("D:\\Dropbox\\Files"),
+            "Dropbox"
+        );
+        assert_eq!(
+            CloudFilterService::detect_provider_name("E:\\Google Drive"),
+            "Google Drive"
+        );
+        assert_eq!(
+            CloudFilterService::detect_provider_name("C:\\Random\\Folder"),
+            "Cloud Storage"
+        );
     }
 
     #[test]

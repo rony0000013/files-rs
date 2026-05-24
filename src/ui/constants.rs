@@ -7,32 +7,32 @@ impl UiConstants {
     // ─────────────────────────────────────────────────────────────────────────────
     // COLORS — Backgrounds (Layered for Mica)
     // ─────────────────────────────────────────────────────────────────────────────
-    
+
     /// Main window background (Solid)
     pub const BG_MAIN_RGBA: u32 = 0x1C1C1CFF;
     pub const BG_MAIN_RGB: u32 = 0x1C1C1C;
-    
+
     /// Sidebar background (Solid dark)
     pub const BG_SIDEBAR_RGBA: u32 = 0x202020FF;
     pub const BG_SIDEBAR_RGB: u32 = 0x202020;
-    
+
     /// Dialog background
     pub const BG_DIALOG_RGB: u32 = 0x202020;
-    
+
     /// Tab Bar background
     pub const BG_TAB_BAR_RGBA: u32 = 0x1A1A1AFF;
-    
+
     /// Navigation / Breadcrumb Bar background
     pub const BG_NAV_BAR_RGBA: u32 = 0x1C1C1CFF;
     pub const BG_NAV_BAR_RGB: u32 = 0x1C1C1C;
-    
+
     /// Toolbar background (Solid card)
     pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CFF;
     pub const BG_TOOLBAR_RGB: u32 = 0x2C2C2C;
-    
+
     /// Status bar background
     pub const BG_STATUS_BAR_RGBA: u32 = 0x2C2C2CFF;
-    
+
     /// Inactive pane dimming
     pub const BG_INACTIVE_PANE_RGBA: u32 = 0x00000014;
 
@@ -47,7 +47,7 @@ impl UiConstants {
 
     /// Badge background (~20% white)
     pub const BG_BADGE_RGBA: u32 = 0xFFFFFF33;
-    
+
     /// Transparent fallback
     pub const BG_TRANSPARENT_RGBA: u32 = 0x00000000;
 
@@ -123,7 +123,7 @@ impl UiConstants {
     pub const PADDING_MEDIUM_RAW: f64 = 8.0;
     pub const PADDING_SMALL_RAW: f64 = 4.0;
     pub const BORDER_RADIUS_SMALL_RAW: f64 = 4.0;
-    
+
     pub const ICON_SIZE_RAW: f64 = 24.0;
     pub const ICON_SIZE_MEDIUM: f64 = 16.0;
     pub const ICON_SIZE_SIDEBAR: f64 = 16.0;

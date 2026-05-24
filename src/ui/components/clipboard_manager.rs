@@ -467,14 +467,8 @@ mod tests {
 
     #[test]
     fn test_clipboard_operation_variants() {
-        assert!(matches!(
-            ClipboardOperation::Cut,
-            ClipboardOperation::Cut
-        ));
-        assert!(matches!(
-            ClipboardOperation::Copy,
-            ClipboardOperation::Copy
-        ));
+        assert!(matches!(ClipboardOperation::Cut, ClipboardOperation::Cut));
+        assert!(matches!(ClipboardOperation::Copy, ClipboardOperation::Copy));
     }
 
     #[test]

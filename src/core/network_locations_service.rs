@@ -104,7 +104,7 @@ impl NetworkLocationsService {
     /// On Windows, this uses WNetEnumResources or SMB APIs
     pub fn enumerate(&mut self) -> Vec<NetworkLocation> {
         self.locations.clear();
-        
+
         #[cfg(windows)]
         {
             // Enumerate mapped drives
@@ -112,10 +112,10 @@ impl NetworkLocationsService {
             // Enumerate SMB shares
             self.enumerate_smb_shares();
         }
-        
+
         // On non-Windows, we can't enumerate network locations without platform-specific code
         // The service still provides the structure for manual addition
-        
+
         self.locations.clone()
     }
 
@@ -126,7 +126,7 @@ impl NetworkLocationsService {
         for letter in b'A'..=b'Z' {
             let drive_str = format!("{}:", letter as char);
             let drive_path = std::path::Path::new(&drive_str);
-            
+
             if drive_path.exists() {
                 // Check if it's a network drive by trying to get its real path
                 // A local drive will resolve to itself, a network drive won't
@@ -151,13 +151,11 @@ impl NetworkLocationsService {
     #[cfg(windows)]
     fn enumerate_smb_shares(&mut self) {
         use std::process::Command;
-        
+
         // Use net view to enumerate shares on the local network
         // This is a basic implementation - a full implementation would use SMB APIs
-        let output = Command::new("net")
-            .args(["view", "/domain"])
-            .output();
-            
+        let output = Command::new("net").args(["view", "/domain"]).output();
+
         if let Ok(out) = output {
             let stdout = String::from_utf8_lossy(&out.stdout);
             // Parse server names from net view output
@@ -179,16 +177,21 @@ impl NetworkLocationsService {
     #[cfg(windows)]
     fn enumerate_shares_for_server(&mut self, server: &str) {
         use std::process::Command;
-        
+
         let output = Command::new("net")
             .args(["view", &format!("\\\\{}", server)])
             .output();
-            
+
         if let Ok(out) = output {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let line = line.trim();
-                if !line.is_empty() && !line.starts_with("Share name") && !line.starts_with("-") && !line.contains("Disk") && !line.contains("IPC") {
+                if !line.is_empty()
+                    && !line.starts_with("Share name")
+                    && !line.starts_with("-")
+                    && !line.contains("Disk")
+                    && !line.contains("IPC")
+                {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if let Some(share_name) = parts.first() {
                         let share_path = format!("\\\\{}\\{}", server, share_name);
@@ -216,7 +219,10 @@ impl NetworkLocationsService {
     }
 
     /// Get locations by type
-    pub fn get_locations_by_type(&self, location_type: NetworkLocationType) -> Vec<&NetworkLocation> {
+    pub fn get_locations_by_type(
+        &self,
+        location_type: NetworkLocationType,
+    ) -> Vec<&NetworkLocation> {
         self.locations
             .iter()
             .filter(|l| l.location_type == location_type)
@@ -233,27 +239,30 @@ impl NetworkLocationsService {
 
     /// Connect to a network location
     /// On Windows, this uses WNetAddConnection2
-    pub fn connect(&self, location: &NetworkLocation, username: Option<&str>, password: Option<&str>) -> Result<FilesPath, String> {
+    pub fn connect(
+        &self,
+        location: &NetworkLocation,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<FilesPath, String> {
         #[cfg(windows)]
         {
             use std::process::Command;
-            
+
             let path = &location.path;
-            
+
             // Build the net use command
             let mut args = vec!["use".to_string(), path.clone()];
-            
+
             if let (Some(user), Some(pass)) = (username, password) {
                 args.push(format!("/user:{}", user));
                 args.push(pass.to_string());
             } else if let Some(user) = username {
                 args.push(format!("/user:{}", user));
             }
-            
-            let output = Command::new("net")
-                .args(&args)
-                .output();
-                
+
+            let output = Command::new("net").args(&args).output();
+
             match output {
                 Ok(out) if out.status.success() => {
                     tracing::info!("Connected to network location: {}", path);
@@ -266,7 +275,7 @@ impl NetworkLocationsService {
                 Err(e) => Err(format!("Failed to execute net use: {}", e)),
             }
         }
-        
+
         #[cfg(not(windows))]
         {
             Err("Network connect is only available on Windows".to_string())
@@ -278,11 +287,9 @@ impl NetworkLocationsService {
         #[cfg(windows)]
         {
             use std::process::Command;
-            
-            let output = Command::new("net")
-                .args(["use", path, "/delete"])
-                .output();
-                
+
+            let output = Command::new("net").args(["use", path, "/delete"]).output();
+
             match output {
                 Ok(out) if out.status.success() => {
                     tracing::info!("Disconnected from: {}", path);
@@ -295,7 +302,7 @@ impl NetworkLocationsService {
                 Err(e) => Err(format!("Failed to execute net use: {}", e)),
             }
         }
-        
+
         #[cfg(not(windows))]
         {
             Err("Network disconnect is only available on Windows".to_string())
@@ -305,12 +312,12 @@ impl NetworkLocationsService {
     /// Check if a path is a network location
     pub fn is_network_path(path: &FilesPath) -> bool {
         let path_str = path.as_path().to_string_lossy();
-        
+
         // Check for UNC path
         if path_str.starts_with("\\\\") {
             return true;
         }
-        
+
         // Check for mapped drive
         if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
             let drive_letter = path_str.chars().next().unwrap();
@@ -318,16 +325,20 @@ impl NetworkLocationsService {
                 let drive_path = format!("{}:", drive_letter);
                 if let Ok(canonical) = std::fs::canonicalize(&drive_path) {
                     let canonical_str = canonical.to_string_lossy();
-                    return canonical_str.starts_with("\\\\") || canonical_str.starts_with("\\\\?\\");
+                    return canonical_str.starts_with("\\\\")
+                        || canonical_str.starts_with("\\\\?\\");
                 }
             }
         }
-        
+
         // Check for known network protocols
-        if path_str.starts_with("smb://") || path_str.starts_with("nfs://") || path_str.starts_with("ftp://") {
+        if path_str.starts_with("smb://")
+            || path_str.starts_with("nfs://")
+            || path_str.starts_with("ftp://")
+        {
             return true;
         }
-        
+
         false
     }
 
@@ -372,7 +383,7 @@ mod tests {
             "Test Share",
             NetworkLocationType::SmbShare,
         );
-        
+
         service.add_location(location);
         assert_eq!(service.get_locations().len(), 1);
     }
@@ -380,22 +391,22 @@ mod tests {
     #[test]
     fn test_get_locations_by_type() {
         let mut service = NetworkLocationsService::new();
-        
+
         service.add_location(NetworkLocation::new(
             "\\\\server1\\share1",
             "Share 1",
             NetworkLocationType::SmbShare,
         ));
-        
+
         service.add_location(NetworkLocation::new(
             "Z:",
             "Network Drive",
             NetworkLocationType::MappedDrive,
         ));
-        
+
         let smb_locations = service.get_locations_by_type(NetworkLocationType::SmbShare);
         assert_eq!(smb_locations.len(), 1);
-        
+
         let mapped = service.get_locations_by_type(NetworkLocationType::MappedDrive);
         assert_eq!(mapped.len(), 1);
     }
@@ -409,7 +420,7 @@ mod tests {
         )
         .with_drive_letter('Z')
         .with_server_share("server", "documents");
-        
+
         assert_eq!(location.drive_letter, Some('Z'));
         assert_eq!(location.server, Some("server".to_string()));
         assert_eq!(location.share_name, Some("documents".to_string()));
@@ -437,8 +448,9 @@ mod tests {
         let (server, share) = NetworkLocationsService::parse_unc_path("\\\\server\\share").unwrap();
         assert_eq!(server, "server");
         assert_eq!(share, "share");
-        
-        let (server, share) = NetworkLocationsService::parse_unc_path("\\\\server\\share\\folder\\file.txt").unwrap();
+
+        let (server, share) =
+            NetworkLocationsService::parse_unc_path("\\\\server\\share\\folder\\file.txt").unwrap();
         assert_eq!(server, "server");
         assert_eq!(share, "share");
     }
@@ -447,7 +459,7 @@ mod tests {
     fn test_parse_unc_path_invalid() {
         let result = NetworkLocationsService::parse_unc_path("C:\\local\\path");
         assert!(result.is_none());
-        
+
         let result = NetworkLocationsService::parse_unc_path("not a unc path");
         assert!(result.is_none());
     }
@@ -455,7 +467,10 @@ mod tests {
     #[test]
     fn test_network_location_type_descriptions() {
         assert_eq!(NetworkLocationType::SmbShare.description(), "SMB Share");
-        assert_eq!(NetworkLocationType::MappedDrive.description(), "Mapped Drive");
+        assert_eq!(
+            NetworkLocationType::MappedDrive.description(),
+            "Mapped Drive"
+        );
     }
 
     #[test]
@@ -475,16 +490,13 @@ mod tests {
     #[test]
     fn test_get_locations_by_status() {
         let mut service = NetworkLocationsService::new();
-        
-        let mut location = NetworkLocation::new(
-            "\\\\server\\share",
-            "Test",
-            NetworkLocationType::SmbShare,
-        );
+
+        let mut location =
+            NetworkLocation::new("\\\\server\\share", "Test", NetworkLocationType::SmbShare);
         location.status = NetworkStatus::Available;
-        
+
         service.add_location(location);
-        
+
         let available = service.get_locations_by_status(NetworkStatus::Available);
         assert_eq!(available.len(), 1);
     }

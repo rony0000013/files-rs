@@ -41,12 +41,8 @@ impl ReleaseInfo {
 
     /// Compare two semantic versions (simple dot-separated comparison).
     pub fn compare_versions(a: &str, b: &str) -> Ordering {
-        let a_parts: Vec<u64> = a.split('.')
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect();
-        let b_parts: Vec<u64> = b.split('.')
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect();
+        let a_parts: Vec<u64> = a.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
+        let b_parts: Vec<u64> = b.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
 
         for i in 0..a_parts.len().max(b_parts.len()) {
             let a_val = a_parts.get(i).copied().unwrap_or(0);
@@ -68,7 +64,11 @@ impl fmt::Display for ReleaseInfo {
             "{} ({}){}",
             self.name,
             self.tag_name,
-            if self.prerelease { " [pre-release]" } else { "" }
+            if self.prerelease {
+                " [pre-release]"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -128,8 +128,10 @@ impl AppUpdateService {
         let output = std::process::Command::new("curl")
             .args([
                 "-sS",
-                "-H", "Accept: application/vnd.github+json",
-                "-H", "User-Agent: files-rs/0.1.0",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "-H",
+                "User-Agent: files-rs/0.1.0",
                 url,
             ])
             .output()
@@ -299,32 +301,59 @@ mod tests {
 
     #[test]
     fn test_compare_versions_equal() {
-        assert_eq!(ReleaseInfo::compare_versions("0.1.0", "0.1.0"), Ordering::Equal);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1.0", "0.1.0"),
+            Ordering::Equal
+        );
     }
 
     #[test]
     fn test_compare_versions_newer() {
-        assert_eq!(ReleaseInfo::compare_versions("0.2.0", "0.1.0"), Ordering::Greater);
-        assert_eq!(ReleaseInfo::compare_versions("1.0.0", "0.9.9"), Ordering::Greater);
-        assert_eq!(ReleaseInfo::compare_versions("0.1.10", "0.1.9"), Ordering::Greater);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.2.0", "0.1.0"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            ReleaseInfo::compare_versions("1.0.0", "0.9.9"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1.10", "0.1.9"),
+            Ordering::Greater
+        );
     }
 
     #[test]
     fn test_compare_versions_older() {
-        assert_eq!(ReleaseInfo::compare_versions("0.1.0", "0.2.0"), Ordering::Less);
-        assert_eq!(ReleaseInfo::compare_versions("0.9.9", "1.0.0"), Ordering::Less);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1.0", "0.2.0"),
+            Ordering::Less
+        );
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.9.9", "1.0.0"),
+            Ordering::Less
+        );
     }
 
     #[test]
     fn test_compare_versions_different_lengths() {
-        assert_eq!(ReleaseInfo::compare_versions("0.1", "0.1.0"), Ordering::Equal);
-        assert_eq!(ReleaseInfo::compare_versions("0.2", "0.1.9"), Ordering::Greater);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1", "0.1.0"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.2", "0.1.9"),
+            Ordering::Greater
+        );
     }
 
     #[test]
     fn test_compare_versions_non_numeric_fallback() {
         // Non-numeric parts are treated as 0
-        assert_eq!(ReleaseInfo::compare_versions("0.1.0-beta", "0.1.0"), Ordering::Equal);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1.0-beta", "0.1.0"),
+            Ordering::Equal
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -391,7 +420,10 @@ mod tests {
         assert_eq!(release.tag_name, "v0.2.0");
         assert_eq!(release.name, "Version 0.2.0");
         assert!(!release.prerelease);
-        assert_eq!(release.html_url, "https://github.com/user/files-rs/releases/tag/v0.2.0");
+        assert_eq!(
+            release.html_url,
+            "https://github.com/user/files-rs/releases/tag/v0.2.0"
+        );
     }
 
     #[test]
@@ -449,7 +481,10 @@ mod tests {
 
     #[test]
     fn test_compare_versions_vs_no_v() {
-        assert_eq!(ReleaseInfo::compare_versions("0.1.0", "v0.1.0"), Ordering::Equal);
+        assert_eq!(
+            ReleaseInfo::compare_versions("0.1.0", "v0.1.0"),
+            Ordering::Equal
+        );
     }
 
     #[test]

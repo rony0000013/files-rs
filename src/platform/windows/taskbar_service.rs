@@ -100,10 +100,12 @@ impl TaskbarProgressService {
     /// Set the progress state on the taskbar
     #[cfg(windows)]
     pub fn set_state(&self, state: TaskbarProgressState) -> Result<()> {
-        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
-        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
-        use windows::Win32::Foundation::HWND;
         use windows::core::Interface;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 
         let hwnd = {
             let hwnd_guard = self.hwnd.lock().unwrap();
@@ -121,12 +123,15 @@ impl TaskbarProgressService {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
             // Create ITaskbarList3 instance
-            let taskbar: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)?;
+            let taskbar: ITaskbarList3 =
+                CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)?;
 
             // Map our state to Windows TBPFLAG
             let tbp_flag = match state {
                 TaskbarProgressState::None => windows::Win32::UI::Shell::TBPF_NOPROGRESS,
-                TaskbarProgressState::Indeterminate => windows::Win32::UI::Shell::TBPF_INDETERMINATE,
+                TaskbarProgressState::Indeterminate => {
+                    windows::Win32::UI::Shell::TBPF_INDETERMINATE
+                }
                 TaskbarProgressState::Normal => windows::Win32::UI::Shell::TBPF_NORMAL,
                 TaskbarProgressState::Error => windows::Win32::UI::Shell::TBPF_ERROR,
                 TaskbarProgressState::Paused => windows::Win32::UI::Shell::TBPF_PAUSED,
@@ -155,10 +160,12 @@ impl TaskbarProgressService {
     /// Set the progress value (0-100)
     #[cfg(windows)]
     pub fn set_progress(&self, progress: u64) -> Result<()> {
-        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
-        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
-        use windows::Win32::Foundation::HWND;
         use windows::core::Interface;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 
         let hwnd = {
             let hwnd_guard = self.hwnd.lock().unwrap();
@@ -173,14 +180,17 @@ impl TaskbarProgressService {
 
         // Ensure state is Normal when setting progress value
         let current_state = *self.state.lock().unwrap();
-        if current_state != TaskbarProgressState::Normal && current_state != TaskbarProgressState::Paused {
+        if current_state != TaskbarProgressState::Normal
+            && current_state != TaskbarProgressState::Paused
+        {
             self.set_state(TaskbarProgressState::Normal)?;
         }
 
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-            let taskbar: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)?;
+            let taskbar: ITaskbarList3 =
+                CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)?;
 
             // Clamp progress to 0-100
             let clamped = progress.min(100);
@@ -195,12 +205,19 @@ impl TaskbarProgressService {
 
     #[cfg(not(windows))]
     pub fn set_progress(&self, progress: u64) -> Result<()> {
-        tracing::debug!("Taskbar progress value (no-op on non-Windows): {}%", progress);
+        tracing::debug!(
+            "Taskbar progress value (no-op on non-Windows): {}%",
+            progress
+        );
         Ok(())
     }
 
     /// Set both state and progress in one call
-    pub fn set_progress_with_state(&self, progress: u64, state: TaskbarProgressState) -> Result<()> {
+    pub fn set_progress_with_state(
+        &self,
+        progress: u64,
+        state: TaskbarProgressState,
+    ) -> Result<()> {
         if state != TaskbarProgressState::None && state != TaskbarProgressState::Indeterminate {
             self.set_state(state)?;
             self.set_progress(progress)?;
@@ -347,7 +364,7 @@ mod tests {
     #[test]
     fn test_all_states() {
         let service = TaskbarProgressService::new();
-        
+
         // All state transitions should succeed
         for state in [
             TaskbarProgressState::None,
@@ -364,7 +381,7 @@ mod tests {
     #[test]
     fn test_progress_clamps() {
         let service = TaskbarProgressService::new();
-        
+
         // Progress values should be accepted (internal clamping is platform-dependent)
         assert!(service.set_progress(0).is_ok());
         assert!(service.set_progress(50).is_ok());

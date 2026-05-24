@@ -135,8 +135,8 @@ impl QuickAccessService {
         header.extend_from_slice(&0x4C_u32.to_le_bytes());
 
         header.extend_from_slice(&[
-            0x01u8, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+            0x01u8, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
         ]);
 
         let flags: u32 = 0x00000001;
@@ -212,11 +212,17 @@ impl QuickAccessService {
     }
 
     pub async fn pin_folder(&self, path: &FilesPath) -> Result<()> {
-        Err(anyhow!("Quick Access is only available on Windows: {:?}", path))
+        Err(anyhow!(
+            "Quick Access is only available on Windows: {:?}",
+            path
+        ))
     }
 
     pub async fn unpin_folder(&self, path: &FilesPath) -> Result<()> {
-        Err(anyhow!("Quick Access is only available on Windows: {:?}", path))
+        Err(anyhow!(
+            "Quick Access is only available on Windows: {:?}",
+            path
+        ))
     }
 }
 

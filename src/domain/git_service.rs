@@ -141,13 +141,21 @@ impl GitService {
                     GitFileStatus::Clean
                 } else if status.contains(Status::WT_NEW) || status.contains(Status::INDEX_NEW) {
                     GitFileStatus::Added
-                } else if status.contains(Status::WT_MODIFIED) || status.contains(Status::INDEX_MODIFIED) {
+                } else if status.contains(Status::WT_MODIFIED)
+                    || status.contains(Status::INDEX_MODIFIED)
+                {
                     GitFileStatus::Modified
-                } else if status.contains(Status::WT_DELETED) || status.contains(Status::INDEX_DELETED) {
+                } else if status.contains(Status::WT_DELETED)
+                    || status.contains(Status::INDEX_DELETED)
+                {
                     GitFileStatus::Deleted
-                } else if status.contains(Status::WT_RENAMED) || status.contains(Status::INDEX_RENAMED) {
+                } else if status.contains(Status::WT_RENAMED)
+                    || status.contains(Status::INDEX_RENAMED)
+                {
                     GitFileStatus::Renamed
-                } else if status.contains(Status::WT_TYPECHANGE) || status.contains(Status::INDEX_TYPECHANGE) {
+                } else if status.contains(Status::WT_TYPECHANGE)
+                    || status.contains(Status::INDEX_TYPECHANGE)
+                {
                     GitFileStatus::Modified
                 } else if status.contains(Status::IGNORED) {
                     GitFileStatus::Ignored
@@ -175,7 +183,8 @@ impl GitService {
         let seconds = time.seconds();
         let datetime = if seconds >= 0 {
             use std::time::{SystemTime, UNIX_EPOCH};
-            if let Some(d) = UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds as u64)) {
+            if let Some(d) = UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds as u64))
+            {
                 // Convert to time_t and format using localtime_r or simple string
                 format_timestamp(d)
             } else {
@@ -287,7 +296,7 @@ mod tests {
         // or is not in a git repository
         let temp_dir = tempfile::TempDir::new().unwrap();
         let non_git_path = FilesPath::from(temp_dir.path().to_str().unwrap());
-        
+
         // Should fail because the temp dir is not a git repository
         let result = GitService::get_properties(&non_git_path);
         assert!(result.is_err());
@@ -375,7 +384,8 @@ mod tests {
             repo.find_tree(oid).unwrap().id()
         };
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
 
         // Now test get_branch
         let files_path = FilesPath::from(repo_path.to_str().unwrap());
@@ -408,8 +418,15 @@ mod tests {
 
         // Commit
         let sig = git2::Signature::now("Test Author", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "My test commit message", &tree, &[])
-            .unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "My test commit message",
+            &tree,
+            &[],
+        )
+        .unwrap();
 
         // Now test get_last_commit for the file
         let files_path = FilesPath::from(file_path.to_str().unwrap());

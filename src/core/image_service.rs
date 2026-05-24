@@ -38,7 +38,11 @@ impl ImageService {
     }
 
     /// Rotate an image by 90 degrees (lossless for JPEG)
-    pub fn rotate_image(&self, path: &FilesPath, direction: RotationDirection) -> Result<RotationResult> {
+    pub fn rotate_image(
+        &self,
+        path: &FilesPath,
+        direction: RotationDirection,
+    ) -> Result<RotationResult> {
         if !Self::is_supported_image(path.as_path()) {
             return Err(anyhow!("Unsupported image format"));
         }

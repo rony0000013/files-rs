@@ -47,8 +47,8 @@ impl WallpaperService {
             use std::os::windows::prelude::OsStrExt;
             use windows::core::PCWSTR;
             use windows::Win32::UI::WindowsAndMessaging::{
-                SystemParametersInfoW, SPI_SETDESKWALLPAPER, SPIF_UPDATEINIFILE,
-                SPIF_SENDWININICHANGE,
+                SystemParametersInfoW, SPIF_SENDWININICHANGE, SPIF_UPDATEINIFILE,
+                SPI_SETDESKWALLPAPER,
             };
 
             tracing::info!("Setting wallpaper to: {}", path_str);
@@ -96,10 +96,10 @@ impl WallpaperService {
         {
             use std::ffi::OsStr;
             use std::os::windows::prelude::OsStrExt;
-            use windows::Win32::System::Registry::{
-                RegOpenKeyExW, RegSetValueExW, RegCloseKey, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
-            };
             use windows::core::PCWSTR;
+            use windows::Win32::System::Registry::{
+                RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
+            };
 
             let path_str = path.to_string_lossy();
 
@@ -202,7 +202,10 @@ impl WallpaperService {
         #[cfg(not(windows))]
         {
             let _ = path;
-            tracing::info!("Cannot set lockscreen on non-Windows platform: {}", path_str);
+            tracing::info!(
+                "Cannot set lockscreen on non-Windows platform: {}",
+                path_str
+            );
             Ok(WallpaperResult {
                 success: false,
                 path: path_str.to_string(),
@@ -218,10 +221,10 @@ impl WallpaperService {
         {
             use std::ffi::OsStr;
             use std::os::windows::prelude::OsStrExt;
-            use windows::Win32::System::Registry::{
-                RegOpenKeyExW, RegSetValueExW, RegCloseKey, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
-            };
             use windows::core::PCWSTR;
+            use windows::Win32::System::Registry::{
+                RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
+            };
 
             tracing::info!("Setting slideshow folder to: {}", path_str);
 

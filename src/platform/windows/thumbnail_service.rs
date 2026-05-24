@@ -9,9 +9,9 @@ use std::os::windows::ffi::OsStrExt;
 /// Thumbnail size options
 #[derive(Debug, Clone, Copy)]
 pub enum ThumbnailSize {
-    Small,   // 32x32
-    Medium,  // 96x96
-    Large,   // 256x256
+    Small,  // 32x32
+    Medium, // 96x96
+    Large,  // 256x256
     ExtraLarge,
 }
 
@@ -69,7 +69,11 @@ impl ThumbnailService {
     }
 
     /// Get thumbnail for a file
-    pub async fn get_thumbnail(&self, path: &FilesPath, size: ThumbnailSize) -> Result<ThumbnailResult> {
+    pub async fn get_thumbnail(
+        &self,
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Result<ThumbnailResult> {
         // Check cache first
         {
             #[cfg(windows)]
@@ -98,13 +102,16 @@ impl ThumbnailService {
     }
 
     #[cfg(windows)]
-    pub fn extract_thumbnail(&self, path: &FilesPath, size: ThumbnailSize) -> Result<ThumbnailResult> {
+    pub fn extract_thumbnail(
+        &self,
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Result<ThumbnailResult> {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Graphics::Gdi::{
-            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW,
-            SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
-            DIBSECTION, RGBQUAD, SRCCOPY,
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, SelectObject,
+            BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIBSECTION, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
         };
         use windows::Win32::UI::WindowsAndMessaging::GetIconInfo;
 
@@ -141,14 +148,18 @@ impl ThumbnailService {
             use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
             use windows::Win32::UI::Shell::SHGFI_SYSICONINDEX;
 
-            let mut sys_info = unsafe { std::mem::zeroed::<windows::Win32::UI::Shell::SHFILEINFOW>() };
+            let mut sys_info =
+                unsafe { std::mem::zeroed::<windows::Win32::UI::Shell::SHFILEINFOW>() };
             let sys_ret = unsafe {
                 windows::Win32::UI::Shell::SHGetFileInfoW(
                     windows::core::PCWSTR(wide_path.as_ptr()),
-                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(file_info.dwFileAttributes),
+                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(
+                        file_info.dwFileAttributes,
+                    ),
                     Some(&mut sys_info),
                     std::mem::size_of_val(&sys_info) as u32,
-                    windows::Win32::UI::Shell::SHGFI_SYSICONINDEX | windows::Win32::UI::Shell::SHGFI_USEFILEATTRIBUTES,
+                    windows::Win32::UI::Shell::SHGFI_SYSICONINDEX
+                        | windows::Win32::UI::Shell::SHGFI_USEFILEATTRIBUTES,
                 )
             };
 
@@ -160,10 +171,17 @@ impl ThumbnailService {
                     )
                 } {
                     // Get the HICON at native 256×256 resolution
-                    if let Ok(hicon) = unsafe { image_list.GetIcon(sys_info.iIcon, ILD_TRANSPARENT.0) } {
+                    if let Ok(hicon) =
+                        unsafe { image_list.GetIcon(sys_info.iIcon, ILD_TRANSPARENT.0) }
+                    {
                         if !hicon.is_invalid() {
-                            if let Some(pixels) = unsafe { Self::extract_icon_pixels(hicon, cx, cy) } {
-                                unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon); }
+                            if let Some(pixels) =
+                                unsafe { Self::extract_icon_pixels(hicon, cx, cy) }
+                            {
+                                unsafe {
+                                    let _ =
+                                        windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                                }
                                 if pixels.len() >= (cx * cy * 4) as usize {
                                     return Ok(ThumbnailResult {
                                         data: pixels,
@@ -173,7 +191,9 @@ impl ThumbnailService {
                                     });
                                 }
                             }
-                            unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon); }
+                            unsafe {
+                                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                            }
                         }
                     }
                 }
@@ -189,7 +209,9 @@ impl ThumbnailService {
         let ret = unsafe {
             windows::Win32::UI::Shell::SHGetFileInfoW(
                 windows::core::PCWSTR(wide_path.as_ptr()),
-                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(file_info.dwFileAttributes),
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(
+                    file_info.dwFileAttributes,
+                ),
                 Some(&mut info),
                 std::mem::size_of_val(&info) as u32,
                 shgfi,
@@ -221,10 +243,10 @@ impl ThumbnailService {
         let mut data = vec![0u8; (cx * cy * 4) as usize];
         for i in 0..((cx * cy) as usize) {
             let offset = i * 4;
-            data[offset] = color.b;     // Blue
+            data[offset] = color.b; // Blue
             data[offset + 1] = color.g; // Green
             data[offset + 2] = color.r; // Red
-            data[offset + 3] = 255;     // Alpha
+            data[offset + 3] = 255; // Alpha
         }
 
         // Clean up icon if we got one (already destroyed above if extracted)
@@ -245,7 +267,11 @@ impl ThumbnailService {
     /// Extract actual pixel data from a Windows HICON using GetIconInfo + GetDIBits.
     /// Returns None on failure, in which case a colored placeholder fallback is used.
     #[cfg(windows)]
-    unsafe fn extract_icon_pixels(hicon: windows::Win32::UI::WindowsAndMessaging::HICON, width: u32, height: u32) -> Option<Vec<u8>> {
+    unsafe fn extract_icon_pixels(
+        hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
+        width: u32,
+        height: u32,
+    ) -> Option<Vec<u8>> {
         use windows::Win32::Graphics::Gdi::*;
         use windows::Win32::UI::WindowsAndMessaging::GetIconInfo;
 
@@ -256,7 +282,12 @@ impl ThumbnailService {
             if !hbitmap.is_invalid() {
                 // Get bitmap info
                 let mut bitmap = std::mem::zeroed::<BITMAP>();
-                if GetObjectW(hbitmap, std::mem::size_of::<BITMAP>() as i32, Some(&mut bitmap as *mut _ as *mut _)) != 0 {
+                if GetObjectW(
+                    hbitmap,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some(&mut bitmap as *mut _ as *mut _),
+                ) != 0
+                {
                     let bmp_width = bitmap.bmWidth as u32;
                     let bmp_height = bitmap.bmHeight as u32;
                     let bmp_bpp = bitmap.bmBitsPixel as u32;
@@ -284,7 +315,12 @@ impl ThumbnailService {
                             };
                             let mut bmp_info = BITMAPINFO {
                                 bmiHeader: bmp_info_header,
-                                bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }; 1],
+                                bmiColors: [RGBQUAD {
+                                    rgbBlue: 0,
+                                    rgbGreen: 0,
+                                    rgbRed: 0,
+                                    rgbReserved: 0,
+                                }; 1],
                             };
 
                             // Allocate buffer for the pixel data
@@ -318,12 +354,16 @@ impl ThumbnailService {
                                     for chunk in pixel_data.chunks_exact_mut(4) {
                                         chunk.swap(0, 2);
                                     }
-                                    let src_img = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
-                                        bmp_width, bmp_height, pixel_data
-                                    );
+                                    let src_img =
+                                        image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                                            bmp_width, bmp_height, pixel_data,
+                                        );
                                     if let Some(src_img) = src_img {
                                         let mut resized_img = image::imageops::resize(
-                                            &src_img, width, height, FilterType::Nearest
+                                            &src_img,
+                                            width,
+                                            height,
+                                            FilterType::Nearest,
                                         );
                                         // Swap back to BGRA for the rest of the pipeline
                                         for chunk in resized_img.chunks_exact_mut(4) {
@@ -350,7 +390,10 @@ impl ThumbnailService {
 
     #[cfg(not(windows))]
     fn extract_thumbnail(&self, path: &FilesPath, size: ThumbnailSize) -> Result<ThumbnailResult> {
-        Err(anyhow!("Thumbnails are only available on Windows: {:?}", path))
+        Err(anyhow!(
+            "Thumbnails are only available on Windows: {:?}",
+            path
+        ))
     }
 
     fn get_color_for_extension(&self, path: &FilesPath) -> Color {
@@ -361,14 +404,46 @@ impl ThumbnailService {
             .unwrap_or("")
             .to_lowercase();
         match ext.as_str() {
-            "rs" | "py" | "js" | "ts" | "go" | "java" | "c" | "cpp" | "h" => Color { r: 0, g: 122, b: 255 },
-            "md" | "txt" | "doc" | "docx" | "pdf" => Color { r: 37, g: 99, b: 235 },
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" => Color { r: 16, g: 185, b: 129 },
-            "mp3" | "wav" | "flac" | "ogg" | "m4a" => Color { r: 236, g: 72, b: 153 },
-            "mp4" | "avi" | "mkv" | "mov" | "wmv" => Color { r: 168, g: 85, b: 247 },
-            "zip" | "rar" | "7z" | "tar" | "gz" => Color { r: 245, g: 158, b: 11 },
-            "exe" | "msi" | "dll" => Color { r: 239, g: 68, b: 68 },
-            _ => Color { r: 107, g: 114, b: 128 },
+            "rs" | "py" | "js" | "ts" | "go" | "java" | "c" | "cpp" | "h" => Color {
+                r: 0,
+                g: 122,
+                b: 255,
+            },
+            "md" | "txt" | "doc" | "docx" | "pdf" => Color {
+                r: 37,
+                g: 99,
+                b: 235,
+            },
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" => Color {
+                r: 16,
+                g: 185,
+                b: 129,
+            },
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" => Color {
+                r: 236,
+                g: 72,
+                b: 153,
+            },
+            "mp4" | "avi" | "mkv" | "mov" | "wmv" => Color {
+                r: 168,
+                g: 85,
+                b: 247,
+            },
+            "zip" | "rar" | "7z" | "tar" | "gz" => Color {
+                r: 245,
+                g: 158,
+                b: 11,
+            },
+            "exe" | "msi" | "dll" => Color {
+                r: 239,
+                g: 68,
+                b: 68,
+            },
+            _ => Color {
+                r: 107,
+                g: 114,
+                b: 128,
+            },
         }
     }
 

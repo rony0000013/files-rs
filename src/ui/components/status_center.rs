@@ -218,10 +218,7 @@ impl StatusCenterState {
             self.oldest_active_time = None;
         } else {
             // Find the job that started earliest
-            let oldest: Option<Instant> = active_jobs
-                .iter()
-                .map(|j| j.created_at)
-                .min();
+            let oldest: Option<Instant> = active_jobs.iter().map(|j| j.created_at).min();
             self.oldest_active_time = oldest;
         }
     }
@@ -269,10 +266,10 @@ mod tests {
     #[test]
     fn test_status_center_state_active_job_count() {
         let mut state = StatusCenterState::new();
-        
+
         // No jobs
         assert_eq!(state.active_job_count(), 0);
-        
+
         // Add a pending job (not in progress)
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -281,7 +278,7 @@ mod tests {
             created_at: Instant::now(),
         });
         assert_eq!(state.active_job_count(), 0);
-        
+
         // Add an in-progress job
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -302,7 +299,7 @@ mod tests {
     fn test_status_center_state_conflict_count() {
         let mut state = StatusCenterState::new();
         assert_eq!(state.conflict_count(), 0);
-        
+
         state.add_conflict(ConflictInfo {
             id: uuid::Uuid::new_v4(),
             source_path: FilesPath::from(std::path::PathBuf::from("/source")),
@@ -317,10 +314,10 @@ mod tests {
     #[test]
     fn test_status_center_state_aggregate_progress() {
         let mut state = StatusCenterState::new();
-        
+
         // No jobs
         assert!(state.aggregate_progress().is_none());
-        
+
         // Add a completed job
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -329,7 +326,7 @@ mod tests {
             created_at: Instant::now(),
         });
         assert!(state.aggregate_progress().is_none());
-        
+
         // Add an in-progress job with 50% progress
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -350,7 +347,7 @@ mod tests {
     fn test_status_center_state_has_pending_conflicts() {
         let mut state = StatusCenterState::new();
         assert!(!state.has_pending_conflicts());
-        
+
         state.add_conflict(ConflictInfo {
             id: uuid::Uuid::new_v4(),
             source_path: FilesPath::from(std::path::PathBuf::from("/source")),
@@ -366,7 +363,7 @@ mod tests {
     fn test_status_center_state_total_items() {
         let mut state = StatusCenterState::new();
         assert_eq!(state.total_items(), 0);
-        
+
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
             name: "Job".to_string(),
@@ -374,7 +371,7 @@ mod tests {
             created_at: Instant::now(),
         });
         assert_eq!(state.total_items(), 1);
-        
+
         state.add_conflict(ConflictInfo {
             id: uuid::Uuid::new_v4(),
             source_path: FilesPath::from(std::path::PathBuf::from("/source")),
@@ -390,7 +387,7 @@ mod tests {
     fn test_status_center_state_has_content() {
         let state = StatusCenterState::new();
         assert!(!state.has_content());
-        
+
         let mut state_with_jobs = StatusCenterState::new();
         state_with_jobs.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -399,7 +396,7 @@ mod tests {
             created_at: Instant::now(),
         });
         assert!(state_with_jobs.has_content());
-        
+
         let mut state_with_conflicts = StatusCenterState::new();
         state_with_conflicts.add_conflict(ConflictInfo {
             id: uuid::Uuid::new_v4(),
@@ -416,7 +413,7 @@ mod tests {
     fn test_find_conflict() {
         let mut state = StatusCenterState::new();
         let conflict_id = uuid::Uuid::new_v4();
-        
+
         state.add_conflict(ConflictInfo {
             id: conflict_id,
             source_path: FilesPath::from(std::path::PathBuf::from("/source")),
@@ -425,11 +422,11 @@ mod tests {
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
         });
-        
+
         let found = state.find_conflict(conflict_id);
         assert!(found.is_some());
         assert_eq!(found.unwrap().id, conflict_id);
-        
+
         let not_found = state.find_conflict(uuid::Uuid::nil());
         assert!(not_found.is_none());
     }
@@ -438,7 +435,7 @@ mod tests {
     fn test_remove_conflict() {
         let mut state = StatusCenterState::new();
         let conflict_id = uuid::Uuid::new_v4();
-        
+
         state.add_conflict(ConflictInfo {
             id: conflict_id,
             source_path: FilesPath::from(std::path::PathBuf::from("/source")),
@@ -447,7 +444,7 @@ mod tests {
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
         });
-        
+
         assert_eq!(state.conflict_count(), 1);
         state.remove_conflict(conflict_id);
         assert_eq!(state.conflict_count(), 0);
@@ -464,7 +461,7 @@ mod tests {
             ConflictType::NetworkError,
             ConflictType::Other("custom".to_string()),
         ];
-        
+
         assert_eq!(variants.len(), 7);
     }
 
@@ -479,7 +476,7 @@ mod tests {
             ConflictResolution::Retry,
             ConflictResolution::Cancel,
         ];
-        
+
         assert_eq!(variants.len(), 7);
     }
 
@@ -487,7 +484,7 @@ mod tests {
     fn test_status_center_action_variants() {
         let job_id = uuid::Uuid::new_v4();
         let conflict_id = uuid::Uuid::new_v4();
-        
+
         let actions = vec![
             StatusCenterAction::CancelJob(job_id),
             StatusCenterAction::PauseJob(job_id),
@@ -502,14 +499,14 @@ mod tests {
             StatusCenterAction::Open,
             StatusCenterAction::Close,
         ];
-        
+
         assert_eq!(actions.len(), 9);
     }
 
     #[test]
     fn test_sync_jobs() {
         let mut state = StatusCenterState::new();
-        
+
         let jobs = vec![
             FileOperationJob {
                 id: uuid::Uuid::new_v4(),
@@ -524,7 +521,7 @@ mod tests {
                 created_at: Instant::now(),
             },
         ];
-        
+
         state.sync_jobs(jobs);
         assert_eq!(state.jobs.len(), 2);
     }
@@ -533,7 +530,7 @@ mod tests {
     fn test_oldest_active_time_tracking() {
         let mut state = StatusCenterState::new();
         assert!(state.oldest_active_time.is_none());
-        
+
         // Add in-progress jobs
         state.jobs.push(FileOperationJob {
             id: uuid::Uuid::new_v4(),
@@ -547,7 +544,7 @@ mod tests {
             },
             created_at: Instant::now(),
         });
-        
+
         state.sync_jobs(state.jobs.clone());
         // After sync, oldest_active_time should be updated
     }

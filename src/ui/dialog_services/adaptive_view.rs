@@ -67,11 +67,7 @@ impl Default for ContentAnalysis {
 
 impl ContentAnalysis {
     /// Create an analysis from a list of file extensions
-    pub fn from_extensions(
-        extensions: &[String],
-        item_count: usize,
-        avg_file_size: u64,
-    ) -> Self {
+    pub fn from_extensions(extensions: &[String], item_count: usize, avg_file_size: u64) -> Self {
         let mut analysis = Self::default();
         analysis.item_count = item_count;
         analysis.avg_file_size = avg_file_size;
@@ -80,7 +76,8 @@ impl ContentAnalysis {
             let ext_lower = ext.to_lowercase();
             match ext_lower.as_str() {
                 // Images
-                "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif" | "webp" => {
+                "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff"
+                | "tif" | "webp" => {
                     analysis.image_count += 1;
                 }
                 // Videos
@@ -92,11 +89,13 @@ impl ContentAnalysis {
                     analysis.audio_count += 1;
                 }
                 // Documents
-                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf" | "odt" => {
+                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf"
+                | "odt" => {
                     analysis.document_count += 1;
                 }
                 // Code
-                "rs" | "js" | "ts" | "py" | "java" | "c" | "cpp" | "h" | "cs" | "go" | "rb" | "php" | "html" | "css" | "json" | "xml" | "yaml" | "yml" | "toml" | "md" => {
+                "rs" | "js" | "ts" | "py" | "java" | "c" | "cpp" | "h" | "cs" | "go" | "rb"
+                | "php" | "html" | "css" | "json" | "xml" | "yaml" | "yml" | "toml" | "md" => {
                     analysis.code_count += 1;
                 }
                 // Archives
@@ -244,7 +243,7 @@ impl AdaptiveViewService {
         // Extract a meaningful pattern from the path
         // e.g., "C:\Users\Documents\Projects\MyProject\src" -> "Projects\MyProject"
         let parts: Vec<&str> = path.split(['\\', '/']).collect();
-        
+
         // Use the last 2-3 meaningful segments as pattern
         if parts.len() >= 2 {
             let pattern = parts[parts.len() - 2..].join("\\");
@@ -315,7 +314,7 @@ mod tests {
         analysis.item_count = 10;
         analysis.image_count = 6;
         assert!(analysis.is_image_heavy());
-        
+
         analysis.image_count = 5;
         assert!(!analysis.is_image_heavy()); // 50% is not > 50%
     }
@@ -351,7 +350,7 @@ mod tests {
         analysis.item_count = 600;
         analysis.avg_file_size = 500_000; // 500KB < 1MB
         assert!(analysis.should_use_compact());
-        
+
         analysis.avg_file_size = 2 * 1024 * 1024; // 2MB
         assert!(!analysis.should_use_compact());
     }
@@ -362,7 +361,7 @@ mod tests {
         analysis.item_count = 10;
         analysis.image_count = 7;
         assert_eq!(analysis.dominant_type_percentage(), 70.0);
-        
+
         analysis.item_count = 0;
         assert_eq!(analysis.dominant_type_percentage(), 0.0);
     }
@@ -381,7 +380,7 @@ mod tests {
         let service = AdaptiveViewService::default();
         let mut analysis = ContentAnalysis::default();
         analysis.item_count = 5;
-        
+
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Details);
         assert_eq!(confidence, 90);
@@ -393,7 +392,7 @@ mod tests {
         let mut analysis = ContentAnalysis::default();
         analysis.item_count = 20;
         analysis.image_count = 15;
-        
+
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Grid);
         assert_eq!(confidence, 85);
@@ -405,7 +404,7 @@ mod tests {
         let mut analysis = ContentAnalysis::default();
         analysis.item_count = 100;
         analysis.code_count = 70;
-        
+
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Details);
         assert_eq!(confidence, 80);
@@ -417,7 +416,7 @@ mod tests {
         let mut analysis = ContentAnalysis::default();
         analysis.item_count = 50;
         analysis.is_git_repo = true;
-        
+
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Columns);
         assert_eq!(confidence, 80);
@@ -429,7 +428,7 @@ mod tests {
         let mut analysis = ContentAnalysis::default();
         analysis.item_count = 600;
         analysis.avg_file_size = 500; // Small files
-        
+
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Compact);
         assert_eq!(confidence, 75);
@@ -439,7 +438,7 @@ mod tests {
     fn test_adaptive_view_service_analyze_with_manual_override() {
         let mut service = AdaptiveViewService::default();
         service.manual_override = Some(AdaptiveViewMode::Grid);
-        
+
         let analysis = ContentAnalysis::default();
         let (mode, confidence) = service.analyze_and_suggest(&analysis);
         assert_eq!(mode, AdaptiveViewMode::Grid);
@@ -449,7 +448,10 @@ mod tests {
     #[test]
     fn test_adaptive_view_service_record_selection() {
         let mut service = AdaptiveViewService::default();
-        service.record_selection("C:\\Users\\Test\\Documents\\Project", AdaptiveViewMode::Grid);
+        service.record_selection(
+            "C:\\Users\\Test\\Documents\\Project",
+            AdaptiveViewMode::Grid,
+        );
         assert!(service.view_history.len() <= 1);
     }
 
@@ -457,10 +459,10 @@ mod tests {
     fn test_adaptive_view_service_set_override() {
         let mut service = AdaptiveViewService::default();
         assert!(service.manual_override.is_none());
-        
+
         service.set_override(Some(AdaptiveViewMode::Cards));
         assert_eq!(service.manual_override, Some(AdaptiveViewMode::Cards));
-        
+
         service.set_override(None);
         assert!(service.manual_override.is_none());
     }
@@ -470,7 +472,7 @@ mod tests {
         let mut service = AdaptiveViewService::default();
         service.record_selection("C:\\Test\\Path", AdaptiveViewMode::Grid);
         assert!(!service.view_history.is_empty());
-        
+
         service.clear_history();
         assert!(service.view_history.is_empty());
     }
@@ -487,10 +489,10 @@ mod tests {
     fn test_adaptive_view_service_set_confidence_threshold() {
         let mut service = AdaptiveViewService::default();
         assert_eq!(service.confidence_threshold, 70);
-        
+
         service.set_confidence_threshold(90);
         assert_eq!(service.confidence_threshold, 90);
-        
+
         // Clamp to 100
         service.set_confidence_threshold(150);
         assert_eq!(service.confidence_threshold, 100);

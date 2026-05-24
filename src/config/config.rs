@@ -117,6 +117,8 @@ pub struct SidebarConfig {
 #[allow(dead_code)]
 pub struct ViewConfig {
     pub default_view_mode: ViewMode,
+    pub last_view_mode: ViewMode,
+    pub last_zoom_level: f32,
     pub sort_by: SortBy,
     pub sort_ascending: bool,
     pub folder_on_top: bool,
@@ -216,7 +218,9 @@ impl Default for AppConfig {
             },
             sidebar: SidebarConfig::default(),
             view: ViewConfig {
-                default_view_mode: ViewMode::List,
+                default_view_mode: ViewMode::Grid,
+                last_view_mode: ViewMode::Grid,
+                last_zoom_level: 0.5,
                 sort_by: SortBy::Name,
                 sort_ascending: true,
                 folder_on_top: true,
@@ -256,8 +260,8 @@ impl AppConfig {
             .get(&key)
             .cloned()
             .unwrap_or_else(|| FolderPreferences {
-                view_mode: self.view.default_view_mode.clone(),
-                zoom_level: 0.5,
+                view_mode: self.view.last_view_mode.clone(),
+                zoom_level: self.view.last_zoom_level,
                 sort_by: self.view.sort_by.clone(),
                 sort_ascending: self.view.sort_ascending,
                 folder_on_top: self.view.folder_on_top,

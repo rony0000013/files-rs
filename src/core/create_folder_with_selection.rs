@@ -110,14 +110,16 @@ mod tests {
     #[test]
     fn test_generate_unique_folder_name_no_conflict() {
         let names = vec!["Documents".to_string(), "Pictures".to_string()];
-        let result = CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
+        let result =
+            CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
         assert_eq!(result, "New Folder");
     }
 
     #[test]
     fn test_generate_unique_folder_name_with_conflict() {
         let names = vec!["New Folder".to_string(), "New Folder (1)".to_string()];
-        let result = CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
+        let result =
+            CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
         assert_eq!(result, "New Folder (2)");
     }
 
@@ -128,7 +130,8 @@ mod tests {
             "New Folder (1)".to_string(),
             "New Folder (2)".to_string(),
         ];
-        let result = CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
+        let result =
+            CreateFolderWithSelectionService::generate_unique_folder_name("New Folder", &names);
         assert_eq!(result, "New Folder (3)");
     }
 
@@ -153,9 +156,7 @@ mod tests {
         let items = vec![FilesPath::new(&file1), FilesPath::new(&file2)];
 
         let service = CreateFolderWithSelectionService::new();
-        let result = service
-            .execute(parent_path, "NewFolder", &items)
-            .await?;
+        let result = service.execute(parent_path, "NewFolder", &items).await?;
 
         assert_eq!(result.items_moved, 2);
         assert!(result.folder_path.as_path().exists());
@@ -177,9 +178,7 @@ mod tests {
         let items: Vec<FilesPath> = vec![];
 
         let service = CreateFolderWithSelectionService::new();
-        let result = service
-            .execute(parent_path, "EmptyFolder", &items)
-            .await?;
+        let result = service.execute(parent_path, "EmptyFolder", &items).await?;
 
         assert_eq!(result.items_moved, 0);
         assert!(result.folder_path.as_path().exists());
@@ -223,7 +222,12 @@ mod tests {
 
         assert_eq!(result.items_moved, 1);
         assert!(result.folder_path.as_path().join("subfolder").exists());
-        assert!(result.folder_path.as_path().join("subfolder").join("nested.txt").exists());
+        assert!(result
+            .folder_path
+            .as_path()
+            .join("subfolder")
+            .join("nested.txt")
+            .exists());
 
         Ok(())
     }

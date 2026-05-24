@@ -17,13 +17,13 @@ pub struct RelativeDateFormatter {
 
 impl RelativeDateFormatter {
     pub fn new() -> Self {
-        RelativeDateFormatter { }
+        RelativeDateFormatter {}
     }
 
     /// Format a SystemTime as a relative date string.
     pub fn format(&self, time: SystemTime) -> String {
         let now = SystemTime::now();
-        
+
         match now.duration_since(time) {
             Ok(duration) => self.format_duration(duration),
             Err(_) => {
@@ -205,41 +205,86 @@ mod tests {
     #[test]
     fn test_format_duration_just_now() {
         let formatter = RelativeDateFormatter::new();
-        assert_eq!(formatter.format_duration(Duration::from_secs(0)), "Just now");
-        assert_eq!(formatter.format_duration(Duration::from_secs(30)), "Just now");
-        assert_eq!(formatter.format_duration(Duration::from_secs(59)), "Just now");
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(0)),
+            "Just now"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(30)),
+            "Just now"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(59)),
+            "Just now"
+        );
     }
 
     #[test]
     fn test_format_duration_minutes() {
         let formatter = RelativeDateFormatter::new();
-        assert_eq!(formatter.format_duration(Duration::from_secs(60)), "1 minute ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(120)), "2 minutes ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(300)), "5 minutes ago");
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(60)),
+            "1 minute ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(120)),
+            "2 minutes ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(300)),
+            "5 minutes ago"
+        );
     }
 
     #[test]
     fn test_format_duration_hours() {
         let formatter = RelativeDateFormatter::new();
-        assert_eq!(formatter.format_duration(Duration::from_secs(3600)), "1 hour ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(7200)), "2 hours ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(14400)), "4 hours ago");
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(3600)),
+            "1 hour ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(7200)),
+            "2 hours ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(14400)),
+            "4 hours ago"
+        );
     }
 
     #[test]
     fn test_format_duration_days() {
         let formatter = RelativeDateFormatter::new();
-        assert_eq!(formatter.format_duration(Duration::from_secs(86400)), "1 day ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(172800)), "2 days ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(432000)), "5 days ago");
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(86400)),
+            "1 day ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(172800)),
+            "2 days ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(432000)),
+            "5 days ago"
+        );
     }
 
     #[test]
     fn test_format_duration_weeks() {
         let formatter = RelativeDateFormatter::new();
-        assert_eq!(formatter.format_duration(Duration::from_secs(604800)), "1 week ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(1209600)), "2 weeks ago");
-        assert_eq!(formatter.format_duration(Duration::from_secs(2419200)), "4 weeks ago");
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(604800)),
+            "1 week ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(1209600)),
+            "2 weeks ago"
+        );
+        assert_eq!(
+            formatter.format_duration(Duration::from_secs(2419200)),
+            "4 weeks ago"
+        );
     }
 
     #[test]

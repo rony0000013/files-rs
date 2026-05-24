@@ -1,10 +1,10 @@
 //! Properties Mapping Service
-//! 
+//!
 //! This module provides customizable properties panel configuration.
 //! Users can define which properties to show for different file types via JSON.
-//! 
+//!
 //! # JSON Schema
-//! 
+//!
 //! ```json
 //! {
 //!   "version": 1,
@@ -354,7 +354,7 @@ impl PropertiesMapping {
     /// Get properties for a specific file extension
     pub fn properties_for_extension(ext: &str) -> Vec<PropertyDefinition> {
         let ext_lower = ext.to_lowercase();
-        
+
         match ext_lower.as_str() {
             ".jpg" | ".jpeg" | ".png" | ".gif" | ".bmp" | ".webp" | ".tiff" | ".ico" => {
                 Self::image_properties()
@@ -365,9 +365,8 @@ impl PropertiesMapping {
             ".mp4" | ".mkv" | ".avi" | ".mov" | ".wmv" | ".flv" | ".webm" => {
                 Self::video_properties()
             }
-            ".txt" | ".md" | ".rs" | ".js" | ".ts" | ".py" | ".java" | ".c" | ".cpp" | ".h" | ".css" | ".html" | ".json" | ".xml" | ".yaml" | ".yml" => {
-                Self::text_properties()
-            }
+            ".txt" | ".md" | ".rs" | ".js" | ".ts" | ".py" | ".java" | ".c" | ".cpp" | ".h"
+            | ".css" | ".html" | ".json" | ".xml" | ".yaml" | ".yml" => Self::text_properties(),
             _ => Self::default_general_properties(),
         }
     }
@@ -376,7 +375,7 @@ impl PropertiesMapping {
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read properties mapping file: {}", e))?;
-        
+
         serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse properties mapping JSON: {}", e))
     }
@@ -385,7 +384,7 @@ impl PropertiesMapping {
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize properties mapping: {}", e))?;
-        
+
         std::fs::write(path, content)
             .map_err(|e| format!("Failed to write properties mapping file: {}", e))
     }
@@ -475,7 +474,7 @@ fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
-    
+
     if bytes >= GB {
         format!("{:.2} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
@@ -490,21 +489,21 @@ fn format_size(bytes: u64) -> String {
 /// Format datetime in standard format using std
 fn format_datetime(time: std::time::SystemTime) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
-    
+
     // Convert to human-readable format
     let days_since_epoch = secs / 86400;
     let seconds_in_day = secs % 86400;
     let hours = seconds_in_day / 3600;
     let minutes = (seconds_in_day % 3600) / 60;
     let seconds = seconds_in_day % 60;
-    
+
     // Calculate year, month, day from days since epoch
     let mut year = 1970;
     let mut remaining_days = days_since_epoch as i64;
-    
+
     while remaining_days > 0 {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
         if remaining_days >= days_in_year {
@@ -514,13 +513,13 @@ fn format_datetime(time: std::time::SystemTime) -> String {
             break;
         }
     }
-    
+
     let days_in_months: [u64; 12] = if is_leap_year(year) {
         [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {
         [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
-    
+
     let mut month = 1;
     for days in days_in_months.iter() {
         if remaining_days < *days as i64 {
@@ -530,8 +529,11 @@ fn format_datetime(time: std::time::SystemTime) -> String {
         month += 1;
     }
     let day = remaining_days + 1;
-    
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hours, minutes, seconds)
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hours, minutes, seconds
+    )
 }
 
 fn is_leap_year(year: u64) -> bool {
@@ -567,10 +569,10 @@ mod tests {
     fn test_properties_for_extension() {
         let jpg_props = PropertiesMapping::properties_for_extension(".jpg");
         assert!(jpg_props.iter().any(|p| p.id == "dimensions"));
-        
+
         let mp3_props = PropertiesMapping::properties_for_extension(".mp3");
         assert!(mp3_props.iter().any(|p| p.id == "duration"));
-        
+
         let txt_props = PropertiesMapping::properties_for_extension(".txt");
         assert!(txt_props.iter().any(|p| p.id == "lines"));
     }

@@ -139,12 +139,12 @@ impl HashInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompatibilityInfo {
     pub run_as_admin: bool,
-    pub color_mode: Option<String>,      // "16-bit", "256-color", "True Color"
+    pub color_mode: Option<String>, // "16-bit", "256-color", "True Color"
     pub disable_theming: bool,
     pub disable_visual_features: bool,
     pub run_in_sandbox: bool,
-    pub emulation_mode: Option<String>,  // "Windows 95", "Windows 98", "Windows XP", etc.
-    pub dpi_settings: Option<String>,    // "Application", "System", "System (Enhanced)"
+    pub emulation_mode: Option<String>, // "Windows 95", "Windows 98", "Windows XP", etc.
+    pub dpi_settings: Option<String>,   // "Application", "System", "System (Enhanced)"
 }
 
 impl Default for CompatibilityInfo {
@@ -446,10 +446,10 @@ mod tests {
     fn test_hash_info_has_any_hash() {
         let mut info = HashInfo::default();
         assert!(!info.has_any_hash());
-        
+
         info.md5 = Some("abc123".to_string());
         assert!(info.has_any_hash());
-        
+
         info.sha256 = Some("def456".to_string());
         assert!(info.has_any_hash());
     }
@@ -506,13 +506,13 @@ mod tests {
     fn test_custom_properties_state_next_tab() {
         let mut state = CustomPropertiesState::default();
         assert_eq!(state.active_tab, PropertiesTab::General);
-        
+
         state.next_tab();
         assert_eq!(state.active_tab, PropertiesTab::Security);
-        
+
         state.next_tab();
         assert_eq!(state.active_tab, PropertiesTab::Customization);
-        
+
         // Go to last tab
         state.set_tab(PropertiesTab::Signatures);
         state.next_tab();
@@ -523,10 +523,10 @@ mod tests {
     fn test_custom_properties_state_prev_tab() {
         let mut state = CustomPropertiesState::default();
         state.set_tab(PropertiesTab::Security);
-        
+
         state.prev_tab();
         assert_eq!(state.active_tab, PropertiesTab::General);
-        
+
         state.prev_tab();
         assert_eq!(state.active_tab, PropertiesTab::General); // No change at start
     }
@@ -536,7 +536,7 @@ mod tests {
         let mut state = CustomPropertiesState::default();
         state.set_loading_hashes(true);
         assert!(state.loading_hashes);
-        
+
         let hashes = HashInfo {
             md5: Some("abc123".to_string()),
             sha256: Some("def456".to_string()),
@@ -552,10 +552,10 @@ mod tests {
         let mut state = CustomPropertiesState::default();
         state.size = 1024;
         assert_eq!(state.formatted_size(), "1.0 KiB");
-        
+
         state.size = 1024 * 1024;
         assert_eq!(state.formatted_size(), "1.0 MiB");
-        
+
         state.size = 1024 * 1024 * 1024;
         assert_eq!(state.formatted_size(), "1.0 GiB");
     }
@@ -563,13 +563,13 @@ mod tests {
     #[test]
     fn test_custom_properties_state_attribute_summary() {
         let mut state = CustomPropertiesState::default();
-        
+
         assert_eq!(state.attribute_summary(), "Normal");
-        
+
         state.is_readonly = true;
         state.is_hidden = true;
         assert_eq!(state.attribute_summary(), "Read-only, Hidden");
-        
+
         state.is_compressed = true;
         state.is_encrypted = true;
         assert!(state.attribute_summary().contains("Compressed"));

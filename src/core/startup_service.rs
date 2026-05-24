@@ -75,9 +75,7 @@ impl StartupService {
             StartupResult {
                 success: false,
                 target: String::new(),
-                error: Some(
-                    "Startup registration is only available on Windows".to_string(),
-                ),
+                error: Some("Startup registration is only available on Windows".to_string()),
             }
         }
     }
@@ -115,8 +113,7 @@ impl StartupService {
 
     /// Get the path to this application's executable.
     fn app_exe_path() -> Result<PathBuf, String> {
-        std::env::current_exe()
-            .map_err(|e| format!("Failed to get current executable path: {}", e))
+        std::env::current_exe().map_err(|e| format!("Failed to get current executable path: {}", e))
     }
 
     /// Get the shortcut name for this application.
@@ -200,10 +197,7 @@ impl StartupService {
         let result = ShortcutService::create_shortcut(options);
 
         if result.success {
-            tracing::info!(
-                "Startup shortcut created at: {}",
-                shortcut_path.display()
-            );
+            tracing::info!("Startup shortcut created at: {}", shortcut_path.display());
             StartupResult {
                 success: true,
                 target: shortcut_path.to_string_lossy().to_string(),
@@ -438,7 +432,9 @@ impl StartupService {
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         match hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") {
-            Ok(key) => key.get_value::<String, _>(Self::registry_key_name()).is_ok(),
+            Ok(key) => key
+                .get_value::<String, _>(Self::registry_key_name())
+                .is_ok(),
             Err(_) => false,
         }
     }

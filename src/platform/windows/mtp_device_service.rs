@@ -85,7 +85,9 @@ impl MtpDeviceService {
             // Read device list
             for name_result in wpd_key.enum_keys() {
                 if let Ok(device_id) = name_result {
-                    if let Ok(device_info) = Self::get_device_info_from_registry(&wpd_key, &device_id) {
+                    if let Ok(device_info) =
+                        Self::get_device_info_from_registry(&wpd_key, &device_id)
+                    {
                         devices.push(device_info);
                     }
                 }
@@ -99,7 +101,8 @@ impl MtpDeviceService {
                     if let Ok(pid_key) = usb_key.open_subkey(&vid) {
                         for pid_result in pid_key.enum_keys() {
                             if let Ok(pid) = pid_result {
-                                if let Some(device) = Self::check_usb_for_mtp(&pid_key, &vid, &pid) {
+                                if let Some(device) = Self::check_usb_for_mtp(&pid_key, &vid, &pid)
+                                {
                                     // Avoid duplicates
                                     if !devices.iter().any(|d| d.serial == device.serial) {
                                         devices.push(device);
@@ -122,12 +125,19 @@ impl MtpDeviceService {
 
     /// Get device info from registry
     #[cfg(windows)]
-    fn get_device_info_from_registry(parent_key: &RegKey, device_id: &str) -> Result<MtpDeviceInfo> {
+    fn get_device_info_from_registry(
+        parent_key: &RegKey,
+        device_id: &str,
+    ) -> Result<MtpDeviceInfo> {
         if let Ok(device_key) = parent_key.open_subkey(device_id) {
-            let name: String = device_key.get_value("FriendlyName").unwrap_or_else(|_| device_id.to_string());
+            let name: String = device_key
+                .get_value("FriendlyName")
+                .unwrap_or_else(|_| device_id.to_string());
             let manufacturer: String = device_key.get_value("Manufacturer").unwrap_or_default();
             let model: String = device_key.get_value("Model").unwrap_or_default();
-            let serial: String = device_key.get_value("SerialNumber").unwrap_or_else(|_| device_id.to_string());
+            let serial: String = device_key
+                .get_value("SerialNumber")
+                .unwrap_or_else(|_| device_id.to_string());
 
             // Check for MTP-specific properties
             let mtp_flag: u32 = device_key.get_value("MTP-Flag").unwrap_or(0);
@@ -171,15 +181,17 @@ impl MtpDeviceService {
             let combined = format!("{} {}", desc, friendly).to_uppercase();
 
             // MTP device indicators
-            let is_mtp = combined.contains("MTP") ||
-                         combined.contains("PTP") ||
-                         combined.contains("MEDIA") ||
-                         combined.contains("CAMERA") ||
-                         combined.contains("IPOD") ||
-                         combined.contains("ANDROID");
+            let is_mtp = combined.contains("MTP")
+                || combined.contains("PTP")
+                || combined.contains("MEDIA")
+                || combined.contains("CAMERA")
+                || combined.contains("IPOD")
+                || combined.contains("ANDROID");
 
             if is_mtp {
-                let manufacturer = device_key.get_value("Mfg").unwrap_or_else(|_| vid.to_string());
+                let manufacturer = device_key
+                    .get_value("Mfg")
+                    .unwrap_or_else(|_| vid.to_string());
                 let device_name = if !friendly.is_empty() {
                     friendly.clone()
                 } else if !desc.is_empty() {
@@ -213,13 +225,27 @@ impl MtpDeviceService {
     /// Detect device type from name string
     fn detect_device_type_from_name(name: &str) -> MtpDeviceType {
         let name_upper = name.to_uppercase();
-        if name_upper.contains("CAMERA") || name_upper.contains("DSLR") || name_upper.contains("ILCE") || name_upper.contains("EOS") {
+        if name_upper.contains("CAMERA")
+            || name_upper.contains("DSLR")
+            || name_upper.contains("ILCE")
+            || name_upper.contains("EOS")
+        {
             MtpDeviceType::Camera
-        } else if name_upper.contains("IPOD") || name_upper.contains("PLAYER") || name_upper.contains("AUDIO") {
+        } else if name_upper.contains("IPOD")
+            || name_upper.contains("PLAYER")
+            || name_upper.contains("AUDIO")
+        {
             MtpDeviceType::MediaPlayer
-        } else if name_upper.contains("IPAD") || name_upper.contains("TAB") || name_upper.contains("SURFACE") {
+        } else if name_upper.contains("IPAD")
+            || name_upper.contains("TAB")
+            || name_upper.contains("SURFACE")
+        {
             MtpDeviceType::Tablet
-        } else if name_upper.contains("PHONE") || name_upper.contains("ANDROID") || name_upper.contains("MI ") || name_upper.contains("GALAXY") {
+        } else if name_upper.contains("PHONE")
+            || name_upper.contains("ANDROID")
+            || name_upper.contains("MI ")
+            || name_upper.contains("GALAXY")
+        {
             MtpDeviceType::Smartphone
         } else {
             MtpDeviceType::Unknown
@@ -230,8 +256,8 @@ impl MtpDeviceService {
     #[cfg(windows)]
     pub fn resolve_shell_path(device_id: &str) -> Result<FilesPath> {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::UI::Shell::{SHGetFolderPathW, CSIDL_PROFILE};
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        use windows::Win32::UI::Shell::{SHGetFolderPathW, CSIDL_PROFILE};
 
         // MTP devices appear under the Devices namespace in Windows Explorer
         // The full path is: ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\\\{DEVICE_ID}
@@ -257,7 +283,10 @@ impl MtpDeviceService {
 
     #[cfg(not(windows))]
     pub fn resolve_shell_path(device_id: &str) -> Result<FilesPath> {
-        Err(anyhow!("MTP devices are only available on Windows: {}", device_id))
+        Err(anyhow!(
+            "MTP devices are only available on Windows: {}",
+            device_id
+        ))
     }
 
     /// Get storage info for an MTP device
@@ -371,11 +400,26 @@ mod tests {
 
     #[test]
     fn test_detect_device_type() {
-        assert_eq!(MtpDeviceService::detect_device_type_from_name("Canon EOS Camera"), MtpDeviceType::Camera);
-        assert_eq!(MtpDeviceService::detect_device_type_from_name("Samsung Galaxy Phone"), MtpDeviceType::Smartphone);
-        assert_eq!(MtpDeviceService::detect_device_type_from_name("Apple iPod"), MtpDeviceType::MediaPlayer);
-        assert_eq!(MtpDeviceService::detect_device_type_from_name("iPad Tablet"), MtpDeviceType::Tablet);
-        assert_eq!(MtpDeviceService::detect_device_type_from_name("Unknown Device"), MtpDeviceType::Unknown);
+        assert_eq!(
+            MtpDeviceService::detect_device_type_from_name("Canon EOS Camera"),
+            MtpDeviceType::Camera
+        );
+        assert_eq!(
+            MtpDeviceService::detect_device_type_from_name("Samsung Galaxy Phone"),
+            MtpDeviceType::Smartphone
+        );
+        assert_eq!(
+            MtpDeviceService::detect_device_type_from_name("Apple iPod"),
+            MtpDeviceType::MediaPlayer
+        );
+        assert_eq!(
+            MtpDeviceService::detect_device_type_from_name("iPad Tablet"),
+            MtpDeviceType::Tablet
+        );
+        assert_eq!(
+            MtpDeviceService::detect_device_type_from_name("Unknown Device"),
+            MtpDeviceType::Unknown
+        );
     }
 
     #[test]

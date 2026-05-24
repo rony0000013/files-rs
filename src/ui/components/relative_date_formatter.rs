@@ -6,9 +6,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Convert SystemTime to (month, day, year) tuple using local time.
 /// Returns (month, day, year) where month is 1-12.
 fn local_datetime_from_system_time(timestamp: SystemTime) -> (u32, u32, u32) {
-    let duration_since_epoch = timestamp
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(UNIX_EPOCH.duration_since(timestamp).unwrap_or(Duration::ZERO));
+    let duration_since_epoch = timestamp.duration_since(UNIX_EPOCH).unwrap_or(
+        UNIX_EPOCH
+            .duration_since(timestamp)
+            .unwrap_or(Duration::ZERO),
+    );
 
     // Use the offset to approximate local time (simplified)
     // For production, use platform-specific APIs for accurate local time
@@ -29,7 +31,11 @@ fn local_datetime_from_system_time(timestamp: SystemTime) -> (u32, u32, u32) {
     let d = doy - (153 * mp + 2) / 5 + 1; // Day of month
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // Month [1, 12]
 
-    (m as u32, d as u32, (y + (if m <= 2 { 1 } else { 0 })) as u32)
+    (
+        m as u32,
+        d as u32,
+        (y + (if m <= 2 { 1 } else { 0 })) as u32,
+    )
 }
 
 /// Relative date formatting result.
@@ -269,17 +275,20 @@ mod tests {
     fn test_format_just_now() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 30 seconds ago -> Just now
         let past = now - Duration::from_secs(30);
-        assert!(matches!(formatter.format(past), RelativeTimeResult::JustNow));
+        assert!(matches!(
+            formatter.format(past),
+            RelativeTimeResult::JustNow
+        ));
     }
 
     #[test]
     fn test_format_minutes_ago() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 5 minutes ago
         let past = now - Duration::from_secs(300);
         match formatter.format(past) {
@@ -292,7 +301,7 @@ mod tests {
     fn test_format_hours_ago() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 3 hours ago
         let past = now - Duration::from_secs(3 * 3600);
         match formatter.format(past) {
@@ -305,7 +314,7 @@ mod tests {
     fn test_format_days_ago() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 5 days ago
         let past = now - Duration::from_secs(5 * 86400);
         match formatter.format(past) {
@@ -318,7 +327,7 @@ mod tests {
     fn test_format_one_day_ago() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 1 day ago
         let past = now - Duration::from_secs(86400);
         match formatter.format(past) {
@@ -331,7 +340,7 @@ mod tests {
     fn test_format_one_hour_ago() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 1 hour ago
         let past = now - Duration::from_secs(3600);
         match formatter.format(past) {
@@ -344,11 +353,11 @@ mod tests {
     fn test_format_standard_date() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 10 days ago -> standard date
         let past = now - Duration::from_secs(10 * 86400);
         match formatter.format(past) {
-            RelativeTimeResult::StandardDate(_) => {},
+            RelativeTimeResult::StandardDate(_) => {}
             _ => panic!("Expected StandardDate for 10+ days"),
         }
     }
@@ -357,11 +366,11 @@ mod tests {
     fn test_format_future_time() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Future time should return standard date
         let future = now + Duration::from_secs(3600);
         match formatter.format(future) {
-            RelativeTimeResult::StandardDate(_) => {},
+            RelativeTimeResult::StandardDate(_) => {}
             other => panic!("Expected StandardDate for future time, got {:?}", other),
         }
     }
@@ -370,7 +379,7 @@ mod tests {
     fn test_needs_refresh_true() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 61 seconds ago -> needs refresh
         let last_update = now - Duration::from_secs(61);
         assert!(formatter.needs_refresh(last_update));
@@ -380,7 +389,7 @@ mod tests {
     fn test_needs_refresh_false() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 30 seconds ago -> no refresh needed
         let last_update = now - Duration::from_secs(30);
         assert!(!formatter.needs_refresh(last_update));
@@ -390,7 +399,7 @@ mod tests {
     fn test_needs_refresh_exactly_at_interval() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Exactly 60 seconds ago -> needs refresh (>= interval)
         let last_update = now - Duration::from_secs(60);
         assert!(formatter.needs_refresh(last_update));
@@ -400,12 +409,14 @@ mod tests {
     fn test_format_boundary_just_now_to_minutes() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Exactly 60 seconds ago should be MinutesAgo(1), not JustNow
         let past = now - Duration::from_secs(60);
         match formatter.format(past) {
-            RelativeTimeResult::MinutesAgo(1) => {},
-            RelativeTimeResult::JustNow => panic!("60 seconds should be MinutesAgo(1), not JustNow"),
+            RelativeTimeResult::MinutesAgo(1) => {}
+            RelativeTimeResult::JustNow => {
+                panic!("60 seconds should be MinutesAgo(1), not JustNow")
+            }
             other => panic!("Expected MinutesAgo(1), got {:?}", other),
         }
     }
@@ -414,12 +425,12 @@ mod tests {
     fn test_format_boundary_minutes_to_hours() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Exactly 60 minutes ago should be HoursAgo(1), not MinutesAgo(60)
         let past = now - Duration::from_secs(60 * 60);
         match formatter.format(past) {
-            RelativeTimeResult::HoursAgo(1) => {},
-            RelativeTimeResult::MinutesAgo(60) => {},
+            RelativeTimeResult::HoursAgo(1) => {}
+            RelativeTimeResult::MinutesAgo(60) => {}
             other => panic!("Expected HoursAgo(1), got {:?}", other),
         }
     }
@@ -428,12 +439,12 @@ mod tests {
     fn test_format_boundary_hours_to_days() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Exactly 24 hours ago should be DaysAgo(1), not HoursAgo(24)
         let past = now - Duration::from_secs(24 * 3600);
         match formatter.format(past) {
-            RelativeTimeResult::DaysAgo(1) => {},
-            RelativeTimeResult::HoursAgo(24) => {},
+            RelativeTimeResult::DaysAgo(1) => {}
+            RelativeTimeResult::HoursAgo(24) => {}
             other => panic!("Expected DaysAgo(1), got {:?}", other),
         }
     }
@@ -442,12 +453,12 @@ mod tests {
     fn test_format_boundary_days_to_standard() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // Exactly 7 days ago should be StandardDate, not DaysAgo(7)
         let past = now - Duration::from_secs(7 * 86400);
         match formatter.format(past) {
-            RelativeTimeResult::StandardDate(_) => {},
-            RelativeTimeResult::DaysAgo(7) => {},
+            RelativeTimeResult::StandardDate(_) => {}
+            RelativeTimeResult::DaysAgo(7) => {}
             other => panic!("Expected StandardDate or DaysAgo(7), got {:?}", other),
         }
     }
@@ -456,7 +467,7 @@ mod tests {
     fn test_format_large_minute_count() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 59 minutes ago
         let past = now - Duration::from_secs(59 * 60);
         match formatter.format(past) {
@@ -469,7 +480,7 @@ mod tests {
     fn test_format_large_hour_count() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 23 hours ago
         let past = now - Duration::from_secs(23 * 3600);
         match formatter.format(past) {
@@ -482,7 +493,7 @@ mod tests {
     fn test_format_large_day_count() {
         let formatter = RelativeDateFormatter::new();
         let now = SystemTime::now();
-        
+
         // 6 days ago
         let past = now - Duration::from_secs(6 * 86400);
         match formatter.format(past) {
@@ -500,7 +511,7 @@ mod tests {
         };
         let formatter = RelativeDateFormatter::with_config(config);
         let now = SystemTime::now();
-        
+
         // With min_minutes=2, 1 minute should show as 2 minutes
         let past = now - Duration::from_secs(60);
         match formatter.format(past) {
@@ -513,16 +524,16 @@ mod tests {
     fn test_show_just_now_false() {
         let config = RelativeDateConfig {
             refresh_interval_secs: 60,
-            show_just_now: false,  // Disabled
+            show_just_now: false, // Disabled
             min_minutes: 1,
         };
         let formatter = RelativeDateFormatter::with_config(config);
         let now = SystemTime::now();
-        
+
         // With show_just_now=false, 30 seconds should show as MinutesAgo
         let past = now - Duration::from_secs(30);
         match formatter.format(past) {
-            RelativeTimeResult::MinutesAgo(1) => {},
+            RelativeTimeResult::MinutesAgo(1) => {}
             RelativeTimeResult::JustNow => panic!("Should not show JustNow when disabled"),
             _ => panic!("Expected MinutesAgo(1)"),
         }

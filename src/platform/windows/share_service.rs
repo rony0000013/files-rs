@@ -37,17 +37,15 @@ impl ShareService {
         // Build the shell execute command to invoke share dialog
         // Using explorer's "send to" context or the share contract
         for path_str in &path_strings {
-            let wide_path: Vec<u16> = path_str
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
 
             // Try to invoke share UI via shell
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
                 let mut sei = windows::Win32::UI::Shell::SHELLEXECUTEINFOW::default();
-                sei.cbSize = std::mem::size_of::<windows::Win32::UI::Shell::SHELLEXECUTEINFOW>() as u32;
+                sei.cbSize =
+                    std::mem::size_of::<windows::Win32::UI::Shell::SHELLEXECUTEINFOW>() as u32;
                 sei.fMask = SEE_MASK_INVOKEIDLIST;
                 sei.nShow = 1; // SW_SHOWNORMAL
 
@@ -77,7 +75,10 @@ impl ShareService {
     /// Show the Windows Share UI (non-Windows stub)
     #[cfg(not(windows))]
     pub async fn show_share_ui(&self, _window_handle: isize, paths: &[FilesPath]) -> Result<()> {
-        tracing::warn!("Share UI is only available on Windows: {:?} files", paths.len());
+        tracing::warn!(
+            "Share UI is only available on Windows: {:?} files",
+            paths.len()
+        );
         Err(anyhow!("Share UI is only available on Windows"))
     }
 
@@ -203,8 +204,11 @@ mod platform_tests {
         let err_msg = result.unwrap_err().to_string();
         // On Windows: "No files to share"
         // On non-Windows: "Share UI is only available on Windows"
-        assert!(err_msg.contains("No files") || err_msg.contains("Windows"), 
-            "Error message should mention 'No files' or 'Windows', got: {}", err_msg);
+        assert!(
+            err_msg.contains("No files") || err_msg.contains("Windows"),
+            "Error message should mention 'No files' or 'Windows', got: {}",
+            err_msg
+        );
     }
 
     #[tokio::test]

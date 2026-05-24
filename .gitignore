@@ -1,4 +1,5 @@
 /target
+zed
 .env
 
 # ByteRover — .brv/context-tree/ contains a nested .git managed by brv vc.

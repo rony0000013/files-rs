@@ -34,12 +34,12 @@ const SIDEBAR_MENU_HEIGHT: f32 = 300.0;
 fn section_icon(section_id: SectionId) -> &'static str {
     match section_id {
         SectionId::Favorites => "\u{E734}",   // Favorite star
-        SectionId::Tags => "\u{E8EC}",          // Tag
-        SectionId::Libraries => "\u{E8B7}",    // Folder
-        SectionId::ThisPc => "\u{E770}",         // HDD/This PC
-        SectionId::CloudDrives => "\u{E753}",   // Cloud
-        SectionId::Network => "\u{E802}",        // Network
-        SectionId::Wsl => "\u{E756}",           // Terminal/WSL
+        SectionId::Tags => "\u{E8EC}",        // Tag
+        SectionId::Libraries => "\u{E8B7}",   // Folder
+        SectionId::ThisPc => "\u{E770}",      // HDD/This PC
+        SectionId::CloudDrives => "\u{E753}", // Cloud
+        SectionId::Network => "\u{E802}",     // Network
+        SectionId::Wsl => "\u{E756}",         // Terminal/WSL
     }
 }
 
@@ -124,7 +124,7 @@ impl SidebarView {
                 move |event, win, cx| {
                     cx.stop_propagation();
                     let position = event.position;
-let flip_up: f32 = position.y.into();
+                    let flip_up: f32 = position.y.into();
                     let win_h: f32 = win.viewport_size().height.into();
                     let bottom_y = if flip_up > (win_h - SIDEBAR_MENU_HEIGHT) {
                         win_h - flip_up
@@ -180,17 +180,15 @@ let flip_up: f32 = position.y.into();
                             .map(|(idx, section)| {
                                 if collapsed {
                                     Self::render_collapsed_section(
-                                        section, idx, state, view.clone(),
-                                    )
-                                    .into_any_element()
-                                } else {
-                                    Self::render_section(
                                         section,
                                         idx,
                                         state,
                                         view.clone(),
                                     )
                                     .into_any_element()
+                                } else {
+                                    Self::render_section(section, idx, state, view.clone())
+                                        .into_any_element()
                                 }
                             }),
                     ),
@@ -245,9 +243,7 @@ let flip_up: f32 = position.y.into();
             );
 
         if reorder_mode {
-            toggle = toggle
-                .opacity(0.4)
-                .cursor_not_allowed();
+            toggle = toggle.opacity(0.4).cursor_not_allowed();
         } else {
             toggle = toggle
                 .cursor_pointer()
@@ -325,9 +321,7 @@ let flip_up: f32 = position.y.into();
         };
 
         if reorder_mode {
-            item = item
-                .opacity(0.4)
-                .cursor_not_allowed();
+            item = item.opacity(0.4).cursor_not_allowed();
         } else {
             item = item
                 .cursor_pointer()
@@ -353,10 +347,18 @@ let flip_up: f32 = position.y.into();
         let collapsed = section.collapsed;
 
         div()
-            .id(SharedString::from(format!("sidebar-section-{}", section_idx)))
+            .id(SharedString::from(format!(
+                "sidebar-section-{}",
+                section_idx
+            )))
             .flex_col()
             .mb(px(SECTION_MARGIN_BOTTOM))
-            .child(Self::render_section_header(section, section_idx, state, view.clone()))
+            .child(Self::render_section_header(
+                section,
+                section_idx,
+                state,
+                view.clone(),
+            ))
             .children(if collapsed {
                 vec![]
             } else {
@@ -456,7 +458,7 @@ let flip_up: f32 = position.y.into();
                 });
         }
 
-// Right-click context menu on group header
+        // Right-click context menu on group header
         header = header.on_mouse_down(MouseButton::Right, {
             let view = view.clone();
             move |event, win, cx| {
@@ -526,9 +528,7 @@ let flip_up: f32 = position.y.into();
             );
 
         if state.reorder_mode {
-            collapsed_sec = collapsed_sec
-                .opacity(0.4)
-                .cursor_not_allowed();
+            collapsed_sec = collapsed_sec.opacity(0.4).cursor_not_allowed();
         } else {
             collapsed_sec = collapsed_sec
                 .cursor_pointer()
@@ -641,9 +641,13 @@ let flip_up: f32 = position.y.into();
                     ),
             )
             // Tooltip items
-            .children(section.items.iter().enumerate().map(|(idx, item)| {
-                Self::render_tooltip_item(item, idx, view.clone())
-            }))
+            .children(
+                section
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| Self::render_tooltip_item(item, idx, view.clone())),
+            )
     }
 
     fn render_tooltip_item(
@@ -713,16 +717,22 @@ let flip_up: f32 = position.y.into();
         let label = item.label.clone();
         let item_id = item.id.clone();
         let v_click = view.clone();
-        let is_active = state.active_item.as_ref().map_or(false, |id| *id == item_id);
+        let is_active = state
+            .active_item
+            .as_ref()
+            .map_or(false, |id| *id == item_id);
         let reorder_mode = state.reorder_mode;
-        
+
         // Pinned locations and Tags are draggable/reorderable!
         let is_draggable = section.id == SectionId::Favorites || section.id == SectionId::Tags;
-        
+
         let is_dragging_this = state.drag_item == Some((section.id, idx));
 
         let mut item_el = div()
-            .id(SharedString::from(format!("sidebar-item-{:?}-{}", section.id, idx)))
+            .id(SharedString::from(format!(
+                "sidebar-item-{:?}-{}",
+                section.id, idx
+            )))
             .h(px(SECTION_ITEM_HEIGHT))
             .mx(px(8.0))
             .flex()
@@ -817,9 +827,7 @@ let flip_up: f32 = position.y.into();
                     });
             } else {
                 // Non-draggable item during reorder phase: greyish and non-interactable
-                item_el = item_el
-                    .opacity(0.4)
-                    .cursor_not_allowed();
+                item_el = item_el.opacity(0.4).cursor_not_allowed();
             }
         } else {
             // Normal interaction mode
@@ -930,7 +938,11 @@ let flip_up: f32 = position.y.into();
 
     // ─── Settings button ──────────────────────────────────────────────────
 
-    fn render_settings_button(collapsed: bool, state: &SidebarState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    fn render_settings_button(
+        collapsed: bool,
+        state: &SidebarState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         let v = view.clone();
         let reorder_mode = state.reorder_mode;
         let mut btn = div()
@@ -962,9 +974,7 @@ let flip_up: f32 = position.y.into();
         }
 
         if reorder_mode {
-            btn = btn
-                .opacity(0.4)
-                .cursor_not_allowed();
+            btn = btn.opacity(0.4).cursor_not_allowed();
         } else {
             btn = btn
                 .cursor_pointer()

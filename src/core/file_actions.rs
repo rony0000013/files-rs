@@ -128,9 +128,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         // Should return Ok even if the actual Windows call doesn't execute in test
         let result = FileActionService::open_item(&path).await;
         assert!(result.is_ok());
@@ -141,9 +141,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         let result = FileActionService::edit_in_notepad(&path).await;
         // Should return Ok (spawn succeeds or fails gracefully)
         assert!(result.is_ok());
@@ -154,9 +154,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         let result = FileActionService::run_with_powershell(&path).await;
         assert!(result.is_ok());
     }
@@ -173,9 +173,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         let result = FileActionService::run_as_admin(&path).await;
         // Returns Ok even if the actual elevation doesn't happen
         assert!(result.is_ok());
@@ -185,9 +185,9 @@ mod tests {
     async fn test_open_item_with_nonexistent_file() {
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.txt");
-        
+
         let path = FilesPath::from(nonexistent.to_str().unwrap());
-        
+
         // Should return Ok (Windows ShellExecute might fail but we don't error)
         let result = FileActionService::open_item(&path).await;
         assert!(result.is_ok());
@@ -198,9 +198,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let unicode_file = temp_dir.path().join("文件.txt");
         std::fs::write(&unicode_file, "content").unwrap();
-        
+
         let path = FilesPath::from(unicode_file.to_str().unwrap());
-        
+
         // All actions should handle unicode paths gracefully
         assert!(FileActionService::open_item(&path).await.is_ok());
         assert!(FileActionService::edit_in_notepad(&path).await.is_ok());
@@ -212,9 +212,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_with_spaces = temp_dir.path().join("my document.txt");
         std::fs::write(&file_with_spaces, "content").unwrap();
-        
+
         let path = FilesPath::from(file_with_spaces.to_str().unwrap());
-        
+
         assert!(FileActionService::open_item(&path).await.is_ok());
         assert!(FileActionService::edit_in_notepad(&path).await.is_ok());
         assert!(FileActionService::run_with_powershell(&path).await.is_ok());

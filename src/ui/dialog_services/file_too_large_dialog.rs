@@ -153,10 +153,10 @@ mod tests {
     fn test_file_too_large_state_should_open() {
         let mut state = FileTooLargeState::default();
         assert!(!state.should_open());
-        
+
         state.set_action(FileTooLargeAction::OpenAnyway);
         assert!(state.should_open());
-        
+
         state.set_action(FileTooLargeAction::Cancel);
         assert!(!state.should_open());
     }

@@ -19,11 +19,9 @@ use gpui::*;
 #[cfg(target_os = "windows")]
 fn start_window_move(window: &Window) {
     use raw_window_handle::HasWindowHandle;
-    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
-    };
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
     if let Ok(raw_handle) = HasWindowHandle::window_handle(window) {
         if let raw_window_handle::RawWindowHandle::Win32(win32) = raw_handle.as_raw() {
             unsafe {
@@ -76,7 +74,7 @@ impl TabBarView {
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .child("\u{E762}"),
             );
-            
+
         // ── Build tabs row
         let tabs_closure = {
             let view_for_tabs = view.clone();
@@ -104,21 +102,21 @@ impl TabBarView {
                 } else {
                     rgba(UiConstants::TEXT_SECONDARY_RGBA)
                 };
-                
+
                 // Active tab background matching Files community — slightly elevated card feel
                 let bg = if is_active {
                     rgba(0xFFFFFF14u32) // ~8% white overlay on Mica = LayerFillColorDefault
                 } else {
                     rgba(0x00000000u32) // Fully transparent when inactive
                 };
-                
+
                 // Active tab gets a bottom accent indicator line (like Files-community)
                 let border_b_color = if is_active {
                     rgba(UiConstants::ACCENT_RGBA)
                 } else {
                     rgba(0x00000000u32)
                 };
-                
+
                 let radius = px(8.0);
                 let show_close = tc > 1;
                 let close_opacity: f32 = if is_active { 1.0 } else { 0.0 };
@@ -131,7 +129,7 @@ impl TabBarView {
                     .min_w(px(120.0))
                     .max_w(px(240.0))
                     .bg(bg)
-                    .rounded_t(px(6.0))  // rounded only on top for tab look
+                    .rounded_t(px(6.0)) // rounded only on top for tab look
                     .border_b(px(2.0))
                     .border_color(border_b_color)
                     .cursor_pointer()
@@ -164,7 +162,11 @@ impl TabBarView {
                     div()
                         .text_size(px(14.0))
                         .font_family(UiConstants::FONT_MDL2)
-                        .text_color(if is_active { rgba(UiConstants::ACCENT_RGBA) } else { rgba(UiConstants::TEXT_SECONDARY_RGBA) })
+                        .text_color(if is_active {
+                            rgba(UiConstants::ACCENT_RGBA)
+                        } else {
+                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                        })
                         .mr(px(8.0))
                         .child("\u{E8B7}"),
                 );
@@ -242,17 +244,16 @@ impl TabBarView {
             );
 
         // ── DRAG ZONE
-        let drag_zone = div()
-            .id("drag-zone")
-            .flex_grow()
-            .h_full()
-            .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
+        let drag_zone = div().id("drag-zone").flex_grow().h_full().on_mouse_down(
+            MouseButton::Left,
+            move |event, window, _cx| {
                 if event.click_count == 2 {
                     window.zoom_window();
                 } else {
                     start_window_move(window);
                 }
-            });
+            },
+        );
 
         // ── Caption buttons
         let caption_buttons = div()

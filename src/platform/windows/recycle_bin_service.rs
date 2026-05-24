@@ -115,9 +115,7 @@ impl RecycleBinService {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::Shell::{SHEmptyRecycleBinW, SHERB_NOCONFIRMATION};
 
-        let path_str = original_path
-            .to_str()
-            .context("Invalid path string")?;
+        let path_str = original_path.to_str().context("Invalid path string")?;
 
         // First, get the drive letter from the path
         let drive = original_path
@@ -136,7 +134,7 @@ impl RecycleBinService {
         // For item-specific restore, we would need IFileOperation or shell namespace browsing
         unsafe {
             let result = SHEmptyRecycleBinW(
-                HWND(0),  // NULL HWND
+                HWND(0), // NULL HWND
                 PCWSTR(drive_path.as_ptr()),
                 SHERB_NOCONFIRMATION,
             );
@@ -184,7 +182,7 @@ impl RecycleBinService {
 
                 unsafe {
                     let result = SHEmptyRecycleBinW(
-                        HWND(0),  // NULL HWND
+                        HWND(0), // NULL HWND
                         PCWSTR(drive_path.as_ptr()),
                         SHERB_NOCONFIRMATION,
                     );
@@ -219,8 +217,7 @@ impl RecycleBinService {
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::Shell::{
-            SHEmptyRecycleBinW, SHERB_NOCONFIRMATION,
-            SHERB_NOPROGRESSUI, SHERB_NOSOUND,
+            SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
         };
 
         // Empty all drives
@@ -234,11 +231,9 @@ impl RecycleBinService {
 
                 unsafe {
                     let _ = SHEmptyRecycleBinW(
-                        HWND(0),  // NULL HWND
+                        HWND(0), // NULL HWND
                         PCWSTR(drive_path.as_ptr()),
-                        SHERB_NOCONFIRMATION
-                            | SHERB_NOPROGRESSUI
-                            | SHERB_NOSOUND,
+                        SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
                     );
                 }
             }
@@ -397,7 +392,10 @@ mod tests {
         assert!(result.is_ok());
         let restore_result = result.unwrap();
         // u32 is always >= 0, so just verify the result structure is valid
-assert!(restore_result.restored_count == restore_result.restored_paths.len() as u32 || restore_result.restored_count == 0);
+        assert!(
+            restore_result.restored_count == restore_result.restored_paths.len() as u32
+                || restore_result.restored_count == 0
+        );
     }
 
     #[tokio::test]
@@ -475,7 +473,10 @@ assert!(restore_result.restored_count == restore_result.restored_paths.len() as 
         let service = RecycleBinService::new();
         let items = service.list_contents_sync().unwrap_or_default();
         for item in &items {
-            assert!(!item.original_path.is_empty(), "original_path must not be empty");
+            assert!(
+                !item.original_path.is_empty(),
+                "original_path must not be empty"
+            );
             assert!(!item.name.is_empty(), "name must not be empty");
         }
     }
@@ -516,6 +517,9 @@ assert!(restore_result.restored_count == restore_result.restored_paths.len() as 
         // will check against the real system (likely 0), detecting a change.
         // If the real system happens to have 999 items, this could fail,
         // but that is extremely unlikely.
-        assert!(second_result, "Should report change after simulated state difference");
+        assert!(
+            second_result,
+            "Should report change after simulated state difference"
+        );
     }
 }

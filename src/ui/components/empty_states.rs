@@ -19,9 +19,9 @@ pub enum EmptyStateTheme {
 /// Represents the size variant for empty state icons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmptyStateSize {
-    Small,   // 48px
-    Medium,  // 100px
-    Large,   // 200px
+    Small,  // 48px
+    Medium, // 100px
+    Large,  // 200px
 }
 
 /// Target panel for empty state display.
@@ -122,7 +122,12 @@ impl EmptyStateService {
     }
 
     /// Get the appropriate SVG asset name for a given target, size, and theme.
-    pub fn get_asset_name(&self, target: EmptyStateTarget, size: EmptyStateSize, theme: EmptyStateTheme) -> String {
+    pub fn get_asset_name(
+        &self,
+        target: EmptyStateTarget,
+        size: EmptyStateSize,
+        theme: EmptyStateTheme,
+    ) -> String {
         let size_str = match size {
             EmptyStateSize::Small => "48",
             EmptyStateSize::Medium => "100",
@@ -208,21 +213,33 @@ mod tests {
     #[test]
     fn test_get_asset_name_shelf_dark_medium() {
         let service = EmptyStateService::new();
-        let name = service.get_asset_name(EmptyStateTarget::Shelf, EmptyStateSize::Medium, EmptyStateTheme::Dark);
+        let name = service.get_asset_name(
+            EmptyStateTarget::Shelf,
+            EmptyStateSize::Medium,
+            EmptyStateTheme::Dark,
+        );
         assert_eq!(name, "EmptyShelf_100_ThemeDark.svg");
     }
 
     #[test]
     fn test_get_asset_name_sidebar_light_large() {
         let service = EmptyStateService::new();
-        let name = service.get_asset_name(EmptyStateTarget::Sidebar, EmptyStateSize::Large, EmptyStateTheme::Light);
+        let name = service.get_asset_name(
+            EmptyStateTarget::Sidebar,
+            EmptyStateSize::Large,
+            EmptyStateTheme::Light,
+        );
         assert_eq!(name, "EmptySidebar_200_ThemeLight.svg");
     }
 
     #[test]
     fn test_get_asset_name_sidebar_dark_small() {
         let service = EmptyStateService::new();
-        let name = service.get_asset_name(EmptyStateTarget::Sidebar, EmptyStateSize::Small, EmptyStateTheme::Dark);
+        let name = service.get_asset_name(
+            EmptyStateTarget::Sidebar,
+            EmptyStateSize::Small,
+            EmptyStateTheme::Dark,
+        );
         assert_eq!(name, "EmptySidebar_48_ThemeDark.svg");
     }
 

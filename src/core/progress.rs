@@ -148,11 +148,11 @@ mod tests {
     #[tokio::test]
     async fn test_start_job() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let job_id = engine.start_job("Test job".to_string()).await;
-        
+
         assert!(job_id != uuid::Uuid::nil());
-        
+
         let job = engine.get_job(job_id).await;
         assert!(job.is_some());
         assert_eq!(job.unwrap().name, "Test job");
@@ -161,7 +161,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_job() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let job = engine.get_job(uuid::Uuid::nil()).await;
         assert!(job.is_none());
     }
@@ -169,10 +169,10 @@ mod tests {
     #[tokio::test]
     async fn test_list_jobs() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let id1 = engine.start_job("Job 1".to_string()).await;
         let id2 = engine.start_job("Job 2".to_string()).await;
-        
+
         let jobs = engine.list_jobs().await;
         assert_eq!(jobs.len(), 2);
         assert!(jobs.iter().any(|j| j.id == id1));
@@ -182,10 +182,10 @@ mod tests {
     #[tokio::test]
     async fn test_remove_job() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let job_id = engine.start_job("Test job".to_string()).await;
         assert!(engine.get_job(job_id).await.is_some());
-        
+
         engine.remove_job(job_id).await;
         assert!(engine.get_job(job_id).await.is_none());
     }
@@ -199,19 +199,19 @@ mod tests {
             speed: 10.0,
             eta: Some(Duration::from_secs(5)),
         };
-        
+
         assert!(matches!(status, OperationStatus::InProgress { progress, .. } if progress == 0.5));
     }
 
     #[tokio::test]
     async fn test_complete_job_sends_update() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let job_id = engine.start_job("Test job".to_string()).await;
-        
+
         // Complete job should not panic
         engine.complete_job(job_id).await;
-        
+
         // Verify job is still in list (complete_job sends update but doesn't remove)
         let job = engine.get_job(job_id).await;
         assert!(job.is_some());
@@ -220,13 +220,13 @@ mod tests {
     #[tokio::test]
     async fn test_fail_job_sends_update() {
         let (engine, _rx) = ProgressEngine::new();
-        
+
         let job_id = engine.start_job("Test job".to_string()).await;
         let error_msg = "Something went wrong".to_string();
-        
+
         // Fail job should not panic
         engine.fail_job(job_id, error_msg.clone()).await;
-        
+
         // Verify job is still in list (fail_job sends update but doesn't remove)
         let job = engine.get_job(job_id).await;
         assert!(job.is_some());
@@ -235,19 +235,19 @@ mod tests {
     #[test]
     fn test_operation_status_variants() {
         use OperationStatus::*;
-        
+
         // Test Pending
         let pending = Pending;
         assert!(matches!(pending, Pending));
-        
+
         // Test Completed
         let completed = Completed;
         assert!(matches!(completed, Completed));
-        
+
         // Test Failed
         let failed = Failed("error".to_string());
         assert!(matches!(failed, Failed(msg) if msg == "error"));
-        
+
         // Test InProgress
         let in_progress = InProgress {
             progress: 0.75,

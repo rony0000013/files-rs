@@ -51,12 +51,12 @@ impl FileLockService {
             // This is a simplified implementation
             let path_str = path.as_path().to_string_lossy();
             tracing::debug!("Checking if file is locked: {}", path_str);
-            
+
             // In a full implementation, we would:
             // 1. Call RmRegisterResources with the file path
             // 2. Call RmListProcess to get the list of processes using the file
             // 3. Return true if any processes are found
-            
+
             // For now, return false (not locked)
             false
         }
@@ -73,10 +73,10 @@ impl FileLockService {
         {
             let path_str = path.as_path().to_string_lossy();
             tracing::debug!("Getting locking processes for: {}", path_str);
-            
+
             // In a full implementation, this would use RmGetList
             // to return actual locking processes
-            
+
             Vec::new()
         }
         #[cfg(not(windows))]
@@ -96,14 +96,17 @@ impl FileLockService {
         #[cfg(windows)]
         {
             let path_str = path.as_path().to_string_lossy();
-            tracing::warn!("Force unlock requested for: {} - not fully implemented", path_str);
-            
+            tracing::warn!(
+                "Force unlock requested for: {} - not fully implemented",
+                path_str
+            );
+
             // In a full implementation, we would:
             // 1. Get the list of locking processes
             // 2. Request each process to shut down
             // 3. Use NtSetInformationFile to close handles
             // This is dangerous and requires admin privileges
-            
+
             Err("Force unlock not implemented - requires admin privileges".to_string())
         }
         #[cfg(not(windows))]
@@ -117,10 +120,10 @@ impl FileLockService {
         #[cfg(windows)]
         {
             tracing::info!("Requesting shutdown of process: {}", pid);
-            
+
             // In a full implementation, we would use RmShutdown
             // to gracefully shutdown the process
-            
+
             Err("Process shutdown not implemented".to_string())
         }
         #[cfg(not(windows))]
@@ -130,16 +133,19 @@ impl FileLockService {
     }
 
     /// Get a map of locked files to their locking processes
-    pub fn get_locked_files_map(&self, paths: &[FilesPath]) -> HashMap<FilesPath, Vec<LockingProcess>> {
+    pub fn get_locked_files_map(
+        &self,
+        paths: &[FilesPath],
+    ) -> HashMap<FilesPath, Vec<LockingProcess>> {
         let mut result = HashMap::new();
-        
+
         for path in paths {
             let processes = self.get_locking_processes(path);
             if !processes.is_empty() {
                 result.insert(path.clone(), processes);
             }
         }
-        
+
         result
     }
 }
@@ -177,7 +183,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent_file.txt");
         let path = FilesPath::from(nonexistent.to_str().unwrap());
-        
+
         // A non-existent file is technically not locked
         // (though the operation might fail for other reasons)
         assert!(!service.is_locked(&path));
@@ -189,7 +195,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test_file.txt");
         std::fs::write(&temp_file, "test content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         assert!(!service.is_locked(&path));
     }
@@ -200,7 +206,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test_file.txt");
         std::fs::write(&temp_file, "test content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         let processes = service.get_locking_processes(&path);
         assert!(processes.is_empty());
@@ -212,7 +218,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test_file.txt");
         std::fs::write(&temp_file, "test content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         assert!(service.can_delete(&path));
     }
@@ -223,7 +229,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test_file.txt");
         std::fs::write(&temp_file, "test content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         // If file is locked, can_delete returns false
         // Our implementation returns true for unlocked files
@@ -237,7 +243,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test_file.txt");
         std::fs::write(&temp_file, "test content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         let result = service.force_unlock(&path);
         // Should return error since force unlock is not implemented
@@ -256,17 +262,17 @@ mod tests {
     fn test_get_locked_files_map() {
         let service = FileLockService::new().unwrap();
         let temp_dir = TempDir::new().unwrap();
-        
+
         let file1 = temp_dir.path().join("file1.txt");
         let file2 = temp_dir.path().join("file2.txt");
         std::fs::write(&file1, "content1").unwrap();
         std::fs::write(&file2, "content2").unwrap();
-        
+
         let paths = vec![
             FilesPath::from(file1.to_str().unwrap()),
             FilesPath::from(file2.to_str().unwrap()),
         ];
-        
+
         let locked = service.get_locked_files_map(&paths);
         // Temp files should not be locked, so map should be empty
         assert!(locked.is_empty());
@@ -280,7 +286,7 @@ mod tests {
             exe_path: "C:\\test\\test.exe".to_string(),
             can_shutdown: true,
         };
-        
+
         assert_eq!(process.pid, 1234);
         assert_eq!(process.name, "test.exe");
         assert!(process.can_shutdown);
@@ -293,7 +299,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_file = temp_dir.path().join("test.txt");
         std::fs::write(&temp_file, "content").unwrap();
-        
+
         let path = FilesPath::from(temp_file.to_str().unwrap());
         // Default service should work
         assert!(!service.is_locked(&path));

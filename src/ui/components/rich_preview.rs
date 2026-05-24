@@ -27,25 +27,24 @@ impl PreviewType {
         match ext.to_lowercase().as_str() {
             // Code languages
             "rs" | "js" | "ts" | "jsx" | "tsx" | "py" | "java" | "c" | "cpp" | "h" | "hpp"
-            | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua"
-            | "perl" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
-            | "dockerfile" | "makefile" | "css" | "scss" | "sass" | "less" | "html"
-            | "htm" | "xml" | "json" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "txt" => {
-                PreviewType::Code
-            }
+            | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua" | "perl"
+            | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "dockerfile"
+            | "makefile" | "css" | "scss" | "sass" | "less" | "html" | "htm" | "xml" | "json"
+            | "yaml" | "yml" | "toml" | "ini" | "cfg" | "txt" => PreviewType::Code,
             // Markdown
             "md" | "markdown" | "rst" => PreviewType::Markdown,
             // PDF
             "pdf" => PreviewType::Pdf,
             // Images
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif"
-            | "svg" | "raw" | "psd" | "ai" | "eps" | "heic" | "heif" => PreviewType::Image,
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+            | "raw" | "psd" | "ai" | "eps" | "heic" | "heif" => PreviewType::Image,
             // Audio
-            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac"
-            | "aiff" => PreviewType::Audio,
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => {
+                PreviewType::Audio
+            }
             // Video
-            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg"
-            | "3gp" | "flv" | "vob" => PreviewType::Video,
+            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg" | "3gp"
+            | "flv" | "vob" => PreviewType::Video,
             _ => PreviewType::Unknown,
         }
     }
@@ -273,8 +272,8 @@ impl PreviewService {
     pub fn is_file_too_large(&self, size_bytes: u64, preview_type: PreviewType) -> bool {
         match preview_type {
             PreviewType::Code | PreviewType::Markdown => size_bytes > 10 * 1024 * 1024, // 10MB
-            PreviewType::Image => size_bytes > 50 * 1024 * 1024,                      // 50MB
-            _ => size_bytes > 100 * 1024 * 1024,                                      // 100MB
+            PreviewType::Image => size_bytes > 50 * 1024 * 1024,                        // 50MB
+            _ => size_bytes > 100 * 1024 * 1024,                                        // 100MB
         }
     }
 
@@ -302,7 +301,10 @@ mod tests {
     #[test]
     fn test_preview_type_from_extension_markdown() {
         assert_eq!(PreviewType::from_extension("md"), PreviewType::Markdown);
-        assert_eq!(PreviewType::from_extension("markdown"), PreviewType::Markdown);
+        assert_eq!(
+            PreviewType::from_extension("markdown"),
+            PreviewType::Markdown
+        );
     }
 
     #[test]

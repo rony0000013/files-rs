@@ -9,17 +9,17 @@
 //! Each view has both flat and grouped variants for optimal performance
 //! and organized file browsing.
 
-pub mod types;
+pub mod columns_view;
+pub mod grid_view;
 pub mod helpers;
 pub mod list_view;
-pub mod grid_view;
-pub mod columns_view;
+pub mod types;
 
 // Keep main_view for shared types and state management
-pub mod main_view;
 pub mod details_view;
+pub mod main_view;
 
 // Re-exports for convenience
-pub use types::*;
 pub use helpers::*;
 pub use main_view::*;
+pub use types::*;

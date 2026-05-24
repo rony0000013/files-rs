@@ -46,13 +46,17 @@ impl BulkRenameService {
         let new_name = old_name.replace(pattern, replacement);
         let mut new_path = path.as_path().to_path_buf();
         new_path.set_file_name(new_name);
-        
+
         fs::rename(path.as_path(), &new_path)?;
         Ok(FilesPath::new(new_path))
     }
 
     /// Generates new names without actually renaming (dry run)
-    pub fn preview_rename(items: &[FilesPath], pattern: &str, replacement: &str) -> Vec<(String, String)> {
+    pub fn preview_rename(
+        items: &[FilesPath],
+        pattern: &str,
+        replacement: &str,
+    ) -> Vec<(String, String)> {
         let mut results = Vec::new();
         for item in items {
             if let Some(old_name) = item.as_path().file_name() {
@@ -111,12 +115,12 @@ mod tests {
     #[tokio::test]
     async fn test_rename_with_pattern_basic() -> Result<()> {
         let dir = tempdir()?;
-        
+
         // Create multiple test files
         let file1 = dir.path().join("doc_old.txt");
         let file2 = dir.path().join("report_old.txt");
         let file3 = dir.path().join("doc_new.txt"); // This one should NOT be renamed (no "old" after replace)
-        
+
         std::fs::write(&file1, "content1")?;
         std::fs::write(&file2, "content2")?;
         std::fs::write(&file3, "content3")?;
@@ -131,18 +135,28 @@ mod tests {
 
         // Should have renamed 2 files
         assert_eq!(results.len(), 2);
-        
+
         // Verify old files gone and new files exist
         assert!(!file1.exists());
         assert!(!file2.exists());
         assert!(file3.exists()); // unchanged
 
         assert_eq!(
-            results[0].1.as_path().file_name().unwrap().to_string_lossy(),
+            results[0]
+                .1
+                .as_path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
             "doc_new.txt"
         );
         assert_eq!(
-            results[1].1.as_path().file_name().unwrap().to_string_lossy(),
+            results[1]
+                .1
+                .as_path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
             "report_new.txt"
         );
         Ok(())
@@ -151,11 +165,11 @@ mod tests {
     #[tokio::test]
     async fn test_preview_rename() -> Result<()> {
         let dir = tempdir()?;
-        
+
         let file1 = dir.path().join("test_old.txt");
         let file2 = dir.path().join("test_old_old.txt");
         let file3 = dir.path().join("test_new.txt"); // no match
-        
+
         std::fs::write(&file1, "1")?;
         std::fs::write(&file2, "2")?;
         std::fs::write(&file3, "3")?;
@@ -167,16 +181,25 @@ mod tests {
         ];
 
         let preview = BulkRenameService::preview_rename(&items, "old", "new");
-        
+
         assert_eq!(preview.len(), 2);
-        assert_eq!(preview[0], ("test_old.txt".to_string(), "test_new.txt".to_string()));
-        assert_eq!(preview[1], ("test_old_old.txt".to_string(), "test_new_new.txt".to_string()));
-        
+        assert_eq!(
+            preview[0],
+            ("test_old.txt".to_string(), "test_new.txt".to_string())
+        );
+        assert_eq!(
+            preview[1],
+            (
+                "test_old_old.txt".to_string(),
+                "test_new_new.txt".to_string()
+            )
+        );
+
         // Files should NOT be renamed (preview mode)
         assert!(file1.exists());
         assert!(file2.exists());
         assert!(file3.exists());
-        
+
         Ok(())
     }
 
@@ -195,7 +218,7 @@ mod tests {
 
         let items = vec![FilesPath::new(&file)];
         let preview = BulkRenameService::preview_rename(&items, "old", "new");
-        
+
         assert!(preview.is_empty());
         // File should be unchanged
         assert!(file.exists());

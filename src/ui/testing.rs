@@ -149,7 +149,16 @@ pub mod test_data {
 
     /// Generate long path for overflow testing
     pub fn long_path() -> PathBuf {
-        let segments = vec!["home", "user", "Documents", "Projects", "files-rs", "src", "ui", "components"];
+        let segments = vec![
+            "home",
+            "user",
+            "Documents",
+            "Projects",
+            "files-rs",
+            "src",
+            "ui",
+            "components",
+        ];
         segments.into_iter().collect()
     }
 }

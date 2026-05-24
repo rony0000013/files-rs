@@ -60,10 +60,7 @@ impl BitLockerService {
         use winreg::RegKey;
 
         let drive_str = format!("{}:\\", drive_letter);
-        let wide_drive: Vec<u16> = drive_str
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide_drive: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
         // Get volume info via Windows API
         let (total_bytes, free_bytes) = Self::get_drive_space(&drive_str);
@@ -129,10 +126,7 @@ impl BitLockerService {
         use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
         let drive_str = format!("{}:", drive_letter);
-        let wide_drive: Vec<u16> = drive_str
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide_drive: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
         unsafe {
             let mut volume_name = vec![0u16; 256];
@@ -166,10 +160,7 @@ impl BitLockerService {
         use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-        let wide_drive: Vec<u16> = drive_str
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide_drive: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
 
         unsafe {
             let mut free_bytes: u64 = 0;
@@ -245,7 +236,7 @@ impl BitLockerService {
         Vec::new()
     }
 
-/// Unlock a BitLocker-protected drive using a password
+    /// Unlock a BitLocker-protected drive using a password
     #[cfg(windows)]
     pub fn unlock_drive(drive_letter: char, password: &str) -> Result<()> {
         let drive_str = format!("{}:", drive_letter);
@@ -265,13 +256,19 @@ impl BitLockerService {
         if output.status.success() {
             Ok(())
         } else {
-            Err(anyhow!("Failed to unlock drive: {}", String::from_utf8_lossy(&output.stderr)))
+            Err(anyhow!(
+                "Failed to unlock drive: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
         }
     }
 
     #[cfg(not(windows))]
     pub fn unlock_drive(drive_letter: char, _password: &str) -> Result<()> {
-        Err(anyhow!("BitLocker is only available on Windows: drive {}", drive_letter))
+        Err(anyhow!(
+            "BitLocker is only available on Windows: drive {}",
+            drive_letter
+        ))
     }
 
     /// Lock a BitLocker-protected drive
@@ -297,7 +294,10 @@ impl BitLockerService {
 
     #[cfg(not(windows))]
     pub fn lock_drive(drive_letter: char) -> Result<()> {
-        Err(anyhow!("BitLocker is only available on Windows: drive {}", drive_letter))
+        Err(anyhow!(
+            "BitLocker is only available on Windows: drive {}",
+            drive_letter
+        ))
     }
 
     /// Check if a drive is BitLocker-protected and locked
@@ -335,20 +335,31 @@ impl BitLockerService {
 
         if let Some(pwd) = password {
             cmd.arg("-password");
-            tracing::info!("BitLocker enable requested for {} with password protection", drive_letter);
+            tracing::info!(
+                "BitLocker enable requested for {} with password protection",
+                drive_letter
+            );
         } else {
             cmd.arg("-recoverypassword");
-            tracing::info!("BitLocker enable requested for {} with recovery password", drive_letter);
+            tracing::info!(
+                "BitLocker enable requested for {} with recovery password",
+                drive_letter
+            );
         }
 
         tracing::warn!("BitLocker enable requires elevated privileges and takes significant time");
 
-        Err(anyhow!("BitLocker enable requires running as administrator"))
+        Err(anyhow!(
+            "BitLocker enable requires running as administrator"
+        ))
     }
 
     #[cfg(not(windows))]
     pub fn enable_bitlocker(drive_letter: char, _password: Option<&str>) -> Result<()> {
-        Err(anyhow!("BitLocker is only available on Windows: drive {}", drive_letter))
+        Err(anyhow!(
+            "BitLocker is only available on Windows: drive {}",
+            drive_letter
+        ))
     }
 
     /// Update the drive cache

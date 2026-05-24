@@ -32,13 +32,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         // copy_path should return Result
         // On Windows it will try to use clip command, may fail in test env
         let result = ClipboardService::copy_path(&path);
-        
+
         // Result should be Ok or Err depending on clip command availability
         // The important thing is it doesn't panic
         assert!(result.is_ok() || result.is_err());
@@ -49,11 +49,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "content").unwrap();
-        
+
         let path = FilesPath::from(file_path.to_str().unwrap());
-        
+
         let result = ClipboardService::copy_path_quoted(&path);
-        
+
         assert!(result.is_ok() || result.is_err());
     }
 
@@ -61,9 +61,9 @@ mod tests {
     fn test_copy_path_with_nonexistent_file() {
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.txt");
-        
+
         let path = FilesPath::from(nonexistent.to_str().unwrap());
-        
+
         // Should not panic, returns Result
         let result = ClipboardService::copy_path(&path);
         assert!(result.is_ok() || result.is_err());
@@ -74,9 +74,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_with_spaces = temp_dir.path().join("file with spaces.txt");
         std::fs::write(&file_with_spaces, "content").unwrap();
-        
+
         let path = FilesPath::from(file_with_spaces.to_str().unwrap());
-        
+
         let result = ClipboardService::copy_path_quoted(&path);
         assert!(result.is_ok() || result.is_err());
     }
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn test_set_clipboard_text_handles_empty_string() {
         let result = ClipboardService::copy_path_quoted(&FilesPath::from(""));
-        
+
         // Should handle empty string gracefully
         assert!(result.is_ok() || result.is_err());
     }
@@ -94,9 +94,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let unicode_file = temp_dir.path().join("文件.txt");
         std::fs::write(&unicode_file, "content").unwrap();
-        
+
         let path = FilesPath::from(unicode_file.to_str().unwrap());
-        
+
         let result = ClipboardService::copy_path(&path);
         assert!(result.is_ok() || result.is_err());
     }

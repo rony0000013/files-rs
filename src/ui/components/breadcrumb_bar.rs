@@ -93,7 +93,8 @@ impl NavigationMemory {
             }
         }
 
-        self.entries.push(NavigationMemoryEntry::new(path, item_index, item_name));
+        self.entries
+            .push(NavigationMemoryEntry::new(path, item_index, item_name));
 
         // Trim if needed
         while self.entries.len() > self.max_entries {
@@ -187,30 +188,36 @@ impl BreadcrumbBarService {
             if parent == PathBuf::from("/") {
                 break;
             }
-            
+
             let label = parent
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "/".to_string());
 
-            segments.insert(0, BreadcrumbSegment {
-                path: parent.clone(),
-                label,
-                is_draggable: true,
-                is_current: false,
-            });
+            segments.insert(
+                0,
+                BreadcrumbSegment {
+                    path: parent.clone(),
+                    label,
+                    is_draggable: true,
+                    is_current: false,
+                },
+            );
 
             ancestor = parent.parent().map(|p| p.to_path_buf());
         }
 
         // Add root if not already included
         if segments.is_empty() || segments[0].path != PathBuf::from("/") {
-            segments.insert(0, BreadcrumbSegment {
-                path: PathBuf::from("/"),
-                label: "/".to_string(),
-                is_draggable: true,
-                is_current: false,
-            });
+            segments.insert(
+                0,
+                BreadcrumbSegment {
+                    path: PathBuf::from("/"),
+                    label: "/".to_string(),
+                    is_draggable: true,
+                    is_current: false,
+                },
+            );
         }
 
         // Add the current segment
@@ -236,7 +243,7 @@ impl BreadcrumbBarService {
         available_width: f32,
     ) -> BreadcrumbDisplayResult {
         let config = &self.config;
-        
+
         // If we have enough space, show all segments
         if available_width >= config.max_width || segments.len() <= config.min_visible_segments {
             return BreadcrumbDisplayResult {
@@ -250,11 +257,13 @@ impl BreadcrumbBarService {
         // Estimate ~100px per segment + chevron
         let estimated_per_segment = 100.0;
         let segments_to_show = (available_width / estimated_per_segment) as usize;
-        let segments_to_show = segments_to_show.max(config.min_visible_segments).min(segments.len());
-        
+        let segments_to_show = segments_to_show
+            .max(config.min_visible_segments)
+            .min(segments.len());
+
         // Always show first (root) and last (current) segments
         let mut visible: Vec<BreadcrumbSegment> = Vec::new();
-        
+
         if segments_to_show >= 3 {
             // Show: first, ellipsis placeholder, last few
             visible.push(segments[0].clone());
@@ -264,13 +273,13 @@ impl BreadcrumbBarService {
                 is_draggable: false,
                 is_current: false,
             });
-            
+
             // Add remaining from the end
             let start_idx = segments.len() - (segments_to_show - 2);
             for i in start_idx..segments.len() {
                 visible.push(segments[i].clone());
             }
-            
+
             BreadcrumbDisplayResult {
                 visible_segments: visible,
                 has_hidden_before: true,
@@ -280,7 +289,7 @@ impl BreadcrumbBarService {
             // Show first and last only
             visible.push(segments[0].clone());
             visible.push(segments.last().unwrap().clone());
-            
+
             BreadcrumbDisplayResult {
                 visible_segments: visible,
                 has_hidden_before: true,
@@ -375,14 +384,12 @@ mod tests {
     #[test]
     fn test_navigation_memory_record_position() {
         let mut memory = NavigationMemory::new();
-        memory.record_position(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
-        
+        memory.record_position(PathBuf::from("/home/user"), 5, "Documents".to_string());
+
         assert_eq!(memory.len(), 1);
-        let (idx, name) = memory.get_last_position(&PathBuf::from("/home/user")).unwrap();
+        let (idx, name) = memory
+            .get_last_position(&PathBuf::from("/home/user"))
+            .unwrap();
         assert_eq!(idx, 5);
         assert_eq!(name, "Documents");
     }
@@ -390,17 +397,9 @@ mod tests {
     #[test]
     fn test_navigation_memory_no_duplicate_consecutive() {
         let mut memory = NavigationMemory::new();
-        memory.record_position(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
-        memory.record_position(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
-        
+        memory.record_position(PathBuf::from("/home/user"), 5, "Documents".to_string());
+        memory.record_position(PathBuf::from("/home/user"), 5, "Documents".to_string());
+
         // Should only have one entry
         assert_eq!(memory.len(), 1);
     }
@@ -415,41 +414,26 @@ mod tests {
     #[test]
     fn test_navigation_memory_forget() {
         let mut memory = NavigationMemory::new();
-        memory.record_position(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
+        memory.record_position(PathBuf::from("/home/user"), 5, "Documents".to_string());
         memory.forget(&PathBuf::from("/home/user"));
-        
+
         assert!(memory.is_empty());
     }
 
     #[test]
     fn test_navigation_memory_clear() {
         let mut memory = NavigationMemory::new();
-        memory.record_position(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
-        memory.record_position(
-            PathBuf::from("/home"),
-            3,
-            "user".to_string(),
-        );
-        
+        memory.record_position(PathBuf::from("/home/user"), 5, "Documents".to_string());
+        memory.record_position(PathBuf::from("/home"), 3, "user".to_string());
+
         memory.clear();
         assert!(memory.is_empty());
     }
 
     #[test]
     fn test_navigation_memory_entry_age() {
-        let entry = NavigationMemoryEntry::new(
-            PathBuf::from("/home/user"),
-            5,
-            "Documents".to_string(),
-        );
+        let entry =
+            NavigationMemoryEntry::new(PathBuf::from("/home/user"), 5, "Documents".to_string());
         let age = entry.age();
         // Should be very small since we just created it
         assert!(age.as_secs() == 0 || age.as_millis() < 100);
@@ -466,7 +450,7 @@ mod tests {
         let service = BreadcrumbBarService::new();
         let path = PathBuf::from("/home/user/Documents");
         let segments = service.build_segments(&path, 0);
-        
+
         assert!(segments.len() >= 3);
         assert_eq!(segments.last().unwrap().label, "Documents");
         assert!(segments.last().unwrap().is_current);
@@ -477,7 +461,7 @@ mod tests {
         let service = BreadcrumbBarService::new();
         let path = PathBuf::from("/");
         let segments = service.build_segments(&path, 0);
-        
+
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].label, "/");
         assert!(segments[0].is_current);
@@ -506,9 +490,9 @@ mod tests {
                 is_current: true,
             },
         ];
-        
+
         let result = service.process_for_display(&segments, 800.0);
-        
+
         assert_eq!(result.visible_segments.len(), 3);
         assert!(!result.has_hidden_before);
         assert!(!result.has_hidden_after);
@@ -543,10 +527,10 @@ mod tests {
                 is_current: true,
             },
         ];
-        
+
         // With small width, should truncate
         let result = service.process_for_display(&segments, 100.0);
-        
+
         assert!(result.has_hidden_before);
     }
 
@@ -555,22 +539,14 @@ mod tests {
         let service = BreadcrumbBarService::new();
 
         // Valid: dropping into different directory (use /tmp which exists on Linux)
-        assert!(service.is_valid_drop_target(
-            &PathBuf::from("/tmp"),
-            &PathBuf::from("/tmp/old_folder"),
-        ));
+        assert!(service
+            .is_valid_drop_target(&PathBuf::from("/tmp"), &PathBuf::from("/tmp/old_folder"),));
 
         // Invalid: dropping folder into itself
-        assert!(!service.is_valid_drop_target(
-            &PathBuf::from("/tmp"),
-            &PathBuf::from("/tmp"),
-        ));
+        assert!(!service.is_valid_drop_target(&PathBuf::from("/tmp"), &PathBuf::from("/tmp"),));
 
         // Invalid: dropping parent into child
-        assert!(!service.is_valid_drop_target(
-            &PathBuf::from("/tmp/test"),
-            &PathBuf::from("/tmp"),
-        ));
+        assert!(!service.is_valid_drop_target(&PathBuf::from("/tmp/test"), &PathBuf::from("/tmp"),));
     }
 
     #[test]
@@ -587,7 +563,7 @@ mod tests {
         let mut ctx = BreadcrumbDragContext::new(PathBuf::from("/home/user"), 2);
         ctx.hover_target = Some(PathBuf::from("/home"));
         ctx.end();
-        
+
         assert!(!ctx.is_dragging);
         assert!(ctx.hover_target.is_none());
     }
@@ -600,7 +576,7 @@ mod tests {
             is_draggable: true,
             is_current: false,
         };
-        
+
         assert!(segment.is_draggable);
         assert!(!segment.is_current);
     }

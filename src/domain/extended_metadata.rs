@@ -107,7 +107,10 @@ mod tests {
             duration: None,
             tags: Some(vec!["rock".to_string(), "pop".to_string()]),
         };
-        assert_eq!(props.tags, Some(vec!["rock".to_string(), "pop".to_string()]));
+        assert_eq!(
+            props.tags,
+            Some(vec!["rock".to_string(), "pop".to_string()])
+        );
     }
 
     #[test]
@@ -161,7 +164,7 @@ mod tests {
         // In real tests, you'd use an actual MP3 file with ID3 tags
         let temp_dir = TempDir::new().unwrap();
         let mp3_file = temp_dir.path().join("test.mp3");
-        
+
         // Create minimal content - id3 crate will return error for non-MP3 content
         std::fs::write(&mp3_file, "not a real mp3").unwrap();
 

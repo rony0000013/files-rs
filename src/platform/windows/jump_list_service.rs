@@ -35,15 +35,18 @@ impl JumpListService {
 
         // Add to Windows Recent Documents for Jump List integration
         unsafe {
-            use windows::Win32::UI::Shell::{SHAddToRecentDocs, SHARD_PATHW};
             use std::os::windows::ffi::OsStrExt;
+            use windows::Win32::UI::Shell::{SHAddToRecentDocs, SHARD_PATHW};
             let wide_path: Vec<u16> = path
                 .as_path()
                 .as_os_str()
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
-            SHAddToRecentDocs(SHARD_PATHW.0 as u32, Some(wide_path.as_ptr() as *const std::ffi::c_void));
+            SHAddToRecentDocs(
+                SHARD_PATHW.0 as u32,
+                Some(wide_path.as_ptr() as *const std::ffi::c_void),
+            );
         }
 
         tracing::info!("Added to jump list: {:?}", path);
@@ -104,8 +107,8 @@ impl JumpListService {
 
         // LinkCLSID (16 bytes) - shell link CLSID {00021401-0000-0000-C000-000000000046}
         data.extend_from_slice(&[
-            0x01u8, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+            0x01u8, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
         ]);
 
         // LinkFlags (4 bytes)
@@ -182,12 +185,13 @@ mod tests {
     fn test_create_shell_link_format() {
         let path = FilesPath::new("C:\\Test\\Folder");
         let link_data = JumpListService::create_shell_link(&path).unwrap();
-        
+
         // Verify minimum size (76 byte header + terminator + path)
         assert!(link_data.len() > 80);
-        
+
         // Check header size field
-        let header_size = u32::from_le_bytes([link_data[0], link_data[1], link_data[2], link_data[3]]);
+        let header_size =
+            u32::from_le_bytes([link_data[0], link_data[1], link_data[2], link_data[3]]);
         assert_eq!(header_size, 0x4C);
     }
 
@@ -196,7 +200,7 @@ mod tests {
     fn test_shell_link_clsuid() {
         let path = FilesPath::new("C:\\Test\\Folder");
         let link_data = JumpListService::create_shell_link(&path).unwrap();
-        
+
         // Verify CLSID at offset 4 (16 bytes)
         assert_eq!(link_data[4], 0x01);
         assert_eq!(link_data[5], 0x14);

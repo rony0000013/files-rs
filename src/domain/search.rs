@@ -60,7 +60,8 @@ impl SearchService {
             return items.to_vec();
         }
         let ext_lower = ext.to_lowercase();
-        items.iter()
+        items
+            .iter()
             .filter(|(name, _)| {
                 std::path::Path::new(name)
                     .extension()
@@ -75,10 +76,9 @@ impl SearchService {
     /// Filter items by size range [min, max].
     /// max=0 means no upper bound.
     pub fn filter_by_size(items: &[(String, u64)], min: u64, max: u64) -> Vec<(String, u64)> {
-        items.iter()
-            .filter(|(_, size)| {
-                *size >= min && (max == 0 || *size <= max)
-            })
+        items
+            .iter()
+            .filter(|(_, size)| *size >= min && (max == 0 || *size <= max))
             .cloned()
             .collect()
     }
@@ -115,9 +115,13 @@ impl SearchService {
 
     fn parse_size_filter(value: &str, filters: &mut AqsFilters) {
         if let Some(num) = value.strip_prefix('>') {
-            if let Some(b) = Self::parse_size_value(num) { filters.size_min = Some(b); }
+            if let Some(b) = Self::parse_size_value(num) {
+                filters.size_min = Some(b);
+            }
         } else if let Some(num) = value.strip_prefix('<') {
-            if let Some(b) = Self::parse_size_value(num) { filters.size_max = Some(b); }
+            if let Some(b) = Self::parse_size_value(num) {
+                filters.size_max = Some(b);
+            }
         } else if let Some(num) = value.strip_prefix('=') {
             if let Some(b) = Self::parse_size_value(num) {
                 filters.size_min = Some(b);
@@ -129,9 +133,15 @@ impl SearchService {
     fn parse_size_value(value: &str) -> Option<u64> {
         let v = value.trim().to_lowercase();
         if let Some(n) = v.strip_suffix("gb") {
-            n.trim().parse::<f64>().ok().map(|x| (x * 1_073_741_824.0) as u64)
+            n.trim()
+                .parse::<f64>()
+                .ok()
+                .map(|x| (x * 1_073_741_824.0) as u64)
         } else if let Some(n) = v.strip_suffix("mb") {
-            n.trim().parse::<f64>().ok().map(|x| (x * 1_048_576.0) as u64)
+            n.trim()
+                .parse::<f64>()
+                .ok()
+                .map(|x| (x * 1_048_576.0) as u64)
         } else if let Some(n) = v.strip_suffix("kb") {
             n.trim().parse::<f64>().ok().map(|x| (x * 1024.0) as u64)
         } else {
@@ -141,7 +151,9 @@ impl SearchService {
 
     fn parse_date_filter(value: &str, filters: &mut AqsFilters) {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let day = 86400i64;
         match value {
             "yesterday" => filters.date_after = Some(now - day * 2),
@@ -152,9 +164,13 @@ impl SearchService {
             _ => {
                 if let Some(ts) = Self::parse_date_value(value) {
                     if let Some(s) = value.strip_prefix('>') {
-                        if let Some(t) = Self::parse_date_value(s) { filters.date_after = Some(t); }
+                        if let Some(t) = Self::parse_date_value(s) {
+                            filters.date_after = Some(t);
+                        }
                     } else if let Some(s) = value.strip_prefix('<') {
-                        if let Some(t) = Self::parse_date_value(s) { filters.date_before = Some(t); }
+                        if let Some(t) = Self::parse_date_value(s) {
+                            filters.date_before = Some(t);
+                        }
                     } else {
                         filters.date_after = Some(ts);
                         filters.date_before = Some(ts + day);
@@ -166,21 +182,31 @@ impl SearchService {
 
     fn parse_date_value(value: &str) -> Option<i64> {
         let parts: Vec<&str> = value.split('-').collect();
-        if parts.len() != 3 { return None; }
+        if parts.len() != 3 {
+            return None;
+        }
         let y = parts[0].parse::<i64>().ok()?;
         let m = parts[1].parse::<u64>().ok()?;
         let d = parts[2].parse::<u64>().ok()?;
-        if m < 1 || m > 12 || d < 1 || d > 31 { return None; }
+        if m < 1 || m > 12 || d < 1 || d > 31 {
+            return None;
+        }
         let mut total = 0i64;
         for year in 1970..y {
-            total += if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+            total += if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                366
+            } else {
+                365
+            };
         }
         let dim = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
             [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         } else {
             [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         };
-        for i in 0..(m as usize - 1) { total += dim[i] as i64; }
+        for i in 0..(m as usize - 1) {
+            total += dim[i] as i64;
+        }
         total += (d - 1) as i64;
         Some(total * 86400)
     }
@@ -257,10 +283,7 @@ mod tests {
     #[test]
     fn test_filter_items_no_match() {
         let service = SearchService::new();
-        let items = vec![
-            "apples.txt".to_string(),
-            "bananas.txt".to_string(),
-        ];
+        let items = vec!["apples.txt".to_string(), "bananas.txt".to_string()];
 
         let result = service.filter_items("xyz", &items);
         assert!(result.is_empty());
@@ -354,30 +377,21 @@ mod tests {
 
     #[test]
     fn test_filter_by_extension_empty_returns_all() {
-        let items = vec![
-            ("a.txt".to_string(), ""),
-            ("b.rs".to_string(), ""),
-        ];
+        let items = vec![("a.txt".to_string(), ""), ("b.rs".to_string(), "")];
         let result = SearchService::filter_by_extension(&items, "");
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_filter_by_extension_case_insensitive() {
-        let items = vec![
-            ("File.TXT".to_string(), ""),
-            ("file.txt".to_string(), ""),
-        ];
+        let items = vec![("File.TXT".to_string(), ""), ("file.txt".to_string(), "")];
         let result = SearchService::filter_by_extension(&items, "TXT");
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_filter_by_extension_no_match() {
-        let items = vec![
-            ("doc.pdf".to_string(), ""),
-            ("image.png".to_string(), ""),
-        ];
+        let items = vec![("doc.pdf".to_string(), ""), ("image.png".to_string(), "")];
         let result = SearchService::filter_by_extension(&items, "txt");
         assert_eq!(result.len(), 0);
     }
@@ -419,9 +433,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_size_no_match() {
-        let items = vec![
-            ("tiny.txt".to_string(), 5u64),
-        ];
+        let items = vec![("tiny.txt".to_string(), 5u64)];
         let result = SearchService::filter_by_size(&items, 100, 1000);
         assert_eq!(result.len(), 0);
     }

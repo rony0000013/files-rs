@@ -27,14 +27,14 @@ impl NetworkCredentialsService {
 
     /// Save credentials for a network share (e.g., \\server\share)
     #[cfg(windows)]
-    pub async fn save_credentials(
-        target: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<()> {
+    pub async fn save_credentials(target: &str, username: &str, password: &str) -> Result<()> {
         let target_name = format!("{}{}", TARGET_PREFIX, target);
-        let mut wide_target: Vec<u16> = target_name.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut wide_username: Vec<u16> = username.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut wide_target: Vec<u16> = target_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut wide_username: Vec<u16> =
+            username.encode_utf16().chain(std::iter::once(0)).collect();
         let wide_password: Vec<u16> = password.encode_utf16().chain(std::iter::once(0)).collect();
 
         let credential = CREDENTIALW {
@@ -53,8 +53,7 @@ impl NetworkCredentialsService {
         };
 
         unsafe {
-            CredWriteW(&credential, 0)
-                .map_err(|e| anyhow!("Failed to save credentials: {}", e))?;
+            CredWriteW(&credential, 0).map_err(|e| anyhow!("Failed to save credentials: {}", e))?;
         }
 
         tracing::info!("Saved credentials for target: {}", target);
@@ -62,11 +61,7 @@ impl NetworkCredentialsService {
     }
 
     #[cfg(not(windows))]
-    pub async fn save_credentials(
-        _target: &str,
-        _username: &str,
-        _password: &str,
-    ) -> Result<()> {
+    pub async fn save_credentials(_target: &str, _username: &str, _password: &str) -> Result<()> {
         Err(anyhow!("Network credentials is only available on Windows"))
     }
 
@@ -74,7 +69,10 @@ impl NetworkCredentialsService {
     #[cfg(windows)]
     pub async fn read_credentials(target: &str) -> Result<Option<(String, String)>> {
         let target_name = format!("{}{}", TARGET_PREFIX, target);
-        let wide_target: Vec<u16> = target_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_target: Vec<u16> = target_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         unsafe {
             let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
@@ -94,7 +92,8 @@ impl NetworkCredentialsService {
                         String::from_utf16_lossy(std::slice::from_raw_parts(cred.UserName.0, len))
                     };
 
-                    let password = if cred.CredentialBlob.is_null() || cred.CredentialBlobSize == 0 {
+                    let password = if cred.CredentialBlob.is_null() || cred.CredentialBlobSize == 0
+                    {
                         String::new()
                     } else {
                         let len = (cred.CredentialBlobSize as usize) / 2;
@@ -128,7 +127,10 @@ impl NetworkCredentialsService {
     #[cfg(windows)]
     pub async fn delete_credentials(target: &str) -> Result<()> {
         let target_name = format!("{}{}", TARGET_PREFIX, target);
-        let wide_target: Vec<u16> = target_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_target: Vec<u16> = target_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         unsafe {
             CredDeleteW(PCWSTR(wide_target.as_ptr()), CRED_TYPE_DOMAIN_PASSWORD, 0)
@@ -165,7 +167,9 @@ impl NetworkCredentialsService {
             for i in 0..count as isize {
                 let cred = *credentials.offset(i);
                 if !(*cred).TargetName.is_null() {
-                    let len = (0..).take_while(|&j| *(*cred).TargetName.0.add(j) != 0).count();
+                    let len = (0..)
+                        .take_while(|&j| *(*cred).TargetName.0.add(j) != 0)
+                        .count();
                     let target = String::from_utf16_lossy(std::slice::from_raw_parts(
                         (*cred).TargetName.0,
                         len,
@@ -191,7 +195,10 @@ impl NetworkCredentialsService {
     #[cfg(windows)]
     pub async fn has_credentials(target: &str) -> bool {
         let target_name = format!("{}{}", TARGET_PREFIX, target);
-        let wide_target: Vec<u16> = target_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_target: Vec<u16> = target_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         unsafe {
             let mut credential: *mut CREDENTIALW = std::ptr::null_mut();

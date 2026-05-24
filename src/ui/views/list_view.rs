@@ -43,11 +43,8 @@ impl MainViewState {
         let text_size = 11.0 + zoom * 5.0;
         let is_checkbox_mode = self.selection_mode == SelectionMode::Checkbox;
 
-        div()
-            .flex_col()
-            .w_full()
-            .flex_grow()
-            // NO overflow_hidden() - would block child scroll events
+div()
+            .size_full()
             .on_mouse_down(MouseButton::Right, {
                 let v = view.clone();
                 move |event, _, cx| {
@@ -208,6 +205,7 @@ impl MainViewState {
                             .into_any_element()
                     }).collect::<Vec<_>>()
                 })
+                .h_full()
                 .track_scroll(self.uniform_list_scroll_handle.clone()),
             )
     }

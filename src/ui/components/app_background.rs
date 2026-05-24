@@ -1,7 +1,7 @@
-use gpui::*;
 use crate::ui::constants::UiConstants;
-use crate::ui::views::main_view::FolderBackground;
 use crate::ui::views::main_view::BackgroundFit;
+use crate::ui::views::main_view::FolderBackground;
+use gpui::*;
 
 pub struct AppBackground;
 
@@ -25,7 +25,7 @@ impl AppBackground {
                     .w_full()
                     .h_full()
                     .relative()
-                    .children(children)
+                    .children(children),
             )
     }
 }

@@ -80,9 +80,9 @@ pub struct Lzma2Settings {
 impl Default for Lzma2Settings {
     fn default() -> Self {
         Self {
-            dictionary_size: 16,  // 2^16 = 64KB default
+            dictionary_size: 16, // 2^16 = 64KB default
             word_size: 32,
-            cpu_threads: 0,        // Auto-detect
+            cpu_threads: 0, // Auto-detect
         }
     }
 }
@@ -108,9 +108,9 @@ impl Lzma2Settings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VolumeSize {
     None,
-    Cdrom,      // 700 MB
-    Dvd,        // 4.7 GB
-    Fat32,      // 4 GB - actual limit ~4,194,304 KB
+    Cdrom,       // 700 MB
+    Dvd,         // 4.7 GB
+    Fat32,       // 4 GB - actual limit ~4,194,304 KB
     Custom(u64), // bytes
 }
 
@@ -218,7 +218,11 @@ impl CreateArchiveState {
             return Err("No files selected for archiving".to_string());
         }
         // Validate destination
-        if self.destination_base.to_str().map_or(true, |s| s.is_empty()) {
+        if self
+            .destination_base
+            .to_str()
+            .map_or(true, |s| s.is_empty())
+        {
             return Err("No destination specified".to_string());
         }
         // Validate LZMA2 settings
@@ -318,7 +322,10 @@ mod tests {
 
     #[test]
     fn test_compression_level_description() {
-        assert_eq!(CompressionLevel::new(0).description(), "Store (no compression)");
+        assert_eq!(
+            CompressionLevel::new(0).description(),
+            "Store (no compression)"
+        );
         assert_eq!(CompressionLevel::new(1).description(), "Fastest");
         assert_eq!(CompressionLevel::new(5).description(), "Default");
         assert_eq!(CompressionLevel::new(9).description(), "Maximum");
@@ -427,15 +434,24 @@ mod tests {
     fn test_create_archive_state_destination_path() {
         let mut state = CreateArchiveState::default();
         state.destination_base = PathBuf::from("C:\\test\\archive");
-        
+
         state.format = ArchiveFormat::Zip;
-        assert_eq!(state.destination_path(), PathBuf::from("C:\\test\\archive.zip"));
-        
+        assert_eq!(
+            state.destination_path(),
+            PathBuf::from("C:\\test\\archive.zip")
+        );
+
         state.format = ArchiveFormat::SevenZ;
-        assert_eq!(state.destination_path(), PathBuf::from("C:\\test\\archive.7z"));
-        
+        assert_eq!(
+            state.destination_path(),
+            PathBuf::from("C:\\test\\archive.7z")
+        );
+
         state.format = ArchiveFormat::TarGz;
-        assert_eq!(state.destination_path(), PathBuf::from("C:\\test\\archive.tar.gz"));
+        assert_eq!(
+            state.destination_path(),
+            PathBuf::from("C:\\test\\archive.tar.gz")
+        );
     }
 
     #[test]
@@ -483,7 +499,9 @@ mod tests {
         state.lzma2.dictionary_size = 15; // Invalid
         let result = state.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid LZMA2 dictionary size"));
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid LZMA2 dictionary size"));
     }
 
     #[test]
@@ -510,10 +528,10 @@ mod tests {
     fn test_create_archive_state_set_format() {
         let mut state = CreateArchiveState::default();
         state.show_advanced = true;
-        
+
         state.set_format(ArchiveFormat::SevenZ);
         assert_eq!(state.format, ArchiveFormat::SevenZ);
-        
+
         // Advanced should remain when switching to 7z
         state.set_format(ArchiveFormat::Zip);
         // Advanced should reset when switching away from 7z
@@ -537,7 +555,7 @@ mod tests {
         state.set_password(Some("secret".to_string()));
         assert_eq!(state.password, Some("secret".to_string()));
         assert!(state.encrypt); // Auto-enabled
-        
+
         state.set_password(Some("".to_string()));
         assert!(state.password.is_none());
     }
@@ -546,11 +564,11 @@ mod tests {
     fn test_create_archive_state_set_encrypt() {
         let mut state = CreateArchiveState::default();
         state.password = Some("secret".to_string());
-        
+
         state.set_encrypt(false);
         assert!(!state.encrypt);
         assert!(state.password.is_none()); // Password cleared
-        
+
         state.password = Some("secret".to_string());
         state.set_encrypt(true);
         assert!(state.encrypt);

@@ -31,18 +31,15 @@ impl ToastService {
     pub async fn show(&self, title: &str, message: &str, level: ToastLevel) -> Result<u32> {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
-        use windows::Win32::UI::Shell::{SHARD_APPIDINFO, SHAddToRecentDocs};
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        use windows::Win32::UI::Shell::{SHAddToRecentDocs, SHARD_APPIDINFO};
 
         let id = self.notification_id.fetch_add(1, Ordering::SeqCst);
 
         // For Windows toast notifications, we'd ideally use Windows.UI.Notifications
         // but that requires WinRT. For now, use a simpler approach via Shell.
 
-        tracing::info!(
-            "Toast [{}] ({:?}): {} - {}",
-            id, level, title, message
-        );
+        tracing::info!("Toast [{}] ({:?}): {} - {}", id, level, title, message);
 
         // On Windows 10/11, we can use PowerShell to show toast via BurntToast module
         // or fallback to a simple message box for critical notifications
@@ -123,7 +120,12 @@ impl ToastService {
     }
 
     /// Show file operation toast (copy/move/delete/etc.)
-    pub async fn file_operation_complete(&self, operation: &str, source: &str, destination: &str) -> Result<u32> {
+    pub async fn file_operation_complete(
+        &self,
+        operation: &str,
+        source: &str,
+        destination: &str,
+    ) -> Result<u32> {
         let message = format!("{} from\n{}\nto\n{}", operation, source, destination);
         self.success("File Operation Complete", &message).await
     }

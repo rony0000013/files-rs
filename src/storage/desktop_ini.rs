@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// Stub implementation for desktop.ini parsing.
 /// TODO: Implement proper INI parsing without the ini crate dependency.

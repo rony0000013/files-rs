@@ -58,7 +58,9 @@ impl ToolbarView {
             ));
         }
 
-        if toolbar_customization.is_visible("new_folder") || toolbar_customization.is_visible("new_file") {
+        if toolbar_customization.is_visible("new_folder")
+            || toolbar_customization.is_visible("new_file")
+        {
             toolbar = toolbar.child(ToolbarDivider::build());
         }
 
@@ -99,7 +101,10 @@ impl ToolbarView {
             });
         }
 
-        if toolbar_customization.is_visible("cut") || toolbar_customization.is_visible("copy") || toolbar_customization.is_visible("paste") {
+        if toolbar_customization.is_visible("cut")
+            || toolbar_customization.is_visible("copy")
+            || toolbar_customization.is_visible("paste")
+        {
             toolbar = toolbar.child(ToolbarDivider::build());
         }
 
@@ -227,13 +232,13 @@ impl ViewModeButton {
             .h(Pixels::from(28.0))
             .cursor_pointer()
             .rounded(Pixels::from(4.0));
-            
+
         if is_active {
             btn = btn.bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA));
         } else {
             btn = btn.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
         }
-        
+
         btn.on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
             let mode = mode.clone();
             view.update(cx, |this, cx| {

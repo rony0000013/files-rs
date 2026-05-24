@@ -725,10 +725,10 @@ impl MainView {
         let show_shelf = state.shelf_visible;
         let v2 = view.clone();
         let v3 = view.clone();
-        
+
         // Collect lasso overlay element if active
         let lasso_overlay = Self::render_lasso_overlay(state);
-        
+
 div()
             .flex()
             .flex_row()
@@ -767,18 +767,18 @@ div()
     fn render_lasso_overlay(state: &MainViewState) -> Option<impl IntoElement> {
         let lasso_state = state.lasso_state.as_ref()?;
         let (start, end) = lasso_state.rect();
-        
+
         // Calculate rectangle dimensions
         let left = start.x.min(end.x);
         let top = start.y.min(end.y);
         let width = (end.x - start.x).abs();
         let height = (end.y - start.y).abs();
-        
+
         // Don't render if very small (just a click)
         if width < 5.0 || height < 5.0 {
             return None;
         }
-        
+
         Some(
             div()
                 .id("lasso-overlay")
@@ -1108,7 +1108,7 @@ PaneType::Single => div()
                         .child(section_header("Media Info"))
                         .into_any_element()
                 ];
-                
+
                 if let Some(ref dims) = state.details_cache.exif_dimensions {
                     children.push(info_row("Dimensions", dims).into_any_element());
                 }
@@ -1130,7 +1130,7 @@ PaneType::Single => div()
                 if let Some(ref res) = state.details_cache.video_resolution {
                     children.push(info_row("Resolution", res).into_any_element());
                 }
-                
+
                 children
             } else {
                 vec![]
@@ -1335,8 +1335,9 @@ PaneType::Single => div()
 div()
             .flex_col()
             .flex_grow()
+            .h_full()  // CRITICAL: Provide concrete height foundation for flex_grow to work
             .w_full()
-            // NO overflow_hidden() - would block child scroll events
+            // NO overflow_hidden here - moves to content div
             .bg(if is_active {
                 rgba(UiConstants::BG_MAIN_RGBA)
             } else {
@@ -1347,8 +1348,10 @@ div()
                 div()
                     .flex()
                     .flex_col()
-                    .flex_grow()
+                    .flex_1()
+                    .h_full()  // Explicit height for flex children
                     .w_full()
+                    .overflow_hidden() // Content clipping for uniform_list
                     .child({
                         if matches!(state.target, ViewTarget::RecycleBin) {
                             Self::render_recycle_bin_view(state, view).into_any_element()
@@ -1361,7 +1364,7 @@ div()
                                         Self::details_view(state, &visible, file_items, view).into_any_element()
                                     }
                                 }
-                                ViewMode::List => state.render_list_view(file_items, view).into_any_element(),
+                                ViewMode::List => state.render_list_view(file_items, view),
                                 ViewMode::Grid => state.render_grid_view(file_items, view).into_any_element(),
                                 ViewMode::Columns => state.render_columns_view(file_items, view).into_any_element(),
                             }
@@ -2592,7 +2595,7 @@ div()
         let visible_clone = visible.to_vec();
         let items_per_row = Self::grid_items_per_row();
         let row_count = (visible.len() + items_per_row - 1) / items_per_row;
-        
+
         let zoom = state.zoom_level;
         let base_size = 80.0 + zoom * 120.0;
         let row_height = base_size + 32.0;
@@ -2624,7 +2627,7 @@ div()
                     range.map(|row_idx| {
                         let start = row_idx * items_per_row;
                         let end = (start + items_per_row).min(visible_clone.len());
-                        
+
                         div()
                             .flex()
                             .flex_row()
@@ -2766,7 +2769,7 @@ div()
 
         // For thumbnail images, use GPUUI's img() to display the image
         // For other items, use text-based icon
-        
+
         // Calculate dynamic dimensions — continuous from min to max zoom
         let item_size = 80.0 + zoom * 160.0; // 80 (min) to 240 (max)
         let item_height = item_size + 30.0;
@@ -4178,7 +4181,7 @@ mod tests {
             current: point(50.0, 150.0),
         };
         let (start, end) = lasso.rect();
-        
+
         // Should normalize so start is top-left, end is bottom-right
         assert_eq!(start.x, 50.0);
         assert_eq!(start.y, 150.0);
@@ -4193,7 +4196,7 @@ mod tests {
             current: point(100.0, 100.0),
         };
         let (start, end) = lasso.rect();
-        
+
         assert_eq!(start.x, 100.0);
         assert_eq!(start.y, 100.0);
         assert_eq!(end.x, 100.0);
@@ -4216,11 +4219,11 @@ mod tests {
     fn test_main_view_state_lasso_start() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         assert!(state.lasso_state.is_none());
-        
+
         state.lasso_start(point(100.0, 200.0));
-        
+
         assert!(state.lasso_state.is_some());
         let lasso = state.lasso_state.unwrap();
         assert_eq!(lasso.start.x, 100.0);
@@ -4233,10 +4236,10 @@ mod tests {
     fn test_main_view_state_lasso_update() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.lasso_start(point(100.0, 100.0));
         state.lasso_update(point(300.0, 400.0));
-        
+
         let lasso = state.lasso_state.unwrap();
         assert_eq!(lasso.start.x, 100.0);
         assert_eq!(lasso.start.y, 100.0);
@@ -4248,10 +4251,10 @@ mod tests {
     fn test_main_view_state_lasso_cancel() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.lasso_start(point(100.0, 100.0));
         assert!(state.lasso_state.is_some());
-        
+
         state.lasso_cancel();
         assert!(state.lasso_state.is_none());
     }
@@ -4260,10 +4263,10 @@ mod tests {
     fn test_main_view_state_lasso_rect() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.lasso_start(point(100.0, 100.0));
         state.lasso_update(point(200.0, 200.0));
-        
+
         let rect = state.lasso_rect();
         assert!(rect.is_some());
         let (start, end) = rect.unwrap();
@@ -4277,7 +4280,7 @@ mod tests {
     fn test_main_view_state_lasso_rect_none_when_inactive() {
         let path = FilesPath::new("C:\\test");
         let state = MainViewState::new(path, ViewMode::Grid);
-        
+
         assert!(state.lasso_rect().is_none());
     }
 
@@ -4285,9 +4288,9 @@ mod tests {
     fn test_main_view_state_drag_start() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.drag_start(vec![0, 1, 2], point(100.0, 200.0));
-        
+
         assert!(state.is_dragging());
         assert_eq!(state.drag_state.indices, vec![0, 1, 2]);
         assert_eq!(state.drag_state.start.x, 100.0);
@@ -4298,10 +4301,10 @@ mod tests {
     fn test_main_view_state_drag_update() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.drag_start(vec![0], point(100.0, 100.0));
         state.drag_update(point(300.0, 400.0), true); // is_copy = true
-        
+
         assert_eq!(state.drag_state.current.x, 300.0);
         assert_eq!(state.drag_state.current.y, 400.0);
         assert!(state.drag_state.is_copy);
@@ -4311,12 +4314,12 @@ mod tests {
     fn test_main_view_state_drag_end() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.drag_start(vec![0, 1], point(100.0, 100.0));
         assert!(state.is_dragging());
-        
+
         state.drag_end();
-        
+
         assert!(!state.is_dragging());
         assert!(state.drag_state.indices.is_empty());
     }
@@ -4325,15 +4328,15 @@ mod tests {
     fn test_main_view_state_get_drop_target() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         // Add some items including a directory
         state.items.push(create_test_file_item("folder1", true)); // index 0
         state.items.push(create_test_file_item("file1.txt", false)); // index 1
         state.items.push(create_test_file_item("folder2", true)); // index 2
-        
+
         // Start a drag
         state.drag_start(vec![1], point(100.0, 100.0));
-        
+
         // Test that we can find drop targets
         // Note: The exact positions depend on item layout which uses hardcoded values
         // This test verifies the method is callable and returns Option<usize>
@@ -4347,7 +4350,7 @@ mod tests {
     fn test_main_view_state_is_dragging_false_by_default() {
         let path = FilesPath::new("C:\\test");
         let state = MainViewState::new(path, ViewMode::Grid);
-        
+
         assert!(!state.is_dragging());
     }
 
@@ -4355,12 +4358,12 @@ mod tests {
     fn test_select_rect_basic() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         // Add some items
         for i in 0..24 {
             state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
         }
-        
+
         // Select items in the first row (items 0-5) using a rectangle
         // Grid layout: item_width=180, item_height=200, gap=12, padding=16
         // First row at y=16 to y=216
@@ -4370,7 +4373,7 @@ mod tests {
             point(200.0, 216.0), // End: bottom-right area of first row
             false, // Don't add to selection, replace
         );
-        
+
         // Items in first row should be selected
         assert!(state.selected_indices.contains(&0));
         assert!(state.selected_indices.contains(&1));
@@ -4384,19 +4387,19 @@ mod tests {
     fn test_select_rect_add_to_selection() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         for i in 0..12 {
             state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
         }
-        
+
         // First select some items
         state.selected_indices.insert(10);
         state.selected_indices.insert(11);
-        
+
         // Then add more via select_rect
         let visible = state.visible_items();
         state.select_rect(point(16.0, 16.0), point(200.0, 216.0), true); // add_to_selection = true
-        
+
         // Original items should still be selected
         assert!(state.selected_indices.contains(&10));
         assert!(state.selected_indices.contains(&11));
@@ -4408,11 +4411,11 @@ mod tests {
     fn test_lasso_end_clears_state() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         state.lasso_start(point(100.0, 100.0));
         state.lasso_update(point(200.0, 200.0));
         assert!(state.lasso_state.is_some());
-        
+
         state.lasso_end(false);
         assert!(state.lasso_state.is_none());
     }
@@ -4421,16 +4424,16 @@ mod tests {
     fn test_select_all_method() {
         let path = FilesPath::new("C:\\test");
         let mut state = MainViewState::new(path, ViewMode::Grid);
-        
+
         for i in 0..10 {
             state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
         }
-        
+
         // Select all via lasso_end with a large rectangle
         state.lasso_start(point(0.0, 0.0));
         state.lasso_update(point(10000.0, 10000.0)); // Cover everything
         state.lasso_end(false);
-        
+
         // All items should be selected
         for i in 0..10 {
             assert!(state.selected_indices.contains(&i), "Item {} should be selected", i);
@@ -4446,7 +4449,7 @@ mod tests {
             is_copy: true,
             is_dragging: true,
         };
-        
+
         let cloned = drag.clone();
         assert_eq!(cloned.indices, vec![1, 2, 3]);
         assert_eq!(cloned.start.x, 100.0);
@@ -4460,7 +4463,7 @@ mod tests {
             start: point(50.0, 50.0),
             current: point(150.0, 150.0),
         };
-        
+
         let cloned = lasso.clone();
         assert_eq!(cloned.start.x, 50.0);
         assert_eq!(cloned.current.x, 150.0);
@@ -4582,5 +4585,3 @@ mod tests {
         assert_eq!(state.get_group_key(&state.items[1]), Some("Untagged".to_string()));
     }
 }
-
-

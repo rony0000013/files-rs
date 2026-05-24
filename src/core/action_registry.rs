@@ -230,7 +230,9 @@ impl ActionRegistry {
     }
 
     /// Build the reverse lookup cache from a binding map.
-    fn build_reverse(bindings: &HashMap<ActionKind, KeyCombination>) -> HashMap<KeyCombination, ActionKind> {
+    fn build_reverse(
+        bindings: &HashMap<ActionKind, KeyCombination>,
+    ) -> HashMap<KeyCombination, ActionKind> {
         let mut rev = HashMap::new();
         for (action, key) in bindings {
             rev.insert(key.clone(), *action);
@@ -326,38 +328,59 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
     let mut m = HashMap::new();
 
     // Navigation
-    m.insert(ActionKind::NavigateBack, KeyCombination::new("left").with_alt());
-    m.insert(ActionKind::NavigateForward, KeyCombination::new("right").with_alt());
+    m.insert(
+        ActionKind::NavigateBack,
+        KeyCombination::new("left").with_alt(),
+    );
+    m.insert(
+        ActionKind::NavigateForward,
+        KeyCombination::new("right").with_alt(),
+    );
     m.insert(ActionKind::NavigateUp, KeyCombination::new("up").with_alt());
     m.insert(ActionKind::NavigateToRoot, KeyCombination::new("Home"));
 
     // Selection & Editing
     m.insert(ActionKind::SelectAll, KeyCombination::new("a").with_ctrl());
-    m.insert(ActionKind::InvertSelection, KeyCombination::new("i").with_ctrl());
+    m.insert(
+        ActionKind::InvertSelection,
+        KeyCombination::new("i").with_ctrl(),
+    );
     m.insert(ActionKind::Copy, KeyCombination::new("c").with_ctrl());
     m.insert(ActionKind::Cut, KeyCombination::new("x").with_ctrl());
     m.insert(ActionKind::Paste, KeyCombination::new("v").with_ctrl());
     m.insert(ActionKind::Rename, KeyCombination::new("F2"));
     m.insert(ActionKind::Delete, KeyCombination::new("Delete"));
-    m.insert(ActionKind::PermanentDelete, KeyCombination::new("Delete").with_shift());
+    m.insert(
+        ActionKind::PermanentDelete,
+        KeyCombination::new("Delete").with_shift(),
+    );
     m.insert(ActionKind::ClearSelection, KeyCombination::new("Escape"));
 
     // View
     m.insert(ActionKind::Refresh, KeyCombination::new("F5"));
     m.insert(ActionKind::Search, KeyCombination::new("f").with_ctrl());
     m.insert(ActionKind::ClearFilter, KeyCombination::new("Escape"));
-    m.insert(ActionKind::ToggleHiddenFiles, KeyCombination::new("h").with_ctrl());
+    m.insert(
+        ActionKind::ToggleHiddenFiles,
+        KeyCombination::new("h").with_ctrl(),
+    );
     m.insert(ActionKind::EditPath, KeyCombination::new("l").with_ctrl());
     m.insert(ActionKind::OpenPreviewPane, KeyCombination::new("Space"));
 
     // Tabs & Windows
     m.insert(ActionKind::NewTab, KeyCombination::new("t").with_ctrl());
     m.insert(ActionKind::CloseTab, KeyCombination::new("w").with_ctrl());
-    m.insert(ActionKind::ReopenClosedTab, KeyCombination::new("t").with_ctrl_shift());
+    m.insert(
+        ActionKind::ReopenClosedTab,
+        KeyCombination::new("t").with_ctrl_shift(),
+    );
     m.insert(ActionKind::NewWindow, KeyCombination::new("n").with_ctrl());
 
     // Commands
-    m.insert(ActionKind::CommandPalette, KeyCombination::new("p").with_ctrl_shift());
+    m.insert(
+        ActionKind::CommandPalette,
+        KeyCombination::new("p").with_ctrl_shift(),
+    );
     m.insert(ActionKind::OpenHelp, KeyCombination::new("F1"));
 
     m
@@ -443,7 +466,11 @@ mod tests {
     fn test_action_kind_labels_non_empty() {
         for action in ActionKind::all() {
             let label = action.label();
-            assert!(!label.is_empty(), "ActionKind::{:?} has empty label", action);
+            assert!(
+                !label.is_empty(),
+                "ActionKind::{:?} has empty label",
+                action
+            );
         }
     }
 
@@ -471,7 +498,11 @@ mod tests {
     fn test_registry_has_default_bindings() {
         let reg = ActionRegistry::new();
         // Should have at least 20+ default bindings
-        assert!(reg.len() >= 20, "Expected >=20 default bindings, got {}", reg.len());
+        assert!(
+            reg.len() >= 20,
+            "Expected >=20 default bindings, got {}",
+            reg.len()
+        );
     }
 
     #[test]
@@ -511,7 +542,11 @@ mod tests {
         let new_key = KeyCombination::new("y").with_ctrl();
 
         assert_eq!(reg.lookup(&old_key), None, "Old binding should be gone");
-        assert_eq!(reg.lookup(&new_key), Some(ActionKind::Copy), "New binding should work");
+        assert_eq!(
+            reg.lookup(&new_key),
+            Some(ActionKind::Copy),
+            "New binding should work"
+        );
 
         let binding = reg.binding(ActionKind::Copy);
         assert_eq!(binding.unwrap().key, "y");
@@ -523,13 +558,19 @@ mod tests {
 
         // Both Ctrl+Z → NavigateBack and Ctrl+Z → Copy
         // The second should win
-        reg.rebind(ActionKind::NavigateBack, KeyCombination::new("z").with_ctrl());
+        reg.rebind(
+            ActionKind::NavigateBack,
+            KeyCombination::new("z").with_ctrl(),
+        );
         reg.rebind(ActionKind::Copy, KeyCombination::new("z").with_ctrl());
 
         let key = KeyCombination::new("z").with_ctrl();
         assert_eq!(reg.lookup(&key), Some(ActionKind::Copy));
-        assert_eq!(reg.binding(ActionKind::NavigateBack), None,
-            "NavigateBack was unbound by last-write-wins");
+        assert_eq!(
+            reg.binding(ActionKind::NavigateBack),
+            None,
+            "NavigateBack was unbound by last-write-wins"
+        );
     }
 
     #[test]
@@ -545,10 +586,7 @@ mod tests {
 
         // Reset to default
         reg.reset_default(ActionKind::Refresh);
-        assert_eq!(
-            reg.lookup(&KeyCombination::new("r").with_ctrl()),
-            None
-        );
+        assert_eq!(reg.lookup(&KeyCombination::new("r").with_ctrl()), None);
         assert_eq!(
             reg.lookup(&KeyCombination::new("F5")),
             Some(ActionKind::Refresh)

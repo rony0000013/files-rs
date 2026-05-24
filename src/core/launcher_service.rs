@@ -80,9 +80,7 @@ impl LauncherService {
             ProtocolRegistrationResult {
                 success: false,
                 protocol: "files-rs".to_string(),
-                error: Some(
-                    "Protocol registration is only available on Windows".to_string(),
-                ),
+                error: Some("Protocol registration is only available on Windows".to_string()),
             }
         }
     }
@@ -99,9 +97,7 @@ impl LauncherService {
             ProtocolRegistrationResult {
                 success: false,
                 protocol: "files-rs".to_string(),
-                error: Some(
-                    "Protocol registration is only available on Windows".to_string(),
-                ),
+                error: Some("Protocol registration is only available on Windows".to_string()),
             }
         }
     }
@@ -194,15 +190,14 @@ impl LauncherService {
         // Check if first arg is a protocol URL
         if let Some(first) = iter.peek() {
             if first.starts_with("files-rs://") || first.starts_with("files-rs:") {
-                return Self::parse_protocol_url(first)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("Failed to parse protocol URL from args: {}", e);
-                        LaunchRequest {
-                            action: LaunchAction::Show,
-                            path: None,
-                            from_protocol: false,
-                        }
-                    });
+                return Self::parse_protocol_url(first).unwrap_or_else(|e| {
+                    tracing::warn!("Failed to parse protocol URL from args: {}", e);
+                    LaunchRequest {
+                        action: LaunchAction::Show,
+                        path: None,
+                        from_protocol: false,
+                    }
+                });
             }
         }
 
@@ -282,9 +277,7 @@ impl LauncherService {
         };
 
         // Open/create HKEY_CLASSES_ROOT\files-rs
-        let hkcr_base = match RegKey::predef(HKEY_CLASSES_ROOT)
-            .create_subkey("files-rs")
-        {
+        let hkcr_base = match RegKey::predef(HKEY_CLASSES_ROOT).create_subkey("files-rs") {
             Ok((key, _)) => key,
             Err(e) => {
                 return ProtocolRegistrationResult {
@@ -469,8 +462,7 @@ mod tests {
     #[test]
     fn test_parse_protocol_url_bare_path() {
         // files-rs:///C:/Users/Test
-        let request = LauncherService::parse_protocol_url("files-rs:///C:/Users/Test")
-            .unwrap();
+        let request = LauncherService::parse_protocol_url("files-rs:///C:/Users/Test").unwrap();
         assert_eq!(request.action, LaunchAction::Open);
         assert_eq!(request.path, Some(PathBuf::from("C:/Users/Test")));
         assert!(request.from_protocol);
@@ -478,8 +470,7 @@ mod tests {
 
     #[test]
     fn test_parse_protocol_url_with_scheme_and_path() {
-        let request =
-            LauncherService::parse_protocol_url("files-rs:///D:/Documents/Work").unwrap();
+        let request = LauncherService::parse_protocol_url("files-rs:///D:/Documents/Work").unwrap();
         assert_eq!(request.action, LaunchAction::Open);
         assert_eq!(request.path, Some(PathBuf::from("D:/Documents/Work")));
     }
@@ -487,8 +478,7 @@ mod tests {
     #[test]
     fn test_parse_protocol_url_open_query() {
         let request =
-            LauncherService::parse_protocol_url("files-rs://open?path=C%3A%5CUsers")
-                .unwrap();
+            LauncherService::parse_protocol_url("files-rs://open?path=C%3A%5CUsers").unwrap();
         assert_eq!(request.action, LaunchAction::Open);
         assert_eq!(request.path, Some(PathBuf::from("C:\\Users")));
     }
@@ -496,8 +486,7 @@ mod tests {
     #[test]
     fn test_parse_protocol_url_new_window_query() {
         let request =
-            LauncherService::parse_protocol_url("files-rs://new-window?path=D%3A%5C")
-                .unwrap();
+            LauncherService::parse_protocol_url("files-rs://new-window?path=D%3A%5C").unwrap();
         assert_eq!(request.action, LaunchAction::NewWindow);
         assert_eq!(request.path, Some(PathBuf::from("D:\\")));
     }
@@ -632,10 +621,7 @@ mod tests {
     #[test]
     fn test_url_decode_simple() {
         assert_eq!(LauncherService::url_decode("hello%20world"), "hello world");
-        assert_eq!(
-            LauncherService::url_decode("C%3A%5CUsers"),
-            "C:\\Users"
-        );
+        assert_eq!(LauncherService::url_decode("C%3A%5CUsers"), "C:\\Users");
     }
 
     #[test]
@@ -683,10 +669,7 @@ mod tests {
 
     #[test]
     fn test_unescape_path_trimmed() {
-        assert_eq!(
-            LauncherService::unescape_path("  C:\\Test  "),
-            "C:\\Test"
-        );
+        assert_eq!(LauncherService::unescape_path("  C:\\Test  "), "C:\\Test");
     }
 
     #[test]
@@ -718,10 +701,7 @@ mod tests {
         {
             let result = LauncherService::register_protocol();
             assert!(!result.success);
-            assert!(result
-                .error
-                .unwrap()
-                .contains("only available on Windows"));
+            assert!(result.error.unwrap().contains("only available on Windows"));
         }
         #[cfg(windows)]
         {
@@ -738,10 +718,7 @@ mod tests {
         {
             let result = LauncherService::unregister_protocol();
             assert!(!result.success);
-            assert!(result
-                .error
-                .unwrap()
-                .contains("only available on Windows"));
+            assert!(result.error.unwrap().contains("only available on Windows"));
         }
         #[cfg(windows)]
         {
@@ -806,8 +783,7 @@ mod tests {
 
     #[test]
     fn test_parse_protocol_url_with_short_scheme() {
-        let request =
-            LauncherService::parse_protocol_url("files-rs:C:/Users/Short").unwrap();
+        let request = LauncherService::parse_protocol_url("files-rs:C:/Users/Short").unwrap();
         assert_eq!(request.action, LaunchAction::Open);
         assert_eq!(request.path, Some(PathBuf::from("C:/Users/Short")));
     }

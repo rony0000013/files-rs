@@ -108,15 +108,15 @@ $path = '{}'
             })
         } else {
             // Try alternative approach using explorer
-            let explorer_result = Command::new("explorer")
-                .args([&drive_path])
-                .spawn();
+            let explorer_result = Command::new("explorer").args([&drive_path]).spawn();
 
             match explorer_result {
                 Ok(_) => Ok(FormatDriveResult {
                     success: true,
                     drive_letter: drive_letter.to_ascii_uppercase(),
-                    error_message: Some("Opened drive in explorer instead of format dialog".to_string()),
+                    error_message: Some(
+                        "Opened drive in explorer instead of format dialog".to_string(),
+                    ),
                 }),
                 Err(e) => Ok(FormatDriveResult {
                     success: false,
@@ -165,14 +165,7 @@ $path = '{}'
 
         // Use format.com via cmd (requires administrator privileges)
         let output = Command::new("cmd")
-            .args([
-                "/c",
-                "format",
-                &drive_path,
-                "/FS:NTFS",
-                "/Q",
-                "/Y",
-            ])
+            .args(["/c", "format", &drive_path, "/FS:NTFS", "/Q", "/Y"])
             .output()
             .context("Failed to execute format command")?;
 
@@ -241,19 +234,17 @@ $path = '{}'
             .output();
 
         match output {
-            Ok(o) => {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter_map(|line| {
-                        let trimmed = line.trim();
-                        if trimmed.len() == 2 && trimmed.chars().next().unwrap().is_ascii_alphabetic() {
-                            Some(trimmed.chars().next().unwrap())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            }
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.len() == 2 && trimmed.chars().next().unwrap().is_ascii_alphabetic() {
+                        Some(trimmed.chars().next().unwrap())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             Err(_) => vec![],
         }
     }

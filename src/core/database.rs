@@ -9,7 +9,7 @@ pub struct Database {
 impl Database {
     pub fn new(path: PathBuf) -> Result<Self> {
         let conn = Connection::open(path)?;
-        
+
         // Initialize tables
         conn.execute(
             "CREATE TABLE IF NOT EXISTS file_tags (
