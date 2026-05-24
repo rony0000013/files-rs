@@ -9,8 +9,7 @@ use crate::storage::storage::FileType;
 use crate::ui::components::icon_renderer::is_thumbnail_image;
 use crate::ui::constants::UiConstants;
 use crate::ui::views::main_view::{
-    get_extension, get_file_type_icon, FileItems, GroupedGridItem,
-    MainViewState, SelectionMode,
+    get_extension, get_file_type_icon, FileItems, GroupedGridItem, MainViewState, SelectionMode,
 };
 use gpui::*;
 
@@ -49,8 +48,20 @@ impl MainViewState {
         let item_height = item_width + 24.0;
         let row_height = item_height + 8.0;
         let icon_size = item_width * 0.6;
-        let gap = if zoom < 0.33 { 6.0 } else if zoom < 0.66 { 8.0 } else { 12.0 };
-        let rounded = if zoom < 0.33 { 2.0 } else if zoom < 0.66 { 4.0 } else { 8.0 };
+        let gap = if zoom < 0.33 {
+            6.0
+        } else if zoom < 0.66 {
+            8.0
+        } else {
+            12.0
+        };
+        let rounded = if zoom < 0.33 {
+            2.0
+        } else if zoom < 0.66 {
+            4.0
+        } else {
+            8.0
+        };
         let text_size = (item_width / 8.0).clamp(9.0, 13.0);
         let padding = if zoom < 0.33 { 8.0 } else { 12.0 };
 
@@ -116,22 +127,24 @@ impl MainViewState {
 
                                 // Collect real grid items + add invisible fillers so every row has
                                 // the same number of children — prevents last-row flex-grow stretch
-                                let mut row_children: Vec<AnyElement> = (start..end).map(|i| {
-                                    let idx = visible_clone[i];
-                                    let item = &fi.items[idx];
-                                    let is_selected = selected.contains(&idx);
-                                    Self::grid_item(
-                                        item,
-                                        idx,
-                                        is_selected,
-                                        sel_mode.clone(),
-                                        view.clone(),
-                                        icon_paths,
-                                        &params,
-                                        compact,
-                                    )
-                                    .into_any_element()
-                                }).collect();
+                                let mut row_children: Vec<AnyElement> = (start..end)
+                                    .map(|i| {
+                                        let idx = visible_clone[i];
+                                        let item = &fi.items[idx];
+                                        let is_selected = selected.contains(&idx);
+                                        Self::grid_item(
+                                            item,
+                                            idx,
+                                            is_selected,
+                                            sel_mode.clone(),
+                                            view.clone(),
+                                            icon_paths,
+                                            &params,
+                                            compact,
+                                        )
+                                        .into_any_element()
+                                    })
+                                    .collect();
 
                                 // Add invisible filler items so all rows have equal children count
                                 for _ in items_in_row..params.items_per_row {
@@ -198,11 +211,7 @@ impl MainViewState {
 
                         range
                             .map(|i| match &flattened[i] {
-                                GroupedGridItem::Header {
-                                    key,
-                                    label,
-                                    count,
-                                } => {
+                                GroupedGridItem::Header { key, label, count } => {
                                     let group_height =
                                         if main_state.compact_mode { 24.0 } else { 32.0 };
                                     let key_clone = key.clone();
@@ -226,9 +235,7 @@ impl MainViewState {
                                             div()
                                                 .text_size(px(12.0))
                                                 .font_family(UiConstants::FONT_MDL2)
-                                                .text_color(rgba(
-                                                    UiConstants::TEXT_SECONDARY_RGBA,
-                                                ))
+                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                                 .child(if collapsed_groups.contains(key) {
                                                     "\u{E76C}"
                                                 } else {
@@ -240,18 +247,14 @@ impl MainViewState {
                                                 .ml(px(6.0))
                                                 .text_size(px(13.0))
                                                 .font_weight(FontWeight(600.0))
-                                                .text_color(rgba(
-                                                    UiConstants::TEXT_PRIMARY_RGBA,
-                                                ))
+                                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                                                 .child(label.clone()),
                                         )
                                         .child(
                                             div()
                                                 .ml(px(8.0))
                                                 .text_size(px(11.0))
-                                                .text_color(rgba(
-                                                    UiConstants::TEXT_SECONDARY_RGBA,
-                                                ))
+                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                                 .child(format!(
                                                     "{} item{}",
                                                     count,
@@ -266,21 +269,24 @@ impl MainViewState {
 
                                     // Collect real grid items + add invisible fillers so every row has
                                     // the same number of children — prevents last-row flex-grow stretch
-                                    let mut row_children: Vec<AnyElement> = indices.iter().map(|idx| {
-                                        let item = &fi.items[*idx];
-                                        let selected = fi.selected_indices.contains(idx);
-                                        Self::grid_item(
-                                            item,
-                                            *idx,
-                                            selected,
-                                            sel_mode.clone(),
-                                            view.clone(),
-                                            icon_paths,
-                                            &params,
-                                            compact,
-                                        )
-                                        .into_any_element()
-                                    }).collect();
+                                    let mut row_children: Vec<AnyElement> = indices
+                                        .iter()
+                                        .map(|idx| {
+                                            let item = &fi.items[*idx];
+                                            let selected = fi.selected_indices.contains(idx);
+                                            Self::grid_item(
+                                                item,
+                                                *idx,
+                                                selected,
+                                                sel_mode.clone(),
+                                                view.clone(),
+                                                icon_paths,
+                                                &params,
+                                                compact,
+                                            )
+                                            .into_any_element()
+                                        })
+                                        .collect();
 
                                     // Add invisible filler items so all rows have equal children count
                                     for _ in items_in_row..params.items_per_row {
@@ -338,8 +344,7 @@ impl MainViewState {
         let is_hover_select = selection_mode == SelectionMode::HoverSelect;
         let item_path = item.path.clone();
         let item_name = item.name.clone();
-        let cached_icon_path: Option<std::path::PathBuf> =
-            icon_paths.get(&item_path).cloned();
+        let cached_icon_path: Option<std::path::PathBuf> = icon_paths.get(&item_path).cloned();
 
         let item_width = params.item_width;
         let item_height = if compact {
@@ -602,31 +607,26 @@ impl MainViewState {
                         });
                     }
                 })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w_full()
-                        .child(if let Some(icon_path) = &cached_icon_path {
-                            img(icon_path.clone())
-                                .w(px(icon_size_val))
-                                .h(px(icon_size_val))
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .into_any_element()
-                        } else {
-                            div()
-                                .text_size(px(icon_size_val * 0.8))
-                                .font_family(UiConstants::FONT_MDL2)
-                                .text_color(if is_dir {
-                                    rgba(UiConstants::ACCENT_RGBA)
-                                } else {
-                                    rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                })
-                                .child(file_icon)
-                                .into_any_element()
-                        }),
-                )
+                .child(div().flex().items_center().justify_center().w_full().child(
+                    if let Some(icon_path) = &cached_icon_path {
+                        img(icon_path.clone())
+                            .w(px(icon_size_val))
+                            .h(px(icon_size_val))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .text_size(px(icon_size_val * 0.8))
+                            .font_family(UiConstants::FONT_MDL2)
+                            .text_color(if is_dir {
+                                rgba(UiConstants::ACCENT_RGBA)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child(file_icon)
+                            .into_any_element()
+                    },
+                ))
                 .child(
                     div()
                         .w_full()

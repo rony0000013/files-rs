@@ -15,14 +15,21 @@ use gpui::*;
 
 impl MainViewState {
     /// Render columns view (Finder-style) with optional grouping
-    pub fn render_columns_view(&self, file_items: Entity<FileItems>, view: Entity<crate::app::AppWindow>) -> AnyElement {
+    pub fn render_columns_view(
+        &self,
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> AnyElement {
         let visible = self.visible_items();
 
         if self.group_by != GroupColumn::None {
-            return self.render_columns_view_grouped(&visible, file_items, view).into_any_element();
+            return self
+                .render_columns_view_grouped(&visible, file_items, view)
+                .into_any_element();
         }
 
-        self.columns_view_flat(&visible, file_items, view).into_any_element()
+        self.columns_view_flat(&visible, file_items, view)
+            .into_any_element()
     }
 
     /// Flat columns view using uniform_list
@@ -33,9 +40,14 @@ impl MainViewState {
         view: Entity<crate::app::AppWindow>,
     ) -> Div {
         let visible_clone = visible.to_vec();
-        let selected_item = self.selected_indices.iter().next()
+        let selected_item = self
+            .selected_indices
+            .iter()
+            .next()
             .and_then(|&i| self.items.get(i));
-        let parent_path = self.primary_path.parent()
+        let parent_path = self
+            .primary_path
+            .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "—".to_string());
         let zoom = self.zoom_level;
@@ -268,10 +280,15 @@ impl MainViewState {
         let flattened = self.flatten_grouped_items(visible);
         let item_count = flattened.len();
 
-        let parent_path = self.primary_path.parent()
+        let parent_path = self
+            .primary_path
+            .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "—".to_string());
-        let selected_item = self.selected_indices.iter().next()
+        let selected_item = self
+            .selected_indices
+            .iter()
+            .next()
             .and_then(|&i| self.items.get(i));
 
         div()
@@ -641,7 +658,12 @@ impl MainViewState {
                                             .text_size(px(12.0))
                                             .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                                             .overflow_hidden()
-                                            .child(item.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
+                                            .child(
+                                                item.path
+                                                    .parent()
+                                                    .map(|p| p.to_string_lossy().into_owned())
+                                                    .unwrap_or_default(),
+                                            ),
                                     ),
                             ),
                     ),

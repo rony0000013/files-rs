@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 // Re-export types and helpers from their dedicated modules (code splitting)
-pub use super::types::*;
 pub use super::helpers::*;
+pub use super::types::*;
 
 use crate::config::config::{GroupColumn, SortBy, ViewMode};
 use crate::domain::metadata::FileItem;
@@ -203,7 +203,9 @@ impl MainViewState {
                 }
             }
             GroupColumn::Tag => {
-                let tags = self.tags_cache.get(&item.path.to_string_lossy().to_string());
+                let tags = self
+                    .tags_cache
+                    .get(&item.path.to_string_lossy().to_string());
                 match tags.and_then(|t| t.first()) {
                     Some(tag) => Some(tag.clone()),
                     None => Some("Untagged".to_string()),
@@ -307,7 +309,11 @@ impl MainViewState {
 
     /// Update the drag position during a group drag operation.
     /// Returns the target group key and insert position within that group.
-    pub fn update_group_drag(&mut self, target_group_key: Option<String>, insert_position: Option<usize>) {
+    pub fn update_group_drag(
+        &mut self,
+        target_group_key: Option<String>,
+        insert_position: Option<usize>,
+    ) {
         if !self.group_drag_state.is_dragging {
             return;
         }
@@ -358,7 +364,10 @@ impl MainViewState {
         // For now, we just reset the drag state
         tracing::debug!(
             "Group drag: item {} moved from {:?} to {} (insert: {:?})",
-            dragged_idx, source_key, target_key, insert_pos
+            dragged_idx,
+            source_key,
+            target_key,
+            insert_pos
         );
 
         true
@@ -379,9 +388,10 @@ impl MainViewState {
         if !self.group_drag_state.is_dragging {
             return None;
         }
-        self.group_drag_state.target_group_key.clone().map(|key| {
-            (key, self.group_drag_state.insert_position)
-        })
+        self.group_drag_state
+            .target_group_key
+            .clone()
+            .map(|key| (key, self.group_drag_state.insert_position))
     }
 
     /// Display name for an item (respects show_extensions setting).
@@ -415,7 +425,11 @@ impl MainViewState {
     }
 
     /// Flatten grouped grid items into a list of (Header | Row)
-    pub fn flatten_grouped_grid_items(&self, visible: &[usize], items_per_row: usize) -> Vec<GroupedGridItem> {
+    pub fn flatten_grouped_grid_items(
+        &self,
+        visible: &[usize],
+        items_per_row: usize,
+    ) -> Vec<GroupedGridItem> {
         let (headers, groups) = self.partition_groups(visible);
         let mut flat = Vec::new();
         for (i, (key, label, count)) in headers.into_iter().enumerate() {
@@ -428,7 +442,9 @@ impl MainViewState {
                 let group_indices = &groups[i];
                 for row_start in (0..group_indices.len()).step_by(items_per_row) {
                     let row_end = (row_start + items_per_row).min(group_indices.len());
-                    flat.push(GroupedGridItem::Row(group_indices[row_start..row_end].to_vec()));
+                    flat.push(GroupedGridItem::Row(
+                        group_indices[row_start..row_end].to_vec(),
+                    ));
                 }
             }
         }
@@ -437,7 +453,11 @@ impl MainViewState {
 
     /// Reorder an item within its group: move from source_visual_index to target_visual_index.
     /// The visual indices are positions in the flattened visible list (accounting for group headers).
-    pub fn reorder_item_within_group(&mut self, source_visual_index: usize, target_visual_index: usize) {
+    pub fn reorder_item_within_group(
+        &mut self,
+        source_visual_index: usize,
+        target_visual_index: usize,
+    ) {
         if source_visual_index == target_visual_index {
             return;
         }
@@ -486,13 +506,18 @@ impl MainViewState {
                     }
                 } else {
                     // Adjust indices for items that shifted
-                    let new_idx = if source_idx < target_idx && old_idx > source_idx && old_idx <= target_idx {
-                        old_idx - 1
-                    } else if source_idx > target_idx && old_idx >= target_idx && old_idx < source_idx {
-                        old_idx + 1
-                    } else {
-                        old_idx
-                    };
+                    let new_idx =
+                        if source_idx < target_idx && old_idx > source_idx && old_idx <= target_idx
+                        {
+                            old_idx - 1
+                        } else if source_idx > target_idx
+                            && old_idx >= target_idx
+                            && old_idx < source_idx
+                        {
+                            old_idx + 1
+                        } else {
+                            old_idx
+                        };
                     if new_idx < self.items.len() {
                         new_selected.insert(new_idx);
                     }
@@ -554,7 +579,11 @@ impl MainViewState {
                 let item_right = item_left + item_width;
                 let item_bottom = item_top + item_height;
 
-                if item_left < max_x && item_right > min_x && item_top < max_y && item_bottom > min_y {
+                if item_left < max_x
+                    && item_right > min_x
+                    && item_top < max_y
+                    && item_bottom > min_y
+                {
                     self.selected_indices.insert(idx);
                 }
             }
@@ -628,7 +657,11 @@ impl MainViewState {
                 let item_right = item_left + item_width;
                 let item_bottom = item_top + item_height;
 
-                if point.x >= item_left && point.x <= item_right && point.y >= item_top && point.y <= item_bottom {
+                if point.x >= item_left
+                    && point.x <= item_right
+                    && point.y >= item_top
+                    && point.y <= item_bottom
+                {
                     return Some(idx);
                 }
             }
@@ -720,7 +753,11 @@ impl Default for FileItems {
 pub struct MainView;
 
 impl MainView {
-    pub fn build(state: &MainViewState, file_items: Entity<FileItems>, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    pub fn build(
+        state: &MainViewState,
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         let has_side_pane = state.side_pane != SidePaneMode::None;
         let show_shelf = state.shelf_visible;
         let v2 = view.clone();
@@ -729,7 +766,7 @@ impl MainView {
         // Collect lasso overlay element if active
         let lasso_overlay = Self::render_lasso_overlay(state);
 
-div()
+        div()
             .flex()
             .flex_row()
             .flex_grow()
@@ -789,7 +826,7 @@ div()
                 .h(px(height))
                 .bg(rgba(0x208B2DC8)) // Semi-transparent accent color
                 .border(px(1.0))
-                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                .border_color(rgba(UiConstants::ACCENT_RGBA)),
         )
     }
 
@@ -799,7 +836,7 @@ div()
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         match state.pane_type {
-PaneType::Single => div()
+            PaneType::Single => div()
                 .flex()
                 .flex_col()
                 .flex_grow()
@@ -812,19 +849,47 @@ PaneType::Single => div()
                 let splitter_w = Pixels::from(UiConstants::SPLITTER_WIDTH_RAW);
                 let base = div().flex().flex_grow().w_full();
 
-                let is_primary_active = matches!(state.active_pane, crate::core::navigation_manager::PaneFocus::Primary);
+                let is_primary_active = matches!(
+                    state.active_pane,
+                    crate::core::navigation_manager::PaneFocus::Primary
+                );
                 let is_secondary_active = !is_primary_active;
 
                 if is_horiz {
                     base.flex_row()
-                        .child(div().flex_grow().child(Self::render_file_view(state, file_items.clone(), view.clone(), is_primary_active)))
+                        .child(div().flex_grow().child(Self::render_file_view(
+                            state,
+                            file_items.clone(),
+                            view.clone(),
+                            is_primary_active,
+                        )))
                         .child(div().w(splitter_w).bg(rgb(UiConstants::BG_NAV_BAR_RGB)))
-                        .child(div().flex_grow().child(Self::render_file_view(state, file_items, view, is_secondary_active)))
+                        .child(div().flex_grow().child(Self::render_file_view(
+                            state,
+                            file_items,
+                            view,
+                            is_secondary_active,
+                        )))
                 } else {
                     base.flex_col()
-                        .child(div().flex_grow().w_full().child(Self::render_file_view(state, file_items.clone(), view.clone(), is_primary_active)))
-                        .child(div().h(splitter_w).bg(rgb(UiConstants::BG_NAV_BAR_RGB)).w_full())
-                        .child(div().flex_grow().w_full().child(Self::render_file_view(state, file_items, view, is_secondary_active)))
+                        .child(div().flex_grow().w_full().child(Self::render_file_view(
+                            state,
+                            file_items.clone(),
+                            view.clone(),
+                            is_primary_active,
+                        )))
+                        .child(
+                            div()
+                                .h(splitter_w)
+                                .bg(rgb(UiConstants::BG_NAV_BAR_RGB))
+                                .w_full(),
+                        )
+                        .child(div().flex_grow().w_full().child(Self::render_file_view(
+                            state,
+                            file_items,
+                            view,
+                            is_secondary_active,
+                        )))
                 }
             }
         }
@@ -937,18 +1002,25 @@ PaneType::Single => div()
                 } else {
                     "Video"
                 };
-                let text = state.preview_text.as_deref().unwrap_or("No metadata available");
+                let text = state
+                    .preview_text
+                    .as_deref()
+                    .unwrap_or("No metadata available");
                 Self::render_media_preview(info, type_str, text, item).into_any_element()
             }
-            PreviewContent::Folder(items) => {
-                Self::render_folder_preview(items).into_any_element()
-            }
+            PreviewContent::Folder(items) => Self::render_folder_preview(items).into_any_element(),
             PreviewContent::Pdf(info) => {
-                let text = state.preview_text.as_deref().unwrap_or("Loading PDF info...");
+                let text = state
+                    .preview_text
+                    .as_deref()
+                    .unwrap_or("Loading PDF info...");
                 Self::render_pdf_preview(info, text).into_any_element()
             }
             PreviewContent::Archive(info) => {
-                let text = state.preview_text.as_deref().unwrap_or("Loading archive...");
+                let text = state
+                    .preview_text
+                    .as_deref()
+                    .unwrap_or("Loading archive...");
                 Self::render_archive_preview(info, text).into_any_element()
             }
             PreviewContent::Text(_) | PreviewContent::None => {
@@ -1007,10 +1079,17 @@ PaneType::Single => div()
 
     /// Rich Details pane — shows extended metadata, git status stub, tags
     fn render_details_pane(state: &MainViewState, item: &FileItem) -> impl IntoElement {
-        let type_label = if matches!(item.file_type, FileType::Directory) { "Folder" } else { "File" };
+        let type_label = if matches!(item.file_type, FileType::Directory) {
+            "Folder"
+        } else {
+            "File"
+        };
         let ext = item.name.rsplit('.').next().unwrap_or("").to_uppercase();
         let size_str = format_size(item.size);
-        let is_image = matches!(ext.as_str(), "JPG"|"JPEG"|"PNG"|"WEBP"|"BMP"|"GIF"|"TIFF");
+        let is_image = matches!(
+            ext.as_str(),
+            "JPG" | "JPEG" | "PNG" | "WEBP" | "BMP" | "GIF" | "TIFF"
+        );
 
         div()
             .flex_col()
@@ -1036,7 +1115,11 @@ PaneType::Single => div()
                             .text_size(px(40.0))
                             .font_family(UiConstants::FONT_MDL2)
                             .text_color(rgba(UiConstants::ACCENT_RGBA))
-                            .child(if matches!(item.file_type, FileType::Directory) { "\u{E8B7}" } else { "\u{E8A5}" })
+                            .child(if matches!(item.file_type, FileType::Directory) {
+                                "\u{E8B7}"
+                            } else {
+                                "\u{E8A5}"
+                            })
                             .into_any_element()
                     }),
             )
@@ -1050,32 +1133,52 @@ PaneType::Single => div()
                     .child(item.name.clone()),
             )
             // Separator
-            .child(div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+            )
             // Properties section
             .child(
-                div().flex_col().gap(px(6.0))
+                div()
+                    .flex_col()
+                    .gap(px(6.0))
                     .child(section_header("Properties"))
                     .child(info_row("Type", type_label))
                     .child(info_row("Size", &size_str))
-                    .child(info_row("Format", if ext.is_empty() { "—" } else { &ext }))
+                    .child(info_row("Format", if ext.is_empty() { "—" } else { &ext })),
             )
             // Shortcut section
             .children(if ext == "LNK" {
                 vec![
-                    div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).into_any_element(),
-                    div().flex_col().gap(px(6.0))
+                    div()
+                        .w_full()
+                        .h(px(1.0))
+                        .bg(rgba(UiConstants::DIVIDER_RGBA))
+                        .into_any_element(),
+                    div()
+                        .flex_col()
+                        .gap(px(6.0))
                         .child(section_header("Shortcut"))
                         .child(info_row("Target", "C:\\Program Files\\..."))
                         .child(info_row("Arguments", "--preview"))
-                        .into_any_element()
+                        .into_any_element(),
                 ]
             } else {
                 vec![]
             })
             // Tags section
-            .child(div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
             .child(
-                div().flex_col().gap(px(6.0))
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .gap(px(6.0))
                     .child(section_header("Tags"))
                     .children(if state.details_cache.tags.is_empty() {
                         vec![div()
@@ -1084,7 +1187,10 @@ PaneType::Single => div()
                             .child("No tags — right-click to add")
                             .into_any_element()]
                     } else {
-                        state.details_cache.tags.iter()
+                        state
+                            .details_cache
+                            .tags
+                            .iter()
                             .map(|tag| {
                                 div()
                                     .flex()
@@ -1098,55 +1204,73 @@ PaneType::Single => div()
                                     .into_any_element()
                             })
                             .collect()
-                    })
+                    }),
             )
             // EXIF/Metadata section (for images)
-            .children(if !state.details_cache.exif_dimensions.is_none() || state.details_cache.audio_duration.is_some() {
-                let mut children = vec![
-                    div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).into_any_element(),
-                    div().flex_col().gap(px(6.0))
-                        .child(section_header("Media Info"))
-                        .into_any_element()
-                ];
+            .children(
+                if !state.details_cache.exif_dimensions.is_none()
+                    || state.details_cache.audio_duration.is_some()
+                {
+                    let mut children = vec![
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(rgba(UiConstants::DIVIDER_RGBA))
+                            .into_any_element(),
+                        div()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(section_header("Media Info"))
+                            .into_any_element(),
+                    ];
 
-                if let Some(ref dims) = state.details_cache.exif_dimensions {
-                    children.push(info_row("Dimensions", dims).into_any_element());
-                }
-                if let Some(ref camera) = state.details_cache.exif_camera {
-                    children.push(info_row("Camera", camera).into_any_element());
-                }
-                if let Some(ref date) = state.details_cache.exif_date {
-                    children.push(info_row("Date Taken", date).into_any_element());
-                }
-                if let Some(ref duration) = state.details_cache.audio_duration {
-                    children.push(info_row("Duration", duration).into_any_element());
-                }
-                if let Some(ref artist) = state.details_cache.audio_artist {
-                    children.push(info_row("Artist", artist).into_any_element());
-                }
-                if let Some(ref album) = state.details_cache.audio_album {
-                    children.push(info_row("Album", album).into_any_element());
-                }
-                if let Some(ref res) = state.details_cache.video_resolution {
-                    children.push(info_row("Resolution", res).into_any_element());
-                }
+                    if let Some(ref dims) = state.details_cache.exif_dimensions {
+                        children.push(info_row("Dimensions", dims).into_any_element());
+                    }
+                    if let Some(ref camera) = state.details_cache.exif_camera {
+                        children.push(info_row("Camera", camera).into_any_element());
+                    }
+                    if let Some(ref date) = state.details_cache.exif_date {
+                        children.push(info_row("Date Taken", date).into_any_element());
+                    }
+                    if let Some(ref duration) = state.details_cache.audio_duration {
+                        children.push(info_row("Duration", duration).into_any_element());
+                    }
+                    if let Some(ref artist) = state.details_cache.audio_artist {
+                        children.push(info_row("Artist", artist).into_any_element());
+                    }
+                    if let Some(ref album) = state.details_cache.audio_album {
+                        children.push(info_row("Album", album).into_any_element());
+                    }
+                    if let Some(ref res) = state.details_cache.video_resolution {
+                        children.push(info_row("Resolution", res).into_any_element());
+                    }
 
-                children
-            } else {
-                vec![]
-            })
+                    children
+                } else {
+                    vec![]
+                },
+            )
             // Git section — shows last commit info and file status
-            .child(div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+            )
             .children({
                 let mut git_children: Vec<gpui::AnyElement> = Vec::new();
                 git_children.push(
-                    div().flex_col().gap(px(6.0))
+                    div()
+                        .flex_col()
+                        .gap(px(6.0))
                         .child(section_header("Git"))
-                        .into_any_element()
+                        .into_any_element(),
                 );
 
                 // Try to get last commit info for this file
-                let commit_info = crate::domain::git_service::GitService::get_last_commit(&item.path);
+                let commit_info =
+                    crate::domain::git_service::GitService::get_last_commit(&item.path);
                 if let Some(info) = commit_info {
                     git_children.push(info_row("Author", &info.author).into_any_element());
                     git_children.push(info_row("Date", &info.date).into_any_element());
@@ -1156,8 +1280,12 @@ PaneType::Single => div()
                         div()
                             .text_size(px(12.0))
                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child(if state.side_pane != SidePaneMode::None { "Not in a repository" } else { "" })
-                            .into_any_element()
+                            .child(if state.side_pane != SidePaneMode::None {
+                                "Not in a repository"
+                            } else {
+                                ""
+                            })
+                            .into_any_element(),
                     );
                 }
 
@@ -1166,8 +1294,14 @@ PaneType::Single => div()
             // Text preview section
             .children(if let Some(text) = &state.preview_text {
                 vec![
-                    div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)).into_any_element(),
-                    div().flex_col().gap(px(6.0))
+                    div()
+                        .w_full()
+                        .h(px(1.0))
+                        .bg(rgba(UiConstants::DIVIDER_RGBA))
+                        .into_any_element(),
+                    div()
+                        .flex_col()
+                        .gap(px(6.0))
                         .child(section_header("Preview"))
                         .child(
                             div()
@@ -1179,9 +1313,10 @@ PaneType::Single => div()
                                         .text_size(px(11.0))
                                         .font_family(UiConstants::FONT_MAIN)
                                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                        .child(text.clone())
-                                )
-                        ).into_any_element()
+                                        .child(text.clone()),
+                                ),
+                        )
+                        .into_any_element(),
                 ]
             } else {
                 vec![]
@@ -1189,7 +1324,10 @@ PaneType::Single => div()
     }
 
     /// Render the shelf pane (staging area for bulk operations)
-    fn render_shelf_pane(state: &MainViewState, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    fn render_shelf_pane(
+        state: &MainViewState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         let item_count = state.shelf_items.len();
         let shelf_size: u64 = state.shelf_items.iter().map(|s| s.size).sum();
 
@@ -1225,7 +1363,11 @@ PaneType::Single => div()
                             .text_size(px(12.0))
                             .font_weight(FontWeight(600.0))
                             .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                            .child(format!("Shelf ({} items, {})", item_count, format_size(shelf_size))),
+                            .child(format!(
+                                "Shelf ({} items, {})",
+                                item_count,
+                                format_size(shelf_size)
+                            )),
                     )
                     .child({
                         let v = view.clone();
@@ -1236,7 +1378,10 @@ PaneType::Single => div()
                             .cursor_pointer()
                             .hover(|s| s.text_color(rgba(UiConstants::ACCENT_RGBA)))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v.update(cx, |this, cx| { this.state.main_view.shelf_items.clear(); cx.notify(); });
+                                v.update(cx, |this, cx| {
+                                    this.state.main_view.shelf_items.clear();
+                                    cx.notify();
+                                });
                             })
                             .child("\u{E74D}") // Clear icon
                     }),
@@ -1253,7 +1398,7 @@ PaneType::Single => div()
                             .text_size(px(12.0))
                             .text_color(rgba(0xFFFFFF40u32))
                             .text_center()
-                            .child("Drag files here to stage for bulk operations")
+                            .child("Drag files here to stage for bulk operations"),
                     )
                     .into_any_element()
             } else {
@@ -1292,7 +1437,11 @@ PaneType::Single => div()
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(if is_dir { String::new() } else { format_size(size) }),
+                                    .child(if is_dir {
+                                        String::new()
+                                    } else {
+                                        format_size(size)
+                                    }),
                             )
                             .child(
                                 div()
@@ -1317,8 +1466,6 @@ PaneType::Single => div()
             })
     }
 
-
-
     fn render_file_view(
         state: &MainViewState,
         file_items: Entity<FileItems>,
@@ -1332,10 +1479,10 @@ PaneType::Single => div()
             return Self::empty_state(state).into_any_element();
         }
 
-div()
+        div()
             .flex_col()
             .flex_grow()
-            .h_full()  // CRITICAL: Provide concrete height foundation for flex_grow to work
+            .h_full() // CRITICAL: Provide concrete height foundation for flex_grow to work
             .w_full()
             // NO overflow_hidden here - moves to content div
             .bg(if is_active {
@@ -1349,7 +1496,7 @@ div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .h_full()  // Explicit height for flex children
+                    .h_full() // Explicit height for flex children
                     .w_full()
                     .overflow_hidden() // Content clipping for uniform_list
                     .child({
@@ -1361,12 +1508,17 @@ div()
                                     if matches!(state.target, ViewTarget::Home) {
                                         Self::render_home_view(state, view).into_any_element()
                                     } else {
-                                        Self::details_view(state, &visible, file_items, view).into_any_element()
+                                        Self::details_view(state, &visible, file_items, view)
+                                            .into_any_element()
                                     }
                                 }
                                 ViewMode::List => state.render_list_view(file_items, view),
-                                ViewMode::Grid => state.render_grid_view(file_items, view).into_any_element(),
-                                ViewMode::Columns => state.render_columns_view(file_items, view).into_any_element(),
+                                ViewMode::Grid => {
+                                    state.render_grid_view(file_items, view).into_any_element()
+                                }
+                                ViewMode::Columns => state
+                                    .render_columns_view(file_items, view)
+                                    .into_any_element(),
                             }
                         }
                     }),
@@ -1374,13 +1526,12 @@ div()
             .into_any_element()
     }
 
-
     fn render_home_view(
         state: &MainViewState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let tags = state.home_tags_cache.clone();
-div()
+        div()
             .flex_col()
             .flex_grow()
             .w_full()
@@ -1407,16 +1558,16 @@ div()
                             .flex_row()
                             .gap(px(12.0))
                             .child(Self::build_home_widget("Desktop", "\u{E8B7}", view.clone()))
-.child(Self::build_network_widget(
-                        "Network".to_string(),
-                        "\u{E968}".to_string(),
-                        "Connected".to_string(),
-                    ))
-                    .child(Self::build_network_widget(
-                        "Server".to_string(),
-                        "\u{E839}".to_string(),
-                        "Available".to_string(),
-                    )),
+                            .child(Self::build_network_widget(
+                                "Network".to_string(),
+                                "\u{E968}".to_string(),
+                                "Connected".to_string(),
+                            ))
+                            .child(Self::build_network_widget(
+                                "Server".to_string(),
+                                "\u{E839}".to_string(),
+                                "Available".to_string(),
+                            )),
                     ),
             )
             .child(
@@ -1462,18 +1613,14 @@ div()
             .id("recycle-bin-view")
             // Header
             .child(
-                div()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .font_weight(FontWeight(600.0))
-                            .text_size(px(20.0))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                            .child(format!("Recycle Bin ({} items)", item_count)),
-                    ),
+                div().flex_row().items_center().gap(px(12.0)).child(
+                    div()
+                        .font_weight(FontWeight(600.0))
+                        .text_size(px(20.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                        .child(format!("Recycle Bin ({} items)", item_count)),
+                ),
             )
             // Action buttons
             .child(
@@ -1532,92 +1679,97 @@ div()
                     ),
             )
             // Item list
-            .child(
-                div()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .children(state.recycle_bin_items.iter().enumerate().map(|(i, item)| {
-                        let view = view.clone();
-                        div()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(12.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .bg(rgba(0xFFFFFF08u32))
-                            .rounded(px(4.0))
-                            .child(
-                                div()
-                                    .flex_col()
-                                    .flex_grow()
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .font_family(UiConstants::FONT_MAIN)
-                                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                            .child(item.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_row()
-                                            .gap(px(16.0))
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                    .child(format!("Original: {}", item.original_path)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                    .child(format!(
-                                                        "Size: {}",
-                                                        if item.size >= 1024 * 1024 {
-                                                            format!("{:.1} MB", item.size as f64 / (1024.0 * 1024.0))
-                                                        } else if item.size >= 1024 {
-                                                            format!("{:.1} KB", item.size as f64 / 1024.0)
-                                                        } else {
-                                                            format!("{} B", item.size)
-                                                        }
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                    .child(format!(
-                                                        "Deleted: {}",
-                                                        item.date_deleted.as_deref().unwrap_or("Unknown")
-                                                    )),
-                                            ),
-                                    ),
-                            )
-                            // Restore button per item
-                            .child(
-                                div()
-                                    .px(px(10.0))
-                                    .py(px(4.0))
-                                    .bg(rgba(0x107C1020u32))
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(0x107C1040u32)))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.restore_recycle_bin_item(i, cx);
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .font_family(UiConstants::FONT_MAIN)
-                                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                            .child("Restore"),
-                                    ),
-                            )
-                    })),
-            )
+            .child(div().flex_col().gap(px(4.0)).children(
+                state.recycle_bin_items.iter().enumerate().map(|(i, item)| {
+                    let view = view.clone();
+                    div()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .bg(rgba(0xFFFFFF08u32))
+                        .rounded(px(4.0))
+                        .child(
+                            div()
+                                .flex_col()
+                                .flex_grow()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_family(UiConstants::FONT_MAIN)
+                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                        .child(item.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_row()
+                                        .gap(px(16.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                                .child(format!("Original: {}", item.original_path)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                                .child(format!(
+                                                    "Size: {}",
+                                                    if item.size >= 1024 * 1024 {
+                                                        format!(
+                                                            "{:.1} MB",
+                                                            item.size as f64 / (1024.0 * 1024.0)
+                                                        )
+                                                    } else if item.size >= 1024 {
+                                                        format!(
+                                                            "{:.1} KB",
+                                                            item.size as f64 / 1024.0
+                                                        )
+                                                    } else {
+                                                        format!("{} B", item.size)
+                                                    }
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                                .child(format!(
+                                                    "Deleted: {}",
+                                                    item.date_deleted
+                                                        .as_deref()
+                                                        .unwrap_or("Unknown")
+                                                )),
+                                        ),
+                                ),
+                        )
+                        // Restore button per item
+                        .child(
+                            div()
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .bg(rgba(0x107C1020u32))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(0x107C1040u32)))
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.restore_recycle_bin_item(i, cx);
+                                    });
+                                })
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .font_family(UiConstants::FONT_MAIN)
+                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                        .child("Restore"),
+                                ),
+                        )
+                }),
+            ))
     }
 
     fn build_home_widget(
@@ -1776,20 +1928,32 @@ div()
                     )
                     .child(
                         // Sample recent files (placeholder data)
-                        Self::build_recent_file_row("document.pdf".to_string(), "Documents".to_string(), "Today".to_string()),
+                        Self::build_recent_file_row(
+                            "document.pdf".to_string(),
+                            "Documents".to_string(),
+                            "Today".to_string(),
+                        ),
                     )
                     .child(
                         div()
                             .border_b(px(1.0))
                             .border_color(rgba(0xFFFFFF0Fu32))
-                            .child(Self::build_recent_file_row("image.png".to_string(), "Pictures".to_string(), "Yesterday".to_string())),
+                            .child(Self::build_recent_file_row(
+                                "image.png".to_string(),
+                                "Pictures".to_string(),
+                                "Yesterday".to_string(),
+                            )),
                     )
                     .child(
                         div()
                             .border_b(px(1.0))
                             .border_color(rgba(0xFFFFFF0Fu32))
-                            .child(Self::build_recent_file_row("report.xlsx".to_string(), "Documents".to_string(), "2 days ago".to_string())),
-                    )
+                            .child(Self::build_recent_file_row(
+                                "report.xlsx".to_string(),
+                                "Documents".to_string(),
+                                "2 days ago".to_string(),
+                            )),
+                    ),
             )
     }
 
@@ -1857,12 +2021,14 @@ div()
             for (name, color, count) in tags.clone() {
                 let view_clone = view.clone();
                 tag_chips = tag_chips.child(
-                    Self::build_tag_chip(name.clone(), color, count)
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    Self::build_tag_chip(name.clone(), color, count).on_mouse_down(
+                        MouseButton::Left,
+                        move |_, _, cx| {
                             view_clone.update(cx, |this, cx| {
                                 this.set_filter_text(name.clone(), cx);
                             });
-                        })
+                        },
+                    ),
                 );
             }
         }
@@ -2003,9 +2169,14 @@ div()
     ) -> impl IntoElement {
         let visible = state.visible_items();
         let visible_clone = visible.to_vec();
-        let selected_item = state.selected_indices.iter().next()
+        let selected_item = state
+            .selected_indices
+            .iter()
+            .next()
             .and_then(|&i| state.items.get(i));
-        let parent_path = state.primary_path.parent()
+        let parent_path = state
+            .primary_path
+            .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "—".to_string());
         let zoom = state.zoom_level;
@@ -2065,10 +2236,16 @@ div()
                                             .text_size(px(13.0))
                                             .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                                             .child(
-                                                state.primary_path
+                                                state
+                                                    .primary_path
                                                     .file_name()
                                                     .map(|n| n.to_string_lossy().into_owned())
-                                                    .unwrap_or_else(|| state.primary_path.to_string_lossy().into_owned())
+                                                    .unwrap_or_else(|| {
+                                                        state
+                                                            .primary_path
+                                                            .to_string_lossy()
+                                                            .into_owned()
+                                                    }),
                                             ),
                                     ),
                             ),
@@ -2096,84 +2273,110 @@ div()
                                     .font_weight(FontWeight(600.0))
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                     .child(
-                                        state.primary_path
+                                        state
+                                            .primary_path
                                             .file_name()
                                             .map(|n| n.to_string_lossy().into_owned())
-                                            .unwrap_or_default()
+                                            .unwrap_or_default(),
                                     ),
                             ),
                     )
-                    .child(
-                        uniform_list("col2-scroll", visible_clone.len(), move |range, _win, cx| {
+                    .child(uniform_list(
+                        "col2-scroll",
+                        visible_clone.len(),
+                        move |range, _win, cx| {
                             let fi = file_items.read(cx);
                             let app_state = view.read(cx);
                             let main_state = &app_state.state.main_view;
                             let icon_paths = &main_state.icon_paths;
 
-                            range.map(|i| {
-                                let idx = visible_clone[i];
-                                let item = &fi.items[idx];
-                                let is_selected = fi.selected_indices.contains(&idx);
-                                let is_dir = matches!(item.file_type, FileType::Directory);
-                                let name = item.name.clone();
-                                let path = item.path.clone();
-                                let v = view.clone();
+                            range
+                                .map(|i| {
+                                    let idx = visible_clone[i];
+                                    let item = &fi.items[idx];
+                                    let is_selected = fi.selected_indices.contains(&idx);
+                                    let is_dir = matches!(item.file_type, FileType::Directory);
+                                    let name = item.name.clone();
+                                    let path = item.path.clone();
+                                    let v = view.clone();
 
-                                div()
-                                    .id(ElementId::from(50000 + idx))
-                                    .flex()
-                                    .flex_row()
-                                    .h(px(row_h))
-                                    .px(px(8.0))
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .rounded(px(4.0))
-                                    .mx(px(4.0))
-                                    .bg(if is_selected { rgba(UiConstants::BG_ITEM_SELECTED_RGBA) } else { rgba(0x00000000) })
-                                    .hover(|s| if !is_selected { s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)) } else { s })
-                                    .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let v = v.clone();
-                                        let path = path.clone();
-                                        move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            v.update(cx, |this, cx| {
-                                                if is_dir {
-                                                    this.navigate(path.clone(), cx);
-                                                } else {
-                                                    this.select_item(idx, false, false, cx);
-                                                }
-                                            });
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .w(px(icon_size)).h(px(icon_size))
-                                            .flex().items_center().justify_center()
-                                            .child(
-                                                if let Some(icon_path) = icon_paths.get(&path) {
-                                                    img(icon_path.clone())
-                                                        .w(px(icon_size)).h(px(icon_size))
-                                                        .into_any_element()
-                                                } else {
-                                                    div()
-                                                        .text_size(px(icon_size * 0.7))
-                                                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                        .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" })
-                                                        .into_any_element()
-                                                }
-                                            )
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_grow()
-                                            .text_size(px(text_size))
-                                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                            .child(name)
-                                    ).into_any_element()
-                            }).collect::<Vec<_>>()
-                        })
-                    ),
+                                    div()
+                                        .id(ElementId::from(50000 + idx))
+                                        .flex()
+                                        .flex_row()
+                                        .h(px(row_h))
+                                        .px(px(8.0))
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .rounded(px(4.0))
+                                        .mx(px(4.0))
+                                        .bg(if is_selected {
+                                            rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                                        } else {
+                                            rgba(0x00000000)
+                                        })
+                                        .hover(|s| {
+                                            if !is_selected {
+                                                s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
+                                            } else {
+                                                s
+                                            }
+                                        })
+                                        .cursor_pointer()
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let v = v.clone();
+                                            let path = path.clone();
+                                            move |_, _, cx| {
+                                                cx.stop_propagation();
+                                                v.update(cx, |this, cx| {
+                                                    if is_dir {
+                                                        this.navigate(path.clone(), cx);
+                                                    } else {
+                                                        this.select_item(idx, false, false, cx);
+                                                    }
+                                                });
+                                            }
+                                        })
+                                        .child(
+                                            div()
+                                                .w(px(icon_size))
+                                                .h(px(icon_size))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    if let Some(icon_path) = icon_paths.get(&path) {
+                                                        img(icon_path.clone())
+                                                            .w(px(icon_size))
+                                                            .h(px(icon_size))
+                                                            .into_any_element()
+                                                    } else {
+                                                        div()
+                                                            .text_size(px(icon_size * 0.7))
+                                                            .text_color(rgba(
+                                                                UiConstants::TEXT_SECONDARY_RGBA,
+                                                            ))
+                                                            .child(if is_dir {
+                                                                "\u{E8B7}"
+                                                            } else {
+                                                                "\u{E8A5}"
+                                                            })
+                                                            .into_any_element()
+                                                    },
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_grow()
+                                                .text_size(px(text_size))
+                                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                                .child(name),
+                                        )
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        },
+                    )),
             )
             // Column 3: Preview panel
             .child(
@@ -2229,127 +2432,135 @@ div()
                     let main_state = &app_state.state.main_view;
                     let icon_paths = &main_state.icon_paths;
 
-                    range.map(|row_idx| {
-                        let start = row_idx * items_per_row;
-                        let end = (start + items_per_row).min(visible_clone.len());
+                    range
+                        .map(|row_idx| {
+                            let start = row_idx * items_per_row;
+                            let end = (start + items_per_row).min(visible_clone.len());
 
-                        div()
-                            .flex()
-                            .flex_row()
-                            .h(px(row_height))
-                            .gap(px(12.0))
-                            .px(px(16.0))
-                            .children((start..end).map(|i| {
-                                let idx = visible_clone[i];
-                                let item = &fi.items[idx];
-                                let is_selected = fi.selected_indices.contains(&idx);
-                                let name = item.name.clone();
-                                let path = item.path.clone();
-                                let size_str = format_size(item.size);
-                                let is_dir = matches!(item.file_type, FileType::Directory);
-                                let v_card = view.clone();
+                            div()
+                                .flex()
+                                .flex_row()
+                                .h(px(row_height))
+                                .gap(px(12.0))
+                                .px(px(16.0))
+                                .children((start..end).map(|i| {
+                                    let idx = visible_clone[i];
+                                    let item = &fi.items[idx];
+                                    let is_selected = fi.selected_indices.contains(&idx);
+                                    let name = item.name.clone();
+                                    let path = item.path.clone();
+                                    let size_str = format_size(item.size);
+                                    let is_dir = matches!(item.file_type, FileType::Directory);
+                                    let v_card = view.clone();
 
-                                div()
-                                    .id(ElementId::from(30000 + idx))
-                                    .w(px(160.0))
-                                    .h(px(200.0))
-                                    .flex_col()
-                                    .rounded(px(8.0))
-                                    .border(px(1.0))
-                                    .border_color(if is_selected {
-                                        rgba(UiConstants::ACCENT_RGBA)
-                                    } else {
-                                        rgba(UiConstants::DIVIDER_RGBA)
-                                    })
-                                    .bg(if is_selected {
-                                        rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                                    } else {
-                                        rgba(0xFFFFFF08u32)
-                                    })
-                                    .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
-                                    .cursor_pointer()
-                                    .overflow_hidden()
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let v = v_card.clone();
-                                        move |ev, _, cx| {
-                                            cx.stop_propagation();
-                                            v.update(cx, |this, cx| {
-                                                this.select_item(idx, ev.modifiers.shift, ev.modifiers.control, cx);
-                                            });
-                                        }
-                                    })
-                                    .on_click({
-                                        let v = v_card.clone();
-                                        let item_type = item.file_type;
-                                        let path = path.clone();
-                                        move |ev, _win, cx| {
-                                            if ev.click_count() == 2 {
+                                    div()
+                                        .id(ElementId::from(30000 + idx))
+                                        .w(px(160.0))
+                                        .h(px(200.0))
+                                        .flex_col()
+                                        .rounded(px(8.0))
+                                        .border(px(1.0))
+                                        .border_color(if is_selected {
+                                            rgba(UiConstants::ACCENT_RGBA)
+                                        } else {
+                                            rgba(UiConstants::DIVIDER_RGBA)
+                                        })
+                                        .bg(if is_selected {
+                                            rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                                        } else {
+                                            rgba(0xFFFFFF08u32)
+                                        })
+                                        .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
+                                        .cursor_pointer()
+                                        .overflow_hidden()
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let v = v_card.clone();
+                                            move |ev, _, cx| {
+                                                cx.stop_propagation();
                                                 v.update(cx, |this, cx| {
-                                                    if item_type == FileType::Directory {
-                                                        this.navigate(path.clone(), cx);
-                                                    } else {
-                                                        this.open_item(idx, cx);
-                                                    }
+                                                    this.select_item(
+                                                        idx,
+                                                        ev.modifiers.shift,
+                                                        ev.modifiers.control,
+                                                        cx,
+                                                    );
                                                 });
                                             }
-                                        }
-                                    })
-                                    .on_mouse_down(MouseButton::Right, {
-                                        let v = v_card.clone();
-                                        move |ev, _, cx| {
-                                            cx.stop_propagation();
-                                            v.update(cx, |this, cx| {
-                                                this.show_context_menu(Some(idx), ev.position, cx);
-                                            });
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .justify_center()
-                                            .w_full()
-                                            .flex_grow()
-                                            .child(
-                                                if let Some(icon_path) = icon_paths.get(&path) {
-                                                    img(icon_path.clone())
-                                                        .w(px(64.0)).h(px(64.0))
-                                                        .into_any_element()
-                                                } else {
-                                                    div()
-                                                        .text_size(px(48.0))
-                                                        .text_color(rgba(UiConstants::ACCENT_RGBA))
-                                                        .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" })
-                                                        .into_any_element()
+                                        })
+                                        .on_click({
+                                            let v = v_card.clone();
+                                            let item_type = item.file_type;
+                                            let path = path.clone();
+                                            move |ev, _win, cx| {
+                                                if ev.click_count() == 2 {
+                                                    v.update(cx, |this, cx| {
+                                                        if item_type == FileType::Directory {
+                                                            this.navigate(path.clone(), cx);
+                                                        } else {
+                                                            this.open_item(idx, cx);
+                                                        }
+                                                    });
                                                 }
-                                            )
-                                    )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .p(px(8.0))
-                                            .bg(rgba(0x00000044u32))
-                                            .child(
+                                            }
+                                        })
+                                        .on_mouse_down(MouseButton::Right, {
+                                            let v = v_card.clone();
+                                            move |ev, _, cx| {
+                                                cx.stop_propagation();
+                                                v.update(cx, |this, cx| {
+                                                    this.show_context_menu(
+                                                        Some(idx),
+                                                        ev.position,
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        })
+                                        .child(div().justify_center().w_full().flex_grow().child(
+                                            if let Some(icon_path) = icon_paths.get(&path) {
+                                                img(icon_path.clone())
+                                                    .w(px(64.0))
+                                                    .h(px(64.0))
+                                                    .into_any_element()
+                                            } else {
                                                 div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child(name)
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(10.0))
-                                                    .text_color(rgba(0xFFFFFF88u32))
-                                                    .child(size_str)
-                                            )
-                                    )
-                                    .into_any_element()
-                            }))
-                            .into_any_element()
-                    }).collect::<Vec<_>>()
+                                                    .text_size(px(48.0))
+                                                    .text_color(rgba(UiConstants::ACCENT_RGBA))
+                                                    .child(if is_dir {
+                                                        "\u{E8B7}"
+                                                    } else {
+                                                        "\u{E8A5}"
+                                                    })
+                                                    .into_any_element()
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .p(px(8.0))
+                                                .bg(rgba(0x00000044u32))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(rgb(0xFFFFFF))
+                                                        .child(name),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(10.0))
+                                                        .text_color(rgba(0xFFFFFF88u32))
+                                                        .child(size_str),
+                                                ),
+                                        )
+                                        .into_any_element()
+                                }))
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .track_scroll(state.uniform_list_scroll_handle.clone())
+                .track_scroll(state.uniform_list_scroll_handle.clone()),
             )
     }
-
-
 
     fn filter_header(
         state: &MainViewState,
@@ -2500,85 +2711,112 @@ div()
             .h_full()
             .overflow_hidden()
             .child(
-                uniform_list("list-scroll", visible_clone.len(), move |range, _win, cx| {
-                    let fi = file_items.read(cx);
-                    let app_state = view.read(cx);
-                    let main_state = &app_state.state.main_view;
-                    let icon_paths = &main_state.icon_paths;
+                uniform_list(
+                    "list-scroll",
+                    visible_clone.len(),
+                    move |range, _win, cx| {
+                        let fi = file_items.read(cx);
+                        let app_state = view.read(cx);
+                        let main_state = &app_state.state.main_view;
+                        let icon_paths = &main_state.icon_paths;
 
-                    range.map(|i| {
-                        let idx = visible_clone[i];
-                        let item = &fi.items[idx];
-                        let is_selected = fi.selected_indices.contains(&idx);
-                        let path = item.path.clone();
-                        let view_row = view.clone();
+                        range
+                            .map(|i| {
+                                let idx = visible_clone[i];
+                                let item = &fi.items[idx];
+                                let is_selected = fi.selected_indices.contains(&idx);
+                                let path = item.path.clone();
+                                let view_row = view.clone();
 
-                        div()
-                            .id(ElementId::from(idx + 20000))
-                            .flex()
-                            .items_center()
-                            .w_full()
-                            .h(px(row_h))
-                            .px(px(16.0))
-                            .py(px(2.0))
-                            .bg(if is_selected {
-                                rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                            } else {
-                                rgba(UiConstants::BG_TRANSPARENT_RGBA)
-                            })
-                            .hover(|s| s.bg(if is_selected {
-                                rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
-                            } else {
-                                rgba(UiConstants::BG_ITEM_HOVER_RGBA)
-                            }))
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, {
-                                let v = view_row.clone();
-                                move |_event, _, cx| {
-                                    cx.stop_propagation();
-                                    v.update(cx, |this, cx| {
-                                        this.select_item(idx, false, false, cx);
-                                    });
-                                }
-                            })
-                            .on_mouse_down(MouseButton::Right, {
-                                let v = view_row.clone();
-                                move |ev, _, cx| {
-                                    cx.stop_propagation();
-                                    v.update(cx, |this, cx| {
-                                        this.show_context_menu(Some(idx), ev.position, cx);
-                                    });
-                                }
-                            })
-                            .child(
                                 div()
-                                    .w(px(icon_size)).h(px(icon_size))
-                                    .flex().items_center().justify_center()
-                                    .child(
-                                        if let Some(icon_path) = icon_paths.get(&path) {
-                                            img(icon_path.clone())
-                                                .w(px(icon_size)).h(px(icon_size))
-                                                .into_any_element()
+                                    .id(ElementId::from(idx + 20000))
+                                    .flex()
+                                    .items_center()
+                                    .w_full()
+                                    .h(px(row_h))
+                                    .px(px(16.0))
+                                    .py(px(2.0))
+                                    .bg(if is_selected {
+                                        rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                                    } else {
+                                        rgba(UiConstants::BG_TRANSPARENT_RGBA)
+                                    })
+                                    .hover(|s| {
+                                        s.bg(if is_selected {
+                                            rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
                                         } else {
-                                            div()
-                                                .text_size(px(icon_size * 0.5))
-                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                .child(if matches!(item.file_type, FileType::Directory) { "\u{E8B7}" } else { "\u{E8A5}" })
-                                                .into_any_element()
-                                        },
+                                            rgba(UiConstants::BG_ITEM_HOVER_RGBA)
+                                        })
+                                    })
+                                    .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let v = view_row.clone();
+                                        move |_event, _, cx| {
+                                            cx.stop_propagation();
+                                            v.update(cx, |this, cx| {
+                                                this.select_item(idx, false, false, cx);
+                                            });
+                                        }
+                                    })
+                                    .on_mouse_down(MouseButton::Right, {
+                                        let v = view_row.clone();
+                                        move |ev, _, cx| {
+                                            cx.stop_propagation();
+                                            v.update(cx, |this, cx| {
+                                                this.show_context_menu(Some(idx), ev.position, cx);
+                                            });
+                                        }
+                                    })
+                                    .child(
+                                        div()
+                                            .w(px(icon_size))
+                                            .h(px(icon_size))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                if let Some(icon_path) = icon_paths.get(&path) {
+                                                    img(icon_path.clone())
+                                                        .w(px(icon_size))
+                                                        .h(px(icon_size))
+                                                        .into_any_element()
+                                                } else {
+                                                    div()
+                                                        .text_size(px(icon_size * 0.5))
+                                                        .text_color(rgba(
+                                                            UiConstants::TEXT_SECONDARY_RGBA,
+                                                        ))
+                                                        .child(
+                                                            if matches!(
+                                                                item.file_type,
+                                                                FileType::Directory
+                                                            ) {
+                                                                "\u{E8B7}"
+                                                            } else {
+                                                                "\u{E8A5}"
+                                                            },
+                                                        )
+                                                        .into_any_element()
+                                                },
+                                            ),
                                     )
-                            )
-                            .child(
-                                div()
-                                    .ml(px(8.0))
-                                    .text_size(px(text_size))
-                                    .text_color(if is_selected { rgb(UiConstants::TEXT_PRIMARY_RGB) } else { rgba(UiConstants::TEXT_PRIMARY_RGBA) })
-                                    .child(item.name.clone()),
-                            )
-                            .into_any_element()
-                    }).collect::<Vec<_>>()
-                })
-                .track_scroll(state.uniform_list_scroll_handle.clone())
+                                    .child(
+                                        div()
+                                            .ml(px(8.0))
+                                            .text_size(px(text_size))
+                                            .text_color(if is_selected {
+                                                rgb(UiConstants::TEXT_PRIMARY_RGB)
+                                            } else {
+                                                rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                                            })
+                                            .child(item.name.clone()),
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                )
+                .track_scroll(state.uniform_list_scroll_handle.clone()),
             )
     }
 
@@ -2624,27 +2862,39 @@ div()
                     let zoom = main_state.zoom_level;
                     let sel_mode = main_state.selection_mode.clone();
 
-                    range.map(|row_idx| {
-                        let start = row_idx * items_per_row;
-                        let end = (start + items_per_row).min(visible_clone.len());
+                    range
+                        .map(|row_idx| {
+                            let start = row_idx * items_per_row;
+                            let end = (start + items_per_row).min(visible_clone.len());
 
-                        div()
-                            .flex()
-                            .flex_row()
-                            .h(px(row_height))
-                            .gap(px(UiConstants::GRID_GAP_RAW as f32))
-                            .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-                            .children((start..end).map(|i| {
-                                let idx = visible_clone[i];
-                                let item = &fi.items[idx];
-                                let is_selected = fi.selected_indices.contains(&idx);
-                                Self::grid_item(item, idx, is_selected, sel_mode.clone(), view.clone(), icon_paths, zoom).into_any_element()
-                            }))
-                            .into_any_element()
-                    }).collect::<Vec<_>>()
+                            div()
+                                .flex()
+                                .flex_row()
+                                .h(px(row_height))
+                                .gap(px(UiConstants::GRID_GAP_RAW as f32))
+                                .px(px(UiConstants::PADDING_LARGE_RAW as f32))
+                                .children((start..end).map(|i| {
+                                    let idx = visible_clone[i];
+                                    let item = &fi.items[idx];
+                                    let is_selected = fi.selected_indices.contains(&idx);
+                                    Self::grid_item(
+                                        item,
+                                        idx,
+                                        is_selected,
+                                        sel_mode.clone(),
+                                        view.clone(),
+                                        icon_paths,
+                                        zoom,
+                                    )
+                                    .into_any_element()
+                                }))
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .track_scroll(state.uniform_list_scroll_handle.clone())
-            ).into_any_element()
+                .track_scroll(state.uniform_list_scroll_handle.clone()),
+            )
+            .into_any_element()
     }
 
     fn grid_view_grouped(
@@ -2656,89 +2906,96 @@ div()
         let flattened = state.flatten_grouped_grid_items(visible, items_per_row);
         let icon_paths = state.icon_paths.clone();
 
-        div()
-            .flex_col()
-            .w_full()
-            .flex_grow()
-            .h_full()
-            .child(
-                div()
-                    .id("grid-grouped-scroll")
-                    .flex_col()
-                    .w_full()
-                    .flex_grow()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&state.scroll_handle)
-                    .children(
-                        (0..flattened.len()).map(|i| {
-                            match &flattened[i] {
-                                GroupedGridItem::Header { key, label, count } => {
-                                    let key_clone = key.clone();
-                                    let label_clone = label.clone();
-                                    let count_clone = *count;
-                                    let is_collapsed = state.collapsed_groups.contains(key);
-                                    let group_height = if state.compact_mode { 24.0 } else { 32.0 };
-                                    let v_g = view.clone();
+        div().flex_col().w_full().flex_grow().h_full().child(
+            div()
+                .id("grid-grouped-scroll")
+                .flex_col()
+                .w_full()
+                .flex_grow()
+                .h_full()
+                .overflow_y_scroll()
+                .track_scroll(&state.scroll_handle)
+                .children((0..flattened.len()).map(|i| match &flattened[i] {
+                    GroupedGridItem::Header { key, label, count } => {
+                        let key_clone = key.clone();
+                        let label_clone = label.clone();
+                        let count_clone = *count;
+                        let is_collapsed = state.collapsed_groups.contains(key);
+                        let group_height = if state.compact_mode { 24.0 } else { 32.0 };
+                        let v_g = view.clone();
 
-                                    div()
-                                        .id(ElementId::from(60000 + i))
-                                        .flex()
-                                        .flex_row()
-                                        .h(px(group_height))
-                                        .items_center()
-                                        .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-                                        .bg(rgba(0x0A000000u32))
-                                        .cursor_pointer()
-                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                            v_g.update(cx, |this, cx| {
-                                                this.toggle_group_collapse(key_clone.clone(), cx);
-                                            });
-                                        })
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .font_family(UiConstants::FONT_MDL2)
-                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                .child(if is_collapsed { "\\u{E76C}" } else { "\\u{E76B}" }),
-                                        )
-                                        .child(
-                                            div()
-                                                .ml(px(6.0))
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight(600.0))
-                                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                                .child(label_clone),
-                                        )
-                                        .child(
-                                            div()
-                                                .ml(px(8.0))
-                                                .text_size(px(11.0))
-                                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                .child(format!("{} item{}", count_clone, if count_clone == 1 { "" } else { "s" })),
-                                        )
-                                        .into_any_element()
-                                }
-                                GroupedGridItem::Row(indices) => {
-                                    let indices = indices.clone();
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .gap(px(UiConstants::GRID_GAP_RAW as f32))
-                                        .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-                                        .py(px(UiConstants::GRID_GAP_RAW as f32))
-                                        .children(indices.into_iter().map(|idx| {
-                                            let item = &state.items[idx];
-                                            let selected = state.selected_indices.contains(&idx);
-                                            let zoom = state.zoom_level;
-                                            Self::grid_item(item, idx, selected, state.selection_mode.clone(), view.clone(), &icon_paths, zoom)
-                                        }))
-                                        .into_any_element()
-                                }
-                            }
-                        })
-                    )
-            )
+                        div()
+                            .id(ElementId::from(60000 + i))
+                            .flex()
+                            .flex_row()
+                            .h(px(group_height))
+                            .items_center()
+                            .px(px(UiConstants::PADDING_LARGE_RAW as f32))
+                            .bg(rgba(0x0A000000u32))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                v_g.update(cx, |this, cx| {
+                                    this.toggle_group_collapse(key_clone.clone(), cx);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(if is_collapsed {
+                                        "\\u{E76C}"
+                                    } else {
+                                        "\\u{E76B}"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .ml(px(6.0))
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                    .child(label_clone),
+                            )
+                            .child(
+                                div()
+                                    .ml(px(8.0))
+                                    .text_size(px(11.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(format!(
+                                        "{} item{}",
+                                        count_clone,
+                                        if count_clone == 1 { "" } else { "s" }
+                                    )),
+                            )
+                            .into_any_element()
+                    }
+                    GroupedGridItem::Row(indices) => {
+                        let indices = indices.clone();
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(UiConstants::GRID_GAP_RAW as f32))
+                            .px(px(UiConstants::PADDING_LARGE_RAW as f32))
+                            .py(px(UiConstants::GRID_GAP_RAW as f32))
+                            .children(indices.into_iter().map(|idx| {
+                                let item = &state.items[idx];
+                                let selected = state.selected_indices.contains(&idx);
+                                let zoom = state.zoom_level;
+                                Self::grid_item(
+                                    item,
+                                    idx,
+                                    selected,
+                                    state.selection_mode.clone(),
+                                    view.clone(),
+                                    &icon_paths,
+                                    zoom,
+                                )
+                            }))
+                            .into_any_element()
+                    }
+                })),
+        )
     }
 
     fn grid_item(
@@ -2747,7 +3004,10 @@ div()
         selected: bool,
         selection_mode: SelectionMode,
         view: Entity<crate::app::AppWindow>,
-        icon_paths: &std::collections::HashMap<crate::core::path_util::FilesPath, std::path::PathBuf>,
+        icon_paths: &std::collections::HashMap<
+            crate::core::path_util::FilesPath,
+            std::path::PathBuf,
+        >,
         zoom: f32,
     ) -> impl IntoElement {
         let v_click = view.clone();
@@ -2797,42 +3057,45 @@ div()
 
             // Add checkbox if in checkbox mode
             if show_checkbox {
-                item_div = item_div
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(4.0))
-                            .left(px(4.0))
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_checkbox.update(cx, |this, cx| {
-                                    this.toggle_checkbox_selection(index, cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .w(px(14.0))
-                                    .h(px(14.0))
-                                    .border(px(1.5))
-                                    .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                    .rounded(px(3.0))
-                                    .bg(if selected { rgba(UiConstants::ACCENT_RGBA) } else { rgba(0x00000000) })
-                                    .child(if selected {
-                                        div()
-                                            .text_size(px(9.0))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child("\u{E73E}")
-                                    } else {
-                                        div()
-                                    }),
-                            ),
-                    );
+                item_div = item_div.child(
+                    div()
+                        .absolute()
+                        .top(px(4.0))
+                        .left(px(4.0))
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_checkbox.update(cx, |this, cx| {
+                                this.toggle_checkbox_selection(index, cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .border(px(1.5))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(3.0))
+                                .bg(if selected {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .child(if selected {
+                                    div()
+                                        .text_size(px(9.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("\u{E73E}")
+                                } else {
+                                    div()
+                                }),
+                        ),
+                );
             }
 
             let path_clone = item_path.clone();
@@ -2934,42 +3197,45 @@ div()
             // Add checkbox if in checkbox mode
             if show_checkbox {
                 let v_checkbox = view.clone();
-                item_div = item_div
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(4.0))
-                            .left(px(4.0))
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_checkbox.update(cx, |this, cx| {
-                                    this.toggle_checkbox_selection(index, cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .w(px(14.0))
-                                    .h(px(14.0))
-                                    .border(px(1.5))
-                                    .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                    .rounded(px(3.0))
-                                    .bg(if selected { rgba(UiConstants::ACCENT_RGBA) } else { rgba(0x00000000) })
-                                    .child(if selected {
-                                        div()
-                                            .text_size(px(9.0))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child("\\u{E73E}")
-                                    } else {
-                                        div()
-                                    }),
-                            ),
-                    );
+                item_div = item_div.child(
+                    div()
+                        .absolute()
+                        .top(px(4.0))
+                        .left(px(4.0))
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_checkbox.update(cx, |this, cx| {
+                                this.toggle_checkbox_selection(index, cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .border(px(1.5))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(3.0))
+                                .bg(if selected {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .child(if selected {
+                                    div()
+                                        .text_size(px(9.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("\\u{E73E}")
+                                } else {
+                                    div()
+                                }),
+                        ),
+                );
             }
 
             let path_clone = item_path.clone();
@@ -3024,32 +3290,28 @@ div()
                 })
                 .child(
                     // Centered icon
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w_full()
-                        .child(
-                            // Icon: use cached shell icon if available (shows folder thumbnails on Windows),
-                            // otherwise MDL2 text glyph
-                            if let Some(icon_path) = &cached_icon_path {
-                                img(icon_path.clone())
-                                    .w(px(icon_size_val)).h(px(icon_size_val))
-                                    .object_fit(gpui::ObjectFit::Contain)
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .text_size(px(icon_size_val * 0.8))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if is_dir {
-                                        rgba(UiConstants::ACCENT_RGBA)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child(file_icon)
-                                    .into_any_element()
-                            },
-                        ),
+                    div().flex().items_center().justify_center().w_full().child(
+                        // Icon: use cached shell icon if available (shows folder thumbnails on Windows),
+                        // otherwise MDL2 text glyph
+                        if let Some(icon_path) = &cached_icon_path {
+                            img(icon_path.clone())
+                                .w(px(icon_size_val))
+                                .h(px(icon_size_val))
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .into_any_element()
+                        } else {
+                            div()
+                                .text_size(px(icon_size_val * 0.8))
+                                .font_family(UiConstants::FONT_MDL2)
+                                .text_color(if is_dir {
+                                    rgba(UiConstants::ACCENT_RGBA)
+                                } else {
+                                    rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                })
+                                .child(file_icon)
+                                .into_any_element()
+                        },
+                    ),
                 )
                 .child(
                     div()
@@ -3066,13 +3328,21 @@ div()
         }
     }
 
-    fn file_grid(state: &MainViewState, file_items: Entity<FileItems>, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    fn file_grid(
+        state: &MainViewState,
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         let visible = state.visible_items();
         Self::grid_view(state, &visible, file_items, view)
     }
 
     #[allow(dead_code)]
-    fn file_list(state: &MainViewState, file_items: Entity<FileItems>, view: Entity<crate::app::AppWindow>) -> impl IntoElement {
+    fn file_list(
+        state: &MainViewState,
+        file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
         let visible = state.visible_items();
         Self::details_view(state, &visible, file_items, view)
     }
@@ -3084,7 +3354,10 @@ div()
     /// Render the default preview (icon + name + raw text)
     fn render_default_preview(item: &FileItem, state: &MainViewState) -> impl IntoElement {
         let ext = get_extension(&item.name);
-        let is_image = matches!(ext.as_str(), "jpg"|"jpeg"|"png"|"gif"|"bmp"|"webp"|"ico"|"tiff"|"tif"|"svg");
+        let is_image = matches!(
+            ext.as_str(),
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+        );
 
         div()
             .flex_col()
@@ -3200,7 +3473,7 @@ div()
                         .mt(px(6.0))
                         .mb(px(2.0))
                         .child(content.to_string())
-                        .into_any_element()
+                        .into_any_element(),
                 );
             } else if trimmed.starts_with("## ") {
                 let content = &trimmed[3..];
@@ -3212,7 +3485,7 @@ div()
                         .mt(px(8.0))
                         .mb(px(2.0))
                         .child(content.to_string())
-                        .into_any_element()
+                        .into_any_element(),
                 );
             } else if trimmed.starts_with("# ") {
                 let content = &trimmed[2..];
@@ -3224,7 +3497,7 @@ div()
                         .mt(px(10.0))
                         .mb(px(4.0))
                         .child(content.to_string())
-                        .into_any_element()
+                        .into_any_element(),
                 );
             } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
                 // List items
@@ -3239,7 +3512,7 @@ div()
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .child(div().child("\u{2022} ")) // bullet
                         .child(div().child(Self::parse_inline_markdown(content)))
-                        .into_any_element()
+                        .into_any_element(),
                 );
             } else if trimmed.is_empty() {
                 children.push(div().h(px(6.0)).into_any_element());
@@ -3251,7 +3524,7 @@ div()
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .py(px(1.0))
                         .child(Self::parse_inline_markdown(line))
-                        .into_any_element()
+                        .into_any_element(),
                 );
             }
         }
@@ -3260,7 +3533,9 @@ div()
         if in_code_block && !code_block_text.is_empty() {
             children.push(
                 div()
-                    .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
+                    .font_family(
+                        "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
+                    )
                     .text_size(px(11.0))
                     .text_color(rgba(0x00FFD700u32))
                     .bg(rgba(0xFFFFFF10u32))
@@ -3268,7 +3543,7 @@ div()
                     .rounded(px(4.0))
                     .w_full()
                     .child(code_block_text)
-                    .into_any_element()
+                    .into_any_element(),
             );
         }
 
@@ -3291,18 +3566,20 @@ div()
             if let Some(start) = remaining.find("**") {
                 if start > 0 {
                     children.push(
-                        div().child(remaining[..start].to_string()).into_any_element()
+                        div()
+                            .child(remaining[..start].to_string())
+                            .into_any_element(),
                     );
                 }
-                let after = &remaining[start+2..];
+                let after = &remaining[start + 2..];
                 if let Some(end) = after.find("**") {
                     children.push(
                         div()
                             .font_weight(FontWeight(700.0))
                             .child(after[..end].to_string())
-                            .into_any_element()
+                            .into_any_element(),
                     );
-                    remaining = &after[end+2..];
+                    remaining = &after[end + 2..];
                     continue;
                 }
             }
@@ -3311,10 +3588,12 @@ div()
             if let Some(start) = remaining.find('`') {
                 if start > 0 {
                     children.push(
-                        div().child(remaining[..start].to_string()).into_any_element()
+                        div()
+                            .child(remaining[..start].to_string())
+                            .into_any_element(),
                     );
                 }
-                let after = &remaining[start+1..];
+                let after = &remaining[start + 1..];
                 if let Some(end) = after.find('`') {
                     children.push(
                         div()
@@ -3325,15 +3604,13 @@ div()
                             .child(after[..end].to_string())
                             .into_any_element()
                     );
-                    remaining = &after[end+1..];
+                    remaining = &after[end + 1..];
                     continue;
                 }
             }
 
             // No more formatting - add remaining text
-            children.push(
-                div().child(remaining.to_string()).into_any_element()
-            );
+            children.push(div().child(remaining.to_string()).into_any_element());
             break;
         }
 
@@ -3355,7 +3632,9 @@ div()
             .child(
                 div()
                     .flex_col()
-                    .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
+                    .font_family(
+                        "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
+                    )
                     .text_size(px(11.0))
                     .children(highlighted.into_iter().enumerate().map(|(i, tokens)| {
                         // Line number + highlighted tokens
@@ -3380,7 +3659,8 @@ div()
                                         if let Some(color) = color_opt {
                                             el = el.text_color(color);
                                         } else {
-                                            el = el.text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA));
+                                            el =
+                                                el.text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA));
                                         }
                                         el.into_any_element()
                                     })),
@@ -3396,7 +3676,7 @@ div()
         // Language-agnostic keyword highlighting based on common patterns
         let keywords: &[(&str, u32)] = &[
             // Rust, C, C++, Java, JavaScript, TypeScript, etc.
-            ("fn", 0x005695FF),      // blue
+            ("fn", 0x005695FF), // blue
             ("let", 0x005695FF),
             ("mut", 0x005695FF),
             ("const", 0x005695FF),
@@ -3534,7 +3814,10 @@ div()
                 // Try to match a string literal first (single or double quoted)
                 if remaining.starts_with('"') || remaining.starts_with('\'') {
                     let quote = remaining.chars().next().unwrap();
-                    let end = remaining[1..].find(quote).map(|i| i + 2).unwrap_or(remaining.len());
+                    let end = remaining[1..]
+                        .find(quote)
+                        .map(|i| i + 2)
+                        .unwrap_or(remaining.len());
                     tokens.push((remaining[..end].to_string(), Some(rgba(0x00CE9178u32)))); // green
                     remaining = &remaining[end..];
                     continue;
@@ -3548,7 +3831,15 @@ div()
 
                 // Try to match a number
                 if remaining.starts_with(|c: char| c.is_ascii_digit()) {
-                    let end = remaining.find(|c: char| !c.is_ascii_digit() && c != '.' && c != 'x' && !(c >= 'A' && c <= 'F') && !(c >= 'a' && c <= 'f')).unwrap_or(remaining.len());
+                    let end = remaining
+                        .find(|c: char| {
+                            !c.is_ascii_digit()
+                                && c != '.'
+                                && c != 'x'
+                                && !(c >= 'A' && c <= 'F')
+                                && !(c >= 'a' && c <= 'f')
+                        })
+                        .unwrap_or(remaining.len());
                     tokens.push((remaining[..end].to_string(), Some(rgba(0x00B5CEA8u32)))); // light green
                     remaining = &remaining[end..];
                     continue;
@@ -3562,7 +3853,8 @@ div()
                     if remaining.starts_with(kw) {
                         // Ensure word boundary
                         let after = &remaining[kw.len()..];
-                        let is_word_boundary = after.is_empty() || !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
+                        let is_word_boundary = after.is_empty()
+                            || !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
                         if is_word_boundary {
                             tokens.push((kw.to_string(), Some(rgba(color))));
                             remaining = after;
@@ -3577,7 +3869,9 @@ div()
                 }
 
                 // Single character or non-matching token
-                let end = remaining.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(1);
+                let end = remaining
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(1);
                 if end > 0 {
                     tokens.push((remaining[..end].to_string(), None));
                     remaining = &remaining[end..];
@@ -3600,23 +3894,21 @@ div()
         // Strip HTML tags for readability
         let stripped = Self::strip_html_tags(text);
 
-        div()
-            .flex_col()
-            .w_full()
-            .max_h(px(400.0))
-            .child(
-                div()
-                    .bg(rgba(0xFFFFFF05u32))
-                    .rounded(px(4.0))
-                    .p(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                            .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
-                            .child(stripped),
-                    ),
-            )
+        div().flex_col().w_full().max_h(px(400.0)).child(
+            div()
+                .bg(rgba(0xFFFFFF05u32))
+                .rounded(px(4.0))
+                .p(px(8.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                        .font_family(
+                            "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
+                        )
+                        .child(stripped),
+                ),
+        )
     }
 
     /// Simple HTML tag stripper — removes <tags> and decodes common entities
@@ -3837,21 +4129,32 @@ div()
     }
 
     /// Render media preview (audio/video) with metadata and player placeholder
-    fn render_media_preview(info: &MediaPreviewInfo, media_type: &str, text: &str, item: &FileItem) -> impl IntoElement {
+    fn render_media_preview(
+        info: &MediaPreviewInfo,
+        media_type: &str,
+        text: &str,
+        item: &FileItem,
+    ) -> impl IntoElement {
         let icon = match media_type {
             "Audio" => "\u{E8D1}",
             _ => "\u{E8D1}",
         };
 
         let format_line = info.format.as_deref().unwrap_or("Unknown");
-        let duration_str = info.duration_secs.map(|d| {
-            let mins = (d / 60.0) as u64;
-            let secs = (d % 60.0) as u64;
-            format!("{}:{:02}", mins, secs)
-        }).unwrap_or_else(|| "Unknown".to_string());
+        let duration_str = info
+            .duration_secs
+            .map(|d| {
+                let mins = (d / 60.0) as u64;
+                let secs = (d % 60.0) as u64;
+                format!("{}:{:02}", mins, secs)
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
 
         let codec_str = info.codec.as_deref().unwrap_or("Unknown");
-        let bitrate_str = info.bitrate_kbps.map(|b| format!("{} kbps", b)).unwrap_or_else(|| "Unknown".to_string());
+        let bitrate_str = info
+            .bitrate_kbps
+            .map(|b| format!("{} kbps", b))
+            .unwrap_or_else(|| "Unknown".to_string());
 
         let mut meta_children: Vec<AnyElement> = vec![
             info_row("Format", format_line).into_any_element(),
@@ -3868,11 +4171,13 @@ div()
         }
         if let Some(w) = info.width {
             if let Some(h) = info.height {
-                meta_children.push(info_row("Resolution", &format!("{}x{}", w, h)).into_any_element());
+                meta_children
+                    .push(info_row("Resolution", &format!("{}x{}", w, h)).into_any_element());
             }
         }
         if let Some(fr) = info.frame_rate {
-            meta_children.push(info_row("Frame Rate", &format!("{:.1} fps", fr)).into_any_element());
+            meta_children
+                .push(info_row("Frame Rate", &format!("{:.1} fps", fr)).into_any_element());
         }
 
         div()
@@ -3933,10 +4238,18 @@ div()
                     ),
             )
             // Separator
-            .child(div().w_full().h(px(1.0)).bg(rgba(UiConstants::DIVIDER_RGBA)))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+            )
             // Metadata section
             .child(
-                div().flex_col().gap(px(6.0)).w_full()
+                div()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .w_full()
                     .child(section_header(&format!("{} Info", media_type)))
                     .children(meta_children),
             )
@@ -4041,7 +4354,11 @@ div()
 
     /// Render folder preview as a thumbnail grid of up to 12 items
     fn render_folder_preview(items: &[FolderPreviewItem]) -> impl IntoElement {
-        let display_items = if items.len() > 12 { &items[..12] } else { items };
+        let display_items = if items.len() > 12 {
+            &items[..12]
+        } else {
+            items
+        };
         let cols = 4.min(display_items.len().max(1));
         let width_pct = 100.0 / cols as f32;
 
@@ -4081,65 +4398,54 @@ div()
                     .bg(rgba(UiConstants::DIVIDER_RGBA)),
             )
             // Thumbnail grid
-            .child(
-                div()
-                    .flex_row()
-                    .flex_wrap()
-                    .w_full()
-                    .gap(px(6.0))
-                    .children(display_items.iter().map(|entry| {
-                        let icon = if entry.is_dir {
-                            "\u{E8B7}"
-                        } else {
-                            "\u{E8A5}"
-                        };
+            .child(div().flex_row().flex_wrap().w_full().gap(px(6.0)).children(
+                display_items.iter().map(|entry| {
+                    let icon = if entry.is_dir { "\u{E8B7}" } else { "\u{E8A5}" };
 
-                        div()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(3.0))
-                            .w(px(60.0))
-                            .child(
-                                div()
-                                    .w(px(40.0))
-                                    .h(px(40.0))
-                                    .bg(rgba(0xFFFFFF10u32))
-                                    .rounded(px(6.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(20.0))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(if entry.is_dir {
-                                                rgba(UiConstants::ACCENT_RGBA)
-                                            } else {
-                                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                            })
-                                            .child(icon),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(9.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .overflow_hidden()
-                                    .max_w(px(60.0))
-                                    .text_center()
-                                    .child(entry.name.clone()),
-                            )
-                            .into_any_element()
-                    })),
-            )
-            .children(if items.len() > 12 {
-                vec![
                     div()
-                        .text_size(px(10.0))
-                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                        .child(format!("+ {} more items", items.len() - 12))
+                        .flex_col()
+                        .items_center()
+                        .gap(px(3.0))
+                        .w(px(60.0))
+                        .child(
+                            div()
+                                .w(px(40.0))
+                                .h(px(40.0))
+                                .bg(rgba(0xFFFFFF10u32))
+                                .rounded(px(6.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_size(px(20.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(if entry.is_dir {
+                                            rgba(UiConstants::ACCENT_RGBA)
+                                        } else {
+                                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                        })
+                                        .child(icon),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.0))
+                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                .overflow_hidden()
+                                .max_w(px(60.0))
+                                .text_center()
+                                .child(entry.name.clone()),
+                        )
                         .into_any_element()
-                ]
+                }),
+            ))
+            .children(if items.len() > 12 {
+                vec![div()
+                    .text_size(px(10.0))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                    .child(format!("+ {} more items", items.len() - 12))
+                    .into_any_element()]
             } else {
                 vec![]
             })
@@ -4159,15 +4465,19 @@ div()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::metadata::FileItem;
     use crate::core::path_util::FilesPath;
+    use crate::domain::metadata::FileItem;
     use crate::storage::storage::FileType;
 
     fn create_test_file_item(name: &str, is_dir: bool) -> FileItem {
         FileItem {
             name: name.to_string(),
             path: FilesPath::new(name),
-            file_type: if is_dir { FileType::Directory } else { FileType::File },
+            file_type: if is_dir {
+                FileType::Directory
+            } else {
+                FileType::File
+            },
             size: 1024,
             is_hidden: false,
             is_system: false,
@@ -4361,7 +4671,9 @@ mod tests {
 
         // Add some items
         for i in 0..24 {
-            state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
+            state
+                .items
+                .push(create_test_file_item(&format!("file{}.txt", i), false));
         }
 
         // Select items in the first row (items 0-5) using a rectangle
@@ -4369,9 +4681,9 @@ mod tests {
         // First row at y=16 to y=216
         let visible = state.visible_items();
         state.select_rect(
-            point(16.0, 16.0),  // Start: top-left of first item
+            point(16.0, 16.0),   // Start: top-left of first item
             point(200.0, 216.0), // End: bottom-right area of first row
-            false, // Don't add to selection, replace
+            false,               // Don't add to selection, replace
         );
 
         // Items in first row should be selected
@@ -4389,7 +4701,9 @@ mod tests {
         let mut state = MainViewState::new(path, ViewMode::Grid);
 
         for i in 0..12 {
-            state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
+            state
+                .items
+                .push(create_test_file_item(&format!("file{}.txt", i), false));
         }
 
         // First select some items
@@ -4426,7 +4740,9 @@ mod tests {
         let mut state = MainViewState::new(path, ViewMode::Grid);
 
         for i in 0..10 {
-            state.items.push(create_test_file_item(&format!("file{}.txt", i), false));
+            state
+                .items
+                .push(create_test_file_item(&format!("file{}.txt", i), false));
         }
 
         // Select all via lasso_end with a large rectangle
@@ -4436,7 +4752,11 @@ mod tests {
 
         // All items should be selected
         for i in 0..10 {
-            assert!(state.selected_indices.contains(&i), "Item {} should be selected", i);
+            assert!(
+                state.selected_indices.contains(&i),
+                "Item {} should be selected",
+                i
+            );
         }
     }
 
@@ -4482,8 +4802,12 @@ mod tests {
             create_test_file_item("bbb.txt", false),
         ];
         // Tag "zzz.txt" with "work", "aaa.txt" with "personal"
-        state.tags_cache.insert("/test/zzz.txt".to_string(), vec!["work".to_string()]);
-        state.tags_cache.insert("/test/aaa.txt".to_string(), vec!["personal".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/zzz.txt".to_string(), vec!["work".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/aaa.txt".to_string(), vec!["personal".to_string()]);
         // bbb.txt is untagged
 
         state.sort.column = SortBy::Tag;
@@ -4508,9 +4832,15 @@ mod tests {
             create_test_file_item("beta.txt", false),
         ];
         // All tagged
-        state.tags_cache.insert("/test/delta.txt".to_string(), vec!["zzz".to_string()]);
-        state.tags_cache.insert("/test/alpha.txt".to_string(), vec!["aaa".to_string()]);
-        state.tags_cache.insert("/test/beta.txt".to_string(), vec!["bbb".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/delta.txt".to_string(), vec!["zzz".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/alpha.txt".to_string(), vec!["aaa".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/beta.txt".to_string(), vec!["bbb".to_string()]);
 
         state.sort.column = SortBy::Tag;
         state.sort.ascending = true;
@@ -4531,8 +4861,12 @@ mod tests {
             create_test_file_item("alpha.txt", false),
             create_test_file_item("beta.txt", false),
         ];
-        state.tags_cache.insert("/test/alpha.txt".to_string(), vec!["work".to_string()]);
-        state.tags_cache.insert("/test/beta.txt".to_string(), vec!["personal".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/alpha.txt".to_string(), vec!["work".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/beta.txt".to_string(), vec!["personal".to_string()]);
 
         state.sort.column = SortBy::Tag;
         state.sort.ascending = false;
@@ -4557,16 +4891,31 @@ mod tests {
             create_test_file_item("file2.txt", false),
             create_test_file_item("file3.txt", false),
         ];
-        state.tags_cache.insert("/test/file1.txt".to_string(), vec!["work".to_string()]);
-        state.tags_cache.insert("/test/file2.txt".to_string(), vec!["work".to_string()]);
-        state.tags_cache.insert("/test/file3.txt".to_string(), vec!["personal".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/file1.txt".to_string(), vec!["work".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/file2.txt".to_string(), vec!["work".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/file3.txt".to_string(), vec!["personal".to_string()]);
 
         state.group_by = GroupColumn::Tag;
 
         // Verify group keys
-        assert_eq!(state.get_group_key(&state.items[0]), Some("work".to_string()));
-        assert_eq!(state.get_group_key(&state.items[1]), Some("work".to_string()));
-        assert_eq!(state.get_group_key(&state.items[2]), Some("personal".to_string()));
+        assert_eq!(
+            state.get_group_key(&state.items[0]),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            state.get_group_key(&state.items[1]),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            state.get_group_key(&state.items[2]),
+            Some("personal".to_string())
+        );
     }
 
     #[test]
@@ -4576,12 +4925,20 @@ mod tests {
             create_test_file_item("tagged.txt", false),
             create_test_file_item("untagged.txt", false),
         ];
-        state.tags_cache.insert("/test/tagged.txt".to_string(), vec!["work".to_string()]);
+        state
+            .tags_cache
+            .insert("/test/tagged.txt".to_string(), vec!["work".to_string()]);
 
         state.group_by = GroupColumn::Tag;
 
         // Tagged item gets "work" group, untagged gets "Untagged"
-        assert_eq!(state.get_group_key(&state.items[0]), Some("work".to_string()));
-        assert_eq!(state.get_group_key(&state.items[1]), Some("Untagged".to_string()));
+        assert_eq!(
+            state.get_group_key(&state.items[0]),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            state.get_group_key(&state.items[1]),
+            Some("Untagged".to_string())
+        );
     }
 }
