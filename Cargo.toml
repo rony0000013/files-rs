@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-gpui = { version = "0.2.2", features = ["default"] }
+# ... (rest of dependencies)
 tokio = { version = "1.52", features = ["full"] }
 windows = { version = "0.52", features = [
     "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging",
@@ -64,6 +64,7 @@ lopdf = "0.31"           # PDF metadata extraction
 raw-window-handle = "0.6"
 sentry = "0.34"
 sentry-tracing = "0.34"
+gpui = "0.2.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

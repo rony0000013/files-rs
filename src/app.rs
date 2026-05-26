@@ -145,10 +145,22 @@ pub struct SidebarPinnedDragState {
     pub is_dragging: bool,
 }
 
+/// Data for the hover file-preview tooltip shown on short hover delay
+#[derive(Debug, Clone)]
+pub struct HoverTooltipData {
+    /// Screen position of the tooltip
+    pub position: gpui::Point<gpui::Pixels>,
+    pub item: crate::domain::metadata::FileItem,
+}
+
 pub struct AppWindow {
     pub state: AppState,
     /// Index of the item currently being hovered (for hover-to-open timer)
     hover_item_index: Option<usize>,
+    /// Hover tooltip state for file preview popup
+    hover_tooltip: Option<HoverTooltipData>,
+    /// Active hover timer task — cancelled on mouse leave or re-hover
+    hover_timer_task: Option<Task<()>>,
     /// Drag state for sidebar pinned item reordering
     sidebar_pinned_drag: Option<SidebarPinnedDragState>,
     /// Whether the zoom slider is currently being dragged.
@@ -168,6 +180,8 @@ impl AppWindow {
         let mut window_view = Self {
             state,
             hover_item_index: None,
+            hover_tooltip: None,
+            hover_timer_task: None,
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
@@ -240,6 +254,9 @@ impl AppWindow {
         self.state.main_view.primary_path = path.clone();
         self.state.nav_bar.update_path(path.clone());
         self.state.main_view.items.clear();
+        // Clear icon_paths to avoid stale entries from previous folder during
+        // the brief window before items are loaded and icon_cache is synced.
+        self.state.main_view.icon_paths.clear();
 
         // Sync sidebar active item and status bar
         #[cfg(windows)]
@@ -309,52 +326,81 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 tracing::info!(
-                    "Background task started for loading items from: {:?}",
+                    "Progressive loading started for: {:?}",
                     path_clone
                 );
-                let storage = LocalFileSystem;
-                if let Ok(storable_items) = storage.list_directory(&path_clone).await {
-                    tracing::info!(
-                        "Loaded {} items from: {:?}",
-                        storable_items.len(),
-                        path_clone
-                    );
-                    let items: Vec<crate::domain::metadata::FileItem> = storable_items
-                        .into_iter()
-                        .map(|storable| crate::domain::metadata::FileItem {
-                            name: storable
-                                .path
-                                .as_path()
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                            path: storable.path,
-                            file_type: if storable.metadata.file_type
-                                == crate::storage::storage::FileType::Directory
-                            {
-                                crate::storage::storage::FileType::Directory
-                            } else {
-                                crate::storage::storage::FileType::File
-                            },
-                            size: storable.metadata.size,
-                            is_hidden: storable.metadata.is_hidden,
-                            is_system: storable.metadata.is_system,
-                        })
-                        .collect();
+                // =================================================================
+                // PHASE 1: Fast initial listing (uses entry.file_type() — no stat)
+                // This uses d_type from readdir, avoiding a per-file stat syscall
+                // which is slow on WSL/9P. Items appear instantly with basic info;
+                // full metadata (size, modified, hidden) is enriched in Phase 2.
+                // =================================================================
+                let fast_items: Vec<crate::domain::metadata::FileItem> = async_cx
+                    .background_executor()
+                    .spawn({
+                        let p = path_clone.clone();
+                        async move {
+                            let mut items = Vec::new();
+                            if let Ok(rd) = std::fs::read_dir(p.as_path()) {
+                                for entry in rd.filter_map(|e| e.ok()) {
+                                    let path = FilesPath::new(entry.path());
+                                    let name = entry
+                                        .file_name()
+                                        .to_string_lossy()
+                                        .into_owned();
+                                    // entry.file_type() uses d_type from readdir —
+                                    // no stat call, very fast
+                                    let file_type = entry
+                                        .file_type()
+                                        .map(|t| {
+                                            if t.is_dir() {
+                                                FileType::Directory
+                                            } else {
+                                                FileType::File
+                                            }
+                                        })
+                                        .unwrap_or(FileType::File);
+                                    items.push(crate::domain::metadata::FileItem {
+                                        name,
+                                        path,
+                                        file_type,
+                                        size: 0,
+                                        is_hidden: false,
+                                        is_system: false,
+                                        modified: None,
+                                    });
+                                }
+                            }
+                            items
+                        }
+                    })
+                    .await;
 
+                let total_count = fast_items.len();
+                let item_paths: Vec<FilesPath> =
+                    fast_items.iter().map(|i| i.path.clone()).collect();
+
+                tracing::info!(
+                    "Phase 1: {} items listed instantly from {:?}",
+                    total_count,
+                    path_clone
+                );
+
+                // Show items immediately so the user sees content without delay
+                {
+                    let p1 = path_clone.clone();
                     this_weak
                         .update(&mut async_cx, |this, cx| {
-                            tracing::info!("Updating UI with {} items", items.len());
-                            this.state.main_view.items = items;
+                            this.state.main_view.items = fast_items;
                             // Sync file_items model for uniform_list closures
                             this.state.file_items.update(cx, |m, _| {
                                 m.items = this.state.main_view.items.clone();
-                                m.selected_indices = this.state.main_view.selected_indices.clone();
+                                m.selected_indices =
+                                    this.state.main_view.selected_indices.clone();
                             });
-                            this.state.main_view.primary_path = path_clone.clone();
-                            this.state.nav_bar.update_path(path_clone.clone());
-                            this.state.sidebar.set_active(&path_clone);
+                            this.state.main_view.primary_path = p1.clone();
+                            this.state.nav_bar.update_path(p1.clone());
+                            this.state.sidebar.set_active(&p1);
                             let folder_count = this
                                 .state
                                 .main_view
@@ -362,48 +408,134 @@ impl AppWindow {
                                 .iter()
                                 .filter(|i| matches!(i.file_type, FileType::Directory))
                                 .count();
-                            let file_count = this.state.main_view.items.len() - folder_count;
+                            let file_count =
+                                this.state.main_view.items.len() - folder_count;
                             this.state.status_bar.sync(
                                 this.state.main_view.items.len(),
                                 folder_count,
                                 file_count,
                             );
-                            // Update git info in status bar after loading items
                             this.state.status_bar.show_git_actions =
-                                GitService::is_repo(&path_clone);
-                            this.state.status_bar.git_branch = GitService::get_branch(&path_clone);
+                                GitService::is_repo(&p1);
+                            this.state.status_bar.git_branch =
+                                GitService::get_branch(&p1);
 
-                            // Trigger icon extraction for the new items
-                            this.load_icons(cx);
-
-                            cx.notify();
-                            // Sync cached icon paths for img() rendering
+                            // Sync cached icon paths so revisited folders show
+                            // thumbnails instantly (Phase 3 will trigger load_icons
+                            // for uncached items).
                             this.state.main_view.icon_paths = this
                                 .state
                                 .icon_cache
                                 .lock()
                                 .map(|cache| cache.clone())
                                 .unwrap_or_default();
+                            cx.notify();
                         })
                         .ok();
-                } else {
-                    tracing::error!("Failed to list directory: {:?}", path_clone);
                 }
-            })
-            .detach();
 
-        // Schedule a deferred re-render to pick up extracted icons (after ~5 seconds)
-        let timer_weak = cx.weak_entity();
-        let mut timer_cx = cx.to_async();
-        let timer = cx
-            .background_executor()
-            .timer(std::time::Duration::from_secs(5));
-        cx.foreground_executor()
-            .spawn(async move {
-                timer.await;
-                let _ = timer_weak.update(&mut timer_cx, |this, cx| {
-                    cx.notify();
-                });
+                // =================================================================
+                // PHASE 2: Enrich items with full metadata in background batches
+                // Each batch fetches size, modified, is_hidden, is_system via stat
+                // and updates the UI progressively.
+                // =================================================================
+                if !item_paths.is_empty() {
+                    let batch_size = 100;
+                    for chunk in item_paths.chunks(batch_size) {
+                        let chunk = chunk.to_vec();
+                        let enriched = async_cx
+                            .background_executor()
+                            .spawn(async move {
+                                let mut results: Vec<(
+                                    FilesPath,
+                                    u64,
+                                    Option<std::time::SystemTime>,
+                                    bool,
+                                    bool,
+                                )> = Vec::new();
+                                for path in &chunk {
+                                    if let Ok(meta) = std::fs::metadata(path.as_path()) {
+                                        let size = meta.len();
+                                        let modified = meta.modified().ok();
+                                        let mut is_hidden = false;
+                                        let mut is_system = false;
+                                        #[cfg(windows)]
+                                        {
+                                            use std::os::windows::fs::MetadataExt;
+                                            let attrs = meta.file_attributes();
+                                            is_hidden = (attrs
+                                                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0)
+                                                != 0;
+                                            is_system = (attrs
+                                                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0)
+                                                != 0;
+                                        }
+                                        results.push((
+                                            path.clone(),
+                                            size,
+                                            modified,
+                                            is_hidden,
+                                            is_system,
+                                        ));
+                                    }
+                                }
+                                results
+                            })
+                            .await;
+
+                        if !enriched.is_empty() {
+                            this_weak
+                                .update(&mut async_cx, |this, cx| {
+                                    for (path, size, modified, is_hidden, is_system) in
+                                        enriched
+                                    {
+                                        if let Some(item) = this
+                                            .state
+                                            .main_view
+                                            .items
+                                            .iter_mut()
+                                            .find(|i| i.path == path)
+                                        {
+                                            item.size = size;
+                                            item.modified = modified;
+                                            item.is_hidden = is_hidden;
+                                            item.is_system = is_system;
+                                        }
+                                    }
+                                    this.state.file_items.update(cx, |m, _| {
+                                        m.items = this.state.main_view.items.clone();
+                                    });
+                                    cx.notify();
+                                })
+                                .ok();
+                        }
+                    }
+                }
+
+                // =================================================================
+                // PHASE 3: Start icon extraction for all items
+                // =================================================================
+                {
+                    let p3 = path_clone.clone();
+                    this_weak
+                        .update(&mut async_cx, |this, cx| {
+                            tracing::info!(
+                                "Phase 3: Starting icon extraction for {} items in {:?}",
+                                this.state.main_view.items.len(),
+                                p3
+                            );
+                            this.load_icons(cx);
+                            // Re-sync icon cache (may have been populated by load_icons)
+                            this.state.main_view.icon_paths = this
+                                .state
+                                .icon_cache
+                                .lock()
+                                .map(|cache| cache.clone())
+                                .unwrap_or_default();
+                            cx.notify();
+                        })
+                        .ok();
+                }
             })
             .detach();
 
@@ -3045,6 +3177,24 @@ impl AppWindow {
             use crate::platform::windows::thumbnail_service::ThumbnailSize;
             use std::path::PathBuf;
 
+            // Determine which items are visible in the viewport so we prioritize them
+            let visible_start = self
+                .state
+                .main_view
+                .uniform_list_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .top_item();
+            let visible_end = self
+                .state
+                .main_view
+                .uniform_list_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .bottom_item();
+
             let icon_dir = icons_cache_dir();
             let items = self.state.main_view.items.clone();
             let thumbnail_service = self.state.thumbnail_service.clone();
@@ -3052,65 +3202,153 @@ impl AppWindow {
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
+            // Build a priority-ordered item list: visible items first, then the rest.
+            // Process ALL items so the persistent disk cache is fully populated —
+            // subsequent navigations to the same folder load cached thumbnails instantly.
+            let total = items.len();
+            let mut priority_items: Vec<usize> = (0..total).collect();
+            if visible_end > visible_start && visible_start < total {
+                // Rotate so visible range comes first
+                let end = visible_end.min(total);
+                let start = visible_start.min(total);
+                let visible_range: Vec<usize> = (start..end).collect();
+                let others: Vec<usize> = (0..start)
+                    .chain(end..total)
+                    .filter(|i| *i < total)
+                    .collect();
+                priority_items = visible_range.into_iter().chain(others).collect();
+            }
+
+            let batch_size = 25;
+
+            // Use foreground executor (no Send requirement) that delegates blocking
+            // extraction work to the background executor batch by batch.
             cx.foreground_executor()
                 .spawn(async move {
-                    // Initialize COM for Shell extraction
-                    let _com_init = unsafe {
-                        windows::Win32::System::Com::CoInitializeEx(
-                            None,
-                            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                        )
-                    };
+                    for chunk in priority_items.chunks(batch_size) {
+                        let chunk_vec = chunk.to_vec();
+                        // Clone only Send types for the background task
+                        let items_clone = items.clone();
+                        let thumb_clone = thumbnail_service.clone();
+                        let cache_clone = icon_cache.clone();
+                        let dir_clone = icon_dir.clone();
+                        let size = ThumbnailSize::Medium;
 
-                    let mut extracted_any = false;
-                    for item in items.iter().take(50) {
-                        let path = &item.path;
+                        // Blocking thumbnail extraction runs on background thread pool
+                        let batch = async_cx
+                            .background_executor()
+                            .spawn(async move {
+                                let _com_init = unsafe {
+                                    windows::Win32::System::Com::CoInitializeEx(
+                                        None,
+                                        windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                                    )
+                                };
 
-                        {
-                            if let Ok(cache) = icon_cache.lock() {
-                                if cache.contains_key(path) {
-                                    continue;
-                                }
-                            }
-                        }
+                                let mut batch_extracted = false;
+                                for &idx in &chunk_vec {
+                                    if idx >= items_clone.len() {
+                                        continue;
+                                    }
+                                    let item = &items_clone[idx];
+                                    let path = &item.path;
 
-                        let size = ThumbnailSize::Large;
-                        if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, size) {
-                            use image::{ImageBuffer, Rgba};
-                            let w = thumb.width;
-                            let h = thumb.height;
-                            if w > 0 && h > 0 && thumb.data.len() as u32 >= w * h * 4 {
-                                let mut rgba_data = thumb.data.clone();
-                                for chunk in rgba_data.chunks_exact_mut(4) {
-                                    chunk.swap(0, 2);
-                                }
-                                if let Some(img) =
-                                    ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data)
-                                {
-                                    let sanitized = path.to_string_lossy().replace(
-                                        |c: char| !c.is_alphanumeric() && c != '.' && c != '_',
-                                        "_",
-                                    );
-                                    let cache_path = icon_dir.join(format!("{}.png", sanitized));
-                                    if img.save(&cache_path).is_ok() {
-                                        if let Ok(mut cache) = icon_cache.lock() {
-                                            cache.insert(path.clone(), cache_path);
-                                            extracted_any = true;
+                                    {
+                                        if let Ok(cache) = cache_clone.lock() {
+                                            if cache.contains_key(path) {
+                                                continue;
+                                            }
+                                        }
+                                        // Check persistent disk cache — avoids expensive COM
+                                        // re-extraction for items already processed in a
+                                        // previous session. Populates in-memory cache so
+                                        // thumbnails appear instantly on fresh start.
+                                        let sanitized = path.to_string_lossy().replace(
+                                            |c: char| !c.is_alphanumeric()
+                                                && c != '.'
+                                                && c != '_',
+                                            "_",
+                                        );
+                                        let cached_png =
+                                            dir_clone.join(format!("{}.png", sanitized));
+                                        if cached_png.exists() {
+                                            if let Ok(mut cache) = cache_clone.lock() {
+                                                cache.insert(path.clone(), cached_png);
+                                                batch_extracted = true;
+                                            }
+                                            continue;
+                                        }
+                                    }
+
+                                    if let Ok(thumb) =
+                                        thumb_clone.extract_thumbnail(path, size)
+                                    {
+                                        use image::{ImageBuffer, Rgba};
+                                        let w = thumb.width;
+                                        let h = thumb.height;
+                                        if w > 0
+                                            && h > 0
+                                            && thumb.data.len() as u32 >= w * h * 4
+                                        {
+                                            let mut rgba_data = thumb.data.clone();
+                                            for ch in rgba_data.chunks_exact_mut(4) {
+                                                ch.swap(0, 2);
+                                            }
+                                            if let Some(img) =
+                                                ImageBuffer::<Rgba<u8>, _>::from_raw(
+                                                    w, h, rgba_data,
+                                                )
+                                            {
+                                                let sanitized =
+                                                    path.to_string_lossy().replace(
+                                                        |c: char| {
+                                                            !c.is_alphanumeric()
+                                                                && c != '.'
+                                                                && c != '_'
+                                                        },
+                                                        "_",
+                                                    );
+                                                let cache_path =
+                                                    dir_clone.join(format!(
+                                                        "{}.png",
+                                                        sanitized
+                                                    ));
+                                                if img.save(&cache_path).is_ok() {
+                                                    if let Ok(mut cache) =
+                                                        cache_clone.lock()
+                                                    {
+                                                        cache.insert(
+                                                            path.clone(),
+                                                            cache_path,
+                                                        );
+                                                        batch_extracted = true;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
+
+                                unsafe {
+                                    windows::Win32::System::Com::CoUninitialize();
+                                }
+
+                                batch_extracted
+                            })
+                            .await;
+
+                        // Back on foreground — update UI with extracted batch
+                        if batch {
+                            let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                                this.state.main_view.icon_paths = this
+                                    .state
+                                    .icon_cache
+                                    .lock()
+                                    .map(|cache| cache.clone())
+                                    .unwrap_or_default();
+                                cx.notify();
+                            });
                         }
-                    }
-
-                    if extracted_any {
-                        let _ = weak_entity.update(&mut async_cx, |_this, cx| {
-                            cx.notify();
-                        });
-                    }
-
-                    unsafe {
-                        windows::Win32::System::Com::CoUninitialize();
                     }
                 })
                 .detach();
@@ -3118,6 +3356,38 @@ impl AppWindow {
         #[cfg(not(windows))]
         {
             let _ = cx;
+        }
+    }
+
+    /// Check if visible viewport items lack icons, and if so, trigger
+    /// icon loading for them. Safe to call repeatedly — already-cached
+    /// icons are skipped.
+    pub fn refresh_icons_for_viewport(&mut self, cx: &mut Context<Self>) {
+        let (top, bottom) = {
+            let scroll = &self.state.main_view.uniform_list_scroll_handle;
+            let base = &scroll.0.borrow().base_handle;
+            (base.top_item(), base.bottom_item())
+        };
+        let items = &self.state.main_view.items;
+        let icon_paths = &self.state.main_view.icon_paths;
+        let limit = bottom.min(items.len().saturating_sub(1));
+
+        // Check if any visible items in the viewport still lack icons
+        let needs_reload = (top..=limit).any(|i| {
+            if i >= items.len() {
+                return false;
+            }
+            !icon_paths.contains_key(&items[i].path)
+        });
+
+        if needs_reload {
+            tracing::debug!(
+                "Viewport icons stale (viewport items {}..{}, total items {}), reloading",
+                top,
+                limit,
+                items.len()
+            );
+            self.load_icons(cx);
         }
     }
 
@@ -3295,16 +3565,21 @@ impl AppWindow {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Hover-to-open (1300ms timer for folders)
+    // Hover-to-preview tooltip (delayed appearance for files)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Hover time in milliseconds before opening a folder on hover
-    const HOVER_OPEN_DELAY_MS: u64 = 10_000_000; // Effectively disabled - 10M ms = ~3 hours
+    const HOVER_TOOLTIP_DELAY_MS: u64 = 350;
 
-    /// Start the hover timer for a folder item. After HOVER_OPEN_DELAY_MS, the folder will open.
-    /// Calling this again with a different index cancels the previous timer.
-    pub fn start_hover_timer(&mut self, index: usize, cx: &mut Context<Self>) {
-        // Don't start timer if in hover selection mode (that uses a different mechanism)
+    /// Start the hover timer for a file item. After HOVER_TOOLTIP_DELAY_MS,
+    /// the tooltip appears. Calling again with a different index cancels the
+    /// previous timer and restarts.
+    pub fn start_hover_timer(
+        &mut self,
+        index: usize,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        // Don't start if in hover selection mode
         if matches!(
             self.state.main_view.selection_mode,
             crate::ui::views::main_view::SelectionMode::HoverSelect
@@ -3312,61 +3587,69 @@ impl AppWindow {
             return;
         }
 
-        // Check if this is a directory - clone path before any mutable borrow
-        let item_path = {
+        // Validate item exists and is a file (not directory)
+        {
             let Some(item) = self.state.main_view.items.get(index) else {
                 return;
             };
-            if !matches!(item.file_type, FileType::Directory) {
+            if matches!(item.file_type, FileType::Directory) {
                 return;
             }
-            // If we're already tracking this item, don't restart the timer
+            // Already tracking this exact item - skip
             if self.hover_item_index == Some(index) {
                 return;
             }
-            item.path.clone()
-        };
+        }
 
-        // Stop any existing timer (uses mutable borrow)
-        self.stop_hover_timer();
+        // Cancel any previous hover timer — assignment drops the old task
+        self.hover_timer_task = None;
 
-        // Store the item index and start a new timer
+        // Store tracking state immediately
         self.hover_item_index = Some(index);
 
-        let timer = cx
-            .background_executor()
-            .timer(std::time::Duration::from_millis(Self::HOVER_OPEN_DELAY_MS));
-        let this_weak = cx.weak_entity();
-        let mut async_cx = cx.to_async();
-        let item_path_clone = item_path.clone();
+        let target_index = index;
+        let tooltip_pos = position;
+        let mut async_app = cx.to_async();
 
-        cx.foreground_executor()
-            .spawn(async move {
-                // Wait for the hover delay
-                timer.await;
+        let task = cx.spawn(move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+            // Wait for hover delay on background
+            async_app
+                .background_executor()
+                .timer(std::time::Duration::from_millis(Self::HOVER_TOOLTIP_DELAY_MS))
+                .await;
 
-                // Check if we're still hovering over the same item
-                if this_weak
-                    .update(&mut async_cx, |this, _cx| {
-                        this.hover_item_index == Some(index)
+            // Check if we're still hovering the same item
+            let still_hovering = this_weak
+                .update(&mut async_app, |this, _cx| {
+                    this.hover_item_index == Some(target_index)
+                })
+                .unwrap_or(false);
+
+            if still_hovering {
+                // Show file preview tooltip
+                this_weak
+                    .update(&mut async_app, |this, cx| {
+                        if let Some(item) = this.state.main_view.items.get(target_index) {
+                            this.hover_tooltip = Some(HoverTooltipData {
+                                position: tooltip_pos,
+                                item: item.clone(),
+                            });
+                            cx.notify();
+                        }
                     })
-                    .unwrap_or(false)
-                {
-                    // Navigate to the folder
-                    this_weak
-                        .update(&mut async_cx, |this, cx| {
-                            this.navigate(item_path_clone, cx);
-                            this.hover_item_index = None;
-                        })
-                        .ok();
-                }
-            })
-            .detach();
+                    .ok();
+            }
+        });
+
+        self.hover_timer_task = Some(task);
     }
 
-    /// Stop the hover timer. Called when the mouse leaves a folder item.
+    /// Stop the hover timer and clear the tooltip.
     pub fn stop_hover_timer(&mut self) {
+        // Drop the old task to cancel it
+        self.hover_timer_task = None;
         self.hover_item_index = None;
+        self.hover_tooltip = None;
     }
 
     pub fn bulk_rename(&mut self, cx: &mut Context<Self>) {
@@ -4460,6 +4743,202 @@ impl Render for AppWindow {
             }
         }
 
+        // Render file preview tooltip on hover (at app level, outside overflow containers)
+        if let Some(tip) = &self.hover_tooltip {
+            use crate::ui::views::helpers::format_size;
+            let item = &tip.item;
+            let pos = tip.position;
+
+            // ── Date formatting ──
+            let date_str = item
+                .modified
+                .as_ref()
+                .map(|t| {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let since_epoch = t
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let secs_per_day: u64 = 86400;
+                    let days = since_epoch / secs_per_day;
+                    let remaining = since_epoch % secs_per_day;
+                    let hours = remaining / 3600;
+                    let minutes = (remaining % 3600) / 60;
+                    let mut y = 2000i64;
+                    let mut d = days as i64 - (11017i64);
+                    loop {
+                        let days_in_year =
+                            if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+                        if d < days_in_year {
+                            break;
+                        }
+                        d -= days_in_year;
+                        y += 1;
+                    }
+                    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+                    let month_days = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+                    let mut m = 0usize;
+                    while d as u64 >= month_days[m] {
+                        d -= month_days[m] as i64;
+                        m += 1;
+                    }
+                    let day = d + 1;
+                    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m + 1, day, hours, minutes)
+                })
+                .unwrap_or_default();
+            let size_bytes = item.size;
+            let size_hr = format_size(size_bytes);
+
+            // ── File type string ──
+            let file_type_str = if matches!(item.file_type, FileType::Directory) {
+                "Folder".to_string()
+            } else {
+                let ext = item
+                    .name
+                    .rsplit('.')
+                    .next()
+                    .map(|e| e.to_uppercase())
+                    .unwrap_or_default();
+                if ext.is_empty() {
+                    "File".to_string()
+                } else {
+                    format!("{} File", ext)
+                }
+            };
+
+            // ── Determine if this is an image with a cached thumbnail ──
+            let extension = item
+                .name
+                .rsplit('.')
+                .next()
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
+            let image_exts = [
+                "jpg", "jpeg", "png", "gif", "bmp", "webp", "ico", "tiff", "tif", "heic", "heif",
+            ];
+            let is_image = image_exts.contains(&extension.as_str());
+            let thumbnail_path = if is_image {
+                self.state.main_view.icon_paths.get(&item.path).cloned()
+            } else {
+                None
+            };
+
+            // ── Tooltip sizing ──
+            let tooltip_w = 280.0;
+            let want_thumb_h = if thumbnail_path.is_some() { 110.0 } else { 0.0 };
+            // Approximate text block height: 13px title + 3×11px lines + margins ≈ 70px
+            let text_h = 70.0;
+            let tooltip_h = 20.0 + want_thumb_h + text_h; // padding + thumb + info
+
+            // ── Viewport-aware positioning ──
+            let win_bounds = _window.bounds();
+            let win_w = win_bounds.size.width;
+            let win_h = win_bounds.size.height;
+
+            // Preferred: tooltip to the RIGHT and ABOVE the cursor
+            let mut tx = pos.x + px(16.0);
+            let mut ty = pos.y - px(tooltip_h) - px(8.0);
+
+            // If tooltip would go off right edge, flip to left of cursor
+            if tx + px(tooltip_w) + px(12.0) > win_w {
+                tx = pos.x - px(tooltip_w) - px(16.0);
+            }
+            // Clamp left edge
+            if tx < px(8.0) {
+                tx = px(8.0);
+            }
+            // If tooltip would go off top edge, show below cursor
+            if ty < px(4.0) {
+                ty = pos.y + px(16.0);
+            }
+            // Clamp bottom edge
+            if ty + px(tooltip_h) + px(4.0) > win_h {
+                ty = (win_h - px(tooltip_h) - px(4.0)).max(px(4.0));
+            }
+
+            // ── Build tooltip element ──
+            let mut info_div = div()
+                .flex()
+                .flex_col();
+
+            // Add thumbnail image preview if available
+            if let Some(thumb_path) = &thumbnail_path {
+                info_div = info_div.child(
+                    div()
+                        .w_full()
+                        .h(px(want_thumb_h))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_b(px(1.0))
+                        .border_color(rgb(0x3A3A3A))
+                        .mb(px(6.0))
+                        .child(
+                            img(thumb_path.clone())
+                                .w(px(130.0))
+                                .h(px(want_thumb_h - 8.0))
+                                .object_fit(ObjectFit::Contain)
+                                .rounded(px(4.0)),
+                        ),
+                );
+            }
+
+            // File info text
+            info_div = info_div
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0xFFFFFF))
+                        .child(item.name.clone()),
+                )
+                .child(
+                    div()
+                        .mt(px(4.0))
+                        .text_size(px(11.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgb(0xAAAAAA))
+                        .child(format!("Type: {}", file_type_str)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgb(0xAAAAAA))
+                        .child(format!("Size: {} ({} bytes)", size_hr, size_bytes)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgb(0xAAAAAA))
+                        .child(format!("Date: {}", date_str)),
+                );
+
+            // Tooltip container with fade-in animation
+            let tooltip = div()
+                .absolute()
+                .left(tx)
+                .top(ty)
+                .w(px(tooltip_w))
+                .bg(rgb(0x2B2B2B))
+                .border(px(1.0))
+                .border_color(rgb(0x444444))
+                .rounded(px(8.0))
+                .py(px(10.0))
+                .px(px(12.0))
+                .overflow_hidden()
+                .child(info_div);
+
+            base = base.child(
+                tooltip.with_animation(
+                    "tooltip-fade",
+                    Animation::new(std::time::Duration::from_millis(120)),
+                    |elem, delta| elem.opacity(delta),
+                ),
+            );
+        }
         if state.show_shortcut_overlay {
             base = base.child(self.build_shortcut_overlay(cx));
         }
@@ -4469,6 +4948,32 @@ impl Render for AppWindow {
                 &state.splash_state,
                 cx.entity(),
             ));
+        }
+
+        // Opportunistic icon refresh check: if the viewport shows items
+        // without cached icons (e.g. after scrolling), schedule a load.
+        // This runs outside the render element tree and is idempotent.
+        if !self.state.main_view.items.is_empty()
+            && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
+        {
+            // Only check every ~500ms max to avoid hammering the executor
+            let now = std::time::Instant::now();
+            let last_check = self.state.main_view.icon_refresh_last_check;
+            let elapsed = last_check.map(|t| now - t).unwrap_or(std::time::Duration::MAX);
+            if elapsed > std::time::Duration::from_millis(500) {
+                self.state.main_view.icon_refresh_last_check = Some(now);
+                let mut trigger = cx.to_async();
+                let weak = cx.weak_entity();
+                // Defer to next tick to avoid side-effects inside render
+                cx.foreground_executor()
+                    .spawn(async move {
+                        weak.update(&mut trigger, |this, cx| {
+                            this.refresh_icons_for_viewport(cx);
+                        })
+                        .ok();
+                    })
+                    .detach();
+            }
         }
 
         base

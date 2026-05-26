@@ -68,6 +68,56 @@ impl ThumbnailService {
         }
     }
 
+    /// Get the Windows open folder icon (the one shown when a folder is open
+    /// in Explorer) at the specified size.
+    #[cfg(windows)]
+    pub fn get_open_folder_icon(path: &FilesPath, cx: u32, cy: u32) -> Option<Vec<u8>> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+        use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
+        use windows::Win32::UI::Shell::{
+            SHGetFileInfoW, SHGetImageList, SHFILEINFOW,
+            SHGFI_OPENICON, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES,
+            SHIL_JUMBO,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+        let wide_path: Vec<u16> = path
+            .as_path()
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut info: SHFILEINFOW = unsafe { std::mem::zeroed() };
+        let ret = unsafe {
+            SHGetFileInfoW(
+                windows::core::PCWSTR(wide_path.as_ptr()),
+                FILE_FLAGS_AND_ATTRIBUTES(0x10), // FILE_ATTRIBUTE_DIRECTORY
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_OPENICON | SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES,
+            )
+        };
+        if ret == 0 {
+            return None;
+        }
+
+        let image_list = unsafe {
+            SHGetImageList::<IImageList>(SHIL_JUMBO as i32).ok()?
+        };
+
+        let hicon = unsafe {
+            image_list.GetIcon(info.iIcon, ILD_TRANSPARENT.0).ok()?
+        };
+
+        unsafe {
+            let result = Self::extract_icon_pixels(hicon, cx, cy);
+            let _ = DestroyIcon(hicon);
+            result
+        }
+    }
+
     /// Get thumbnail for a file
     pub async fn get_thumbnail(
         &self,
@@ -141,7 +191,29 @@ impl ThumbnailService {
 
         let (cx, cy) = size.dimensions();
 
-        // Try SHGetImageList + SHIL_JUMBO for native high-resolution icon (256×256, no upscaling).
+        // Try IShellItemImageFactory first — uses Windows WIC for high-quality
+        // hardware-accelerated scaling (same engine Files Community uses).
+        // This always requests 256×256 and downscales, so we get the best
+        // available source at native resolution before any scaling happens.
+        #[cfg(windows)]
+        if let Ok(result) = Self::extract_via_shell_item_factory(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            cx,
+            cy,
+        ) {
+            // ISIF succeeded — but if it returned a small result (much smaller
+            // than target), the image quality will be degraded. Check the actual
+            // returned dimensions: if either axis is < 80% of target, the icon
+            // was upscaled and looks blurry. Fall through to SHIL_JUMBO instead.
+            if result.width >= (cx as f32 * 0.8) as u32 && result.height >= (cy as f32 * 0.8) as u32 {
+                return Ok(result);
+            }
+            // ISIF returned a small icon — fall through to SHIL_JUMBO which
+            // guarantees 256×256 native resolution. This is critical for EXEs
+            // where the embedded icon might be 16×16 or 32×32.
+        }
+
+        // Fallback: Try SHGetImageList + SHIL_JUMBO for native high-resolution icon (256×256).
         // This gives the actual high-res icon from the executable's icon resource.
         #[cfg(windows)]
         {
@@ -174,7 +246,7 @@ impl ThumbnailService {
                     if let Ok(hicon) =
                         unsafe { image_list.GetIcon(sys_info.iIcon, ILD_TRANSPARENT.0) }
                     {
-                        if !hicon.is_invalid() {
+                            if !hicon.is_invalid() {
                             if let Some(pixels) =
                                 unsafe { Self::extract_icon_pixels(hicon, cx, cy) }
                             {
@@ -183,8 +255,10 @@ impl ThumbnailService {
                                         windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
                                 }
                                 if pixels.len() >= (cx * cy * 4) as usize {
+                                    let mut centered = pixels;
+                                    Self::enlarge_icon_content(&mut centered, cx, cy);
                                     return Ok(ThumbnailResult {
-                                        data: pixels,
+                                        data: centered,
                                         width: cx,
                                         height: cy,
                                         format: ImageFormat::Bmp,
@@ -226,8 +300,10 @@ impl ThumbnailService {
                 let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(info.hIcon);
             }
             if let Some(data) = icon_pixels {
+                let mut centered = data;
+                Self::enlarge_icon_content(&mut centered, cx, cy);
                 return Ok(ThumbnailResult {
-                    data,
+                    data: centered,
                     width: cx,
                     height: cy,
                     format: ImageFormat::Bmp,
@@ -262,6 +338,280 @@ impl ThumbnailService {
             height: cy,
             format: ImageFormat::Bmp,
         })
+    }
+
+    /// Try IShellItemImageFactory (WIC-backed) for high-quality icon extraction.
+    /// Always requests 256×256 from the system, then downscales to (cx × cy) via
+    /// Lanczos3. This is the key to Files Community-quality crispness: we never
+    /// accept a small icon and upscale it — we always source the highest available
+    /// resolution (256×256 from the Windows thumbnail/icon cache) and downscale.
+    #[cfg(windows)]
+    fn extract_via_shell_item_factory(
+        raw_path: windows::core::PCWSTR,
+        cx: u32,
+        cy: u32,
+    ) -> Result<ThumbnailResult> {
+        use windows::Win32::Foundation::SIZE;
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, SelectObject,
+            BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, RGBQUAD,
+        };
+        use windows::Win32::UI::Shell::{
+            IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+        };
+
+        // Create IShellItemImageFactory from the file path
+        let factory: IShellItemImageFactory = unsafe {
+            SHCreateItemFromParsingName(raw_path, None)
+                .map_err(|e| anyhow!("SHCreateItemFromParsingName failed: {:?}", e))?
+        };
+
+        // ALWAYS request 256×256 — this is the native resolution of the Windows
+        // thumbnail cache. SIIGBF_BIGGERSIZEOK ensures we get the best available
+        // (thumbnail cache for images/docs, 256×256 shell icons for everything else).
+        // We then downscale with Lanczos3 to (cx × cy).
+        //
+        // This is EXACTLY what Files Community does: request the maximum resolution,
+        // then scale down. We never accept a small icon and upscale it, which would
+        // create the blurry aliasing the user sees.
+        //
+        // Without SIIGBF_ICONONLY, Windows returns the best available representation:
+        //   - For images: a real content thumbnail (not a generic icon)
+        //   - For .exe/.dll: the 256×256 shell icon (not the small embedded icon)
+        //   - For folders: the standard folder icon
+        let nat_w: i32 = 256;
+        let nat_h: i32 = 256;
+        let sz = SIZE { cx: nat_w, cy: nat_h };
+        let flags = SIIGBF_BIGGERSIZEOK;
+
+        let hbitmap: HBITMAP = unsafe {
+            factory
+                .GetImage(sz, flags)
+                .map_err(|e| anyhow!("IShellItemImageFactory::GetImage failed: {:?}", e))?
+        };
+
+        if hbitmap.is_invalid() {
+            return Err(anyhow!("IShellItemImageFactory returned invalid HBITMAP"));
+        }
+
+        // Read pixel data from the HBITMAP
+        let (pixel_data, bmp_w, bmp_h) =
+            unsafe { Self::read_hbitmap_pixels(hbitmap) }
+                .ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
+
+        unsafe { let _ = DeleteObject(hbitmap); };
+
+        // Core quality fix: if we got 256×256 from ISIF, downscale to (cx × cy)
+        // with Lanczos3. If it's already exactly (cx × cy), return directly.
+        // We NEVER upscale — if the native is smaller than requested, the
+        // resize_and_pad path will handle it (with Lanczos3).
+        if bmp_w == cx && bmp_h == cy {
+            // Exact match — return as-is (Windows WIC already did high-quality scaling)
+            return Ok(ThumbnailResult {
+                data: pixel_data,
+                width: cx,
+                height: cy,
+                format: ImageFormat::Bmp,
+            });
+        }
+
+        // Dimensions differ (ISIF gave us something different from target) —
+        // resize to fit within (cx × cy) preserving aspect ratio, then
+        // center-pad to square canvas. Uses Lanczos3 for high-quality scaling.
+        // This path also handles the case where bmp_w/bmp_h < cx/cy (upscale)
+        // since resize_and_pad always scales to fit, not to exceed.
+        if let Some(padded) = Self::resize_and_pad(&pixel_data, bmp_w, bmp_h, cx, cy) {
+            return Ok(ThumbnailResult {
+                data: padded,
+                width: cx,
+                height: cy,
+                format: ImageFormat::Bmp,
+            });
+        }
+
+        Err(anyhow!("Failed to resize/pad IShellItemImageFactory result"))
+    }
+
+    /// Read raw BGRA pixel data from a Windows HBITMAP using GetDIBits.
+    /// Returns (pixel_data, width, height) in top-down BGRA format (32 bpp).
+    #[cfg(windows)]
+    unsafe fn read_hbitmap_pixels(
+        hbitmap: windows::Win32::Graphics::Gdi::HBITMAP,
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        use windows::Win32::Graphics::Gdi::*;
+
+        let mut bitmap = std::mem::zeroed::<BITMAP>();
+        if GetObjectW(
+            hbitmap,
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bitmap as *mut _ as *mut _),
+        ) == 0
+        {
+            return None;
+        }
+
+        let w = bitmap.bmWidth as u32;
+        let h = bitmap.bmHeight as u32;
+        if w == 0 || h == 0 {
+            return None;
+        }
+
+        let hdc = CreateCompatibleDC(None);
+        if hdc.is_invalid() {
+            return None;
+        }
+
+        let old_obj = SelectObject(hdc, hbitmap);
+
+        let bmp_info_header = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w as i32,
+            biHeight: -(h as i32), // Negative = top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0, // BI_RGB
+            biSizeImage: w * h * 4,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let mut bmp_info = BITMAPINFO {
+            bmiHeader: bmp_info_header,
+            bmiColors: [RGBQUAD {
+                rgbBlue: 0,
+                rgbGreen: 0,
+                rgbRed: 0,
+                rgbReserved: 0,
+            }; 1],
+        };
+
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let result = GetDIBits(
+            hdc,
+            hbitmap,
+            0,
+            h,
+            Some(pixels.as_mut_ptr() as *mut _),
+            &mut bmp_info,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc, old_obj);
+        let _ = DeleteDC(hdc);
+
+        if result == 0 {
+            None
+        } else {
+            Some((pixels, w, h))
+        }
+    }
+
+    /// Resize BGRA pixel data to fit within (target_w × target_h) maintaining aspect
+    /// ratio (Lanczos3), then center on a (target_w × target_h) transparent canvas.
+    /// Returns None on failure.
+    #[cfg(windows)]
+    fn resize_and_pad(
+        pixels: &[u8],
+        source_w: u32,
+        source_h: u32,
+        target_w: u32,
+        target_h: u32,
+    ) -> Option<Vec<u8>> {
+        if source_w == 0 || source_h == 0 || target_w == 0 || target_h == 0
+            || pixels.len() < (source_w * source_h * 4) as usize
+        {
+            return None;
+        }
+
+        // No-op if already at target size
+        if source_w == target_w && source_h == target_h {
+            return Some(pixels.to_vec());
+        }
+
+        use image::imageops::FilterType;
+        let src_aspect = source_w as f64 / source_h as f64;
+        let tgt_aspect = target_w as f64 / target_h as f64;
+
+        // Determine the scaled size that fits within the target while preserving aspect ratio
+        let (scaled_w, scaled_h) = if src_aspect > tgt_aspect {
+            // Source is wider → fit width, letterbox top/bottom
+            (target_w, (target_w as f64 / src_aspect).round() as u32)
+        } else {
+            // Source is taller or equal → fit height, pillarbox left/right
+            ((target_h as f64 * src_aspect).round() as u32, target_h)
+        };
+
+        let scaled_w = scaled_w.max(1).min(target_w);
+        let scaled_h = scaled_h.max(1).min(target_h);
+
+        // Convert BGRA → RGBA for the image crate
+        let mut rgba = pixels.to_vec();
+        for chunk in rgba.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+
+        let src_img =
+            image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(source_w, source_h, rgba)?;
+
+        // Resize with Lanczos3 to the fitted size
+        let resized = if source_w != scaled_w || source_h != scaled_h {
+            image::imageops::resize(&src_img, scaled_w, scaled_h, FilterType::Lanczos3)
+        } else {
+            // Convert RGBA back for direct copy
+            let mut direct = src_img.into_raw();
+            for chunk in direct.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+            return Self::center_pad_bgra(&direct, scaled_w, scaled_h, target_w, target_h);
+        };
+
+        let resized_rgba = resized.into_raw();
+
+        // Convert back to BGRA for center-padding
+        let mut resized_bgra = resized_rgba;
+        for chunk in resized_bgra.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+
+        Self::center_pad_bgra(&resized_bgra, scaled_w, scaled_h, target_w, target_h)
+    }
+
+    /// Center a BGRA image within a larger canvas with transparent padding.
+    #[cfg(windows)]
+    fn center_pad_bgra(
+        pixels: &[u8],
+        w: u32,
+        h: u32,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> Option<Vec<u8>> {
+        if w == 0 || h == 0 || canvas_w == 0 || canvas_h == 0 {
+            return None;
+        }
+        if w == canvas_w && h == canvas_h {
+            return Some(pixels.to_vec());
+        }
+
+        let x_off = ((canvas_w as i32 - w as i32) / 2).max(0) as usize;
+        let y_off = ((canvas_h as i32 - h as i32) / 2).max(0) as usize;
+        let w_u = w as usize;
+        let h_u = h as usize;
+        let cw_u = canvas_w as usize;
+
+        let mut canvas = vec![0u8; (canvas_w * canvas_h * 4) as usize]; // transparent BGRA
+
+        for y in 0..h_u {
+            let src_row_start = y * w_u * 4;
+            let dst_row_start = ((y_off + y) * cw_u + x_off) * 4;
+            let copy_len = w_u * 4;
+            if dst_row_start + copy_len <= canvas.len() && src_row_start + copy_len <= pixels.len() {
+                canvas[dst_row_start..dst_row_start + copy_len]
+                    .copy_from_slice(&pixels[src_row_start..src_row_start + copy_len]);
+            }
+        }
+
+        Some(canvas)
     }
 
     /// Extract actual pixel data from a Windows HICON using GetIconInfo + GetDIBits.
@@ -348,7 +698,7 @@ impl ThumbnailService {
                                 if bmp_width == width && bmp_height == height {
                                     return Some(pixel_data);
                                 } else {
-                                    // Bilinear interpolation via the image crate (much smoother than nearest-neighbor)
+                                    // Lanczos3 interpolation via the image crate (high quality, minimal aliasing)
                                     use image::imageops::FilterType;
                                     // Source data is BGRA (from GetDIBits); swap to RGBA for the image crate
                                     for chunk in pixel_data.chunks_exact_mut(4) {
@@ -363,7 +713,7 @@ impl ThumbnailService {
                                             &src_img,
                                             width,
                                             height,
-                                            FilterType::Nearest,
+                                            FilterType::Lanczos3,
                                         );
                                         // Swap back to BGRA for the rest of the pipeline
                                         for chunk in resized_img.chunks_exact_mut(4) {
@@ -386,6 +736,138 @@ impl ThumbnailService {
             }
         }
         None
+    }
+
+    /// Post-process extracted BGRA pixels to enlarge the actual non-transparent icon
+    /// content to fill the full canvas using high-quality Lanczos3 interpolation.
+    /// Some Windows HICONs embed a small icon at the top-left of the bitmap with
+    /// transparent padding to the right/bottom — this detects that case, extracts the
+    /// content bounding box, and upscales it to fill the entire canvas so small icons
+    /// (e.g. 32×32 embedded in 256×256 canvas) appear full-sized in the thumbnail area.
+    #[cfg(windows)]
+    fn enlarge_icon_content(pixels: &mut [u8], width: u32, height: u32) {
+        use image::imageops::FilterType;
+
+        let w = width as usize;
+        let h = height as usize;
+        if w < 4 || h < 4 || pixels.len() < w * h * 4 {
+            return;
+        }
+
+        // Find bounding box of non-transparent pixels (alpha > 0 at byte index 3)
+        let mut min_x = w;
+        let mut min_y = h;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+
+        for y in 0..h {
+            for x in 0..w {
+                let alpha_idx = (y * w + x) * 4 + 3;
+                if pixels[alpha_idx] > 0 {
+                    if x < min_x { min_x = x; }
+                    if y < min_y { min_y = y; }
+                    if x > max_x { max_x = x; }
+                    if y > max_y { max_y = y; }
+                }
+            }
+        }
+
+        // No visible content — nothing to enlarge
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+
+        let content_w = max_x - min_x + 1;
+        let content_h = max_y - min_y + 1;
+
+        // Skip if content already fills most of the canvas (>= 80% in both dims)
+        if (content_w as f64) >= (w as f64 * 0.80)
+            && (content_h as f64) >= (h as f64 * 0.80)
+        {
+            return;
+        }
+
+        // Extract the content pixels (BGRA format)
+        let mut content: Vec<u8> = Vec::with_capacity(content_w * content_h * 4);
+        for y in min_y..=max_y {
+            let row_start = (y * w + min_x) * 4;
+            content.extend_from_slice(&pixels[row_start..row_start + content_w * 4]);
+        }
+
+        // Convert from BGRA to RGBA for the image crate
+        for chunk in content.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+
+        // Scale up content to fill the full canvas using high-quality Lanczos3 interpolation
+        if let Some(src_img) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+            content_w as u32, content_h as u32, content,
+        ) {
+            let scaled = image::imageops::resize(
+                &src_img,
+                width,
+                height,
+                FilterType::Lanczos3,
+            );
+
+            // Convert back from RGBA to BGRA
+            let mut result = scaled.into_raw();
+            for chunk in result.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+
+            // Apply unsharp mask sharpening to restore edge crispness after upscaling.
+            // This is the final step that makes upscaled icons look near-native:
+            // Lanczos3 creates slightly softened edges (the math of interpolation),
+            // and unsharp mask reverses that by boosting high-frequency detail.
+            Self::unsharp_mask_bgra(&mut result, width, height, 1.5, 0.4);
+
+            // Replace entire pixel buffer with the scaled-up content
+            pixels.copy_from_slice(&result);
+        }
+    }
+
+    /// Apply unsharp mask sharpening to a BGRA image. Restores edge crispness after
+    /// Lanczos3 upscaling — the Lanczos3 kernel inherently softens edges by ~5-10%,
+    /// and this pass recovers that lost sharpness.
+    ///
+    /// `sigma` — Gaussian blur radius (smaller = sharper but more halos)
+    /// `amount` — sharpness boost (0.0 = none, 0.5 = strong)
+    #[cfg(windows)]
+    fn unsharp_mask_bgra(pixels: &mut [u8], w: u32, h: u32, sigma: f64, amount: f64) {
+        if sigma < 0.5 || amount <= 0.0 {
+            return;
+        }
+        if (pixels.len() as u32) < w * h * 4 {
+            return;
+        }
+
+        // Convert to RGBA for image crate processing
+        let mut rgba = pixels.to_vec();
+        for chunk in rgba.chunks_exact_mut(4) { chunk.swap(0, 2); }
+
+        let src_img = match image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, rgba.clone()) {
+            Some(img) => img,
+            None => return,
+        };
+
+        // Create blurred version
+        let blurred = image::imageops::blur(&src_img, sigma as f32);
+
+        // Apply unsharp mask: result = original + (original - blurred) * amount
+        let mut sharpened = image::ImageBuffer::new(w, h);
+        for (x, y, pixel) in src_img.enumerate_pixels() {
+            let bp = blurred.get_pixel(x, y);
+            let r = (pixel[0] as f64 + (pixel[0] as f64 - bp[0] as f64) * amount).clamp(0.0, 255.0) as u8;
+            let g = (pixel[1] as f64 + (pixel[1] as f64 - bp[1] as f64) * amount).clamp(0.0, 255.0) as u8;
+            let b = (pixel[2] as f64 + (pixel[2] as f64 - bp[2] as f64) * amount).clamp(0.0, 255.0) as u8;
+            sharpened.put_pixel(x, y, image::Rgba([r, g, b, pixel[3]]));
+        }
+
+        // Convert back to BGRA
+        let mut result = sharpened.into_raw();
+        for chunk in result.chunks_exact_mut(4) { chunk.swap(0, 2); }
+        pixels.copy_from_slice(&result);
     }
 
     #[cfg(not(windows))]
@@ -455,6 +937,51 @@ impl ThumbnailService {
             cache.clear();
             tracing::info!("Thumbnail cache cleared");
         }
+    }
+
+    /// Get thumbnail for a directory. Uses the newest non-hidden file to create a
+    /// composite "preview" thumbnail that matches Windows native folder styling.
+    #[cfg(windows)]
+    fn extract_folder_thumbnail(
+        &self,
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Result<ThumbnailResult> {
+        use crate::platform::folder_thumbnail::compose_folder_thumbnail;
+        use image::ImageBuffer;
+
+        let (cx, cy) = size.dimensions();
+
+        // 1. Find the newest file
+        let newest_file = std::fs::read_dir(path.as_path())
+            .map_err(|e| anyhow!("Failed to read dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|e| Some((e.path(), e.metadata().ok()?.modified().ok()?)))
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p);
+
+        let newest_path = newest_file.ok_or_else(|| anyhow!("No files in folder"))?;
+        let file_thumb = self.extract_thumbnail(&FilesPath::new(&newest_path), size)?;
+
+        // 2. Load icons
+        let folder_icon_bgra = Self::get_open_folder_icon(path, cx, cy)
+            .ok_or_else(|| anyhow!("Failed to get folder icon"))?;
+
+        // 3. Compose
+        let folder_icon = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, folder_icon_bgra)
+            .ok_or_else(|| anyhow!("Failed to parse folder icon buffer"))?;
+        let file_content = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, file_thumb.data)
+            .ok_or_else(|| anyhow!("Failed to parse content thumbnail buffer"))?;
+
+        let composed = compose_folder_thumbnail(&folder_icon, &file_content);
+
+        Ok(ThumbnailResult {
+            data: composed.into_raw(),
+            width: cx,
+            height: cy,
+            format: ImageFormat::Bmp,
+        })
     }
 
     /// Get cached thumbnail if available

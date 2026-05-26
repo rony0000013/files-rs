@@ -44,26 +44,29 @@ impl MainViewState {
         };
 
         // Tile size: small (compact) to large (cards)
-        let item_width = 60.0 + zoom * 140.0; // 60 → 200
-        let item_height = item_width + 24.0;
+        // Files Community style: card has landscape thumbnail area + filename below
+        let item_width = 80.0 + zoom * 140.0; // 80 → 220
+        let thumb_height = item_width * 0.85; // ~5:6 portrait-ish thumbnail area
+        let item_height = thumb_height + 65.0; // thumbnail + space for 3-line filename
         let row_height = item_height + 8.0;
-        let icon_size = item_width * 0.6;
+        // Thumbnail icon fits inside the thumbnail container
+        let icon_size = thumb_height * 0.80;
         let gap = if zoom < 0.33 {
             6.0
         } else if zoom < 0.66 {
-            8.0
+            10.0
         } else {
-            12.0
+            14.0
         };
         let rounded = if zoom < 0.33 {
-            2.0
+            3.0
         } else if zoom < 0.66 {
-            4.0
+            6.0
         } else {
-            8.0
+            10.0
         };
-        let text_size = (item_width / 8.0).clamp(9.0, 13.0);
-        let padding = if zoom < 0.33 { 8.0 } else { 12.0 };
+        let text_size = (item_width / 8.0).clamp(10.0, 13.0);
+        let padding = if zoom < 0.33 { 10.0 } else { 14.0 };
 
         GridLayoutParams {
             items_per_row,
@@ -347,6 +350,7 @@ impl MainViewState {
         let cached_icon_path: Option<std::path::PathBuf> = icon_paths.get(&item_path).cloned();
 
         let item_width = params.item_width;
+        let thumb_height = item_width * 0.85;
         let item_height = if compact {
             params.item_height - 8.0
         } else {
@@ -365,7 +369,7 @@ impl MainViewState {
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
-                .py(px(item_width * 0.25))
+                .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
                 .border(px(if selected { 2.0 } else { 1.5 }))
@@ -447,14 +451,14 @@ impl MainViewState {
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |_, _, cx| {
+                    move |ev, _, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
                             });
-                        } else if is_dir {
+                        } else {
                             v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, cx);
+                                this.start_hover_timer(index, ev.position, cx);
                             });
                         }
                     }
@@ -462,25 +466,49 @@ impl MainViewState {
                 .on_mouse_up_out(MouseButton::Left, {
                     let v_timer = v_timer.clone();
                     move |_, _, cx| {
-                        v_timer.update(cx, |this, cx| {
+                        v_timer.update(cx, |this, _cx| {
                             this.stop_hover_timer();
                         });
                     }
                 })
+                .on_hover({
+                    let v = view.clone();
+                    move |hovered, _, cx| {
+                        if !hovered {
+                            v.update(cx, |this, _cx| {
+                                this.stop_hover_timer();
+                            });
+                        }
+                    }
+                })
                 .child(
-                    img(item_path.as_path().to_path_buf())
-                        .w(px(icon_size_val))
-                        .h(px(icon_size_val))
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .rounded(px(rounded)),
+                    // Thumbnail container with fixed aspect ratio
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(thumb_height))
+                        .child(
+                            img(if let Some(p) = &cached_icon_path {
+                                p.clone()
+                            } else {
+                                item_path.as_path().to_path_buf()
+                            })
+                            .w(px(icon_size_val))
+                            .h(px(icon_size_val))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .rounded(px(rounded)),
+                        ),
                 )
                 .child(
+                    // 3-line filename below the thumbnail
                     div()
                         .w_full()
                         .px(px(4.0))
-                        .mt(px(4.0))
+                        .mt(px(3.0))
                         .text_center()
-                        .overflow_hidden()
+                        .line_clamp(3)
                         .text_size(px(text_size))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
@@ -504,7 +532,7 @@ impl MainViewState {
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
-                .py(px(item_width * 0.25))
+                .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
                 .border(px(if selected { 2.0 } else { 1.5 }))
@@ -587,14 +615,14 @@ impl MainViewState {
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |_, _, cx| {
+                    move |ev, _, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
                             });
-                        } else if is_dir {
+                        } else {
                             v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, cx);
+                                this.start_hover_timer(index, ev.position, cx);
                             });
                         }
                     }
@@ -602,42 +630,106 @@ impl MainViewState {
                 .on_mouse_up_out(MouseButton::Left, {
                     let v_timer = v_timer.clone();
                     move |_, _, cx| {
-                        v_timer.update(cx, |this, cx| {
+                        v_timer.update(cx, |this, _cx| {
                             this.stop_hover_timer();
                         });
                     }
                 })
-                .child(div().flex().items_center().justify_center().w_full().child(
-                    if let Some(icon_path) = &cached_icon_path {
-                        img(icon_path.clone())
-                            .w(px(icon_size_val))
-                            .h(px(icon_size_val))
-                            .object_fit(gpui::ObjectFit::Contain)
-                            .into_any_element()
-                    } else {
-                        div()
-                            .text_size(px(icon_size_val * 0.8))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(if is_dir {
-                                rgba(UiConstants::ACCENT_RGBA)
-                            } else {
-                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                            })
-                            .child(file_icon)
-                            .into_any_element()
-                    },
-                ))
+                .on_hover({
+                    let v = view.clone();
+                    move |hovered, _, cx| {
+                        if !hovered {
+                            v.update(cx, |this, _cx| {
+                                this.stop_hover_timer();
+                            });
+                        }
+                    }
+                })
                 .child(
+                    // Thumbnail container — icons fill the full space, centered
                     div()
                         .w_full()
-                        .px(px(2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(thumb_height))
+                        .child(
+                            if let Some(icon_path) = &cached_icon_path {
+                                // Wrap img in a sized div so explicit dimensions survive
+                                // type erasure (into_any_element) and flex centering works.
+                                div()
+                                    .w(px(thumb_height))
+                                    .h(px(thumb_height))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        img(icon_path.clone())
+                                            .w_full()
+                                            .h_full()
+                                            .object_fit(gpui::ObjectFit::Contain)
+                                            .rounded(px(rounded)),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                // Render MDL2 font icon centered in the full container
+                                div()
+                                    .w_full()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(thumb_height))
+                                            .font_family(UiConstants::FONT_MDL2)
+                                            .text_color(if is_dir {
+                                                rgba(UiConstants::ACCENT_RGBA)
+                                            } else {
+                                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                            })
+                                            .child(file_icon),
+                                    )
+                                    .into_any_element()
+                            },
+                        ),
+                )
+                .child(
+                    // 3-line filename below the icon
+                    div()
+                        .w_full()
+                        .px(px(4.0))
+                        .mt(px(2.0))
                         .text_center()
+                        .line_clamp(3)
                         .text_size(px(text_size))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .overflow_hidden()
                         .child(item_name.clone()),
                 )
         }
+    }
+}
+
+/// Shorten a filename with middle ellipsis so the first characters
+/// and the extension remain visible, e.g. "long_docu...nt.pdf"
+pub fn shorten_filename_middle(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
+    }
+    // Find the last extension dot
+    if let Some(dot) = name.rfind('.') {
+        let base = &name[..dot];
+        let ext = &name[dot..]; // includes "."
+        let ext_visible = if ext.len() > 8 { 8 } else { ext.len() };
+        let base_max = max_len.saturating_sub(3 + ext_visible);
+        if base_max > 0 && base.len() > base_max {
+            format!("{}...{}", &base[..base_max], ext)
+        } else {
+            format!("{}...", &name[..max_len.saturating_sub(3)])
+        }
+    } else {
+        // No extension — just truncate end
+        format!("{}...", &name[..max_len.saturating_sub(3)])
     }
 }
 

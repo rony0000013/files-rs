@@ -65,6 +65,8 @@ impl MainViewState {
             zoom_level: zoom_for_view_mode(&view_mode),
             scroll_handle: ScrollHandle::new(),
             uniform_list_scroll_handle: UniformListScrollHandle::new(),
+            last_empty_click: None,
+            icon_refresh_last_check: None,
         }
     }
 
@@ -1490,6 +1492,49 @@ impl MainView {
             } else {
                 rgba(UiConstants::BG_INACTIVE_PANE_RGBA)
             }) // Dim if inactive
+            // Double-click empty space → navigate backward
+            // Checks click position against visible item bounds to avoid
+            // triggering when clicking on file/folder items.
+            .on_mouse_down(MouseButton::Left, {
+                let v = view.clone();
+                move |ev, _, cx| {
+                    v.update(cx, |this, cx| {
+                        let pos = ev.position;
+
+                        // Check if click hit any visible file item (drop RefCell borrow quickly)
+                        let on_item = {
+                            let scroll = &this.state.main_view.uniform_list_scroll_handle;
+                            let base = &scroll.0.borrow().base_handle;
+                            (base.top_item()..=base.bottom_item()).any(|i| {
+                                base.bounds_for_item(i)
+                                    .map(|b| b.contains(&pos))
+                                    .unwrap_or(false)
+                            })
+                        };
+
+                        if on_item {
+                            // Click was on an item — clear any pending empty-space back
+                            this.state.main_view.last_empty_click = None;
+                            return;
+                        }
+
+                        // Click was on empty space — check for double-click
+                        let now = std::time::Instant::now();
+                        let is_double_click = this
+                            .state
+                            .main_view
+                            .last_empty_click
+                            .map(|t| now - t < std::time::Duration::from_millis(500))
+                            .unwrap_or(false);
+                        if is_double_click {
+                            this.state.main_view.last_empty_click = None;
+                            this.navigate_back(cx);
+                        } else {
+                            this.state.main_view.last_empty_click = Some(now);
+                        }
+                    });
+                }
+            })
             .child(Self::filter_header(state, view.clone()))
             .child(
                 div()
@@ -3126,15 +3171,14 @@ impl MainView {
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |_, _, cx| {
+                    move |ev, _, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
                             });
-                        } else if is_dir {
-                            // Hover-to-open: start timer when hovering over a folder
+                        } else {
                             v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, cx);
+                                this.start_hover_timer(index, ev.position, cx);
                             });
                         }
                     }
@@ -3266,15 +3310,14 @@ impl MainView {
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |_, _, cx| {
+                    move |ev, _, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
                             });
-                        } else if is_dir {
-                            // Hover-to-open: start timer when hovering over a folder
+                        } else {
                             v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, cx);
+                                this.start_hover_timer(index, ev.position, cx);
                             });
                         }
                     }
@@ -4481,6 +4524,7 @@ mod tests {
             size: 1024,
             is_hidden: false,
             is_system: false,
+            modified: None,
         }
     }
 

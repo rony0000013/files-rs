@@ -1,5 +1,6 @@
 pub mod linux;
 pub mod macos;
+pub mod folder_thumbnail;
 pub mod windows;
 
 #[cfg(target_os = "windows")]

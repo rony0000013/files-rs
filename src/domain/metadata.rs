@@ -16,6 +16,7 @@ pub struct FileItem {
     pub size: u64,
     pub is_hidden: bool,
     pub is_system: bool,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 pub struct MetadataExtractor;

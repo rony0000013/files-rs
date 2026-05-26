@@ -53,17 +53,23 @@ impl StorageService for LocalFileSystem {
             return Ok(items); // Return empty rather than erroring
         }
 
-        for entry in jwalk::WalkDir::new(path.as_path())
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            match self.get_metadata(&FilesPath::new(entry.path())).await {
-                Ok(item) => items.push(item),
-                Err(e) => {
-                    tracing::warn!("Skipping entry {:?}: {}", entry.path(), e);
-                    continue;
+        // Use std::fs::read_dir (not jwalk) for flat listings — much faster on WSL
+        // because DirEntry::metadata() reuses the directory handle, halving syscalls.
+        match std::fs::read_dir(path.as_path()) {
+            Ok(rd) => {
+                for entry in rd.filter_map(|e| e.ok()) {
+                    let path = FilesPath::new(entry.path());
+                    match get_metadata_from_entry(&entry, &path).await {
+                        Ok(item) => items.push(item),
+                        Err(e) => {
+                            tracing::warn!("Skipping entry {:?}: {}", path, e);
+                            continue;
+                        }
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read directory {:?}: {}", path, e);
             }
         }
         Ok(items)
@@ -85,23 +91,13 @@ impl StorageService for LocalFileSystem {
 
         #[cfg(windows)]
         {
-            use std::os::windows::ffi::OsStrExt;
-            use windows::Win32::Storage::FileSystem::{
-                GetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM,
-            };
+            use std::os::windows::fs::MetadataExt;
 
-            let wide_path: Vec<u16> = path
-                .as_path()
-                .as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            let attrs = unsafe { GetFileAttributesW(windows::core::PCWSTR(wide_path.as_ptr())) };
-
-            if attrs != u32::MAX {
-                is_hidden = (attrs & FILE_ATTRIBUTE_HIDDEN.0) != 0;
-                is_system = (attrs & FILE_ATTRIBUTE_SYSTEM.0) != 0;
-            }
+            let attrs = meta.file_attributes();
+            is_hidden =
+                (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
+            is_system =
+                (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
         }
 
         Ok(StorableItem {
@@ -300,4 +296,47 @@ impl FileOperationService for WindowsFileOperationService {
             "Windows shortcut creation (.lnk) requires COM IShellLink implementation"
         ))
     }
+}
+
+/// Optimized metadata extraction from a DirEntry — avoids a separate stat syscall
+/// by using the handle already opened during read_dir.
+async fn get_metadata_from_entry(
+    entry: &std::fs::DirEntry,
+    path: &FilesPath,
+) -> Result<StorableItem> {
+    let meta = entry.metadata()?;
+    let file_type = if meta.is_dir() {
+        FileType::Directory
+    } else if meta.is_symlink() {
+        FileType::Symlink
+    } else {
+        FileType::File
+    };
+
+    let mut is_hidden = false;
+    let mut is_system = false;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        // file_attributes() comes from the same metadata() call above — no extra syscall
+        let attrs = meta.file_attributes();
+        is_hidden =
+            (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
+        is_system =
+            (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
+    }
+
+    Ok(StorableItem {
+        path: path.clone(),
+        metadata: FileMetadata {
+            size: meta.len(),
+            created: meta.created().ok(),
+            modified: meta.modified().ok(),
+            file_type,
+            is_hidden,
+            is_system,
+        },
+    })
 }

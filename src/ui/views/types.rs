@@ -587,6 +587,12 @@ pub struct MainViewState {
     /// Scroll handle for uniform_list (runtime-only, not persisted)
     #[serde(skip)]
     pub uniform_list_scroll_handle: UniformListScrollHandle,
+    /// Timestamp of last click on empty space (for double-click → navigate_back detection)
+    #[serde(skip)]
+    pub last_empty_click: Option<std::time::Instant>,
+    /// Last check timestamp for viewport-based icon refresh (debounce guard)
+    #[serde(skip)]
+    pub icon_refresh_last_check: Option<std::time::Instant>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
