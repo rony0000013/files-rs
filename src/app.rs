@@ -1485,12 +1485,27 @@ impl AppWindow {
 
     pub fn rename_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(&first_selected) = self.state.main_view.selected_indices.iter().next() {
-            let item = &self.state.main_view.items[first_selected];
-            self.state.active_dialog = Some(DialogType::Rename {
-                item_index: first_selected,
-                current_name: item.name.clone(),
-            });
-            cx.notify();
+            self.start_rename(first_selected, cx);
+        }
+    }
+
+    pub fn share_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(&idx) = self.state.main_view.selected_indices.iter().next() {
+            if let Some(item) = self.state.main_view.items.get(idx) {
+                let share_path = item.path.clone();
+                #[cfg(windows)]
+                {
+                    cx.background_executor().spawn(async move {
+                        let service = crate::platform::windows::share_service::ShareService::new();
+                        let _ = service.share_file(0, &share_path).await;
+                    }).detach();
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = share_path;
+                    tracing::info!("Share not implemented on this platform");
+                }
+            }
         }
     }
 
@@ -3099,6 +3114,26 @@ impl AppWindow {
         cx.notify();
     }
 
+    pub fn confirm_add_item(&mut self, cx: &mut Context<Self>) {
+        if let Some(DialogType::AddItem { is_folder, name }) = self.state.active_dialog.clone() {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                let mut target_path = self.state.main_view.primary_path.as_path().to_path_buf();
+                target_path.push(trimmed);
+                if is_folder {
+                    let _ = std::fs::create_dir_all(&target_path);
+                } else {
+                    let _ = std::fs::write(&target_path, b"");
+                }
+                // Refresh directory
+                let current_path = self.state.main_view.primary_path.clone();
+                self.navigate(current_path, cx);
+            }
+        }
+        self.state.active_dialog = None;
+        cx.notify();
+    }
+
     pub fn open_zoom_slider(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
         use crate::ui::components::dialogs::DialogType;
         // Reset any stale drag state from a previous incomplete drag
@@ -4397,6 +4432,68 @@ impl Render for AppWindow {
                                             keystroke,
                                         );
                                     view.update(cx, |this, cx| {
+                                        use crate::ui::components::dialogs::DialogType;
+
+                                        // Intercept AddItem dialog input typing
+                                        if let Some(DialogType::AddItem { ref mut name, .. }) = this.state.active_dialog {
+                                            let key = keystroke.key.as_str();
+                                            match key {
+                                                "escape" | "Escape" => {
+                                                    this.close_dialog(cx);
+                                                }
+                                                "enter" | "return" | "Enter" | "Return" => {
+                                                    this.confirm_add_item(cx);
+                                                }
+                                                "backspace" | "Backspace" => {
+                                                    name.pop();
+                                                    cx.notify();
+                                                }
+                                                "space" | "Space" => {
+                                                    name.push(' ');
+                                                    cx.notify();
+                                                }
+                                                _ => {
+                                                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                                                        if keystroke.key.chars().count() == 1 {
+                                                            name.push_str(&keystroke.key);
+                                                            cx.notify();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            return;
+                                        }
+
+                                        // Intercept inline renaming input typing
+                                        if this.state.main_view.renaming_index.is_some() {
+                                            let key = keystroke.key.as_str();
+                                            match key {
+                                                "escape" | "Escape" => {
+                                                    this.cancel_rename(cx);
+                                                }
+                                                "enter" | "return" | "Enter" | "Return" => {
+                                                    this.commit_rename(cx);
+                                                }
+                                                "backspace" | "Backspace" => {
+                                                    this.state.main_view.rename_text.pop();
+                                                    cx.notify();
+                                                }
+                                                "space" | "Space" => {
+                                                    this.state.main_view.rename_text.push(' ');
+                                                    cx.notify();
+                                                }
+                                                _ => {
+                                                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                                                        if keystroke.key.chars().count() == 1 {
+                                                            this.state.main_view.rename_text.push_str(&keystroke.key);
+                                                            cx.notify();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            return;
+                                        }
+
                                         if let Some(action) =
                                             this.state.action_registry.lookup(&key_combo)
                                         {
@@ -4577,6 +4674,19 @@ impl Render for AppWindow {
                                                                 cx.notify();
                                                             }
                                                         }
+                                                        if let (Some(start_x), Some(start_width)) = (
+                                                            this.state.main_view.side_pane_resize_start_x,
+                                                            this.state.main_view.side_pane_resize_start_width,
+                                                        ) {
+                                                            let x: f32 = win.mouse_position().x.into();
+                                                            let delta = x - start_x;
+                                                            let win_width: f32 = win.viewport_size().width.into();
+                                                            let min_width = 150.0;
+                                                            let max_width = win_width * 0.65;
+                                                            let new_width = (start_width - delta).max(min_width).min(max_width);
+                                                            this.state.main_view.side_pane_width = Some(new_width);
+                                                            cx.notify();
+                                                        }
                                                         // Handle column resize drag
                                                         if this.column_resize.is_some() {
                                                             let x: f32 =
@@ -4590,7 +4700,7 @@ impl Render for AppWindow {
                                             .on_mouse_up(MouseButton::Left, {
                                                 let view = view.clone();
                                                 move |_event, _win, cx| {
-                                                    view.update(cx, |this, _cx| {
+                                                    view.update(cx, |this, cx| {
                                                         if this
                                                             .state
                                                             .sidebar
@@ -4598,6 +4708,11 @@ impl Render for AppWindow {
                                                             .is_some()
                                                         {
                                                             this.state.sidebar.end_resize_drag();
+                                                        }
+                                                        if this.state.main_view.side_pane_resize_start_x.is_some() {
+                                                            this.state.main_view.side_pane_resize_start_x = None;
+                                                            this.state.main_view.side_pane_resize_start_width = None;
+                                                            cx.notify();
                                                         }
                                                         if this.column_resize.is_some() {
                                                             this.end_column_resize();
@@ -4647,7 +4762,11 @@ impl Render for AppWindow {
                                                         ToolbarView::build(
                                                             &state.main_view.view_mode,
                                                             &state.main_view.toolbar_customization,
-                                                            cx.entity(),
+                                                            !state.main_view.selected_indices.is_empty(),
+                                                            state.main_view.selected_indices.len() == 1,
+                                                            !matches!(state.clipboard, ClipboardState::Empty),
+                                                             state.main_view.filter_text.clone(),
+                                                             cx.entity(),
                                                         ),
                                                     ),
                                                 )

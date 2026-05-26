@@ -226,13 +226,19 @@ impl MainViewState {
                                                         }
                                                     )
                                             )
-                                            .child(
+                                            .child(if main_state.renaming_index == Some(idx) {
                                                 div()
-                                                    .flex_grow()
-                                                    .text_size(px(t_size))
-                                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                                    .child(name)
-                                            ).into_any_element()
+                                                    .bg(rgba(0xFFFFFF20u32))
+                                                    .border(px(1.0))
+                                                    .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                                    .rounded(px(2.0))
+                                                    .px(px(4.0))
+                                                    .child(main_state.rename_text.clone())
+                                                    .into_any_element()
+                                            } else {
+                                                div().child(name).into_any_element()
+                                            })
+                                            .into_any_element()
                                     }).collect::<Vec<_>>()
                             }
                         })
@@ -512,13 +518,19 @@ impl MainViewState {
                                                             }
                                                         )
                                                 )
-                                                .child(
+                                                .child(if main_state.renaming_index == Some(idx) {
                                                     div()
-                                                        .flex_grow()
-                                                        .text_size(px(t_size))
-                                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                                        .child(name)
-                                                ).into_any_element()
+                                                        .bg(rgba(0xFFFFFF20u32))
+                                                        .border(px(1.0))
+                                                        .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                                        .rounded(px(2.0))
+                                                        .px(px(4.0))
+                                                        .child(main_state.rename_text.clone())
+                                                        .into_any_element()
+                                                } else {
+                                                    div().child(name).into_any_element()
+                                                })
+                                                .into_any_element()
                                         }
                                     }).collect::<Vec<_>>()
                             }

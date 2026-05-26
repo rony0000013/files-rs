@@ -541,7 +541,7 @@ impl DialogsView {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     }))
                     .child(Self::build_button("Create", true, move |_, _, cx| {
-                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
+                        v_ok.update(cx, |this, cx| this.confirm_add_item(cx));
                     })),
             )
     }

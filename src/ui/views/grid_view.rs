@@ -144,6 +144,8 @@ impl MainViewState {
                                             icon_paths,
                                             &params,
                                             compact,
+                                            main_state.renaming_index,
+                                            main_state.rename_text.clone(),
                                         )
                                         .into_any_element()
                                     })
@@ -286,6 +288,8 @@ impl MainViewState {
                                                 icon_paths,
                                                 &params,
                                                 compact,
+                                                main_state.renaming_index,
+                                                main_state.rename_text.clone(),
                                             )
                                             .into_any_element()
                                         })
@@ -335,6 +339,8 @@ impl MainViewState {
         >,
         params: &GridLayoutParams,
         compact: bool,
+        renaming_index: Option<usize>,
+        rename_text: String,
     ) -> impl IntoElement {
         let v_click = view.clone();
         let v_hover = view.clone();
@@ -512,7 +518,18 @@ impl MainViewState {
                         .text_size(px(text_size))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(item_name.clone()),
+                        .child(if renaming_index == Some(index) {
+                            div()
+                                .bg(rgba(0xFFFFFF20u32))
+                                .border(px(1.0))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(2.0))
+                                .px(px(4.0))
+                                .child(rename_text.clone())
+                                .into_any_element()
+                        } else {
+                            div().child(item_name.clone()).into_any_element()
+                        }),
                 )
         } else {
             // Show icon for directories and non-image files
@@ -704,7 +721,18 @@ impl MainViewState {
                         .line_clamp(3)
                         .text_size(px(text_size))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(item_name.clone()),
+                        .child(if renaming_index == Some(index) {
+                            div()
+                                .bg(rgba(0xFFFFFF20u32))
+                                .border(px(1.0))
+                                .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                .rounded(px(2.0))
+                                .px(px(4.0))
+                                .child(rename_text.clone())
+                                .into_any_element()
+                        } else {
+                            div().child(item_name.clone()).into_any_element()
+                        }),
                 )
         }
     }

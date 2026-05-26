@@ -9,18 +9,27 @@ impl ToolbarView {
     pub fn build(
         view_mode: &ViewMode,
         toolbar_customization: &ToolbarCustomizationState,
+        has_selection: bool,
+        single_selection: bool,
+        has_clipboard: bool,
+        filter_text: String,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let view_clone = view.clone();
-        let vc = view.clone();
-        let vc2 = view.clone();
-        let vc3 = view.clone();
-        let vc4 = view.clone();
-        let vc5 = view.clone();
-        let vc6 = view.clone();
-        let vp = view.clone();
-        let vi = view.clone();
-        let vcomp = view.clone();
+        let view_new_folder = view.clone();
+        let view_new_file = view.clone();
+        let view_cut = view.clone();
+        let view_copy = view.clone();
+        let view_paste = view.clone();
+        let view_rename = view.clone();
+        let view_share = view.clone();
+        let view_delete = view.clone();
+
+        let view_filter = view.clone();
+        let view_select_all = view.clone();
+        let view_invert = view.clone();
+        let view_clear_sel = view.clone();
+
+        let view_info = view.clone();
 
         let mut toolbar = div()
             .flex()
@@ -32,13 +41,20 @@ impl ToolbarView {
             .border_b(Pixels::from(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA));
 
+        // LEFT-ALIGNED GROUP: Context Commands
+        let mut left_group = div()
+            .flex()
+            .items_center()
+            .gap(px(2.0));
+
         // New Folder button
         if toolbar_customization.is_visible("new_folder") {
-            toolbar = toolbar.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build(
                 "\u{E8F4}",
                 "New Folder (Ctrl+Shift+N)",
+                true,
                 move |_event, _window, cx| {
-                    view_clone.update(cx, |this, cx| {
+                    view_new_folder.update(cx, |this, cx| {
                         this.new_folder(cx);
                     });
                 },
@@ -47,11 +63,12 @@ impl ToolbarView {
 
         // New File button
         if toolbar_customization.is_visible("new_file") {
-            toolbar = toolbar.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build(
                 "\u{E7C3}",
                 "New File",
+                true,
                 move |_event, _window, cx| {
-                    vc.update(cx, |this, cx| {
+                    view_new_file.update(cx, |this, cx| {
                         this.new_file(cx);
                     });
                 },
@@ -61,16 +78,17 @@ impl ToolbarView {
         if toolbar_customization.is_visible("new_folder")
             || toolbar_customization.is_visible("new_file")
         {
-            toolbar = toolbar.child(ToolbarDivider::build());
+            left_group = left_group.child(ToolbarDivider::build());
         }
 
         // Cut button
         if toolbar_customization.is_visible("cut") {
-            toolbar = toolbar.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build(
                 "\u{E8C6}",
-                "Cut",
+                "Cut (Ctrl+X)",
+                has_selection,
                 move |_event, _window, cx| {
-                    vc2.update(cx, |this, cx| {
+                    view_cut.update(cx, |this, cx| {
                         this.cut_selected(cx);
                     });
                 },
@@ -79,11 +97,12 @@ impl ToolbarView {
 
         // Copy button
         if toolbar_customization.is_visible("copy") {
-            toolbar = toolbar.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build(
                 "\u{E8C8}",
-                "Copy",
+                "Copy (Ctrl+C)",
+                has_selection,
                 move |_event, _window, cx| {
-                    vc3.update(cx, |this, cx| {
+                    view_copy.update(cx, |this, cx| {
                         this.copy_selected(cx);
                     });
                 },
@@ -92,80 +111,203 @@ impl ToolbarView {
 
         // Paste button
         if toolbar_customization.is_visible("paste") {
-            toolbar = toolbar.child({
-                ToolbarButton::build("\u{E77F}", "Paste", move |_event, _window, cx| {
-                    vc4.update(cx, |this, cx| {
+            left_group = left_group.child(ToolbarButton::build(
+                "\u{E77F}",
+                "Paste (Ctrl+V)",
+                has_clipboard,
+                move |_event, _window, cx| {
+                    view_paste.update(cx, |this, cx| {
                         this.paste(cx);
                     });
-                })
-            });
+                },
+            ));
         }
 
         if toolbar_customization.is_visible("cut")
             || toolbar_customization.is_visible("copy")
             || toolbar_customization.is_visible("paste")
         {
-            toolbar = toolbar.child(ToolbarDivider::build());
+            left_group = left_group.child(ToolbarDivider::build());
         }
+
+        // Rename button
+        if toolbar_customization.is_visible("rename") {
+            left_group = left_group.child(ToolbarButton::build(
+                "\u{E8AC}",
+                "Rename (F2)",
+                single_selection,
+                move |_event, _window, cx| {
+                    view_rename.update(cx, |this, cx| {
+                        this.rename_selected(cx);
+                    });
+                },
+            ));
+        }
+
+        // Share button
+        left_group = left_group.child(ToolbarButton::build(
+            "\u{E72D}",
+            "Share",
+            has_selection,
+            move |_event, _window, cx| {
+                view_share.update(cx, |this, cx| {
+                    this.share_selected(cx);
+                });
+            },
+        ));
+
+        // Delete button
+        if toolbar_customization.is_visible("delete") {
+            left_group = left_group.child(ToolbarButton::build(
+                "\u{E74D}",
+                "Delete (Del)",
+                has_selection,
+                move |_event, _window, cx| {
+                    view_delete.update(cx, |this, cx| {
+                        this.delete_selected(cx);
+                    });
+                },
+            ));
+        }
+
+        toolbar = toolbar.child(left_group);
+
+        // Spacer to separate left and right groups
+        toolbar = toolbar.child(div().flex_grow());
+
+        // RIGHT-ALIGNED GROUP: Base/View Commands
+        let mut right_group = div()
+            .flex()
+            .items_center()
+            .gap(px(2.0));
+
+        // Filter button
+        let filter_active = !filter_text.is_empty();
+        right_group = right_group.child(ToolbarButton::build(
+            "\u{E71C}",
+            if filter_active { "Clear Filter" } else { "Filter" },
+            true,
+            move |_event, _window, cx| {
+                let active = filter_active;
+                view_filter.update(cx, |this, cx| {
+                    if active {
+                        this.set_filter_text(String::new(), cx);
+                    } else {
+                        // Open a dynamic dialog explaining how to filter
+                        this.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::Dynamic {
+                            title: "Filter Items".to_string(),
+                            message: "To filter items, please press Esc and use the search bar in the Omnibar, or enter filter criteria in the details view.".to_string(),
+                        });
+                        cx.notify();
+                    }
+                });
+            },
+        ));
+
+        right_group = right_group.child(ToolbarDivider::build());
+
+        // Select All button
+        right_group = right_group.child(ToolbarButton::build(
+            "\u{E8B3}",
+            "Select All (Ctrl+A)",
+            true,
+            move |_event, _window, cx| {
+                view_select_all.update(cx, |this, cx| {
+                    this.select_all(cx);
+                });
+            },
+        ));
+
+        // Invert Selection button
+        right_group = right_group.child(ToolbarButton::build(
+            "\u{E71D}",
+            "Invert Selection",
+            true,
+            move |_event, _window, cx| {
+                view_invert.update(cx, |this, cx| {
+                    this.invert_selection(cx);
+                });
+            },
+        ));
+
+        // Clear Selection button
+        right_group = right_group.child(ToolbarButton::build(
+            "\u{E894}",
+            "Clear Selection",
+            has_selection,
+            move |_event, _window, cx| {
+                view_clear_sel.update(cx, |this, cx| {
+                    this.clear_selection(cx);
+                });
+            },
+        ));
+
+        right_group = right_group.child(ToolbarDivider::build());
+
+        // View Mode Switchers
+        right_group = right_group.child(ViewModeButton::build(
+            "\u{E8C0}",
+            "Details View",
+            ViewMode::Details,
+            view_mode,
+            view.clone(),
+        ));
+        right_group = right_group.child(ViewModeButton::build(
+            "\u{E8B9}",
+            "List View",
+            ViewMode::List,
+            view_mode,
+            view.clone(),
+        ));
+        right_group = right_group.child(ViewModeButton::build(
+            "\u{E80A}",
+            "Grid View",
+            ViewMode::Grid,
+            view_mode,
+            view.clone(),
+        ));
+        right_group = right_group.child(ViewModeButton::build(
+            "\u{E8F1}",
+            "Columns View",
+            ViewMode::Columns,
+            view_mode,
+            view.clone(),
+        ));
+
+        right_group = right_group.child(ToolbarDivider::build());
 
         // Preview Pane button
         if toolbar_customization.is_visible("preview_pane") {
-            toolbar = toolbar.child({
-                ToolbarButton::build(
-                    "\u{E8A0}",
-                    "Preview Pane (Ctrl+P)",
+            right_group = right_group.child(ToolbarButton::build(
+                "\u{E8A0}",
+                "Preview Pane (Ctrl+P)",
+                true,
+                {
+                    let v = view.clone();
                     move |_event, _window, cx| {
-                        vc5.update(cx, |this, cx| {
+                        v.update(cx, |this, cx| {
                             this.toggle_preview_pane(cx);
                         });
-                    },
-                )
-            });
+                    }
+                },
+            ));
         }
 
-        // Info Pane button
+        // Info/Details Pane button
         if toolbar_customization.is_visible("info_pane") {
-            toolbar = toolbar.child({
-                ToolbarButton::build("\u{E946}", "Info Pane", move |_event, _window, cx| {
-                    vc6.update(cx, |this, cx| {
+            right_group = right_group.child(ToolbarButton::build(
+                "\u{E946}",
+                "Info Pane",
+                true,
+                move |_event, _window, cx| {
+                    view_info.update(cx, |this, cx| {
                         this.toggle_info_pane(cx);
                     });
-                })
-            });
+                },
+            ));
         }
 
-        toolbar = toolbar.child(div().flex_grow());
-
-        // Search bar
-        if toolbar_customization.is_visible("search") {
-            toolbar = toolbar.child(
-                div()
-                    .w(Pixels::from(240.0))
-                    .h(Pixels::from(32.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                    .rounded(Pixels::from(6.0))
-                    .border(Pixels::from(1.0))
-                    .border_color(rgba(UiConstants::STROKE_RGBA))
-                    .flex()
-                    .items_center()
-                    .px(Pixels::from(10.0))
-                    .child(
-                        div()
-                            .text_size(Pixels::from(14.0))
-                            .font_family(UiConstants::FONT_ICONS)
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child("\u{E721}"),
-                    )
-                    .child(
-                        div()
-                            .flex_grow()
-                            .ml(Pixels::from(8.0))
-                            .text_size(Pixels::from(13.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child("Search..."),
-                    ),
-            );
-        }
+        toolbar = toolbar.child(right_group);
 
         toolbar
     }
@@ -177,26 +319,36 @@ impl ToolbarButton {
     fn build(
         glyph: &str,
         _tooltip: &str,
+        is_enabled: bool,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
-        div()
+        let mut btn = div()
             .flex()
             .items_center()
             .justify_center()
             .min_w(Pixels::from(32.0))
             .h(Pixels::from(32.0))
             .px(Pixels::from(6.0))
-            .cursor_pointer()
-            .rounded(Pixels::from(6.0))
-            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-            .on_mouse_down(MouseButton::Left, on_click)
-            .child(
-                div()
-                    .text_size(AbsoluteLength::Pixels(Pixels::from(16.0)))
-                    .font_family(UiConstants::FONT_ICONS)
-                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .child(glyph.to_string()),
-            )
+            .rounded(Pixels::from(6.0));
+
+        if is_enabled {
+            btn = btn
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_mouse_down(MouseButton::Left, on_click);
+        }
+
+        btn.child(
+            div()
+                .text_size(AbsoluteLength::Pixels(Pixels::from(16.0)))
+                .font_family(UiConstants::FONT_ICONS)
+                .text_color(if is_enabled {
+                    rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                } else {
+                    rgba(UiConstants::TEXT_MUTED_RGBA)
+                })
+                .child(glyph.to_string()),
+        )
     }
 }
 

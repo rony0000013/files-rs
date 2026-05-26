@@ -36,6 +36,9 @@ impl MainViewState {
             show_system_files: false,
             loading: false,
             side_pane: SidePaneMode::None,
+            side_pane_width: Some(300.0),
+            side_pane_resize_start_x: None,
+            side_pane_resize_start_width: None,
             renaming_index: None,
             rename_text: String::new(),
             compact_mode: false,
@@ -790,7 +793,10 @@ impl MainView {
                     }),
             )
             .children(if has_side_pane {
-                vec![Self::render_side_pane(state, v3).into_any_element()]
+                vec![
+                    Self::render_side_pane_splitter(state, view.clone()).into_any_element(),
+                    Self::render_side_pane(state, v3).into_any_element(),
+                ]
             } else {
                 vec![]
             })
@@ -897,6 +903,36 @@ impl MainView {
         }
     }
 
+    fn render_side_pane_splitter(
+        state: &MainViewState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let is_resizing = state.side_pane_resize_start_x.is_some();
+        div()
+            .id("side-pane-splitter")
+            .w(px(4.0))
+            .h_full()
+            .cursor_col_resize()
+            .bg(if is_resizing {
+                rgba(UiConstants::ACCENT_RGBA)
+            } else {
+                rgba(UiConstants::BG_TRANSPARENT_RGBA)
+            })
+            .hover(|s| s.bg(rgba(0xFFFFFF11u32)))
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |event, _win, cx| {
+                    let x: f32 = event.position.x.into();
+                    view.update(cx, |this, cx| {
+                        let width = this.state.main_view.side_pane_width.unwrap_or(300.0);
+                        this.state.main_view.side_pane_resize_start_x = Some(x);
+                        this.state.main_view.side_pane_resize_start_width = Some(width);
+                        cx.notify();
+                    });
+                }
+            })
+    }
+
     fn render_side_pane(
         state: &MainViewState,
         view: Entity<crate::app::AppWindow>,
@@ -907,10 +943,11 @@ impl MainView {
             .iter()
             .next()
             .and_then(|&i| state.items.get(i));
+        let pane_w = state.side_pane_width.unwrap_or(300.0);
 
         div()
             .id("side-pane")
-            .w(px(300.0))
+            .w(px(pane_w))
             .h_full()
             .flex_col()
             .bg(rgba(UiConstants::BG_TOOLBAR_RGBA))

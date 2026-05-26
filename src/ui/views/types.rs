@@ -520,6 +520,12 @@ pub struct MainViewState {
     pub loading: bool,
     /// Side pane mode (Preview / Info / Details / None)
     pub side_pane: SidePaneMode,
+    /// Width of the side pane
+    pub side_pane_width: Option<f32>,
+    /// Side pane resize start mouse position
+    pub side_pane_resize_start_x: Option<f32>,
+    /// Side pane resize start width
+    pub side_pane_resize_start_width: Option<f32>,
     /// Whether rename is in progress for an item index
     pub renaming_index: Option<usize>,
     /// Current rename text (used during inline rename)
