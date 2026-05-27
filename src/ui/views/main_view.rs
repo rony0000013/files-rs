@@ -5,7 +5,7 @@ use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, Thu
 use crate::ui::components::bouncy_scroll::{
     bouncy_overscroll_content, bouncy_scroll_content, bouncy_scroll_handler,
     bouncy_scroll_handler_with_handle, start_bouncy_animation, uniformlist_scroll_info,
-    BouncyScrollState,
+    BouncyScrollState, MAX_OVERSCROLL, VELOCITY_BLEND_HISTORY,
 };
 use gpui::*;
 use std::collections::{BTreeMap, HashSet};
@@ -1644,25 +1644,48 @@ impl MainView {
                                     if bs.drag_active {
                                         let y: f32 = win.mouse_position().y.into();
                                         let delta = bs.apply_mouse_drag_delta(y);
-                                        let current_y: f32 = this.state.main_view
-                                            .uniform_list_scroll_handle
-                                            .0
-                                            .borrow()
-                                            .base_handle
-                                            .offset()
-                                            .y
-                                            .into();
-                                        let target = current_y + delta;
-                                        let (_, max_y, _, _) = uniformlist_scroll_info(
+                                        // Read scroll state and update bounds on every move
+                                        // so max_offset stays in sync with the UniformList.
+                                        // Prevents stale bounds from causing incorrect overscroll
+                                        // detection during in-bounds drag.
+                                        let (current_y, max_y, viewport_h, content_h) = uniformlist_scroll_info(
                                             &this.state.main_view.uniform_list_scroll_handle,
                                         );
-                                        if target > 0.0 {
-                                            // Top overscroll: snap uniform list to 0
-                                            let overscroll_dist = target;
+                                        bs.update_bounds(content_h, viewport_h);
+                                        // Keep active state fresh on each move so the release
+                                        // transition correctly detects overscroll vs in-bounds.
+                                        bs.is_active = true;
+                                        bs.graceful_counter = crate::ui::components::bouncy_scroll::MOMENTUM_GRACE_TICKS;
+
+                                        // ── Effective-position tracking via raw_overscroll ──
+                                        // `raw_overscroll` tracks the TRUE cumulative distance the
+                                        // user has dragged past the boundary (un-damped). During
+                                        // drag, `offset` stores the damped visual offset (from
+                                        // rubber_band_clamp), while `raw_overscroll` stores the raw
+                                        // distance. This is essential because `rubber_band_clamp` is
+                                        // NON-LINEAR — applying it per-event gives wrong accumulation.
+                                        let effective = if bs.raw_overscroll > 0.0 {
+                                            bs.raw_overscroll // top: raw distance past boundary
+                                        } else if bs.raw_overscroll < 0.0 {
+                                            bs.max_offset + bs.raw_overscroll // bottom
+                                        } else {
+                                            current_y // in-bounds
+                                        };
+                                        let new_effective = effective - delta;
+
+                                        // Accumulate velocity for momentum after release
+                                        // (-delta converts mouse-down-positive to scroll-down-negative)
+                                        bs.velocity = bs.velocity * VELOCITY_BLEND_HISTORY
+                                            + (-delta) * (1.0 - VELOCITY_BLEND_HISTORY);
+                                        bs.velocity = bs.velocity.clamp(-3000.0, 3000.0);
+
+                                        if new_effective > 0.0 {
+                                            // Top overscroll
+                                            bs.raw_overscroll = new_effective;
                                             let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
-                                                overscroll_dist,
+                                                bs.raw_overscroll,
                                                 crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
-                                                crate::ui::components::bouncy_scroll::MAX_OVERSCROLL,
+                                                MAX_OVERSCROLL,
                                             );
                                             bs.offset = damped;
                                             this.state.main_view.uniform_list_scroll_handle
@@ -1670,13 +1693,14 @@ impl MainView {
                                                 .borrow()
                                                 .base_handle
                                                 .set_offset(gpui::point(px(0.0), px(0.0)));
-                                        } else if target < -max_y {
-                                            // Bottom overscroll: snap uniform list to max
-                                            let exceed = -max_y - target;
+                                        } else if new_effective < -max_y {
+                                            // Bottom overscroll
+                                            bs.raw_overscroll = new_effective + max_y;
+                                            let exceed = -max_y - new_effective;
                                             let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
                                                 exceed,
                                                 crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
-                                                crate::ui::components::bouncy_scroll::MAX_OVERSCROLL,
+                                                MAX_OVERSCROLL,
                                             );
                                             bs.offset = bs.max_offset - damped;
                                             this.state.main_view.uniform_list_scroll_handle
@@ -1686,12 +1710,13 @@ impl MainView {
                                                 .set_offset(gpui::point(px(0.0), px(-max_y)));
                                         } else {
                                             // In-bounds
-                                            bs.offset = target;
+                                            bs.raw_overscroll = 0.0;
+                                            bs.offset = new_effective;
                                             this.state.main_view.uniform_list_scroll_handle
                                                 .0
                                                 .borrow()
                                                 .base_handle
-                                                .set_offset(gpui::point(px(0.0), px(target)));
+                                                .set_offset(gpui::point(px(0.0), px(new_effective)));
                                         }
                                         cx.notify();
                                     }

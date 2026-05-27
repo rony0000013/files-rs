@@ -38,13 +38,13 @@ use gpui::*;
 // Physics constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Spring stiffness for overscroll pull-back (k). Lower = gentler return.
-/// iOS uses a soft spring — underdamped, ~70-120 range.
-const SPRING_STIFFNESS: f32 = 80.0;
+/// Spring stiffness for overscroll pull-back (k). Higher = faster return.
+/// 120 is ~1.5x faster than default, still in iOS range.
+const SPRING_STIFFNESS: f32 = 120.0;
 
 /// Spring damping coefficient (b). Higher = less oscillation, smoother return.
-/// Critical damping for k=80 is roughly 2*sqrt(k) ≈ 18.
-const SPRING_DAMPING: f32 = 18.0;
+/// Critical damping for k=120 is roughly 2*sqrt(k) ≈ 21.9.
+const SPRING_DAMPING: f32 = 22.0;
 
 /// Rubber-band resistance. Lower = stretchier/more visible overscroll.
 /// iOS uses ~60-100 on different contexts.
@@ -59,12 +59,12 @@ const SETTLE_VELOCITY: f32 = 0.5;
 /// Offset distance below which we snap to boundary target.
 const SETTLE_OFFSET: f32 = 0.5;
 
-/// Animation tick interval (~60 fps).
-const TICK_INTERVAL_MS: u64 = 16;
+/// Animation tick interval (~120 fps).
+const TICK_INTERVAL_MS: u64 = 8;
 
 /// How many ticks with no input before momentum kicks in (scroll wheel only).
-/// At 60fps: 3 ticks ≈ 48ms debounce.
-const MOMENTUM_GRACE_TICKS: u32 = 3;
+/// At 120fps: 6 ticks ≈ 48ms debounce.
+pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 6;
 
 /// Per-tick friction multiplier for momentum phase.
 /// Lower = less coasting (stops faster).
@@ -72,7 +72,7 @@ const MOMENTUM_FRICTION_PER_TICK: f32 = 0.88;
 
 /// Velocity blending factor when accumulating from scroll deltas.
 /// `velocity = velocity * BLEND_HISTORY + delta_y * (1 - BLEND_HISTORY)`
-const VELOCITY_BLEND_HISTORY: f32 = 0.92;
+pub(crate) const VELOCITY_BLEND_HISTORY: f32 = 0.92;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BouncyScrollState
@@ -116,10 +116,22 @@ pub struct BouncyScrollState {
     /// Counts ticks since last scroll event. When this reaches 0 (after
     /// being set to MOMENTUM_GRACE_TICKS on each scroll), is_active becomes
     /// false and momentum/spring can engage (for scroll-wheel input).
-    graceful_counter: u32,
+    pub(crate) graceful_counter: u32,
 
     /// Last mouse Y position for drag scroll delta calculation.
     pub drag_last_y: Option<f32>,
+
+    /// Raw (un-damped) cumulative overscroll distance past the boundary.
+    ///
+    /// During mouse drag, `offset` stores the damped visual offset (via `rubber_band_clamp`),
+    /// while `raw_overscroll` tracks the TRUE cumulative distance the user has dragged past
+    /// the boundary. This is essential because `rubber_band_clamp` is NON-LINEAR — applying
+    /// it per-event gives wrong accumulation.
+    ///
+    /// - `> 0`: raw distance past the top boundary (e.g., 50 = dragged 50px past top)
+    /// - `< 0`: raw distance past the bottom boundary (e.g., -15 = dragged 15px past bottom)
+    /// - `0.0`: in-bounds
+    pub raw_overscroll: f32,
 }
 
 impl Default for BouncyScrollState {
@@ -142,6 +154,7 @@ impl BouncyScrollState {
             content_height: 0.0,
             graceful_counter: 0,
             drag_last_y: None,
+            raw_overscroll: 0.0,
         }
     }
 
@@ -193,11 +206,19 @@ impl BouncyScrollState {
     /// While `drag_active` is true, `tick_spring` will NOT apply any
     /// spring-back or momentum — the offset stays exactly where the user
     /// put it. Call `release()` on mouse-up to end the drag.
+    ///
+    /// IMPORTANT: increments `interaction_epoch` to kill any stale animation
+    /// loops from previous scroll-wheel interactions. Without this, the old
+    /// loop keeps running throughout the drag (doing nothing due to
+    /// `drag_active`, but its `cx.notify()` can cause frame-rate re-renders
+    /// that read stale `offset`/`max_offset` between mouse-move events).
     pub fn start_mouse_drag(&mut self, y: f32) {
+        self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
         self.drag_active = true;
         self.is_active = true;
         self.drag_last_y = Some(y);
         self.graceful_counter = MOMENTUM_GRACE_TICKS;
+        self.velocity = 0.0; // Clear stale velocity from previous scroll wheel interactions
     }
 
     /// Calculate scroll delta from the current mouse Y and the last recorded
@@ -221,6 +242,12 @@ impl BouncyScrollState {
         self.is_active = false;
         self.graceful_counter = 0;
         self.drag_last_y = None;
+        self.raw_overscroll = 0.0;
+        // Increment epoch to kill any stale animation loops (e.g. from a scroll-wheel
+        // grace period that was still running when the drag started). Without this,
+        // the new animation loop started from the mouse-up handler could share an epoch
+        // with a stale loop, causing a double spring-back animation.
+        self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
         if self.offset > 0.0
             || self.offset < self.max_offset
             || self.velocity.abs() > SETTLE_VELOCITY
@@ -293,8 +320,8 @@ impl BouncyScrollState {
 
         // ─── In bounds: momentum phase ───
         if self.velocity.abs() > SETTLE_VELOCITY {
-            // Apply friction
-            self.velocity *= MOMENTUM_FRICTION_PER_TICK;
+            // Apply friction (frame-rate independent: 0.88 at 60fps baseline)
+            self.velocity *= MOMENTUM_FRICTION_PER_TICK.powf(dt * 60.0);
             self.offset += self.velocity;
 
             // Check if momentum carried us past a boundary
@@ -470,7 +497,7 @@ pub fn start_bouncy_animation(
                     return false;
                 }
 
-                let still_going = state.tick_spring(1.0 / 60.0);
+                let still_going = state.tick_spring(1.0 / 120.0);
                 cx.notify();
                 still_going
             });
