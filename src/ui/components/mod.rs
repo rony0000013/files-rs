@@ -1,5 +1,6 @@
 pub mod app_background;
 pub mod background_warmup;
+pub mod bouncy_scroll;
 pub mod breadcrumb_bar;
 pub mod clipboard_manager;
 pub mod compact_overlay;

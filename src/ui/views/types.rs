@@ -4,6 +4,7 @@ use crate::domain::extended_metadata::ExtendedMetadataExtractor;
 use crate::domain::metadata::FileItem;
 use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::storage::storage::FileType;
+use crate::ui::components::bouncy_scroll::BouncyScrollState;
 use crate::ui::components::dialogs::{DialogType, SettingsTab};
 use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, ThumbnailRenderer};
 use crate::ui::constants::UiConstants;
@@ -599,6 +600,9 @@ pub struct MainViewState {
     /// Last check timestamp for viewport-based icon refresh (debounce guard)
     #[serde(skip)]
     pub icon_refresh_last_check: Option<std::time::Instant>,
+    /// Bouncy scroll state for the main file view content area (home, grouped, recycle bin only)
+    #[serde(skip)]
+    pub bouncy_scroll: BouncyScrollState,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

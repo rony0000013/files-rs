@@ -7,6 +7,7 @@
 
 use crate::core::path_util::FilesPath;
 use crate::ui::constants::UiConstants;
+use crate::ui::components::bouncy_scroll::BouncyScrollState;
 
 use crate::config::config::AppConfig;
 #[cfg(windows)]
@@ -152,6 +153,8 @@ pub struct SidebarState {
     pub drag_item: Option<(SectionId, usize)>,
     /// Backup of section collapsed states before entering reorder mode
     pub reorder_collapsed_backup: Option<Vec<(SectionId, bool)>>,
+    /// Bouncy (spring-loaded) scroll state for rubber-band overscroll
+    pub bouncy_scroll: BouncyScrollState,
 }
 
 impl SidebarState {

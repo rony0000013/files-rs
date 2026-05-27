@@ -2,6 +2,11 @@ use crate::core::path_util::FilesPath;
 use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::ui::components::dialogs::{DialogType, SettingsTab};
 use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, ThumbnailRenderer};
+use crate::ui::components::bouncy_scroll::{
+    bouncy_overscroll_content, bouncy_scroll_content, bouncy_scroll_handler,
+    bouncy_scroll_handler_with_handle, start_bouncy_animation, uniformlist_scroll_info,
+    BouncyScrollState,
+};
 use gpui::*;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -70,6 +75,7 @@ impl MainViewState {
             uniform_list_scroll_handle: UniformListScrollHandle::new(),
             last_empty_click: None,
             icon_refresh_last_check: None,
+            bouncy_scroll: BouncyScrollState::new(),
         }
     }
 
@@ -1573,38 +1579,159 @@ impl MainView {
                 }
             })
             .child(Self::filter_header(state, view.clone()))
-            .child(
-                div()
+            .child({
+                let is_recycle_bin = matches!(state.target, ViewTarget::RecycleBin);
+                let is_home = matches!(state.target, ViewTarget::Home);
+
+                let content: gpui::AnyElement = if matches!(state.target, ViewTarget::RecycleBin) {
+                    Self::render_recycle_bin_view(state, view.clone()).into_any_element()
+                } else {
+                    match state.view_mode {
+                        ViewMode::Details => {
+                            if matches!(state.target, ViewTarget::Home) {
+                                Self::render_home_view(state, view.clone()).into_any_element()
+                            } else {
+                                Self::details_view(state, &visible, file_items, view.clone())
+                                    .into_any_element()
+                            }
+                        }
+                        ViewMode::List => {
+                            state.render_list_view(file_items, view.clone()).into_any_element()
+                        }
+                        ViewMode::Grid => {
+                            state.render_grid_view(file_items, view.clone()).into_any_element()
+                        }
+                        ViewMode::Columns => state
+                            .render_columns_view(file_items, view.clone())
+                            .into_any_element(),
+                    }
+                };
+
+                let mut view_container = div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .h_full() // Explicit height for flex children
+                    .h_full()
                     .w_full()
-                    .overflow_hidden() // Content clipping for uniform_list
-                    .child({
-                        if matches!(state.target, ViewTarget::RecycleBin) {
-                            Self::render_recycle_bin_view(state, view).into_any_element()
-                        } else {
-                            match state.view_mode {
-                                ViewMode::Details => {
-                                    if matches!(state.target, ViewTarget::Home) {
-                                        Self::render_home_view(state, view).into_any_element()
-                                    } else {
-                                        Self::details_view(state, &visible, file_items, view)
-                                            .into_any_element()
-                                    }
-                                }
-                                ViewMode::List => state.render_list_view(file_items, view),
-                                ViewMode::Grid => {
-                                    state.render_grid_view(file_items, view).into_any_element()
-                                }
-                                ViewMode::Columns => state
-                                    .render_columns_view(file_items, view)
-                                    .into_any_element(),
+                    .overflow_hidden();
+
+                if !is_home {
+                    view_container = view_container
+                        .on_scroll_wheel(bouncy_scroll_handler_with_handle(
+                            view.clone(),
+                            |app_state: &mut crate::app::AppState| {
+                                &mut app_state.main_view.bouncy_scroll
+                            },
+                            |app_state: &mut crate::app::AppState| {
+                                &app_state.main_view.uniform_list_scroll_handle
+                            },
+                        ))
+                        .on_mouse_down(MouseButton::Left, {
+                            let view = view.clone();
+                            move |_event, win, cx| {
+                                view.update(cx, |this, cx| {
+                                    let y: f32 = win.mouse_position().y.into();
+                                    this.state.main_view.bouncy_scroll.start_mouse_drag(y);
+                                    cx.notify();
+                                });
                             }
+                        })
+                        .on_mouse_move({
+                            let view = view.clone();
+                            move |_event, win, cx| {
+                                view.update(cx, |this, cx| {
+                                    let bs = &mut this.state.main_view.bouncy_scroll;
+                                    if bs.drag_active {
+                                        let y: f32 = win.mouse_position().y.into();
+                                        let delta = bs.apply_mouse_drag_delta(y);
+                                        let current_y: f32 = this.state.main_view
+                                            .uniform_list_scroll_handle
+                                            .0
+                                            .borrow()
+                                            .base_handle
+                                            .offset()
+                                            .y
+                                            .into();
+                                        let target = current_y + delta;
+                                        let (_, max_y, _, _) = uniformlist_scroll_info(
+                                            &this.state.main_view.uniform_list_scroll_handle,
+                                        );
+                                        if target > 0.0 {
+                                            // Top overscroll: snap uniform list to 0
+                                            let overscroll_dist = target;
+                                            let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
+                                                overscroll_dist,
+                                                crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
+                                                crate::ui::components::bouncy_scroll::MAX_OVERSCROLL,
+                                            );
+                                            bs.offset = damped;
+                                            this.state.main_view.uniform_list_scroll_handle
+                                                .0
+                                                .borrow()
+                                                .base_handle
+                                                .set_offset(gpui::point(px(0.0), px(0.0)));
+                                        } else if target < -max_y {
+                                            // Bottom overscroll: snap uniform list to max
+                                            let exceed = -max_y - target;
+                                            let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
+                                                exceed,
+                                                crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
+                                                crate::ui::components::bouncy_scroll::MAX_OVERSCROLL,
+                                            );
+                                            bs.offset = bs.max_offset - damped;
+                                            this.state.main_view.uniform_list_scroll_handle
+                                                .0
+                                                .borrow()
+                                                .base_handle
+                                                .set_offset(gpui::point(px(0.0), px(-max_y)));
+                                        } else {
+                                            // In-bounds
+                                            bs.offset = target;
+                                            this.state.main_view.uniform_list_scroll_handle
+                                                .0
+                                                .borrow()
+                                                .base_handle
+                                                .set_offset(gpui::point(px(0.0), px(target)));
+                                        }
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                        .on_mouse_up(MouseButton::Left, {
+                            let view = view.clone();
+                            move |_event, _window, cx| {
+                                view.update(cx, |this, cx| {
+                                    let bs = &mut this.state.main_view.bouncy_scroll;
+                                    if bs.drag_active {
+                                        bs.release();
+                                        if bs.animating {
+                                            let epoch = bs.epoch();
+                                            crate::ui::components::bouncy_scroll::start_bouncy_animation(
+                                                &view,
+                                                cx,
+                                                |app_state: &mut crate::app::AppState| {
+                                                    &mut app_state.main_view.bouncy_scroll
+                                                },
+                                                epoch,
+                                            );
+                                            cx.notify();
+                                        }
+                                    }
+                                });
+                            }
+                        })
                         }
-                    }),
-            )
+                view_container.child({
+                    if is_recycle_bin {
+                        bouncy_scroll_content(&state.bouncy_scroll, [content]).into_any_element()
+                    } else if !is_home {
+                        bouncy_overscroll_content(&state.bouncy_scroll, [content]).into_any_element()
+                    } else {
+                        content
+                    }
+                })
+            })
             .into_any_element()
     }
 

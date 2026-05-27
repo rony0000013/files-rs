@@ -167,30 +167,175 @@ impl SidebarView {
                     .flex_grow()
                     .flex_col()
                     .w_full()
-                    .overflow_y_scroll()
-                    .pt(px(UiConstants::PADDING_BASE as f32))
-                    .pb(px(UiConstants::PADDING_BASE as f32))
-                    // Sections
-                    .children(
-                        state
-                            .sections
-                            .iter()
-                            .filter(|s| !state.hidden_sections.contains(&s.id))
-                            .enumerate()
-                            .map(|(idx, section)| {
-                                if collapsed {
-                                    Self::render_collapsed_section(
-                                        section,
-                                        idx,
-                                        state,
-                                        view.clone(),
-                                    )
-                                    .into_any_element()
-                                } else {
-                                    Self::render_section(section, idx, state, view.clone())
-                                        .into_any_element()
+                    .overflow_hidden()
+                    .relative()
+                    .on_scroll_wheel({
+                        let view = view.clone();
+                        move |event: &ScrollWheelEvent, window: &mut Window, cx: &mut App| {
+                            let line_height = px(16.0);
+                            let delta = event.delta.pixel_delta(line_height);
+                            let delta_y: f32 = delta.y.into();
+
+                            view.update(cx, |this, cx| {
+                                let sidebar = &mut this.state.sidebar;
+
+                                // Calculate content height from visible sections
+                                let content_h = {
+                                    let padding = UiConstants::PADDING_BASE as f32; // top padding
+                                    let bottom_padding = 60.0; // bottom padding (extra space for rubber band visibility)
+                                    let mut h = padding + bottom_padding;
+                                    for section in &sidebar.sections {
+                                        if sidebar.hidden_sections.contains(&section.id) {
+                                            continue;
+                                        }
+                                        h += SECTION_HEADER_HEIGHT;
+                                        if sidebar.collapsed {
+                                            h += COLLAPSED_SECTION_ICON_SIZE;
+                                        } else if !section.collapsed {
+                                            h += section.items.len() as f32 * SECTION_ITEM_HEIGHT;
+                                        }
+                                        h += SECTION_MARGIN_BOTTOM;
+                                    }
+                                    h
+                                };
+
+                                // Viewport ≈ window content height minus fixed elements
+                                let win_h: f32 = window.viewport_size().height.into();
+                                let viewport_h = (win_h - 100.0).max(100.0);
+
+                                // Scale scroll delta for more responsive feel
+                                let scaled_delta = delta_y * 1.5;
+
+                                // Update scroll bounds
+                                let bs = &mut sidebar.bouncy_scroll;
+                                bs.update_bounds(content_h, viewport_h);
+
+                                // Apply scroll delta — sets offset directly for 1:1 tracking,
+                                // accumulates velocity for momentum, resets grace counter.
+                                // This increments the interaction epoch.
+                                bs.apply_scroll_delta(scaled_delta);
+
+                                // Capture epoch AFTER apply so the animation loop's epoch guard
+                                // correctly detects when new input supersedes it.
+                                let epoch = bs.epoch();
+
+                                // Always start the animation loop. It handles:
+                                // - Grace period (while is_active and recent input)
+                                // - Overscroll spring (after grace period)
+                                // - Momentum (after grace period, with velocity)
+                                bs.animating = true;
+                                crate::ui::components::bouncy_scroll::start_bouncy_animation(
+                                    &view,
+                                    cx,
+                                    |app_state: &mut crate::app::AppState| {
+                                        &mut app_state.sidebar.bouncy_scroll
+                                    },
+                                    epoch,
+                                );
+                                cx.notify();
+                            });
+                        }
+                    })
+                    // ─── Mouse hold-drag scroll ───────────────────────────
+                    .on_mouse_down(MouseButton::Left, {
+                        let view = view.clone();
+                        move |_event, win, cx| {
+                            view.update(cx, |this, cx| {
+                                if this.state.sidebar.reorder_mode {
+                                    return; // Don't start drag scroll in reorder mode
                                 }
-                            }),
+                                let y: f32 = win.mouse_position().y.into();
+                                this.state.sidebar.bouncy_scroll.start_mouse_drag(y);
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_mouse_move({
+                        let view = view.clone();
+                        move |_event, win, cx| {
+                            view.update(cx, |this, cx| {
+                                let bs = &mut this.state.sidebar.bouncy_scroll;
+                                if bs.drag_active {
+                                    let y: f32 = win.mouse_position().y.into();
+                                    let delta = bs.apply_mouse_drag_delta(y);
+                                    // Same 1.5x scaling as scroll wheel
+                                    let scaled_delta = delta * 1.5;
+                                    // Update bounds from current widget sizes
+                                    let win_h: f32 = win.viewport_size().height.into();
+                                    let viewport_h = (win_h - 100.0).max(100.0);
+                                    bs.update_bounds(bs.content_height, viewport_h);
+                                    bs.apply_scroll_delta(scaled_delta);
+                                    let epoch = bs.epoch();
+                                    bs.animating = true;
+                                    crate::ui::components::bouncy_scroll::start_bouncy_animation(
+                                        &view,
+                                        cx,
+                                        |app_state: &mut crate::app::AppState| {
+                                            &mut app_state.sidebar.bouncy_scroll
+                                        },
+                                        epoch,
+                                    );
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .on_mouse_up(MouseButton::Left, {
+                        let view = view.clone();
+                        move |_event, _win, cx| {
+                            view.update(cx, |this, cx| {
+                                let bs = &mut this.state.sidebar.bouncy_scroll;
+                                if bs.drag_active {
+                                    // Update bounds one last time before release
+                                    bs.update_bounds(bs.content_height, bs.viewport_height);
+                                    bs.release();
+                                    if bs.animating {
+                                        let epoch = bs.epoch();
+                                        crate::ui::components::bouncy_scroll::start_bouncy_animation(
+                                            &view,
+                                            cx,
+                                            |app_state: &mut crate::app::AppState| {
+                                                &mut app_state.sidebar.bouncy_scroll
+                                            },
+                                            epoch,
+                                        );
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        }
+                    })
+                    .child(
+                        crate::ui::components::bouncy_scroll::bouncy_scroll_content(
+                            &state.bouncy_scroll,
+                            [div()
+                                .flex_col()
+                                .w_full()
+                                .pt(px(UiConstants::PADDING_BASE as f32))
+                                .pb(px(60.0))
+                                // Sections
+                                .children(
+                                    state
+                                        .sections
+                                        .iter()
+                                        .filter(|s| !state.hidden_sections.contains(&s.id))
+                                        .enumerate()
+                                        .map(|(idx, section)| {
+                                            if collapsed {
+                                                Self::render_collapsed_section(
+                                                    section,
+                                                    idx,
+                                                    state,
+                                                    view.clone(),
+                                                )
+                                                .into_any_element()
+                                            } else {
+                                                Self::render_section(section, idx, state, view.clone())
+                                                    .into_any_element()
+                                            }
+                                        }),
+                                )],
+                        ),
                     ),
             )
             // Settings button (pinned to bottom)
