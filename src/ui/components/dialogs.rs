@@ -328,6 +328,8 @@ impl DialogsView {
                 })
                 .on_mouse_move(move |event, _win, cx| {
                     v_drag.update(cx, |this, cx| {
+                        // Cancel file preview tooltip when mouse enters dialog area
+                        this.stop_hover_timer(cx);
                         if let Some((start_y, initial_zoom)) = this.zoom_drag_start {
                             let current_y: f32 = event.position.y.into();
                             let delta_y = current_y - start_y;
@@ -347,7 +349,10 @@ impl DialogsView {
                 .on_mouse_down(MouseButton::Left, {
                     let v = v_overlay_close.clone();
                     move |_, _, cx| {
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+                        v.update(cx, |this, cx| {
+                            this.stop_hover_timer(cx);
+                            this.close_dialog(cx);
+                        });
                     }
                 })
                 .on_mouse_move(|_, _, cx| cx.stop_propagation());
@@ -1818,11 +1823,41 @@ impl DialogsView {
                     let path = selected_path.clone();
                     move |_, _, cx| {
                         if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            // First try Windows Terminal (`wt -d path`), fallback to cmd
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "wt", "-d", &path_str])
-                                .spawn();
+                            // Open Windows Terminal as independent process
+                            #[cfg(windows)]
+                            {
+                                use std::ffi::OsStr;
+                                use std::os::windows::ffi::OsStrExt;
+                                use windows::Win32::UI::Shell::ShellExecuteW;
+                                use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+                                let path_str = format!("-d \"{}\"", p.to_string_lossy());
+                                let params_wide: Vec<u16> = OsStr::new(&path_str)
+                                    .encode_wide()
+                                    .chain(std::iter::once(0))
+                                    .collect();
+                                let exe_wide: Vec<u16> = OsStr::new("wt.exe")
+                                    .encode_wide()
+                                    .chain(std::iter::once(0))
+                                    .collect();
+
+                                unsafe {
+                                    ShellExecuteW(
+                                        None,
+                                        windows::core::PCWSTR::null(),
+                                        windows::core::PCWSTR(exe_wide.as_ptr()),
+                                        windows::core::PCWSTR(params_wide.as_ptr()),
+                                        None,
+                                        SW_SHOW,
+                                    );
+                                }
+                            }
+                            #[cfg(not(windows))]
+                            {
+                                let _ = std::process::Command::new("x-terminal-emulator")
+                                    .arg(&p.to_string_lossy().to_string())
+                                    .spawn();
+                            }
                         }
                         v.update(cx, |this, cx| this.close_dialog(cx));
                     }
@@ -2391,9 +2426,41 @@ impl DialogsView {
                             .primary_path
                             .to_string_lossy()
                             .to_string();
-                        let _ = std::process::Command::new("cmd")
-                            .args(["/C", "start", "wt", "-d", &path_str])
-                            .spawn();
+                        // Open Windows Terminal as independent process
+                        #[cfg(windows)]
+                        {
+                            use std::ffi::OsStr;
+                            use std::os::windows::ffi::OsStrExt;
+                            use windows::Win32::UI::Shell::ShellExecuteW;
+                            use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+                            let params = format!("-d \"{}\"", &path_str);
+                            let params_wide: Vec<u16> = OsStr::new(&params)
+                                .encode_wide()
+                                .chain(std::iter::once(0))
+                                .collect();
+                            let exe_wide: Vec<u16> = OsStr::new("wt.exe")
+                                .encode_wide()
+                                .chain(std::iter::once(0))
+                                .collect();
+
+                            unsafe {
+                                ShellExecuteW(
+                                    None,
+                                    windows::core::PCWSTR::null(),
+                                    windows::core::PCWSTR(exe_wide.as_ptr()),
+                                    windows::core::PCWSTR(params_wide.as_ptr()),
+                                    None,
+                                    SW_SHOW,
+                                );
+                            }
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = std::process::Command::new("x-terminal-emulator")
+                                .arg(&path_str)
+                                .spawn();
+                        }
                         this.close_dialog(cx);
                     });
                 }
@@ -3138,7 +3205,6 @@ impl DialogsView {
             name: &'static str,
             icon: &'static str,
             mode: ViewMode,
-            default_zoom: f32,
             /// Vertical padding
             item_py: f32,
             /// Icon font size
@@ -3154,7 +3220,6 @@ impl DialogsView {
                 name: "Details",
                 icon: "\u{E783}",
                 mode: ViewMode::Details,
-                default_zoom: 0.15,
                 item_py: 6.0,
                 icon_size: 16.0,
                 text_size: 12.0,
@@ -3164,7 +3229,6 @@ impl DialogsView {
                 name: "List",
                 icon: "\u{E77B}",
                 mode: ViewMode::List,
-                default_zoom: 0.30,
                 item_py: 6.0,
                 icon_size: 16.0,
                 text_size: 12.0,
@@ -3174,7 +3238,6 @@ impl DialogsView {
                 name: "Columns",
                 icon: "\u{E8A8}",
                 mode: ViewMode::Columns,
-                default_zoom: 0.50,
                 item_py: 6.0,
                 icon_size: 16.0,
                 text_size: 12.0,
@@ -3184,7 +3247,6 @@ impl DialogsView {
                 name: "Grid",
                 icon: "\u{E80A}",
                 mode: ViewMode::Grid,
-                default_zoom: 0.75,
                 item_py: 6.0,
                 icon_size: 16.0,
                 text_size: 12.0,
@@ -3216,7 +3278,6 @@ impl DialogsView {
                         };
                         let v_btn = view.clone();
                         let mode = item.mode.clone();
-                        let default_zoom = item.default_zoom;
                         let item_py = item.item_py;
                         let icon_size = item.icon_size;
                         let text_size = item.text_size;
@@ -3250,8 +3311,7 @@ impl DialogsView {
                                         move |_, _, cx| {
                                             let mode = mode.clone();
                                             v_btn.update(cx, |this, cx| {
-                                                this.state.main_view.view_mode = mode.clone();
-                                                this.state.main_view.zoom_level = default_zoom;
+                                                this.set_view_mode(mode.clone(), cx);
                                                 this.close_dialog(cx);
                                             });
                                         }

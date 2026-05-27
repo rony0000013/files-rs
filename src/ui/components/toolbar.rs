@@ -39,7 +39,15 @@ impl ToolbarView {
             .px(Pixels::from(8.0))
             .bg(rgb(UiConstants::BG_TOOLBAR_RGB))
             .border_b(Pixels::from(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA));
+            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+            .on_mouse_move({
+                let v = view.clone();
+                move |_ev, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.stop_hover_timer(cx);
+                    });
+                }
+            });
 
         // LEFT-ALIGNED GROUP: Context Commands
         let mut left_group = div()

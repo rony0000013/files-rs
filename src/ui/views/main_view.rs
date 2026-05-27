@@ -3377,7 +3377,7 @@ impl MainView {
                     move |_, _, cx| {
                         // Stop the hover timer when mouse leaves
                         v_timer.update(cx, |this, cx| {
-                            this.stop_hover_timer();
+                            this.stop_hover_timer(cx);
                         });
                     }
                 })
@@ -3516,7 +3516,7 @@ impl MainView {
                     move |_, _, cx| {
                         // Stop the hover timer when mouse leaves
                         v_timer.update(cx, |this, cx| {
-                            this.stop_hover_timer();
+                            this.stop_hover_timer(cx);
                         });
                     }
                 })

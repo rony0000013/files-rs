@@ -1,7 +1,7 @@
 use crate::config::config::{SortBy, ViewMode};
 use crate::core::path_util::FilesPath;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SortState {
@@ -44,6 +44,12 @@ pub enum GroupColumn {
 pub struct TabState {
     pub path: FilesPath,
     pub view_mode: ViewMode,
+    #[serde(default)]
+    pub zoom_level: f32,
+    /// Per-view-mode zoom levels saved when switching modes,
+    /// so each view mode remembers its own zoom level.
+    #[serde(default)]
+    pub per_view_zoom_levels: HashMap<ViewMode, f32>,
     pub scroll_offset_px: f32,
     pub sort: SortState,
     pub history_back: VecDeque<FilesPath>,
@@ -59,6 +65,8 @@ impl TabState {
         Self {
             path: path.clone(),
             view_mode,
+            zoom_level: 0.5,
+            per_view_zoom_levels: HashMap::new(),
             scroll_offset_px: 0.0,
             sort: SortState::default(),
             history_back: VecDeque::with_capacity(MAX_HISTORY),
@@ -66,6 +74,37 @@ impl TabState {
             secondary_pane_path: None,
             selection: Vec::new(),
         }
+    }
+
+    pub fn new_with_zoom(path: FilesPath, view_mode: ViewMode, zoom_level: f32) -> Self {
+        Self {
+            path: path.clone(),
+            view_mode,
+            zoom_level,
+            per_view_zoom_levels: HashMap::new(),
+            scroll_offset_px: 0.0,
+            sort: SortState::default(),
+            history_back: VecDeque::with_capacity(MAX_HISTORY),
+            history_forward: VecDeque::with_capacity(MAX_HISTORY),
+            secondary_pane_path: None,
+            selection: Vec::new(),
+        }
+    }
+
+    /// Get the zoom level for a specific view mode.
+    /// Returns the saved per-view-mode zoom if available, otherwise the fallback zoom_level.
+    pub fn get_zoom_for_view(&self, mode: ViewMode) -> f32 {
+        self.per_view_zoom_levels
+            .get(&mode)
+            .copied()
+            .unwrap_or(self.zoom_level)
+    }
+
+    /// Set the zoom level for a specific view mode, saving it to both
+    /// the per-view-mode map and the fallback zoom_level.
+    pub fn set_zoom_for_view(&mut self, mode: ViewMode, level: f32) {
+        self.per_view_zoom_levels.insert(mode, level);
+        self.zoom_level = level;
     }
 
     pub fn navigate(&mut self, path: FilesPath) {
@@ -156,6 +195,11 @@ impl TabManagerState {
 
     pub fn add_tab(&mut self, path: FilesPath, mode: ViewMode) {
         self.tabs.push(TabState::new(path, mode));
+        self.active_tab_index = self.tabs.len() - 1;
+    }
+
+    pub fn add_tab_with_zoom(&mut self, path: FilesPath, mode: ViewMode, zoom_level: f32) {
+        self.tabs.push(TabState::new_with_zoom(path, mode, zoom_level));
         self.active_tab_index = self.tabs.len() - 1;
     }
 

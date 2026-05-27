@@ -472,8 +472,8 @@ impl MainViewState {
                 .on_mouse_up_out(MouseButton::Left, {
                     let v_timer = v_timer.clone();
                     move |_, _, cx| {
-                        v_timer.update(cx, |this, _cx| {
-                            this.stop_hover_timer();
+                        v_timer.update(cx, |this, cx| {
+                            this.stop_hover_timer(cx);
                         });
                     }
                 })
@@ -481,8 +481,8 @@ impl MainViewState {
                     let v = view.clone();
                     move |hovered, _, cx| {
                         if !hovered {
-                            v.update(cx, |this, _cx| {
-                                this.stop_hover_timer();
+                            v.update(cx, |this, cx| {
+                                this.stop_hover_timer(cx);
                             });
                         }
                     }
@@ -647,8 +647,8 @@ impl MainViewState {
                 .on_mouse_up_out(MouseButton::Left, {
                     let v_timer = v_timer.clone();
                     move |_, _, cx| {
-                        v_timer.update(cx, |this, _cx| {
-                            this.stop_hover_timer();
+                        v_timer.update(cx, |this, cx| {
+                            this.stop_hover_timer(cx);
                         });
                     }
                 })
@@ -656,8 +656,8 @@ impl MainViewState {
                     let v = view.clone();
                     move |hovered, _, cx| {
                         if !hovered {
-                            v.update(cx, |this, _cx| {
-                                this.stop_hover_timer();
+                            v.update(cx, |this, cx| {
+                                this.stop_hover_timer(cx);
                             });
                         }
                     }

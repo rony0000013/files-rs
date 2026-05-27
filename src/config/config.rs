@@ -125,7 +125,7 @@ pub struct ViewConfig {
     pub group_by: GroupColumn,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 #[allow(dead_code)]
 pub enum ViewMode {
@@ -195,12 +195,30 @@ pub struct ExperimentalConfig {
 pub struct SessionConfig {
     pub open_tabs: Vec<TabSession>,
     pub active_tab_index: usize,
+    /// Pane layout: "single", "horizontal", or "vertical"
+    #[serde(default = "default_pane_layout")]
+    pub pane_layout: String,
+    /// Active pane: "primary" or "secondary"
+    #[serde(default = "default_active_pane")]
+    pub active_pane: String,
+}
+
+fn default_pane_layout() -> String {
+    "single".to_string()
+}
+
+fn default_active_pane() -> String {
+    "primary".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabSession {
     pub path: String,
     pub view_mode: ViewMode,
+    #[serde(default)]
+    pub zoom_level: f32,
+    #[serde(default)]
+    pub secondary_pane_path: Option<String>,
 }
 
 impl Default for AppConfig {

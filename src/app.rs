@@ -187,7 +187,94 @@ impl AppWindow {
             column_resize: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
-        window_view.navigate(initial_path, cx);
+
+        // Restore tabs from saved session if available (BEFORE initial navigate,
+        // so the saved session data is still intact in memory)
+        let restored = {
+            let config = window_view.state.settings.read(cx);
+            let session = &config.config.session;
+            if !session.open_tabs.is_empty() {
+                let new_tabs: Vec<crate::core::navigation_manager::TabState> = session
+                    .open_tabs
+                    .iter()
+                    .map(|t| {
+                        let path = crate::core::path_util::FilesPath::new(&t.path);
+                        crate::core::navigation_manager::TabState::new_with_zoom(
+                            path,
+                            t.view_mode.clone(),
+                            t.zoom_level,
+                        )
+                    })
+                    .collect();
+
+                let active_index = session.active_tab_index.min(new_tabs.len() - 1);
+
+                // Restore pane layout and active pane from saved strings
+                let pane_layout = match session.pane_layout.as_str() {
+                    "horizontal" => crate::core::navigation_manager::PaneLayout::Horizontal,
+                    "vertical" => crate::core::navigation_manager::PaneLayout::Vertical,
+                    _ => crate::core::navigation_manager::PaneLayout::Single,
+                };
+                let active_pane = match session.active_pane.as_str() {
+                    "secondary" => crate::core::navigation_manager::PaneFocus::Secondary,
+                    _ => crate::core::navigation_manager::PaneFocus::Primary,
+                };
+
+                window_view.state.navigation.update(cx, |nav, _cx| {
+                    nav.tabs.tabs = new_tabs;
+                    nav.tabs.active_tab_index = active_index;
+                    nav.tabs.closed_tabs.clear();
+                    nav.pane_layout = pane_layout;
+                    nav.active_pane = active_pane;
+                });
+
+                // Sync main_view's pane_type to match restored pane layout
+                window_view.state.main_view.pane_type = match pane_layout {
+                    crate::core::navigation_manager::PaneLayout::Single => {
+                        crate::ui::views::main_view::PaneType::Single
+                    }
+                    _ => crate::ui::views::main_view::PaneType::Dual,
+                };
+
+                true // restored
+            } else {
+                false
+            }
+        };
+
+        if restored {
+            // Navigate to the active restored tab's path
+            let active_path = window_view
+                .state
+                .navigation
+                .read(cx)
+                .tabs
+                .active_tab()
+                .path
+                .clone();
+            window_view.state.main_view.primary_path = active_path.clone();
+            window_view.navigate(active_path, cx);
+
+            // After restoring, also set the zoom level from the saved tab
+            let restored_zoom = window_view
+                .state
+                .navigation
+                .read(cx)
+                .tabs
+                .active_tab()
+                .zoom_level;
+            window_view.state.main_view.zoom_level = restored_zoom;
+
+            // Ensure the session service path matches restored active tab
+            let session_path = window_view.state.navigation.read(cx).active_pane_path();
+            window_view
+                .state
+                .session_service
+                .set_last_path(session_path.to_string_lossy().as_ref());
+        } else {
+            // No saved session — navigate to the default home path
+            window_view.navigate(initial_path, cx);
+        }
 
         // Crash detection: silently restore without showing dialog
         {
@@ -291,7 +378,7 @@ impl AppWindow {
             self.state.main_view.zoom_level = prefs.zoom_level;
         } else {
             self.state.main_view.view_mode = active_tab.view_mode.clone();
-            self.state.main_view.zoom_level = settings_model.config().view.last_zoom_level;
+            self.state.main_view.zoom_level = active_tab.get_zoom_for_view(active_tab.view_mode.clone());
         }
 
         // Load folder background from desktop.ini
@@ -591,14 +678,32 @@ impl AppWindow {
             .map(|t| crate::config::config::TabSession {
                 path: t.path.to_string_lossy().into_owned(),
                 view_mode: t.view_mode.clone(),
+                zoom_level: t.zoom_level,
+                secondary_pane_path: t
+                    .secondary_pane_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
             })
             .collect();
 
         let active_index = nav.tabs.active_tab_index;
+        let pane_layout_str = match nav.pane_layout {
+            crate::core::navigation_manager::PaneLayout::Single => "single",
+            crate::core::navigation_manager::PaneLayout::Horizontal => "horizontal",
+            crate::core::navigation_manager::PaneLayout::Vertical => "vertical",
+        }
+        .to_string();
+        let active_pane_str = match nav.active_pane {
+            crate::core::navigation_manager::PaneFocus::Primary => "primary",
+            crate::core::navigation_manager::PaneFocus::Secondary => "secondary",
+        }
+        .to_string();
 
         settings.update(cx, move |s, _cx| {
             s.config.session.open_tabs = open_tabs;
             s.config.session.active_tab_index = active_index;
+            s.config.session.pane_layout = pane_layout_str;
+            s.config.session.active_pane = active_pane_str;
             let _ = s.config.save();
         });
     }
@@ -617,9 +722,26 @@ impl AppWindow {
         tracing::info!("Opening help URL: {}", url);
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("cmd.exe")
-                .args(["/C", "start", "", url])
-                .spawn();
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+            let url_wide: Vec<u16> = OsStr::new(url)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    windows::core::PCWSTR::null(),
+                    windows::core::PCWSTR(url_wide.as_ptr()),
+                    windows::core::PCWSTR::null(),
+                    None,
+                    SW_SHOW,
+                );
+            }
         }
         #[cfg(not(windows))]
         {
@@ -627,15 +749,83 @@ impl AppWindow {
         }
     }
 
-    /// Restore the last session path from the session service.
+    /// Restore the last session tabs and path from the session config.
     pub fn restore_last_session(&mut self, cx: &mut Context<Self>) {
-        let last_path = self.state.session_service.last_path().to_string();
-        if !last_path.is_empty() {
-            tracing::info!("Restoring last session path: {}", last_path);
-            let path = crate::core::path_util::FilesPath::new(&last_path);
-            self.navigate(path, cx);
+        let config = self.state.settings.read(cx);
+        let session = &config.config.session;
+        let has_tabs = !session.open_tabs.is_empty();
+
+        if has_tabs {
+            let new_tabs: Vec<crate::core::navigation_manager::TabState> = session
+                .open_tabs
+                .iter()
+                .map(|t| {
+                    let path = crate::core::path_util::FilesPath::new(&t.path);
+                    crate::core::navigation_manager::TabState::new_with_zoom(
+                        path,
+                        t.view_mode.clone(),
+                        t.zoom_level,
+                    )
+                })
+                .collect();
+
+            let active_index = session
+                .active_tab_index
+                .min(new_tabs.len().saturating_sub(1));
+
+            let pane_layout = match session.pane_layout.as_str() {
+                "horizontal" => crate::core::navigation_manager::PaneLayout::Horizontal,
+                "vertical" => crate::core::navigation_manager::PaneLayout::Vertical,
+                _ => crate::core::navigation_manager::PaneLayout::Single,
+            };
+            let active_pane = match session.active_pane.as_str() {
+                "secondary" => crate::core::navigation_manager::PaneFocus::Secondary,
+                _ => crate::core::navigation_manager::PaneFocus::Primary,
+            };
+
+            self.state.navigation.update(cx, |nav, _cx| {
+                nav.tabs.tabs = new_tabs;
+                nav.tabs.active_tab_index = active_index;
+                nav.tabs.closed_tabs.clear();
+                nav.pane_layout = pane_layout;
+                nav.active_pane = active_pane;
+            });
+
+            self.state.main_view.pane_type = match pane_layout {
+                crate::core::navigation_manager::PaneLayout::Single => {
+                    crate::ui::views::main_view::PaneType::Single
+                }
+                _ => crate::ui::views::main_view::PaneType::Dual,
+            };
+
+            let active_path = self
+                .state
+                .navigation
+                .read(cx)
+                .tabs
+                .active_tab()
+                .path
+                .clone();
+            self.navigate(active_path, cx);
+
+            // Restore the zoom level from the active tab
+            let restored_zoom = self
+                .state
+                .navigation
+                .read(cx)
+                .tabs
+                .active_tab()
+                .zoom_level;
+            self.state.main_view.zoom_level = restored_zoom;
         } else {
-            tracing::info!("No last session path to restore.");
+            let last_path = self.state.session_service.last_path().to_string();
+            if !last_path.is_empty() {
+                tracing::info!("Restoring last session path: {}", last_path);
+                let path = crate::core::path_util::FilesPath::new(&last_path);
+                self.navigate(path, cx);
+            } else {
+                tracing::info!("No last session path to restore.");
+            }
         }
     }
 
@@ -644,8 +834,9 @@ impl AppWindow {
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
         let current_path = self.state.main_view.primary_path.clone();
         let mode = self.state.main_view.view_mode.clone();
+        let zoom = self.state.main_view.zoom_level;
         self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.add_tab(current_path, mode);
+            nav.tabs.add_tab_with_zoom(current_path, mode, zoom);
         });
         self.save_session(cx);
         cx.notify();
@@ -744,7 +935,7 @@ impl AppWindow {
         let tab = self.state.navigation.read(cx).tabs.tabs.get(index).cloned();
         if let Some(tab) = tab {
             self.state.navigation.update(cx, |nav, _cx| {
-                nav.tabs.add_tab(tab.path.clone(), tab.view_mode.clone());
+                nav.tabs.add_tab_with_zoom(tab.path.clone(), tab.view_mode.clone(), tab.zoom_level);
             });
             self.save_session(cx);
             cx.notify();
@@ -918,14 +1109,30 @@ impl AppWindow {
                     self.navigate(item.path.clone(), cx);
                 }
                 FileType::File => {
-                    // Open file with default handler
+                    // Open file with default handler — use ShellExecuteW so the
+                    // opened app runs as an independent process (not a child).
                     #[cfg(windows)]
                     {
-                        use std::process::Command;
-                        let path_str = item.path.as_path().to_string_lossy();
-                        let _ = Command::new("cmd.exe")
-                            .args(["/C", "start", "", &path_str])
-                            .spawn();
+                        use std::ffi::OsStr;
+                        use std::os::windows::ffi::OsStrExt;
+                        use windows::Win32::UI::Shell::ShellExecuteW;
+                        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+                        let path_wide: Vec<u16> = OsStr::new(item.path.as_path())
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+
+                        unsafe {
+                            ShellExecuteW(
+                                None,
+                                windows::core::PCWSTR::null(),
+                                windows::core::PCWSTR(path_wide.as_ptr()),
+                                windows::core::PCWSTR::null(),
+                                None,
+                                SW_SHOW,
+                            );
+                        }
                     }
                 }
                 FileType::Symlink => {
@@ -1231,14 +1438,29 @@ impl AppWindow {
                     // Navigate into folder
                     self.navigate(path.clone(), cx);
                 } else {
-                    // Open file with default handler
+                    // Open file with default handler — independent process (no parent-child)
                     #[cfg(windows)]
                     {
-                        use std::process::Command;
-                        let path_s = path.as_path().to_string_lossy();
-                        let _ = Command::new("cmd.exe")
-                            .args(["/C", "start", "", &path_s])
-                            .spawn();
+                        use std::ffi::OsStr;
+                        use std::os::windows::ffi::OsStrExt;
+                        use windows::Win32::UI::Shell::ShellExecuteW;
+                        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+                        let path_wide: Vec<u16> = OsStr::new(path.as_path())
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+
+                        unsafe {
+                            ShellExecuteW(
+                                None,
+                                windows::core::PCWSTR::null(),
+                                windows::core::PCWSTR(path_wide.as_ptr()),
+                                windows::core::PCWSTR::null(),
+                                None,
+                                SW_SHOW,
+                            );
+                        }
                     }
                     #[cfg(not(windows))]
                     {
@@ -3165,6 +3387,12 @@ impl AppWindow {
             *current_zoom = level;
         }
 
+        // Persist zoom level on the active tab (per-view-mode)
+        self.state.navigation.update(cx, |nav, _cx| {
+            let tab = nav.tabs.active_tab_mut();
+            tab.set_zoom_for_view(tab.view_mode.clone(), level);
+        });
+
         // Save last used zoom (always) + per-directory preferences if lock is enabled
         let path = self.state.main_view.primary_path.clone();
         let view_mode = self.state.main_view.view_mode.clone();
@@ -3190,6 +3418,9 @@ impl AppWindow {
             }
             let _ = s.config.save();
         });
+
+        // Persist session so per-tab zoom levels are saved to disk
+        self.save_session(cx);
 
         cx.notify();
     }
@@ -3549,8 +3780,9 @@ impl AppWindow {
 
     pub fn open_in_new_tab(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         let mode = self.state.main_view.view_mode.clone();
+        let zoom = self.state.main_view.zoom_level;
         self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.add_tab(path, mode);
+            nav.tabs.add_tab_with_zoom(path, mode, zoom);
         });
         cx.notify();
     }
@@ -3622,6 +3854,11 @@ impl AppWindow {
             return;
         }
 
+        // Don't start if a dialog/menu is open on top of the main view
+        if self.state.active_dialog.is_some() {
+            return;
+        }
+
         // Validate item exists and is a file (not directory)
         {
             let Some(item) = self.state.main_view.items.get(index) else {
@@ -3680,11 +3917,12 @@ impl AppWindow {
     }
 
     /// Stop the hover timer and clear the tooltip.
-    pub fn stop_hover_timer(&mut self) {
+    pub fn stop_hover_timer(&mut self, cx: &mut Context<Self>) {
         // Drop the old task to cancel it
         self.hover_timer_task = None;
         self.hover_item_index = None;
         self.hover_tooltip = None;
+        cx.notify();
     }
 
     pub fn bulk_rename(&mut self, cx: &mut Context<Self>) {
@@ -3839,10 +4077,21 @@ impl AppWindow {
     }
 
     pub fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
-        self.state.main_view.view_mode = mode.clone();
-        self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.active_tab_mut().view_mode = mode.clone();
+        let old_mode = self.state.main_view.view_mode.clone();
+        let current_zoom = self.state.main_view.zoom_level;
+        let new_zoom = self.state.navigation.update(cx, |nav, _cx| {
+            let tab = nav.tabs.active_tab_mut();
+            // Save the old mode's zoom level
+            tab.per_view_zoom_levels.insert(old_mode, current_zoom);
+            // Switch to the new view mode
+            tab.view_mode = mode.clone();
+            // Restore the new mode's saved zoom, or keep current zoom as default
+            let mode_zoom = tab.per_view_zoom_levels.get(&mode).copied().unwrap_or(current_zoom);
+            tab.zoom_level = mode_zoom;
+            mode_zoom
         });
+        self.state.main_view.view_mode = mode.clone();
+        self.state.main_view.zoom_level = new_zoom;
 
         // Save last used view mode (always) + per-directory preferences if lock is enabled
         let path = self.state.main_view.primary_path.clone();
@@ -3870,6 +4119,9 @@ impl AppWindow {
             }
             let _ = s.config.save();
         });
+
+        // Persist session so per-tab view mode and zoom are saved
+        self.save_session(cx);
 
         cx.notify();
     }
