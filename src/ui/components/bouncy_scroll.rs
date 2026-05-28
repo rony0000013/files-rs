@@ -1,5 +1,8 @@
 //! Bouncy (rubber-band) scroll container with iOS-style momentum + spring physics.
 //!
+//! Also provides minimal scrollbar rendering helpers for use with BouncyScrollState
+//! and UniformListScrollHandle.
+//!
 //! Provides a scroll container that allows overscroll past content bounds
 //! with rubber-band damping, then springs back when released. Also provides
 //! momentum scrolling: after the user stops scrolling, velocity carries the
@@ -732,4 +735,110 @@ where
             }
         });
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Minimal scrollbar rendering
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scrollbar track + thumb width for minimal scrollbars.
+pub const SCROLLBAR_WIDTH: f32 = 6.0;
+
+/// Minimum thumb height in pixels — prevents the thumb from vanishing
+/// on very tall content.
+pub const SCROLLBAR_THUMB_MIN_HEIGHT: f32 = 30.0;
+
+/// Render a minimal scrollbar from a [`BouncyScrollState`].
+///
+/// The scrollbar is 6px wide, positioned on the right edge of the container.
+/// It automatically hides when the content fits within the viewport.
+pub fn bouncy_scroll_scrollbar(state: &BouncyScrollState) -> impl IntoElement {
+    let viewport_h = state.viewport_height;
+    let content_h = state.content_height;
+
+    if content_h <= viewport_h {
+        return div().into_any_element();
+    }
+
+    let scroll_range = (content_h - viewport_h).max(1.0);
+    let progress = (-state.display_offset() / scroll_range).clamp(0.0, 1.0);
+    let track_h = viewport_h;
+    let thumb_h = ((viewport_h / content_h) * track_h).max(SCROLLBAR_THUMB_MIN_HEIGHT);
+    let max_off = track_h - thumb_h;
+    let thumb_off = progress * max_off;
+
+    div()
+        .absolute()
+        .right(px(0.0))
+        .top(px(0.0))
+        .w(px(SCROLLBAR_WIDTH))
+        .h(px(track_h))
+        .child(
+            div()
+                .absolute()
+                .left(px(1.0))
+                .top(px(thumb_off))
+                .w(px(SCROLLBAR_WIDTH - 2.0))
+                .h(px(thumb_h))
+                .rounded(px(2.0))
+                .bg(rgba(0xFFFFFF22)),
+        )
+        .into_any_element()
+}
+
+/// Render a minimal scrollbar for a [`UniformList`]-backed view.
+///
+/// Reads the actual scroll position from the `UniformListScrollHandle`
+/// and overscroll from the `BouncyScrollState`. The scrollbar reflects
+/// in-bounds scrolling as well as overscroll at the boundaries.
+pub fn uniform_list_scrollbar(
+    bouncy: &BouncyScrollState,
+    handle: &UniformListScrollHandle,
+) -> impl IntoElement {
+    let (current_y, max_y, viewport_h, content_h) = uniformlist_scroll_info(handle);
+
+    if content_h <= viewport_h {
+        return div().into_any_element();
+    }
+
+    let scroll_range = content_h - viewport_h;
+    let base_progress = if max_y > 0.0 {
+        (-current_y / max_y).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    // Add overscroll push. When top-overscrolled (offset > 0), progress goes
+    // slightly negative; bottom-overscrolled, slightly past 1.0.
+    let overscroll_boost = if bouncy.offset > 0.0 {
+        -bouncy.offset / content_h.max(1.0)
+    } else if bouncy.offset < bouncy.max_offset {
+        bouncy.offset.abs() / content_h.max(1.0)
+    } else {
+        0.0
+    };
+    let progress = (base_progress + overscroll_boost).clamp(0.0, 1.0);
+
+    let track_h = viewport_h;
+    let thumb_h = ((viewport_h / content_h) * track_h).max(SCROLLBAR_THUMB_MIN_HEIGHT);
+    let max_off = track_h - thumb_h;
+    let thumb_off = progress * max_off;
+
+    div()
+        .absolute()
+        .right(px(0.0))
+        .top(px(0.0))
+        .w(px(SCROLLBAR_WIDTH))
+        .h(px(track_h))
+        .child(
+            div()
+                .absolute()
+                .left(px(1.0))
+                .top(px(thumb_off))
+                .w(px(SCROLLBAR_WIDTH - 2.0))
+                .h(px(thumb_h))
+                .rounded(px(2.0))
+                .bg(rgba(0xFFFFFF22)),
+        )
+        .into_any_element()
 }

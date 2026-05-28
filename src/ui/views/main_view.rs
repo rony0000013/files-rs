@@ -5,7 +5,7 @@ use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, Thu
 use crate::ui::components::bouncy_scroll::{
     bouncy_overscroll_content, bouncy_scroll_content, bouncy_scroll_handler,
     bouncy_scroll_handler_with_handle, start_bouncy_animation, uniformlist_scroll_info,
-    BouncyScrollState, MAX_OVERSCROLL, VELOCITY_BLEND_HISTORY,
+    uniform_list_scrollbar, BouncyScrollState, MAX_OVERSCROLL, VELOCITY_BLEND_HISTORY,
 };
 use gpui::*;
 use std::collections::{BTreeMap, HashSet};
@@ -1756,6 +1756,11 @@ impl MainView {
                         content
                     }
                 })
+                // Minimal scrollbar for UniformList-based views
+                .child(uniform_list_scrollbar(
+                    &state.bouncy_scroll,
+                    &state.uniform_list_scroll_handle,
+                ))
             })
             .into_any_element()
     }

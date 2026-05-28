@@ -336,6 +336,12 @@ impl SidebarView {
                                         }),
                                 )],
                         ),
+                    )
+                    // Minimal scrollbar
+                    .child(
+                        crate::ui::components::bouncy_scroll::bouncy_scroll_scrollbar(
+                            &state.bouncy_scroll,
+                        ),
                     ),
             )
             // Settings button (pinned to bottom)
