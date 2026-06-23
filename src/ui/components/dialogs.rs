@@ -54,6 +54,7 @@ pub enum DialogType {
     /// Breadcrumb sibling folders dropdown
     SiblingDropdown {
         parent_path: crate::core::path_util::FilesPath,
+        siblings: Vec<crate::core::path_util::FilesPath>,
     },
     /// Status Center showing active operations
     StatusCenter {
@@ -203,8 +204,8 @@ impl DialogsView {
             DialogType::AddItem { is_folder, name } => {
                 Self::build_add_item_dialog(*is_folder, name, view.clone()).into_any_element()
             }
-            DialogType::SiblingDropdown { parent_path } => {
-                Self::build_sibling_dropdown(parent_path, view.clone(), cx).into_any_element()
+            DialogType::SiblingDropdown { parent_path, siblings } => {
+                Self::build_sibling_dropdown(parent_path, siblings, view.clone(), cx).into_any_element()
             }
             DialogType::StatusCenter {
                 active_operations, ..
@@ -720,12 +721,12 @@ impl DialogsView {
 
     fn build_sibling_dropdown(
         _parent_path: &crate::core::path_util::FilesPath,
+        siblings: &[crate::core::path_util::FilesPath],
         view: Entity<crate::app::AppWindow>,
-        cx: &mut Context<crate::app::AppWindow>,
+        _cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v_close = view.clone();
         let v_nav = Arc::new(view.clone());
-        let siblings = view.read(cx).state.nav_bar.siblings.clone();
 
         div()
             .flex_col()
@@ -747,9 +748,8 @@ impl DialogsView {
                         let name = sibling
                             .as_path()
                             .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| sibling.as_path().to_string_lossy().to_string());
                         let path = sibling.clone();
                         div()
                             .flex()

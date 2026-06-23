@@ -98,7 +98,7 @@ impl MainViewState {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| {
+            .filter(|(i, item)| {
                 // 1. System file filter
                 if !self.show_system_files && item.is_system {
                     return false;
@@ -113,6 +113,10 @@ impl MainViewState {
                 }
                 // 4. Search text filter
                 if !filter.is_empty() && !item.name.to_lowercase().contains(&filter) {
+                    return false;
+                }
+                // 5. Global search results filter
+                if self.search_state.is_searching && !self.search_state.query.is_empty() && !self.search_state.results.contains(&i) {
                     return false;
                 }
                 true

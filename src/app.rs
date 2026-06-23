@@ -9,7 +9,7 @@ use crate::domain::metadata::FileItem;
 use crate::storage::storage::{FileType, LocalFileSystem, StorageService};
 use crate::ui::components::app_background::AppBackground;
 use crate::ui::components::dialogs::{DialogType, DialogsView, SettingsTab};
-use crate::ui::components::navigation_bar::{NavigationBarState, NavigationBarView};
+use crate::ui::components::navigation_bar::{build_breadcrumb_dropdown, build_suggestions_dropdown, NavigationBarState, NavigationBarView};
 #[cfg(windows)]
 use crate::ui::components::sidebar::{SidebarSplitter, SidebarView};
 use crate::ui::components::sidebar_state::SidebarItemId;
@@ -291,6 +291,38 @@ impl AppWindow {
 
         // Splash auto-dismiss timer removed (splash disabled)
 
+        // Dismiss omnibar when window loses focus (e.g. user clicks outside the app)
+        {
+            let focus = cx.focus_handle();
+            cx.on_focus_out(&focus, _window, move |this, _event, _window, cx| {
+                let was_active = this.state.nav_bar.edit_mode
+                    || matches!(
+                        this.state.nav_bar.omnibar_mode,
+                        crate::ui::components::navigation_bar::OmnibarMode::Search
+                            | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                    );
+                if was_active {
+                    this.state.nav_bar.edit_mode = false;
+                    this.state.nav_bar.show_suggestions = false;
+                    if matches!(
+                        this.state.nav_bar.omnibar_mode,
+                        crate::ui::components::navigation_bar::OmnibarMode::Search
+                    ) {
+                        this.state.nav_bar.omnibar_mode =
+                            crate::ui::components::navigation_bar::OmnibarMode::Path;
+                        this.clear_search(cx);
+                    } else if matches!(
+                        this.state.nav_bar.omnibar_mode,
+                        crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                    ) {
+                        this.state.nav_bar.omnibar_mode =
+                            crate::ui::components::navigation_bar::OmnibarMode::Path;
+                    }
+                    cx.notify();
+                }
+            });
+        }
+
         // Progress listener removed (prevents entity lease conflicts)
         // let this_weak = cx.weak_entity();
         // let mut async_cx = cx.to_async();
@@ -340,6 +372,8 @@ impl AppWindow {
 
         self.state.main_view.primary_path = path.clone();
         self.state.nav_bar.update_path(path.clone());
+        // Immediately notify so the omnibar dismisses before async item loading
+        cx.notify();
         self.state.main_view.items.clear();
         // Clear icon_paths to avoid stale entries from previous folder during
         // the brief window before items are loaded and icon_cache is synced.
@@ -1246,8 +1280,9 @@ impl AppWindow {
     /// Open the sibling folders dropdown for a given parent path.
     pub fn open_sibling_dropdown(&mut self, parent_path: FilesPath, cx: &mut Context<Self>) {
         self.state.nav_bar.load_siblings(&parent_path);
+        let siblings = self.state.nav_bar.siblings.clone();
         self.state.nav_bar.open_dropdown_parent = Some(parent_path.clone());
-        self.state.active_dialog = Some(DialogType::SiblingDropdown { parent_path });
+        self.state.active_dialog = Some(DialogType::SiblingDropdown { parent_path, siblings });
         cx.notify();
     }
 
@@ -2426,11 +2461,33 @@ impl AppWindow {
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
-            cx.foreground_executor().spawn(async move {
+            let _task = cx.foreground_executor().spawn(async move {
                 let results = Self::do_deep_search(path_clone, query_clone, cancel_flag);
-                weak_entity.update(&mut async_cx, |this, _cx| {
-                    this.state.main_view.search_state.deep_results = results;
+                let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                    this.state.main_view.search_state.deep_results = results.clone();
+
+                    let file_items: Vec<FileItem> = results.iter().map(|res| {
+                        let modified = std::fs::metadata(res.path.as_path()).ok().and_then(|m| m.modified().ok());
+                        FileItem {
+                            name: res.name.clone(),
+                            path: res.path.clone(),
+                            file_type: if res.is_dir { FileType::Directory } else { FileType::File },
+                            size: res.size,
+                            is_hidden: false,
+                            is_system: false,
+                            modified,
+                        }
+                    }).collect();
+
+                    this.state.main_view.items = file_items.clone();
+                    this.state.file_items.update(cx, |m, _| {
+                        m.items = file_items;
+                        m.selected_indices.clear();
+                    });
+                    this.state.main_view.search_state.results = (0..this.state.main_view.items.len()).collect();
+
                     this.state.main_view.search_state.loading = false;
+                    cx.notify();
                 });
             });
         }
@@ -2581,7 +2638,68 @@ impl AppWindow {
             token.store(true, Ordering::Relaxed);
         }
         self.state.main_view.search_state = crate::ui::views::main_view::SearchState::default();
+        self.navigate(self.state.main_view.primary_path.clone(), cx);
         cx.notify();
+    }
+
+    /// Confirm selected suggestion or raw query from the navigation bar/omnibar
+    pub fn handle_suggestion_confirm(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::navigation_bar::{OmnibarMode, SuggestionKind};
+        if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
+            if let Some(suggestion) = self.state.nav_bar.suggestions.get(idx).cloned() {
+                match suggestion.kind {
+                    SuggestionKind::Path { path } => {
+                        self.state.nav_bar.edit_mode = false;
+                        self.state.nav_bar.show_suggestions = false;
+                        self.state.nav_bar.selected_suggestion_index = None;
+                        self.navigate(path, cx);
+                    }
+                    SuggestionKind::SearchHistory { query } => {
+                        self.state.nav_bar.show_suggestions = false;
+                        self.state.nav_bar.selected_suggestion_index = None;
+                        self.state.nav_bar.search_query = query.clone();
+                        self.update_search(query, cx);
+                    }
+                    SuggestionKind::Command { action, .. } => {
+                        self.state.nav_bar.show_suggestions = false;
+                        self.state.nav_bar.selected_suggestion_index = None;
+                        self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                        self.dispatch_action(action, cx);
+                    }
+                }
+                return;
+            }
+        }
+
+        // If no suggestion selected, handle based on current mode
+        match self.state.nav_bar.omnibar_mode {
+            OmnibarMode::Path => {
+                let path_str = self.state.nav_bar.edit_text.trim().to_string();
+                self.state.nav_bar.edit_mode = false;
+                self.state.nav_bar.show_suggestions = false;
+                self.state.nav_bar.selected_suggestion_index = None;
+                if !path_str.is_empty() {
+                    let path = FilesPath::from(std::path::PathBuf::from(path_str));
+                    self.navigate(path, cx);
+                }
+            }
+            OmnibarMode::Search => {
+                self.state.nav_bar.show_suggestions = false;
+                self.state.nav_bar.selected_suggestion_index = None;
+                let query = self.state.nav_bar.search_query.clone();
+                self.update_search(query, cx);
+            }
+            OmnibarMode::CommandPalette => {
+                if let Some(suggestion) = self.state.nav_bar.suggestions.first().cloned() {
+                    if let SuggestionKind::Command { action, .. } = suggestion.kind {
+                        self.state.nav_bar.show_suggestions = false;
+                        self.state.nav_bar.selected_suggestion_index = None;
+                        self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                        self.dispatch_action(action, cx);
+                    }
+                }
+            }
+        }
     }
 
     /// Check if search is currently active
@@ -4337,6 +4455,11 @@ impl AppWindow {
             }
             crate::core::action_registry::ActionKind::Refresh => self.refresh(cx),
             crate::core::action_registry::ActionKind::Search => {
+                self.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Search;
+                self.state.nav_bar.search_query.clear();
+                self.state.nav_bar.show_suggestions = true;
+                let registry = self.state.action_registry.clone();
+                self.state.nav_bar.update_suggestions(&registry);
                 self.state.main_view.search_state.is_searching = true;
                 tracing::debug!("Ctrl+F: Search activated");
             }
@@ -4351,15 +4474,24 @@ impl AppWindow {
                 self.toggle_setting("show_hidden_files", cx)
             }
             crate::core::action_registry::ActionKind::EditPath => {
-                // Set focus to path bar for editing - placeholder
+                self.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Path;
+                self.state.nav_bar.edit_mode = true;
+                self.state.nav_bar.edit_text = self.state.nav_bar.current_path.to_string_lossy().to_string();
+                self.state.nav_bar.show_suggestions = true;
+                let registry = self.state.action_registry.clone();
+                self.state.nav_bar.update_suggestions(&registry);
                 tracing::debug!("Edit path requested (Ctrl+L)");
             }
             crate::core::action_registry::ActionKind::OpenPreviewPane => {
                 self.invoke_third_party_preview(cx)
             }
             crate::core::action_registry::ActionKind::CommandPalette => {
-                // Toggle shortcut overlay / command palette
-                self.toggle_shortcut_overlay(cx);
+                self.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::CommandPalette;
+                self.state.nav_bar.command_query.clear();
+                self.state.nav_bar.show_suggestions = true;
+                let registry = self.state.action_registry.clone();
+                self.state.nav_bar.update_suggestions(&registry);
+                tracing::debug!("Command Palette activated (Ctrl+Shift+P)");
             }
             crate::core::action_registry::ActionKind::NewTab => {
                 tracing::debug!("New tab requested (Ctrl+T) - not yet implemented");
@@ -4633,6 +4765,38 @@ impl Render for AppWindow {
             _ => crate::ui::views::main_view::PaneType::Dual,
         };
 
+        // Dismiss omnibar if window lost focus (e.g. user alt-tabbed or clicked outside)
+        if !_window.is_window_active() {
+            let was_active = self.state.nav_bar.edit_mode
+                || matches!(
+                    self.state.nav_bar.omnibar_mode,
+                    crate::ui::components::navigation_bar::OmnibarMode::Search
+                        | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                );
+            if was_active {
+                self.state.nav_bar.edit_mode = false;
+                self.state.nav_bar.show_suggestions = false;
+                if matches!(
+                    self.state.nav_bar.omnibar_mode,
+                    crate::ui::components::navigation_bar::OmnibarMode::Search
+                ) {
+                    self.state.nav_bar.omnibar_mode =
+                        crate::ui::components::navigation_bar::OmnibarMode::Path;
+                    self.clear_search(cx);
+                } else if matches!(
+                    self.state.nav_bar.omnibar_mode,
+                    crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                ) {
+                    self.state.nav_bar.omnibar_mode =
+                            crate::ui::components::navigation_bar::OmnibarMode::Path;
+                    }
+                    }
+                    // Also close breadcrumb dropdown on window deactivation
+                    if self.state.nav_bar.breadcrumb_dropdown_open {
+                    self.state.nav_bar.close_breadcrumb_dropdown();
+                    }
+                    }
+
         let state = &self.state;
         let _nav = state.navigation.read(cx);
 
@@ -4685,6 +4849,136 @@ impl Render for AppWindow {
                                         );
                                     view.update(cx, |this, cx| {
                                         use crate::ui::components::dialogs::DialogType;
+
+                                        // Intercept Navigation Bar input typing
+                                        let is_nav_bar_active = this.state.nav_bar.edit_mode 
+                                            || matches!(this.state.nav_bar.omnibar_mode, crate::ui::components::navigation_bar::OmnibarMode::Search)
+                                            || matches!(this.state.nav_bar.omnibar_mode, crate::ui::components::navigation_bar::OmnibarMode::CommandPalette);
+
+                                        if is_nav_bar_active {
+                                            use crate::ui::components::navigation_bar::OmnibarMode;
+                                            let key = keystroke.key.as_str();
+                                            match key {
+                                                "escape" | "Escape" => {
+                                                    // Revert and close active modes
+                                                    this.state.nav_bar.edit_mode = false;
+                                                    this.state.nav_bar.show_suggestions = false;
+                                                    if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                                                        this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                                                        this.clear_search(cx);
+                                                    } else if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::CommandPalette) {
+                                                        this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                                                    }
+                                                    cx.notify();
+                                                }
+                                                "enter" | "return" | "Enter" | "Return" => {
+                                                    this.handle_suggestion_confirm(cx);
+                                                    cx.notify();
+                                                }
+                                                "up" | "Up" => {
+                                                    if this.state.nav_bar.show_suggestions && !this.state.nav_bar.suggestions.is_empty() {
+                                                        let current = this.state.nav_bar.selected_suggestion_index.unwrap_or(0);
+                                                        if current > 0 {
+                                                            this.state.nav_bar.selected_suggestion_index = Some(current - 1);
+                                                        } else {
+                                                            this.state.nav_bar.selected_suggestion_index = Some(this.state.nav_bar.suggestions.len() - 1);
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                }
+                                                "down" | "Down" => {
+                                                    if this.state.nav_bar.show_suggestions && !this.state.nav_bar.suggestions.is_empty() {
+                                                        let current = this.state.nav_bar.selected_suggestion_index.unwrap_or(0);
+                                                        if current + 1 < this.state.nav_bar.suggestions.len() {
+                                                            this.state.nav_bar.selected_suggestion_index = Some(current + 1);
+                                                        } else {
+                                                            this.state.nav_bar.selected_suggestion_index = Some(0);
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                }
+                                                "tab" | "Tab" => {
+                                                    if let Some(idx) = this.state.nav_bar.selected_suggestion_index {
+                                                        if let Some(suggestion) = this.state.nav_bar.suggestions.get(idx).cloned() {
+                                                            match suggestion.kind {
+                                                                crate::ui::components::navigation_bar::SuggestionKind::Path { path } => {
+                                                                    this.state.nav_bar.edit_text = path.to_string_lossy().to_string();
+                                                                    let registry = this.state.action_registry.clone();
+                                                                    this.state.nav_bar.update_suggestions(&registry);
+                                                                }
+                                                                crate::ui::components::navigation_bar::SuggestionKind::SearchHistory { query } => {
+                                                                    this.state.nav_bar.search_query = query;
+                                                                    let registry = this.state.action_registry.clone();
+                                                                    this.state.nav_bar.update_suggestions(&registry);
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    }
+                                                }
+                                                "backspace" | "Backspace" => {
+                                                    match this.state.nav_bar.omnibar_mode {
+                                                        OmnibarMode::Path => {
+                                                            this.state.nav_bar.edit_text.pop();
+                                                        }
+                                                        OmnibarMode::Search => {
+                                                            this.state.nav_bar.search_query.pop();
+                                                            let query = this.state.nav_bar.search_query.clone();
+                                                            this.update_search(query, cx);
+                                                        }
+                                                        OmnibarMode::CommandPalette => {
+                                                            this.state.nav_bar.command_query.pop();
+                                                        }
+                                                    }
+                                                    let registry = this.state.action_registry.clone();
+                                                    this.state.nav_bar.update_suggestions(&registry);
+                                                    cx.notify();
+                                                }
+                                                "space" | "Space" => {
+                                                    match this.state.nav_bar.omnibar_mode {
+                                                        OmnibarMode::Path => {
+                                                            this.state.nav_bar.edit_text.push(' ');
+                                                        }
+                                                        OmnibarMode::Search => {
+                                                            this.state.nav_bar.search_query.push(' ');
+                                                            let query = this.state.nav_bar.search_query.clone();
+                                                            this.update_search(query, cx);
+                                                        }
+                                                        OmnibarMode::CommandPalette => {
+                                                            this.state.nav_bar.command_query.push(' ');
+                                                        }
+                                                    }
+                                                    let registry = this.state.action_registry.clone();
+                                                    this.state.nav_bar.update_suggestions(&registry);
+                                                    cx.notify();
+                                                }
+                                                _ => {
+                                                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                                                        if keystroke.key.chars().count() == 1 {
+                                                            match this.state.nav_bar.omnibar_mode {
+                                                                OmnibarMode::Path => {
+                                                                    this.state.nav_bar.edit_text.push_str(&keystroke.key);
+                                                                }
+                                                                OmnibarMode::Search => {
+                                                                    this.state.nav_bar.search_query.push_str(&keystroke.key);
+                                                                    let query = this.state.nav_bar.search_query.clone();
+                                                                    this.update_search(query, cx);
+                                                                }
+                                                                OmnibarMode::CommandPalette => {
+                                                                    this.state.nav_bar.command_query.push_str(&keystroke.key);
+                                                                }
+                                                            }
+                                                            this.state.nav_bar.show_suggestions = true;
+                                                            let registry = this.state.action_registry.clone();
+                                                            this.state.nav_bar.update_suggestions(&registry);
+                                                            cx.notify();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            return;
+                                        }
 
                                         // Intercept AddItem dialog input typing
                                         if let Some(DialogType::AddItem { ref mut name, .. }) = this.state.active_dialog {
@@ -4877,14 +5171,42 @@ impl Render for AppWindow {
                                     .flex_grow()
                                     .h_full()
                                     .w_full()
-                                    .overflow_hidden()
-                                    .child(
-                                        // TabBar (fixed height)
-                                        div().flex_shrink_0().w_full().child(TabBarView::build(
-                                            &state.navigation.read(cx),
-                                            cx.entity(),
-                                        )),
-                                    )
+                                    .child({
+                                        // TabBar (fixed height) — also dismisses omnibar on click
+                                        let view = cx.entity();
+                                        div().flex_shrink_0().w_full()
+                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    let was_active = this.state.nav_bar.edit_mode
+                                                        || matches!(
+                                                            this.state.nav_bar.omnibar_mode,
+                                                            crate::ui::components::navigation_bar::OmnibarMode::Search
+                                                                | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                                                        );
+                                                    if was_active {
+                                                        this.state.nav_bar.edit_mode = false;
+                                                        this.state.nav_bar.show_suggestions = false;
+                                                        if matches!(
+                                                            this.state.nav_bar.omnibar_mode,
+                                                            crate::ui::components::navigation_bar::OmnibarMode::Search
+                                                        ) {
+                                                            this.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Path;
+                                                            this.clear_search(cx);
+                                                        } else if matches!(
+                                                            this.state.nav_bar.omnibar_mode,
+                                                            crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                                                        ) {
+                                                            this.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Path;
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            })
+                                            .child(TabBarView::build(
+                                                &state.navigation.read(cx),
+                                                cx.entity(),
+                                            ))
+                                    })
                                     .child(
                                         // Navigation Bar (fixed height)
                                         div().flex_shrink_0().w_full().child(
@@ -4892,7 +5214,9 @@ impl Render for AppWindow {
                                                 &state.nav_bar,
                                                 can_go_back,
                                                 can_go_forward,
+                                                state.main_view.side_pane.clone(),
                                                 cx.entity(),
+                                                &state.action_registry,
                                             ),
                                         ),
                                     )
@@ -4971,6 +5295,38 @@ impl Render for AppWindow {
                                                         }
                                                     });
                                                 }
+                                            })
+                                            // Dismiss omnibar active state when clicking
+                                            // anywhere in the content / sidebar area.
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let view = view.clone();
+                                                move |_event, _win, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        let was_active = this.state.nav_bar.edit_mode
+                                                            || matches!(
+                                                                this.state.nav_bar.omnibar_mode,
+                                                                crate::ui::components::navigation_bar::OmnibarMode::Search
+                                                                    | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                                                            );
+                                                        if was_active {
+                                                            this.state.nav_bar.edit_mode = false;
+                                                            this.state.nav_bar.show_suggestions = false;
+                                                            if matches!(
+                                                                this.state.nav_bar.omnibar_mode,
+                                                                crate::ui::components::navigation_bar::OmnibarMode::Search
+                                                            ) {
+                                                                this.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Path;
+                                                                this.clear_search(cx);
+                                                            } else if matches!(
+                                                                this.state.nav_bar.omnibar_mode,
+                                                                crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                                                            ) {
+                                                                this.state.nav_bar.omnibar_mode = crate::ui::components::navigation_bar::OmnibarMode::Path;
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                }
                                             });
                                         if state.sidebar_visible {
                                             #[cfg(windows)]
@@ -4994,7 +5350,6 @@ impl Render for AppWindow {
                                                 .flex_grow()
                                                 .w_full()
                                                 .h_full()
-                                                .overflow_hidden()
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let view = cx.entity();
                                                     move |_event, _window, cx| {
@@ -5065,7 +5420,13 @@ impl Render for AppWindow {
             }
         }
 
-        let mut base = div().relative().w_full().h_full();
+        let mut base = {
+            let _view = cx.entity();
+            div()
+                .relative()
+                .w_full()
+                .h_full()
+        };
         if let Some(dialog) = &state.active_dialog {
             // Pre-read settings dialog data to avoid BorrowMutError during render tree construction
             let settings_data = match dialog {
@@ -5110,6 +5471,145 @@ impl Render for AppWindow {
                             cx.entity(),
                         )
                     });
+                }
+            }
+        }
+
+        // Render omnibar suggestions dropdown at app root level (outside nav bar's
+        // fixed-height container) so it can extend below the nav bar.
+        if state.nav_bar.show_suggestions && !state.nav_bar.suggestions.is_empty() {
+            // Position dropdown below the nav bar:
+            // TabBar=40px + NavBar=44px = 84px from top
+            // NavBar padding=12px + 4 buttons(32px each) + 3 gaps(2px) + pill_gap(8px) = 154px from left
+            let nav_btn_area = 4.0 * 32.0 + 3.0 * 2.0; // 134px
+            let pill_left = 12.0 + nav_btn_area + 8.0;  // 154px
+            let dropdown_top = 40.0 + 44.0;               // 84px
+            let vp = _window.viewport_size();
+            let dropdown_width = vp.width - px(pill_left) - px(12.0); // minus right padding
+
+            let dropdown = build_suggestions_dropdown(
+                &state.nav_bar,
+                &state.action_registry,
+                cx.entity(),
+            );
+            // The wrapper dismisses the omnibar when clicked. Individual suggestion
+            // rows inside the dropdown call stop_propagation(), so their clicks are
+            // handled by the row handlers (navigation / command execution) instead.
+            let view = cx.entity();
+            base = base.child(
+                div()
+                    .absolute()
+                    .left(px(pill_left))
+                    .top(px(dropdown_top))
+                    .w(dropdown_width)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.state.nav_bar.edit_mode = false;
+                            this.state.nav_bar.show_suggestions = false;
+                            if matches!(
+                                this.state.nav_bar.omnibar_mode,
+                                crate::ui::components::navigation_bar::OmnibarMode::Search
+                            ) {
+                                this.state.nav_bar.omnibar_mode =
+                                    crate::ui::components::navigation_bar::OmnibarMode::Path;
+                                this.clear_search(cx);
+                            } else if matches!(
+                                this.state.nav_bar.omnibar_mode,
+                                crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+                            ) {
+                                this.state.nav_bar.omnibar_mode =
+                                    crate::ui::components::navigation_bar::OmnibarMode::Path;
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .child(dropdown),
+            );
+        }
+
+        // Render breadcrumb sibling dropdown at app root level (like tooltip pattern)
+        if state.nav_bar.breadcrumb_dropdown_open {
+            if let Some((_dx, _dy)) = state.nav_bar.breadcrumb_dropdown_position {
+                let breadcrumb_focus = cx.focus_handle();
+                if let Some(bd_dropdown) = build_breadcrumb_dropdown(
+                    &state.nav_bar,
+                    cx.entity(),
+                    breadcrumb_focus.clone(),
+                ) {
+                    // Request focus so keyboard events go to the dropdown
+                    _window.focus(&breadcrumb_focus);
+
+                    let view = cx.entity();
+                    let view2 = cx.entity();
+                    base = base.child(
+                        bd_dropdown
+                            .track_focus(&breadcrumb_focus)
+                            .on_mouse_down_out(move |_, _, cx| {
+                                view2.update(cx, |this, cx| {
+                                    this.state.nav_bar.close_breadcrumb_dropdown();
+                                    cx.notify();
+                                });
+                            })
+                            .on_scroll_wheel(move |event: &gpui::ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
+                                // Stop scroll propagation so main view doesn't scroll
+                                cx.stop_propagation();
+                            })
+                            .on_key_down(move |event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut App| {
+                                let keystroke = &event.keystroke;
+                                view.update(cx, |this, cx| {
+                                    if !this.state.nav_bar.breadcrumb_dropdown_open {
+                                        return;
+                                    }
+                                    let key = keystroke.key.as_str();
+                                    match key {
+                                        "escape" | "Escape" => {
+                                            this.state.nav_bar.close_breadcrumb_dropdown();
+                                            cx.notify();
+                                        }
+                                        "enter" | "return" | "Enter" | "Return" => {
+                                            if let Some(idx) = this.state.nav_bar.breadcrumb_dropdown_selected {
+                                                let filtered = this.state.nav_bar.breadcrumb_dropdown_filtered_siblings();
+                                                if let Some((_, path)) = filtered.get(idx) {
+                                                    let path = (*path).clone();
+                                                    this.state.nav_bar.close_breadcrumb_dropdown();
+                                                    this.navigate(path, cx);
+                                                }
+                                            }
+                                        }
+                                        "up" | "Up" => {
+                                            let count = this.state.nav_bar.breadcrumb_dropdown_filtered_siblings().len();
+                                            if count > 0 {
+                                                let current = this.state.nav_bar.breadcrumb_dropdown_selected.unwrap_or(0);
+                                                this.state.nav_bar.breadcrumb_dropdown_selected = Some(if current > 0 { current - 1 } else { count - 1 });
+                                                cx.notify();
+                                            }
+                                        }
+                                        "down" | "Down" => {
+                                            let count = this.state.nav_bar.breadcrumb_dropdown_filtered_siblings().len();
+                                            if count > 0 {
+                                                let current = this.state.nav_bar.breadcrumb_dropdown_selected.unwrap_or(0);
+                                                this.state.nav_bar.breadcrumb_dropdown_selected = Some(if current + 1 < count { current + 1 } else { 0 });
+                                                cx.notify();
+                                            }
+                                        }
+                                        "backspace" | "Backspace" => {
+                                            this.state.nav_bar.breadcrumb_dropdown_filter.pop();
+                                            this.state.nav_bar.breadcrumb_dropdown_selected = Some(0);
+                                            cx.notify();
+                                        }
+                                        _ => {
+                                            if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                                                if keystroke.key.chars().count() == 1 {
+                                                    this.state.nav_bar.breadcrumb_dropdown_filter.push_str(&keystroke.key);
+                                                    this.state.nav_bar.breadcrumb_dropdown_selected = Some(0);
+                                                    cx.notify();
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }),
+                    );
                 }
             }
         }
