@@ -2,13 +2,11 @@ use nucleo::{Config, Matcher, Utf32Str};
 use std::sync::Mutex;
 
 /// High-performance fuzzy search service for the UI
-#[allow(dead_code)]
 pub struct SearchService {
     matcher: Mutex<Matcher>,
     config: Config,
 }
 
-#[allow(dead_code)]
 impl SearchService {
     pub fn new() -> Self {
         let config = Config::DEFAULT;
@@ -156,8 +154,15 @@ impl SearchService {
             .as_secs() as i64;
         let day = 86400i64;
         match value {
-            "yesterday" => filters.date_after = Some(now - day * 2),
-            "today" => filters.date_after = Some(now - day),
+            "yesterday" => {
+                filters.date_after = Some(now - day * 2);
+                filters.date_before = Some(now - day);
+            }
+            "today" => {
+                // Start of today: current time minus time since midnight
+                let secs_since_midnight = now % day;
+                filters.date_after = Some(now - secs_since_midnight);
+            }
             "thisweek" => filters.date_after = Some(now - day * 7),
             "thismonth" => filters.date_after = Some(now - day * 30),
             "thisyear" => filters.date_after = Some(now - day * 365),

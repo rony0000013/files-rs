@@ -12,14 +12,5 @@ pub mod file_too_large_dialog;
 pub mod properties_mapping;
 pub mod shortcut_dialog;
 
-// Re-export for convenience
-pub use adaptive_view::*;
-pub use archive_dialog::*;
-pub use clone_repo_dialog::*;
-pub use conflict_dialog::*;
-pub use credential_dialog::*;
-pub use custom_properties_dialog::*;
-pub use decompress_dialog::*;
-pub use file_too_large_dialog::*;
-pub use properties_mapping::*;
-pub use shortcut_dialog::*;
+// No glob re-exports — all access goes through specific module paths
+// e.g., crate::ui::dialog_services::archive_dialog::ArchiveFormat

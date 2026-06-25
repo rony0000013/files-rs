@@ -11,9 +11,11 @@ impl Logger {
     /// Initializes the global tracing subscriber with both console and file output.
     /// The file output uses daily rotation.
     pub fn init() -> Self {
-        // 1. Define the directory for logs
-        // In a real app, this would be in the AppData folder via the `directories` crate
-        let log_dir = PathBuf::from("logs");
+        // 1. Define the directory for logs using the directories crate
+        let log_dir = directories::ProjectDirs::from("", "", "files-rs")
+            .map(|dirs| dirs.data_dir().join("logs"))
+            .unwrap_or_else(|| PathBuf::from("logs"));
+        let _ = std::fs::create_dir_all(&log_dir);
 
         // 2. Setup rolling file appender (daily rotation)
         let file_appender = tracing_appender::rolling::daily(log_dir, "files-rs.log");

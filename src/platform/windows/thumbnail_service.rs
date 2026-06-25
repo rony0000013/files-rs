@@ -1,6 +1,5 @@
 use crate::core::path_util::FilesPath;
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[cfg(windows)]
@@ -30,7 +29,7 @@ impl ThumbnailSize {
 /// Provides thumbnails for files
 pub struct ThumbnailService {
     #[cfg(windows)]
-    cache: Mutex<HashMap<FilesPath, ThumbnailResult>>,
+    cache: Mutex<lru::LruCache<FilesPath, ThumbnailResult>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +63,7 @@ impl ThumbnailService {
     pub fn new() -> Self {
         Self {
             #[cfg(windows)]
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(2000).unwrap())),
         }
     }
 
@@ -76,9 +75,8 @@ impl ThumbnailService {
         use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
         use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
         use windows::Win32::UI::Shell::{
-            SHGetFileInfoW, SHGetImageList, SHFILEINFOW,
-            SHGFI_OPENICON, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES,
-            SHIL_JUMBO,
+            SHGetFileInfoW, SHGetImageList, SHFILEINFOW, SHGFI_OPENICON, SHGFI_SYSICONINDEX,
+            SHGFI_USEFILEATTRIBUTES, SHIL_JUMBO,
         };
         use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
@@ -103,13 +101,9 @@ impl ThumbnailService {
             return None;
         }
 
-        let image_list = unsafe {
-            SHGetImageList::<IImageList>(SHIL_JUMBO as i32).ok()?
-        };
+        let image_list = unsafe { SHGetImageList::<IImageList>(SHIL_JUMBO as i32).ok()? };
 
-        let hicon = unsafe {
-            image_list.GetIcon(info.iIcon, ILD_TRANSPARENT.0).ok()?
-        };
+        let hicon = unsafe { image_list.GetIcon(info.iIcon, ILD_TRANSPARENT.0).ok()? };
 
         unsafe {
             let result = Self::extract_icon_pixels(hicon, cx, cy);
@@ -128,8 +122,8 @@ impl ThumbnailService {
         {
             #[cfg(windows)]
             {
-                let cache = self.cache.lock().unwrap();
-                if let Some(cached) = cache.get(path) {
+                let mut cache = self.cache.lock().unwrap();
+                if let Some(cached) = cache.get(&path) {
                     tracing::debug!("Thumbnail cache hit for {:?}", path);
                     return Ok(cached.clone());
                 }
@@ -144,7 +138,7 @@ impl ThumbnailService {
             #[cfg(windows)]
             {
                 let mut cache = self.cache.lock().unwrap();
-                cache.insert(path.clone(), result.clone());
+                cache.put(path.clone(), result.clone());
             }
         }
 
@@ -196,16 +190,15 @@ impl ThumbnailService {
         // This always requests 256×256 and downscales, so we get the best
         // available source at native resolution before any scaling happens.
         #[cfg(windows)]
-        if let Ok(result) = Self::extract_via_shell_item_factory(
-            windows::core::PCWSTR(wide_path.as_ptr()),
-            cx,
-            cy,
-        ) {
+        if let Ok(result) =
+            Self::extract_via_shell_item_factory(windows::core::PCWSTR(wide_path.as_ptr()), cx, cy)
+        {
             // ISIF succeeded — but if it returned a small result (much smaller
             // than target), the image quality will be degraded. Check the actual
             // returned dimensions: if either axis is < 80% of target, the icon
             // was upscaled and looks blurry. Fall through to SHIL_JUMBO instead.
-            if result.width >= (cx as f32 * 0.8) as u32 && result.height >= (cy as f32 * 0.8) as u32 {
+            if result.width >= (cx as f32 * 0.8) as u32 && result.height >= (cy as f32 * 0.8) as u32
+            {
                 return Ok(result);
             }
             // ISIF returned a small icon — fall through to SHIL_JUMBO which
@@ -246,16 +239,15 @@ impl ThumbnailService {
                     if let Ok(hicon) =
                         unsafe { image_list.GetIcon(sys_info.iIcon, ILD_TRANSPARENT.0) }
                     {
-                            if !hicon.is_invalid() {
-                            if let Some(pixels) =
-                                unsafe { Self::extract_icon_pixels(hicon, cx, cy) }
-                            {
-                                unsafe {
-                                    let _ =
-                                        windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
-                                }
-                                if pixels.len() >= (cx * cy * 4) as usize {
-                                    let mut centered = pixels;
+                        if !hicon.is_invalid() {
+                            let pixels = unsafe { Self::extract_icon_pixels(hicon, cx, cy) };
+                            // Destroy icon immediately after extraction — single cleanup point
+                            unsafe {
+                                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                            }
+                            if let Some(data) = pixels {
+                                if data.len() >= (cx * cy * 4) as usize {
+                                    let mut centered = data;
                                     Self::enlarge_icon_content(&mut centered, cx, cy);
                                     return Ok(ThumbnailResult {
                                         data: centered,
@@ -265,9 +257,7 @@ impl ThumbnailService {
                                     });
                                 }
                             }
-                            unsafe {
-                                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
-                            }
+                            // If pixel extraction failed or data too small, fall through to next fallback
                         }
                     }
                 }
@@ -325,12 +315,8 @@ impl ThumbnailService {
             data[offset + 3] = 255; // Alpha
         }
 
-        // Clean up icon if we got one (already destroyed above if extracted)
-        if ret != 0 && !info.hIcon.is_invalid() {
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(info.hIcon);
-            }
-        }
+        // Icon handle was already destroyed at line ~300 after pixel extraction.
+        // No additional cleanup needed.
 
         Ok(ThumbnailResult {
             data,
@@ -381,7 +367,10 @@ impl ThumbnailService {
         //   - For folders: the standard folder icon
         let nat_w: i32 = 256;
         let nat_h: i32 = 256;
-        let sz = SIZE { cx: nat_w, cy: nat_h };
+        let sz = SIZE {
+            cx: nat_w,
+            cy: nat_h,
+        };
         let flags = SIIGBF_BIGGERSIZEOK;
 
         let hbitmap: HBITMAP = unsafe {
@@ -395,11 +384,12 @@ impl ThumbnailService {
         }
 
         // Read pixel data from the HBITMAP
-        let (pixel_data, bmp_w, bmp_h) =
-            unsafe { Self::read_hbitmap_pixels(hbitmap) }
-                .ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
+        let (pixel_data, bmp_w, bmp_h) = unsafe { Self::read_hbitmap_pixels(hbitmap) }
+            .ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
 
-        unsafe { let _ = DeleteObject(hbitmap); };
+        unsafe {
+            let _ = DeleteObject(hbitmap);
+        };
 
         // Core quality fix: if we got 256×256 from ISIF, downscale to (cx × cy)
         // with Lanczos3. If it's already exactly (cx × cy), return directly.
@@ -429,7 +419,9 @@ impl ThumbnailService {
             });
         }
 
-        Err(anyhow!("Failed to resize/pad IShellItemImageFactory result"))
+        Err(anyhow!(
+            "Failed to resize/pad IShellItemImageFactory result"
+        ))
     }
 
     /// Read raw BGRA pixel data from a Windows HBITMAP using GetDIBits.
@@ -518,7 +510,10 @@ impl ThumbnailService {
         target_w: u32,
         target_h: u32,
     ) -> Option<Vec<u8>> {
-        if source_w == 0 || source_h == 0 || target_w == 0 || target_h == 0
+        if source_w == 0
+            || source_h == 0
+            || target_w == 0
+            || target_h == 0
             || pixels.len() < (source_w * source_h * 4) as usize
         {
             return None;
@@ -551,8 +546,7 @@ impl ThumbnailService {
             chunk.swap(0, 2);
         }
 
-        let src_img =
-            image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(source_w, source_h, rgba)?;
+        let src_img = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(source_w, source_h, rgba)?;
 
         // Resize with Lanczos3 to the fitted size
         let resized = if source_w != scaled_w || source_h != scaled_h {
@@ -605,7 +599,8 @@ impl ThumbnailService {
             let src_row_start = y * w_u * 4;
             let dst_row_start = ((y_off + y) * cw_u + x_off) * 4;
             let copy_len = w_u * 4;
-            if dst_row_start + copy_len <= canvas.len() && src_row_start + copy_len <= pixels.len() {
+            if dst_row_start + copy_len <= canvas.len() && src_row_start + copy_len <= pixels.len()
+            {
                 canvas[dst_row_start..dst_row_start + copy_len]
                     .copy_from_slice(&pixels[src_row_start..src_row_start + copy_len]);
             }
@@ -696,7 +691,11 @@ impl ThumbnailService {
                                 // Successfully extracted pixel data
                                 // Resize if needed to match requested dimensions
                                 if bmp_width == width && bmp_height == height {
-                                    return Some(pixel_data);
+                                        let _ = DeleteObject(hbitmap);
+                                        if !icon_info.hbmMask.is_invalid() {
+                                            let _ = DeleteObject(icon_info.hbmMask);
+                                        }
+                                        return Some(pixel_data);
                                 } else {
                                     // Lanczos3 interpolation via the image crate (high quality, minimal aliasing)
                                     use image::imageops::FilterType;
@@ -720,6 +719,10 @@ impl ThumbnailService {
                                             chunk.swap(0, 2);
                                         }
                                         let resized = resized_img.into_raw();
+                                        let _ = DeleteObject(hbitmap);
+                                        if !icon_info.hbmMask.is_invalid() {
+                                            let _ = DeleteObject(icon_info.hbmMask);
+                                        }
                                         return Some(resized);
                                     }
                                 }
@@ -764,10 +767,18 @@ impl ThumbnailService {
             for x in 0..w {
                 let alpha_idx = (y * w + x) * 4 + 3;
                 if pixels[alpha_idx] > 0 {
-                    if x < min_x { min_x = x; }
-                    if y < min_y { min_y = y; }
-                    if x > max_x { max_x = x; }
-                    if y > max_y { max_y = y; }
+                    if x < min_x {
+                        min_x = x;
+                    }
+                    if y < min_y {
+                        min_y = y;
+                    }
+                    if x > max_x {
+                        max_x = x;
+                    }
+                    if y > max_y {
+                        max_y = y;
+                    }
                 }
             }
         }
@@ -781,9 +792,7 @@ impl ThumbnailService {
         let content_h = max_y - min_y + 1;
 
         // Skip if content already fills most of the canvas (>= 80% in both dims)
-        if (content_w as f64) >= (w as f64 * 0.80)
-            && (content_h as f64) >= (h as f64 * 0.80)
-        {
+        if (content_w as f64) >= (w as f64 * 0.80) && (content_h as f64) >= (h as f64 * 0.80) {
             return;
         }
 
@@ -801,14 +810,11 @@ impl ThumbnailService {
 
         // Scale up content to fill the full canvas using high-quality Lanczos3 interpolation
         if let Some(src_img) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
-            content_w as u32, content_h as u32, content,
+            content_w as u32,
+            content_h as u32,
+            content,
         ) {
-            let scaled = image::imageops::resize(
-                &src_img,
-                width,
-                height,
-                FilterType::Lanczos3,
-            );
+            let scaled = image::imageops::resize(&src_img, width, height, FilterType::Lanczos3);
 
             // Convert back from RGBA to BGRA
             let mut result = scaled.into_raw();
@@ -844,7 +850,9 @@ impl ThumbnailService {
 
         // Convert to RGBA for image crate processing
         let mut rgba = pixels.to_vec();
-        for chunk in rgba.chunks_exact_mut(4) { chunk.swap(0, 2); }
+        for chunk in rgba.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
 
         let src_img = match image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, rgba.clone()) {
             Some(img) => img,
@@ -858,15 +866,20 @@ impl ThumbnailService {
         let mut sharpened = image::ImageBuffer::new(w, h);
         for (x, y, pixel) in src_img.enumerate_pixels() {
             let bp = blurred.get_pixel(x, y);
-            let r = (pixel[0] as f64 + (pixel[0] as f64 - bp[0] as f64) * amount).clamp(0.0, 255.0) as u8;
-            let g = (pixel[1] as f64 + (pixel[1] as f64 - bp[1] as f64) * amount).clamp(0.0, 255.0) as u8;
-            let b = (pixel[2] as f64 + (pixel[2] as f64 - bp[2] as f64) * amount).clamp(0.0, 255.0) as u8;
+            let r = (pixel[0] as f64 + (pixel[0] as f64 - bp[0] as f64) * amount).clamp(0.0, 255.0)
+                as u8;
+            let g = (pixel[1] as f64 + (pixel[1] as f64 - bp[1] as f64) * amount).clamp(0.0, 255.0)
+                as u8;
+            let b = (pixel[2] as f64 + (pixel[2] as f64 - bp[2] as f64) * amount).clamp(0.0, 255.0)
+                as u8;
             sharpened.put_pixel(x, y, image::Rgba([r, g, b, pixel[3]]));
         }
 
         // Convert back to BGRA
         let mut result = sharpened.into_raw();
-        for chunk in result.chunks_exact_mut(4) { chunk.swap(0, 2); }
+        for chunk in result.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
         pixels.copy_from_slice(&result);
     }
 
@@ -968,10 +981,23 @@ impl ThumbnailService {
         let folder_icon_bgra = Self::get_open_folder_icon(path, cx, cy)
             .ok_or_else(|| anyhow!("Failed to get folder icon"))?;
 
-        // 3. Compose
-        let folder_icon = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, folder_icon_bgra)
+        // 3. Compose — swap BGRA→RGBA before creating ImageBuffer
+        let mut folder_icon_rgba = folder_icon_bgra;
+        for pixel in folder_icon_rgba.chunks_exact_mut(4) {
+            let tmp = pixel[0]; // B
+            pixel[0] = pixel[2]; // R → B position
+            pixel[2] = tmp; // B → R position
+        }
+        let folder_icon = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, folder_icon_rgba)
             .ok_or_else(|| anyhow!("Failed to parse folder icon buffer"))?;
-        let file_content = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, file_thumb.data)
+        // file_thumb.data is already in BGRA format from extract_thumbnail, swap too
+        let mut file_rgba = file_thumb.data;
+        for pixel in file_rgba.chunks_exact_mut(4) {
+            let tmp = pixel[0];
+            pixel[0] = pixel[2];
+            pixel[2] = tmp;
+        }
+        let file_content = ImageBuffer::<image::Rgba<u8>, _>::from_raw(cx, cy, file_rgba)
             .ok_or_else(|| anyhow!("Failed to parse content thumbnail buffer"))?;
 
         let composed = compose_folder_thumbnail(&folder_icon, &file_content);
@@ -988,7 +1014,7 @@ impl ThumbnailService {
     pub fn get_cached(&self, path: &FilesPath) -> Option<ThumbnailResult> {
         #[cfg(windows)]
         {
-            let cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().unwrap();
             cache.get(path).cloned()
         }
         #[cfg(not(windows))]

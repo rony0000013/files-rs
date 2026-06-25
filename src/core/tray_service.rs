@@ -40,6 +40,9 @@ pub struct SystemTrayManager {
     pub config: SystemTrayConfig,
     /// Path to the PowerShell script if tray is active
     script_path: Option<std::path::PathBuf>,
+    /// PID of the spawned PowerShell process (for targeted kill)
+    #[cfg(target_os = "windows")]
+    powershell_pid: Option<u32>,
 }
 
 impl SystemTrayManager {
@@ -49,6 +52,8 @@ impl SystemTrayManager {
             icon_visible: false,
             config: SystemTrayConfig::default(),
             script_path: None,
+            #[cfg(target_os = "windows")]
+            powershell_pid: None,
         }
     }
 
@@ -58,6 +63,8 @@ impl SystemTrayManager {
             icon_visible: false,
             config,
             script_path: None,
+            #[cfg(target_os = "windows")]
+            powershell_pid: None,
         }
     }
 
@@ -91,9 +98,13 @@ impl SystemTrayManager {
                 .spawn();
 
             match result {
-                Ok(_) => {
+                Ok(child) => {
                     self.icon_visible = true;
                     self.script_path = Some(script_path);
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.powershell_pid = Some(child.id());
+                    }
                     tracing::info!("System tray icon initialized via PowerShell");
                     Ok(())
                 }
@@ -108,24 +119,23 @@ impl SystemTrayManager {
         }
     }
 
-    /// Remove the tray icon by killing the PowerShell process.
-    pub fn remove_icon(&self) -> Result<(), String> {
+    /// Remove the tray icon by killing the specific PowerShell process.
+    pub fn remove_icon(&mut self) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
             if !self.icon_visible {
                 return Ok(());
             }
-            // Kill any powershell tray processes
-            let _ = std::process::Command::new("taskkill")
-                .args([
-                    "/F",
-                    "/IM",
-                    "powershell.exe",
-                    "/FI",
-                    "WindowTitle eq Files-Rust Tray",
-                ])
-                .output();
-            tracing::info!("System tray icon removed");
+            // Kill only the specific PowerShell process we spawned, not all powershell.exe
+            if let Some(pid) = self.powershell_pid.take() {
+                let pid_str = pid.to_string();
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid_str])
+                    .output();
+                tracing::info!("System tray icon removed (killed PID {})", pid);
+            } else {
+                tracing::warn!("No PowerShell PID tracked — cannot kill tray process");
+            }
         }
         Ok(())
     }

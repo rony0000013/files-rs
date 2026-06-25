@@ -29,16 +29,7 @@ pub enum FolderOrder {
     Interleaved,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum GroupColumn {
-    Name,
-    DateModified,
-    DateCreated,
-    Size,
-    FileType,
-    SyncStatus,
-    FileTag,
-}
+use crate::config::config::GroupColumn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabState {
@@ -56,6 +47,9 @@ pub struct TabState {
     pub history_forward: VecDeque<FilesPath>,
     pub secondary_pane_path: Option<FilesPath>,
     pub selection: Vec<FilesPath>,
+    /// The view target for this tab (Directory, Home, Settings, etc.)
+    #[serde(default)]
+    pub target: crate::ui::views::types::ViewTarget,
 }
 
 const MAX_HISTORY: usize = 50;
@@ -73,6 +67,7 @@ impl TabState {
             history_forward: VecDeque::with_capacity(MAX_HISTORY),
             secondary_pane_path: None,
             selection: Vec::new(),
+            target: crate::ui::views::types::ViewTarget::Directory(path),
         }
     }
 
@@ -88,6 +83,7 @@ impl TabState {
             history_forward: VecDeque::with_capacity(MAX_HISTORY),
             secondary_pane_path: None,
             selection: Vec::new(),
+            target: crate::ui::views::types::ViewTarget::Directory(path),
         }
     }
 
@@ -199,7 +195,20 @@ impl TabManagerState {
     }
 
     pub fn add_tab_with_zoom(&mut self, path: FilesPath, mode: ViewMode, zoom_level: f32) {
-        self.tabs.push(TabState::new_with_zoom(path, mode, zoom_level));
+        self.tabs
+            .push(TabState::new_with_zoom(path, mode, zoom_level));
+        self.active_tab_index = self.tabs.len() - 1;
+    }
+
+    /// Add a new tab that displays the Settings page.
+    pub fn add_settings_tab(&mut self) {
+        use crate::ui::views::types::ViewTarget;
+        let home = directories::UserDirs::new()
+            .map(|d| FilesPath::new(d.home_dir().to_path_buf()))
+            .unwrap_or_else(|| FilesPath::from("C:\\"));
+        let mut tab = TabState::new(home, ViewMode::Details);
+        tab.target = ViewTarget::Settings;
+        self.tabs.push(tab);
         self.active_tab_index = self.tabs.len() - 1;
     }
 
@@ -212,7 +221,10 @@ impl TabManagerState {
         if self.closed_tabs.len() > MAX_CLOSED_TABS {
             self.closed_tabs.pop_back();
         }
-        if self.active_tab_index >= self.tabs.len() {
+        // Adjust active_tab_index when closing a tab before the active one
+        if index < self.active_tab_index {
+            self.active_tab_index -= 1;
+        } else if self.active_tab_index >= self.tabs.len() {
             self.active_tab_index = self.tabs.len() - 1;
         }
     }
@@ -886,7 +898,7 @@ mod tests {
         assert_eq!(GroupColumn::Size, GroupColumn::Size);
         assert_eq!(GroupColumn::FileType, GroupColumn::FileType);
         assert_eq!(GroupColumn::SyncStatus, GroupColumn::SyncStatus);
-        assert_eq!(GroupColumn::FileTag, GroupColumn::FileTag);
+        assert_eq!(GroupColumn::Tag, GroupColumn::Tag);
     }
 
     // === PaneLayout Tests ===

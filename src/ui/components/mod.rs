@@ -5,6 +5,9 @@ pub mod breadcrumb_bar;
 pub mod clipboard_manager;
 pub mod compact_overlay;
 pub mod dialogs;
+pub mod dialogs_context;
+pub mod dialogs_panels;
+pub mod dialogs_settings;
 pub mod empty_states;
 pub mod icon_renderer;
 pub mod navigation_bar;
@@ -19,3 +22,6 @@ pub mod status_center;
 pub mod tab_bar;
 pub mod tab_interactions;
 pub mod toolbar;
+
+// No glob re-exports — all access goes through specific module paths
+// e.g., crate::ui::components::dialogs::DialogType

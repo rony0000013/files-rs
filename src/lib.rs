@@ -1,6 +1,10 @@
 #![recursion_limit = "4096"]
 
 pub mod app;
+mod app_actions;
+mod app_navigation;
+mod app_render;
+pub mod app_state;
 pub mod config;
 pub mod core;
 pub mod domain;
@@ -9,10 +13,5 @@ pub mod platform;
 pub mod storage;
 pub mod ui;
 
-pub use config::*;
-pub use core::*;
-pub use domain::*;
-pub use localization::*;
-pub use platform::*;
-pub use storage::*;
-pub use ui::*;
+// Explicit re-exports for types used via `files_rs::TypeName` in main.rs
+// All other access goes through the module paths (e.g., files_rs::core::path_util::FilesPath)

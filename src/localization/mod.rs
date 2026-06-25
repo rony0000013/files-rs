@@ -1,2 +1,3 @@
 pub mod localization;
-pub use localization::*;
+// Explicit re-export
+pub use localization::LocalizationManager;

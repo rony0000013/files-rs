@@ -416,7 +416,7 @@ impl LauncherService {
 
     /// Simple percent-decoding for URLs.
     fn url_decode(input: &str) -> String {
-        let mut result = String::with_capacity(input.len());
+        let mut bytes = Vec::with_capacity(input.len());
         let mut chars = input.chars();
 
         while let Some(c) = chars.next() {
@@ -424,21 +424,21 @@ impl LauncherService {
                 let hex: String = chars.by_ref().take(2).collect();
                 if hex.len() == 2 {
                     if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                        result.push(byte as char);
+                        bytes.push(byte);
                         continue;
                     }
                 }
                 // Invalid percent encoding — keep as-is
-                result.push('%');
-                result.push_str(&hex);
+                bytes.push(b'%');
+                bytes.extend_from_slice(hex.as_bytes());
             } else if c == '+' {
-                result.push(' ');
+                bytes.push(b' ');
             } else {
-                result.push(c);
+                bytes.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
             }
         }
 
-        result
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     /// Basic path unescaping (currently just returns as-is).

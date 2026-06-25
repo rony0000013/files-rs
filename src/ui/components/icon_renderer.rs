@@ -1,11 +1,12 @@
 use lucide_rs::Lucide;
-use once_cell::sync::Lazy;
 use resvg::tiny_skia::Pixmap;
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
-/// Cache for rendered icon textures
-static ICON_CACHE: Lazy<Mutex<HashMap<String, Vec<u8>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+/// Cache for rendered icon textures (LRU-bounded to prevent unbounded memory growth)
+static ICON_CACHE: LazyLock<Mutex<lru::LruCache<String, Vec<u8>>>> =
+    LazyLock::new(|| Mutex::new(lru::LruCache::new(NonZeroUsize::new(2000).unwrap())));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ThumbnailRenderer
@@ -74,7 +75,7 @@ impl IconRenderer {
         let key = format!("{:?}_{}", icon, size);
 
         // Check cache first
-        if let Ok(cache) = ICON_CACHE.lock() {
+        if let Ok(mut cache) = ICON_CACHE.lock() {
             if let Some(data) = cache.get(&key) {
                 return data.clone();
             }
@@ -83,14 +84,26 @@ impl IconRenderer {
         // Get SVG data from lucide-rs
         let svg_data = icon.to_string();
 
-        // Parse SVG
-        let tree =
-            resvg::usvg::Tree::from_data(svg_data.as_bytes(), &resvg::usvg::Options::default())
-                .map_err(|e| format!("Failed to parse SVG: {}", e))
-                .unwrap();
+        // Parse SVG — return empty pixels if malformed
+        let tree = match resvg::usvg::Tree::from_data(
+            svg_data.as_bytes(),
+            &resvg::usvg::Options::default(),
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("Failed to parse SVG for {:?}: {}", icon, e);
+                return vec![0u8; (size * size * 4) as usize];
+            }
+        };
 
-        // Create pixmap
-        let mut pixmap = Pixmap::new(size, size).unwrap();
+        // Create pixmap — return empty pixels if size is invalid
+        let mut pixmap = match Pixmap::new(size, size) {
+            Some(p) => p,
+            None => {
+                tracing::warn!("Failed to create {}x{} pixmap for {:?}", size, size, icon);
+                return vec![0u8; (size * size * 4) as usize];
+            }
+        };
 
         // Render using the high-level resvg::render function
         let transform = resvg::tiny_skia::Transform::from_scale(
@@ -101,9 +114,9 @@ impl IconRenderer {
 
         let pixel_data = pixmap.data().to_vec();
 
-        // Cache it
+        // Cache it (LRU will evict oldest entries when capacity is reached)
         if let Ok(mut cache) = ICON_CACHE.lock() {
-            cache.insert(key, pixel_data.clone());
+            cache.put(key, pixel_data.clone());
         }
 
         pixel_data

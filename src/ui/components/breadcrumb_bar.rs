@@ -171,21 +171,45 @@ impl BreadcrumbBarService {
     pub fn build_segments(&self, path: &PathBuf, _current_index: usize) -> Vec<BreadcrumbSegment> {
         let mut segments = Vec::new();
 
+        // Detect Windows root paths (e.g., "C:\", "D:\")
+        let path_str = path.to_string_lossy();
+        let is_windows_root = path_str.len() == 3
+            && path_str.ends_with(":\\")
+            && path_str
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false);
+
         // For root path, just return one segment
-        if path == &PathBuf::from("/") || path.to_string_lossy() == "/" {
+        if path == &PathBuf::from("/") || path_str == "/" || is_windows_root {
+            let label = if is_windows_root {
+                path_str.to_string()
+            } else {
+                "/".to_string()
+            };
             return vec![BreadcrumbSegment {
-                path: PathBuf::from("/"),
-                label: "/".to_string(),
+                path: path.clone(),
+                label,
                 is_draggable: false,
                 is_current: true,
             }];
         }
 
-        // Build ancestors (root to current)
+        // Build ancestors (root to current) — push in order, then reverse
         let mut ancestor = path.parent().map(|p| p.to_path_buf());
         while let Some(parent) = ancestor {
-            // Stop at root
-            if parent == PathBuf::from("/") {
+            let parent_str = parent.to_string_lossy();
+            let parent_is_windows_root = parent_str.len() == 3
+                && parent_str.ends_with(":\\")
+                && parent_str
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic())
+                    .unwrap_or(false);
+
+            // Stop at root (Unix or Windows)
+            if parent == PathBuf::from("/") || parent_is_windows_root {
                 break;
             }
 
@@ -194,26 +218,33 @@ impl BreadcrumbBarService {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "/".to_string());
 
-            segments.insert(
-                0,
-                BreadcrumbSegment {
-                    path: parent.clone(),
-                    label,
-                    is_draggable: true,
-                    is_current: false,
-                },
-            );
+            segments.push(BreadcrumbSegment {
+                path: parent.clone(),
+                label,
+                is_draggable: true,
+                is_current: false,
+            });
 
             ancestor = parent.parent().map(|p| p.to_path_buf());
         }
+        // Reverse so ancestors go from root to current
+        segments.reverse();
 
         // Add root if not already included
-        if segments.is_empty() || segments[0].path != PathBuf::from("/") {
+        if segments.is_empty() {
+            // Determine the root label
+            let root_path = path.ancestors().last().unwrap_or(path);
+            let root_str = root_path.to_string_lossy();
+            let root_label = if root_str.len() == 3 && root_str.ends_with(":\\") {
+                root_str.to_string()
+            } else {
+                "/".to_string()
+            };
             segments.insert(
                 0,
                 BreadcrumbSegment {
-                    path: PathBuf::from("/"),
-                    label: "/".to_string(),
+                    path: root_path.to_path_buf(),
+                    label: root_label,
                     is_draggable: true,
                     is_current: false,
                 },

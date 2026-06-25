@@ -212,22 +212,22 @@ impl MainView {
                                                 .items_center()
                                                 .gap(px(8.0))
                                                 .children([
-                                                div()
-                                                    .w(px(icon_size))
-                                                    .h(px(icon_size))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .child(
-                                                        if let Some(icon_path) =
-                                                            icon_paths.get(&item.path)
-                                                        {
-                                                            img(icon_path.clone())
-                                                                .w(px(icon_size))
-                                                                .h(px(icon_size))
-                                                                .into_any_element()
-                                                        } else {
-                                                            div()
+                                                    div()
+                                                        .w(px(icon_size))
+                                                        .h(px(icon_size))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            if let Some(icon_path) =
+                                                                icon_paths.get(&item.path)
+                                                            {
+                                                                img(icon_path.clone())
+                                                                    .w(px(icon_size))
+                                                                    .h(px(icon_size))
+                                                                    .into_any_element()
+                                                            } else {
+                                                                div()
                                                                 .text_size(px(icon_size * 0.5))
                                                                 .text_color(rgb(
                                                                     UiConstants::ACCENT_COLOR_RGB,
@@ -243,15 +243,17 @@ impl MainView {
                                                                     },
                                                                 )
                                                                 .into_any_element()
-                                                        },
-                                                    ),
-                                                div()
-                                                    .w(px(widths.name))
-                                                    .overflow_hidden()
-                                                    .text_size(px(text_size))
-                                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                                    .child(display_name),
-                                            ]),
+                                                            },
+                                                        ),
+                                                    div()
+                                                        .w(px(widths.name))
+                                                        .overflow_hidden()
+                                                        .text_size(px(text_size))
+                                                        .text_color(rgb(
+                                                            UiConstants::TEXT_PRIMARY_RGB,
+                                                        ))
+                                                        .child(display_name),
+                                                ]),
                                             div()
                                                 .w(px(widths.date))
                                                 .text_center()
@@ -365,7 +367,7 @@ impl MainView {
                                                 .text_size(px(12.0))
                                                 .font_family(UiConstants::FONT_MDL2)
                                                 .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                                .child(if is_collapsed { "\\u{E76C}" } else { "\\u{E76B}" }),
+                                                .child(if is_collapsed { "\u{E76C}" } else { "\u{E76B}" }),
                                         )
                                         .child(
                                             div()
@@ -549,8 +551,10 @@ impl MainView {
                                                     ).into_any_element()
                                             );
 
-                                            // Git status icon
-                                            let git_status = crate::domain::git_service::GitService::get_file_status(&path);
+                                            // Git status icon — use cached status to avoid blocking I/O in render
+                                            let git_status = state.git_status_cache.get(&item.path)
+                                                .copied()
+                                                .unwrap_or(crate::domain::git_service::GitFileStatus::Unknown);
                                             if git_status != crate::domain::git_service::GitFileStatus::Clean && git_status != crate::domain::git_service::GitFileStatus::Unknown {
                                                 cells.push(
                                                     div()

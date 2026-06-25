@@ -1,0 +1,6 @@
+# Clippy configuration for files-rs
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Allow certain lints that are too noisy for this codebase
+too-many-arguments-threshold = 10
+type-complexity-threshold = 500

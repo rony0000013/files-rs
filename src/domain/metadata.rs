@@ -2,10 +2,6 @@ use crate::core::path_util::FilesPath;
 use crate::storage::storage::{FileMetadata, FileType, StorableItem};
 use anyhow::Result;
 use std::fs;
-
-use bytesize::ByteSize;
-use infer;
-use mime_guess;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +13,7 @@ pub struct FileItem {
     pub is_hidden: bool,
     pub is_system: bool,
     pub modified: Option<std::time::SystemTime>,
+    pub created: Option<std::time::SystemTime>,
 }
 
 pub struct MetadataExtractor;
@@ -31,26 +28,6 @@ impl MetadataExtractor {
         } else {
             FileType::File
         };
-
-        // Get mime type using mime_guess for extension-based guessing
-        let _mime_type = mime_guess::from_path(path.as_path())
-            .first_raw()
-            .unwrap_or("application/octet-stream");
-
-        // Get mime type using infer for magic bytes detection
-        let _magic_bytes_mime = if meta.is_file() {
-            let mut buffer = vec![0u8; 1024];
-            let mut file = fs::File::open(path.as_path())?;
-            let _ = std::io::Read::read(&mut file, &mut buffer);
-            infer::get(&buffer)
-                .map(|k| k.mime_type())
-                .unwrap_or("application/octet-stream")
-        } else {
-            "application/octet-stream"
-        };
-
-        // Use bytesize for human-readable sizing
-        let _size_readable = ByteSize::b(meta.len()).to_string();
 
         Ok(StorableItem {
             path: path.clone(),

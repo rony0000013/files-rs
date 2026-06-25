@@ -50,10 +50,7 @@ impl ToolbarView {
             });
 
         // LEFT-ALIGNED GROUP: Context Commands
-        let mut left_group = div()
-            .flex()
-            .items_center()
-            .gap(px(2.0));
+        let mut left_group = div().flex().items_center().gap(px(2.0));
 
         // New Folder button
         if toolbar_customization.is_visible("new_folder") {
@@ -184,10 +181,7 @@ impl ToolbarView {
         toolbar = toolbar.child(div().flex_grow());
 
         // RIGHT-ALIGNED GROUP: Base/View Commands
-        let mut right_group = div()
-            .flex()
-            .items_center()
-            .gap(px(2.0));
+        let mut right_group = div().flex().items_center().gap(px(2.0));
 
         // Filter button
         let filter_active = !filter_text.is_empty();

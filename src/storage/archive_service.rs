@@ -35,9 +35,7 @@ impl ArchiveService {
                     } else {
                         zip.start_file(name.to_string_lossy(), options.clone())?;
                         let mut f = std::fs::File::open(path)?;
-                        let mut buffer = Vec::new();
-                        f.read_to_end(&mut buffer)?;
-                        zip.write_all(&buffer)?;
+                        std::io::copy(&mut f, &mut zip)?;
                     }
                 }
             } else {
@@ -46,9 +44,7 @@ impl ArchiveService {
                     options.clone(),
                 )?;
                 let mut f = std::fs::File::open(item_path)?;
-                let mut buffer = Vec::new();
-                f.read_to_end(&mut buffer)?;
-                zip.write_all(&buffer)?;
+                std::io::copy(&mut f, &mut zip)?;
             }
         }
         zip.finish()?;
@@ -60,9 +56,23 @@ impl ArchiveService {
         let file = File::open(archive_path.as_path())?;
         let mut archive = zip::ZipArchive::new(file)?;
 
+        let dest_root = std::fs::canonicalize(destination.as_path())
+            .unwrap_or_else(|_| destination.as_path().to_path_buf());
+
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let outpath = std::path::PathBuf::from(destination.as_path()).join(file.mangled_name());
+
+            // Zip slip protection: validate the resolved path stays within destination
+            let canonical = std::fs::canonicalize(&outpath).unwrap_or_else(|_| outpath.clone());
+            if !canonical.starts_with(&dest_root) {
+                anyhow::bail!(
+                    "Zip slip detected: entry '{}' resolves to '{}' which is outside destination '{}'",
+                    file.name(),
+                    canonical.display(),
+                    dest_root.display()
+                );
+            }
 
             if file.is_dir() {
                 std::fs::create_dir_all(&outpath)?;

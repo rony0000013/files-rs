@@ -35,6 +35,8 @@ impl ComThread {
         let (tx, rx) = std::sync::mpsc::channel::<ComTask>();
 
         let handle = std::thread::spawn(move || {
+            use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+            unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); }
             println!("COM STA Thread started.");
 
             while let Ok(task) = rx.recv() {
@@ -45,6 +47,7 @@ impl ComThread {
                 }
             }
 
+            unsafe { CoUninitialize(); }
             println!("COM STA Thread shutting down.");
         });
 

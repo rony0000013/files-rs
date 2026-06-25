@@ -190,7 +190,7 @@ impl ConflictResolutionService {
     }
 
     /// Auto-generate a rename suffix for a file
-    /// Returns " (1)", " (2)", etc. based on existing files
+    /// Returns a suffix based on the configured rename_pattern (default: " (1)", " (2)", etc.)
     pub fn suggest_rename_suffix(&self, path: &FilesPath) -> Option<String> {
         let path_buf = path.as_path().to_path_buf();
         let parent = path_buf.parent()?;
@@ -199,9 +199,11 @@ impl ConflictResolutionService {
             .extension()
             .map(|e| e.to_string_lossy().to_string());
 
-        // Check for existing copies: file (1), file (2), etc.
-        for counter in 1..=999 {
-            let suffix = format!(" ({})", counter);
+        // Check for existing copies using the configured pattern
+        for counter in 1..=99 {
+            let suffix = self
+                .rename_pattern
+                .replace("{counter}", &counter.to_string());
             let new_filename = if let Some(ref ext) = extension {
                 format!("{}{}.{}", filename, suffix, ext)
             } else {
@@ -266,12 +268,10 @@ impl ConflictResolutionService {
 
     /// Check if a conflict can be auto-resolved (no user input needed)
     pub fn can_auto_resolve(&self, conflict: &ConflictInfo) -> bool {
-        // If source and destination have same content, we can skip
-        if conflict.conflict_type == ConflictType::ContentCollision {
-            if let (Some(src_size), Some(dst_size)) = (conflict.source_size, conflict.dest_size) {
-                return src_size == dst_size;
-            }
-        }
+        // Same-size files can still have different content — don't auto-resolve.
+        // Only auto-resolve if both files are truly identical (same size AND same content hash),
+        // which requires a full file comparison. For safety, always require user input
+        // for ContentCollision conflicts.
         false
     }
 

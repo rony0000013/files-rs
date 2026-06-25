@@ -81,17 +81,23 @@ impl TabBarView {
             let tc = tab_count;
             state.tabs.tabs.iter().enumerate().map(move |(i, tab)| {
                 let is_active = i == active_idx;
-                let path_name = tab
-                    .path
-                    .as_path()
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let label = if path_name.is_empty() {
-                    tab.path.to_string_lossy().to_string()
+                let is_settings = matches!(tab.target, crate::ui::views::types::ViewTarget::Settings);
+
+                let label = if is_settings {
+                    "Settings".to_string()
                 } else {
-                    path_name
+                    let path_name = tab
+                        .path
+                        .as_path()
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    if path_name.is_empty() {
+                        tab.path.to_string_lossy().to_string()
+                    } else {
+                        path_name
+                    }
                 };
 
                 let v_click = view_for_tabs.clone();
@@ -157,7 +163,12 @@ impl TabBarView {
                         }
                     });
 
-                // Tab Icon (Folder Glyph)
+                // Tab Icon (Folder Glyph or Settings Gear)
+                let tab_icon = if is_settings {
+                    "\u{E713}" // Settings gear icon
+                } else {
+                    "\u{E8B7}" // Folder icon
+                };
                 tab_div = tab_div.child(
                     div()
                         .text_size(px(14.0))
@@ -168,7 +179,7 @@ impl TabBarView {
                             rgba(UiConstants::TEXT_SECONDARY_RGBA)
                         })
                         .mr(px(8.0))
-                        .child("\u{E8B7}"),
+                        .child(tab_icon),
                 );
 
                 // Tab Label

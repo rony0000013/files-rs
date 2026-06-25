@@ -208,18 +208,18 @@ impl MainViewState {
                                                 },
                                             ),
                                     )
-                                            .child(if main_state.renaming_index == Some(idx) {
-                                                div()
-                                                    .bg(rgba(0xFFFFFF20u32))
-                                                    .border(px(1.0))
-                                                    .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                                    .rounded(px(2.0))
-                                                    .px(px(4.0))
-                                                    .child(main_state.rename_text.clone())
-                                                    .into_any_element()
-                                            } else {
-                                                div().child(item.name.clone()).into_any_element()
-                                            })
+                                    .child(if main_state.renaming_index == Some(idx) {
+                                        div()
+                                            .bg(rgba(0xFFFFFF20u32))
+                                            .border(px(1.0))
+                                            .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                            .rounded(px(2.0))
+                                            .px(px(4.0))
+                                            .child(main_state.rename_text.clone())
+                                            .into_any_element()
+                                    } else {
+                                        div().child(item.name.clone()).into_any_element()
+                                    })
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()
@@ -389,18 +389,18 @@ impl MainViewState {
                                                 },
                                             ),
                                     )
-                                            .child(if main_state.renaming_index == Some(idx) {
-                                                div()
-                                                    .bg(rgba(0xFFFFFF20u32))
-                                                    .border(px(1.0))
-                                                    .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                                    .rounded(px(2.0))
-                                                    .px(px(4.0))
-                                                    .child(main_state.rename_text.clone())
-                                                    .into_any_element()
-                                            } else {
-                                                div().child(item.name.clone()).into_any_element()
-                                            })
+                                    .child(if main_state.renaming_index == Some(idx) {
+                                        div()
+                                            .bg(rgba(0xFFFFFF20u32))
+                                            .border(px(1.0))
+                                            .border_color(rgba(UiConstants::ACCENT_RGBA))
+                                            .rounded(px(2.0))
+                                            .px(px(4.0))
+                                            .child(main_state.rename_text.clone())
+                                            .into_any_element()
+                                    } else {
+                                        div().child(item.name.clone()).into_any_element()
+                                    })
                                     .into_any_element()
                             }
                         })

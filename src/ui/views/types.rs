@@ -24,6 +24,13 @@ pub enum ViewTarget {
     Home,
     RecycleBin,
     ThisPc,
+    Settings,
+}
+
+impl Default for ViewTarget {
+    fn default() -> Self {
+        ViewTarget::Home
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +113,7 @@ impl Default for FolderBackground {
 // Preview / Info pane state
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum SidePaneMode {
     #[default]
     None,
@@ -275,6 +282,8 @@ pub struct MediaPreviewInfo {
     pub channels: Option<u8>,
     /// Media format (e.g., "MP4", "MP3", "FLAC")
     pub format: Option<String>,
+    /// Artist name (for audio)
+    pub artist: Option<String>,
 }
 
 /// Archive contents for preview
@@ -438,8 +447,8 @@ pub struct SearchState {
     pub is_searching: bool,
     /// Current search query
     pub query: String,
-    /// Search results (indices into MainViewState.items)
-    pub results: Vec<usize>,
+    /// Search results (indices into MainViewState.items) — HashSet for O(1) lookups
+    pub results: HashSet<usize>,
     /// Whether search is in progress
     pub loading: bool,
     /// Search mode: name, content, size, date, type, tag
@@ -603,6 +612,10 @@ pub struct MainViewState {
     /// Bouncy scroll state for the main file view content area (home, grouped, recycle bin only)
     #[serde(skip)]
     pub bouncy_scroll: BouncyScrollState,
+    /// Cached git status per file path (populated during directory load)
+    #[serde(skip)]
+    pub git_status_cache:
+        std::collections::HashMap<FilesPath, crate::domain::git_service::GitFileStatus>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -629,21 +642,6 @@ pub enum GroupedGridItem {
     Row(Vec<usize>),
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// File items model for uniform_list
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct FileItems {
-    pub items: Vec<FileItem>,
-    pub selected_indices: HashSet<usize>,
-}
-
-impl Default for FileItems {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            selected_indices: HashSet::new(),
-        }
-    }
-}
+// FileItems is defined in main_view.rs (required by GPUI uniform_list pattern)
+// Re-exported here for convenience
+pub use super::main_view::FileItems;

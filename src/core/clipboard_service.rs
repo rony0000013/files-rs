@@ -16,8 +16,22 @@ impl ClipboardService {
     }
 
     fn set_clipboard_text(text: &str) -> Result<()> {
-        // Using a simple shell command to set clipboard on Windows
-        Command::new("clip").arg(text).spawn()?;
+        // Pipe text to clip.exe via stdin — clip reads from stdin, not args
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("clip")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // clip.exe expects UTF-16LE encoded text
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            let bytes: Vec<u8> = wide.iter().flat_map(|w| w.to_le_bytes()).collect();
+            stdin.write_all(&bytes)?;
+            drop(stdin); // Close stdin to signal EOF
+        }
+        child.wait()?;
         Ok(())
     }
 }

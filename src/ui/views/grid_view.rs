@@ -670,46 +670,44 @@ impl MainViewState {
                         .items_center()
                         .justify_center()
                         .h(px(thumb_height))
-                        .child(
-                            if let Some(icon_path) = &cached_icon_path {
-                                // Wrap img in a sized div so explicit dimensions survive
-                                // type erasure (into_any_element) and flex centering works.
-                                div()
-                                    .w(px(thumb_height))
-                                    .h(px(thumb_height))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        img(icon_path.clone())
-                                            .w_full()
-                                            .h_full()
-                                            .object_fit(gpui::ObjectFit::Contain)
-                                            .rounded(px(rounded)),
-                                    )
-                                    .into_any_element()
-                            } else {
-                                // Render MDL2 font icon centered in the full container
-                                div()
-                                    .w_full()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(thumb_height))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(if is_dir {
-                                                rgba(UiConstants::ACCENT_RGBA)
-                                            } else {
-                                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                            })
-                                            .child(file_icon),
-                                    )
-                                    .into_any_element()
-                            },
-                        ),
+                        .child(if let Some(icon_path) = &cached_icon_path {
+                            // Wrap img in a sized div so explicit dimensions survive
+                            // type erasure (into_any_element) and flex centering works.
+                            div()
+                                .w(px(thumb_height))
+                                .h(px(thumb_height))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    img(icon_path.clone())
+                                        .w_full()
+                                        .h_full()
+                                        .object_fit(gpui::ObjectFit::Contain)
+                                        .rounded(px(rounded)),
+                                )
+                                .into_any_element()
+                        } else {
+                            // Render MDL2 font icon centered in the full container
+                            div()
+                                .w_full()
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_size(px(thumb_height))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(if is_dir {
+                                            rgba(UiConstants::ACCENT_RGBA)
+                                        } else {
+                                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                        })
+                                        .child(file_icon),
+                                )
+                                .into_any_element()
+                        }),
                 )
                 .child(
                     // 3-line filename below the icon

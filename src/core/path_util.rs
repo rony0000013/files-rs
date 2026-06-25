@@ -17,7 +17,7 @@ pub mod known_folders {
     pub const FOLDERID_VIDEOS: GUID = GUID::from_u128(0x8863A180_C1B7_4B89_9173_F9260C476B70);
     pub const FOLDERID_RECYCLE_BIN: GUID = GUID::from_u128(0xBF797060_1F7D_47F2_A63F_8E9A765A4455);
     pub const FOLDERID_NETWORK_HOOD: GUID = GUID::from_u128(0x590329B8_8283_4439_B7EF_FB5FC3F26D1);
-    pub const FOLDERID_BUILDS: GUID = GUID::from_u128(0x0);
+    pub const FOLDERID_BUILDS: GUID = GUID::from_u128(0x0AC0837C_BBF8_452A_850D_79D08E667CA7);
 }
 
 impl FilesPath {
@@ -86,7 +86,16 @@ impl FilesPath {
 
     pub fn is_namespace_path(&self) -> bool {
         let s = self.to_string_lossy();
-        s.contains(':') && !s.contains(r":\")
+        if let Some(colon_pos) = s.find(':') {
+            // If colon is at position 1 and the first byte is an ASCII letter,
+            // this is a drive letter path (e.g., "C:"), not a namespace path.
+            if colon_pos == 1 && s.as_bytes().first().map_or(false, |b| b.is_ascii_alphabetic()) {
+                return false;
+            }
+            s.contains(':') && !s.contains(r":\")
+        } else {
+            false
+        }
     }
 
     pub fn resolve_shell_path(&self) -> anyhow::Result<Self> {

@@ -6,4 +6,5 @@ pub mod metadata;
 pub mod search;
 pub mod tag_service;
 
-pub use metadata::*;
+// Explicit re-exports
+pub use metadata::FileItem;

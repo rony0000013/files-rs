@@ -125,7 +125,7 @@ pub struct ViewConfig {
     pub group_by: GroupColumn,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 #[allow(dead_code)]
 pub enum ViewMode {
@@ -349,7 +349,11 @@ impl AppConfig {
         }
 
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(&path, json)?;
+
+        // Atomic write: write to temp file, then rename over the target
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, &json)?;
+        fs::rename(&tmp_path, &path)?;
 
         tracing::info!("Settings saved to {:?}", path);
         Ok(())

@@ -1,13 +1,22 @@
 use crate::config::config::AppConfig;
 use gpui::*;
+use std::time::Instant;
 
 pub struct SettingsModel {
     pub config: AppConfig,
+    /// Last time settings were saved to disk (for debounce)
+    last_save: Option<Instant>,
 }
+
+/// Minimum interval between settings saves to avoid hammering disk
+const SAVE_DEBOUNCE_MS: u64 = 500;
 
 impl SettingsModel {
     pub fn new(config: AppConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            last_save: None,
+        }
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -129,9 +138,16 @@ impl SettingsModel {
         F: FnOnce(&mut AppConfig),
     {
         f(&mut self.config);
-        // Auto-save on change
-        if let Err(e) = self.config.save() {
-            tracing::error!("Failed to save settings: {:?}", e);
+        // Debounced save — only write to disk if enough time has passed
+        let should_save = match self.last_save {
+            Some(last) => last.elapsed().as_millis() >= SAVE_DEBOUNCE_MS as u128,
+            None => true,
+        };
+        if should_save {
+            if let Err(e) = self.config.save() {
+                tracing::error!("Failed to save settings: {:?}", e);
+            }
+            self.last_save = Some(Instant::now());
         }
         cx.notify(entity_id);
     }

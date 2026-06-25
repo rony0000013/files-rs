@@ -182,12 +182,7 @@ impl IconCacheService {
     #[cfg(windows)]
     fn get_volume_bitlocker_status(volume_path: &std::path::Path) -> Result<bool> {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-        use windows::Win32::System::Com::{
-            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
-        };
-        #[allow(unused_imports)]
-        use windows::Win32::System::Wmi::{IWbemServices, WBEM_CONNECT_OPTIONS};
+        use windows::Win32::Storage::FileSystem::GetFileAttributesW;
 
         // Get drive letter from path
         let drive_str = volume_path
@@ -196,21 +191,24 @@ impl IconCacheService {
             .take(2)
             .collect::<String>();
 
+        if drive_str.len() < 2 {
+            return Ok(false);
+        }
+
         let wide_drive: Vec<u16> = format!("\\\\.\\{}:", &drive_str[..1])
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
 
-        // Query WMI for BitLocker status
+        // This function does NOT use COM — it only calls GetFileAttributesW.
+        // COM initialization/uninitialization should be done once at thread startup,
+        // not per-call. Removed per-call CoInitializeEx/CoUninitialize to avoid
+        // changing the apartment model on threads where COM is already initialized.
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
             // Simplified check: if the drive is NTFS and system has BitLocker, assume protected
-            let attrs = windows::Win32::Storage::FileSystem::GetFileAttributesW(
+            let _attrs = GetFileAttributesW(
                 windows::core::PCWSTR(wide_drive.as_ptr()),
             );
-
-            let _ = CoUninitialize();
 
             // If the volume supports encryption attributes, it may be BitLocker-protected
             // This is a heuristic - full BitLocker detection requires WMI

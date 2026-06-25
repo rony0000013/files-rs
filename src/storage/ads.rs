@@ -31,16 +31,53 @@ impl AdsService {
 
     /// Checks if ADS is supported on the current filesystem (NTFS only)
     pub fn is_supported(path: &FilesPath) -> bool {
-        // ADS is only supported on NTFS filesystems
-        // This is a best-effort check - we try to write and immediately clean up
-        let test_stream = format!("{}:hermes_test_stream", path.as_path().to_string_lossy());
-        match fs::write(&test_stream, b"test") {
-            Ok(_) => {
-                let _ = fs::remove_file(&test_stream);
-                true
+        // Check filesystem type via volume information (non-destructive).
+        // On Windows we can use GetVolumeInformationW; fall back to attempting
+        // a non-destructive stat on the path to confirm it exists, then
+        // assume NTFS if running on Windows (ADS is an NTFS feature).
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            let wide: Vec<u16> = std::path::Path::new(path.as_path())
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let mut vol_name = [0u16; 256];
+            let mut vol_serial = 0u32;
+            let mut max_comp = 0u32;
+            let mut fs_flags = 0u32;
+            let mut fs_name = [0u16; 256];
+
+            // SAFETY: wide is null-terminated, buffers are stack-allocated
+            let ok = unsafe {
+                windows::Win32::Storage::FileSystem::GetVolumeInformationW(
+                    windows::core::PCWSTR(wide.as_ptr()),
+                    Some(&mut vol_name),
+                    Some(&mut vol_serial),
+                    Some(&mut max_comp),
+                    Some(&mut fs_flags),
+                    Some(&mut fs_name),
+                )
+                .is_ok()
+            };
+
+            if ok {
+                let fs: String = fs_name
+                    .iter()
+                    .take_while(|&&c| c != 0)
+                    .filter_map(|&c| char::from_u32(c as u32))
+                    .collect();
+                return fs.eq_ignore_ascii_case("NTFS");
             }
-            Err(_) => false,
+            // Cannot determine filesystem — assume not supported
+            false
         }
+
+        #[cfg(not(target_os = "windows"))]
+        false
     }
 
     /// Gets the stream path format string (for reference)

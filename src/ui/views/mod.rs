@@ -18,8 +18,16 @@ pub mod types;
 // Keep main_view for shared types and state management
 pub mod details_view;
 pub mod main_view;
+pub mod main_view_grouped;
+pub mod main_view_home;
+pub mod main_view_preview;
+pub mod main_view_recycle;
+pub mod main_view_selection;
+pub mod main_view_settings;
 
-// Re-exports for convenience
-pub use helpers::*;
-pub use main_view::*;
-pub use types::*;
+// Explicit re-exports for types used via `crate::ui::views::TypeName`
+pub use main_view::{
+    ColumnResizeState, ColumnWidths, DetailsPaneCache, FileItems, GroupDragState, MainView,
+    MainViewState,
+};
+pub use types::PaneType;

@@ -169,27 +169,80 @@ impl GitService {
         }
     }
 
-    /// Get the last commit information for a specific file
+    /// Get the last commit information for a specific file.
+    /// Walks the git log filtered by path to find the most recent commit that
+    /// actually touched this file, rather than just returning HEAD.
     pub fn get_last_commit(path: &FilesPath) -> Option<GitCommitInfo> {
         let repo = Repository::discover(path.as_path()).ok()?;
+
+        // Get the relative path within the repo
+        let repo_workdir = repo.workdir()?;
+        let relative_path = path.as_path().strip_prefix(repo_workdir).ok()?;
+
+        // Walk the log filtered to the specific file
+        let mut revwalk = repo.revwalk().ok()?;
+        revwalk.set_sorting(git2::Sort::TIME).ok()?;
+        revwalk.push_head().ok()?;
+
+        for oid_result in revwalk {
+            let oid = oid_result.ok()?;
+            let commit = repo.find_commit(oid).ok()?;
+
+            // Check if this commit touches our file
+            let commit_tree = commit.tree().ok()?;
+            let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+
+            let mut diff_opts = git2::DiffOptions::new();
+            diff_opts.pathspec(relative_path);
+
+            let diff = repo
+                .diff_tree_to_tree(
+                    parent_tree.as_ref(),
+                    Some(&commit_tree),
+                    Some(&mut diff_opts),
+                )
+                .ok()?;
+
+            if diff.deltas().len() > 0 {
+                // This commit touched our file
+                let author = commit.author().name().unwrap_or("Unknown").to_string();
+                let message = commit.summary().unwrap_or("No message").to_string();
+                let time = commit.time();
+                let seconds = time.seconds();
+                let datetime = if seconds >= 0 {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    if let Some(d) =
+                        UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds as u64))
+                    {
+                        format_timestamp(d)
+                    } else {
+                        "Unknown date".to_string()
+                    }
+                } else {
+                    "Unknown date".to_string()
+                };
+
+                return Some(GitCommitInfo {
+                    author,
+                    message,
+                    date: datetime,
+                });
+            }
+        }
+
+        // Fallback: if no commit found via revwalk (e.g., initial commit), try HEAD
         let head = repo.head().ok()?;
         let commit = head.peel_to_commit().ok()?;
-
         let author = commit.author().name().unwrap_or("Unknown").to_string();
         let message = commit.summary().unwrap_or("No message").to_string();
-
-        // Format the commit time using standard library
         let time = commit.time();
         let seconds = time.seconds();
         let datetime = if seconds >= 0 {
             use std::time::{SystemTime, UNIX_EPOCH};
-            if let Some(d) = UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds as u64))
-            {
-                // Convert to time_t and format using localtime_r or simple string
-                format_timestamp(d)
-            } else {
-                "Unknown date".to_string()
-            }
+            UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(seconds as u64))
+                .map(format_timestamp)
+                .unwrap_or_else(|| "Unknown date".to_string())
         } else {
             "Unknown date".to_string()
         };

@@ -1,5 +1,5 @@
-use image::{imageops, ImageBuffer, Rgba};
 use image::imageops::FilterType;
+use image::{imageops, ImageBuffer, Rgba};
 
 /// The coordinates (normalized 0.0-1.0) of the "viewport" inside a standard
 /// folder icon where content thumbnails are visible.
@@ -24,10 +24,10 @@ pub fn compose_folder_thumbnail(
 
     // 3. Create a blank canvas, put file in background, folder on top.
     let mut final_image = ImageBuffer::new(fw, fh);
-    
+
     // Draw content into viewport
     imageops::overlay(&mut final_image, &resized_content, v_x, v_y);
-    
+
     // Draw folder on top (the alpha mask of the folder icon handles the cropping)
     imageops::overlay(&mut final_image, folder_icon, 0, 0);
 

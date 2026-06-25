@@ -266,9 +266,47 @@ impl ShellPreviewService {
 
         // Check for JPEG
         if header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF {
-            // JPEG - need to parse to find SOF marker
-            // Simplified: return a common default
-            return Ok((1920, 1080));
+            // JPEG - scan for SOF0/SOF2 marker to extract real dimensions
+            let mut pos: u64 = 2;
+            file.seek(SeekFrom::Start(pos)).ok();
+            loop {
+                let mut marker = [0u8; 2];
+                if file.read_exact(&mut marker).is_err() {
+                    break;
+                }
+                if marker[0] != 0xFF {
+                    break;
+                }
+                let m = marker[1];
+                match m {
+                    // SOF0 (baseline) or SOF2 (progressive)
+                    0xC0 | 0xC2 => {
+                        let mut sof = [0u8; 7];
+                        if file.read_exact(&mut sof).is_err() {
+                            break;
+                        }
+                        let height = u16::from_be_bytes([sof[1], sof[2]]) as u32;
+                        let width = u16::from_be_bytes([sof[3], sof[4]]) as u32;
+                        return Ok((width, height));
+                    }
+                    // Skip markers that have a length field
+                    0xD0..=0xD9 | 0x01 => {}
+                    _ => {
+                        // Read 2-byte length and skip payload
+                        let mut len_bytes = [0u8; 2];
+                        if file.read_exact(&mut len_bytes).is_err() {
+                            break;
+                        }
+                        let seg_len = u16::from_be_bytes(len_bytes) as i64;
+                        if file.seek(SeekFrom::Current(seg_len - 2)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                pos = file.stream_position().unwrap_or(0);
+            }
+            // Fallback: JPEG dimensions not found
+            return Err(anyhow!("Could not find SOF marker in JPEG"));
         }
 
         // Check for BMP

@@ -102,6 +102,8 @@ pub enum ActionKind {
     Delete,
     PermanentDelete,
     ClearSelection,
+    Undo,
+    Redo,
 
     // View
     Refresh,
@@ -121,6 +123,8 @@ pub enum ActionKind {
     CommandPalette,
     /// Open the help/documentation URL
     OpenHelp,
+    /// Open the settings page as a tab
+    OpenSettings,
     /// Restore the last session after a crash
     RestoreLastSession,
 }
@@ -142,6 +146,8 @@ impl ActionKind {
             Self::Delete => "Move to Trash",
             Self::PermanentDelete => "Permanent Delete",
             Self::ClearSelection => "Clear Selection",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
             Self::Refresh => "Refresh",
             Self::Search => "Search",
             Self::ClearFilter => "Clear Filter / Escape",
@@ -154,6 +160,7 @@ impl ActionKind {
             Self::NewWindow => "New Window",
             Self::CommandPalette => "Command Palette",
             Self::OpenHelp => "Open Help",
+            Self::OpenSettings => "Open Settings",
             Self::RestoreLastSession => "Restore Last Session",
         }
     }
@@ -193,7 +200,10 @@ impl ActionKind {
             NewWindow,
             CommandPalette,
             OpenHelp,
+            OpenSettings,
             RestoreLastSession,
+            Undo,
+            Redo,
         ]
     }
 }
@@ -354,7 +364,8 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         ActionKind::PermanentDelete,
         KeyCombination::new("Delete").with_shift(),
     );
-    m.insert(ActionKind::ClearSelection, KeyCombination::new("Escape"));
+    m.insert(ActionKind::Undo, KeyCombination::new("z").with_ctrl());
+    m.insert(ActionKind::Redo, KeyCombination::new("y").with_ctrl());
 
     // View
     m.insert(ActionKind::Refresh, KeyCombination::new("F5"));
@@ -382,6 +393,7 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         KeyCombination::new("p").with_ctrl_shift(),
     );
     m.insert(ActionKind::OpenHelp, KeyCombination::new("F1"));
+    m.insert(ActionKind::OpenSettings, KeyCombination::new(",").with_ctrl());
 
     m
 }

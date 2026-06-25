@@ -61,10 +61,10 @@ impl RelativeDateFormatter {
             return Self::days_ago(days);
         }
 
-        // >= 7 days: standard date - this would need a DateTime to format
-        // For now, return "X weeks ago"
-        let weeks = total_seconds / 604800;
-        Self::weeks_ago(weeks)
+        // >= 7 days: show standard date
+        // Reconstruct the SystemTime from the duration
+        let time = SystemTime::now() - duration;
+        self.format_standard_date(time)
     }
 
     fn minutes_ago(minutes: u64) -> String {
@@ -99,10 +99,68 @@ impl RelativeDateFormatter {
         }
     }
 
-    fn format_standard_date(&self, _time: SystemTime) -> String {
-        // In a full implementation, this would format using a DateTime library
-        // For now, return a placeholder
-        "Earlier".to_string()
+    fn format_standard_date(&self, time: SystemTime) -> String {
+        // Convert SystemTime to duration since UNIX_EPOCH
+        let epoch = SystemTime::UNIX_EPOCH;
+        let duration = time
+            .duration_since(epoch)
+            .unwrap_or(Duration::from_secs(0));
+        let total_secs = duration.as_secs();
+
+        // Calculate date components
+        let mut remaining = total_secs;
+        let seconds_in_day = 86400u64;
+
+        // Days since epoch (Jan 1, 1970)
+        let days_since_epoch = remaining / seconds_in_day;
+        let _day_of_week = days_since_epoch % 7; // Jan 1 1970 was Thursday
+
+        // Calculate year, month, day
+        let (year, month, day) = Self::days_to_date(days_since_epoch);
+
+        let month_names = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+
+        format!("{} {}, {}", month_names[month - 1], day, year)
+    }
+
+    /// Convert days since Unix epoch to (year, month, day)
+    fn days_to_date(days: u64) -> (u64, usize, u64) {
+        // Approximate year
+        let mut year = 1970u64;
+        let mut remaining_days = days;
+
+        loop {
+            let days_in_year = if Self::is_leap_year(year) { 366 } else { 365 };
+            if remaining_days < days_in_year {
+                break;
+            }
+            remaining_days -= days_in_year;
+            year += 1;
+        }
+
+        let days_in_months = if Self::is_leap_year(year) {
+            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        } else {
+            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        };
+
+        let mut month = 1usize;
+        for &days_in_month in &days_in_months {
+            if remaining_days < days_in_month {
+                break;
+            }
+            remaining_days -= days_in_month;
+            month += 1;
+        }
+
+        (year, month, remaining_days + 1) // day is 1-indexed
+    }
+
+    fn is_leap_year(year: u64) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
     }
 }
 

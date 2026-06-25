@@ -169,10 +169,35 @@ impl ContextMenuHost {
 
     #[cfg(windows)]
     fn do_cut(&self, paths: &[FilesPath]) -> Result<()> {
+        self.do_clipboard_drop_files(paths, true)
+    }
+
+    #[cfg(not(windows))]
+    fn do_cut(&self, paths: &[FilesPath]) -> Result<()> {
+        tracing::warn!("Cut not implemented on non-Windows: {} items", paths.len());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn do_copy(&self, paths: &[FilesPath]) -> Result<()> {
+        self.do_clipboard_drop_files(paths, false)
+    }
+
+    #[cfg(not(windows))]
+    fn do_copy(&self, paths: &[FilesPath]) -> Result<()> {
+        tracing::warn!("Copy not implemented on non-Windows: {} items", paths.len());
+        Ok(())
+    }
+
+    /// Shared implementation for cut/copy via CF_HDROP + CF_PREFERREDDROPEFFECT.
+    /// `is_move=true` for cut, `is_move=false` for copy.
+    #[cfg(windows)]
+    fn do_clipboard_drop_files(&self, paths: &[FilesPath], is_move: bool) -> Result<()> {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Foundation::{BOOL, HANDLE};
+        use windows::Win32::Foundation::{BOOL, GlobalFree, HANDLE};
         use windows::Win32::System::DataExchange::{
-            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+            CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
+            SetClipboardData,
         };
         use windows::Win32::System::Memory::{
             GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
@@ -199,7 +224,7 @@ impl ContextMenuHost {
             for wp in &wide_paths {
                 total_size += wp.len() * 2;
             }
-            total_size += 2;
+            total_size += 4; // double null terminator (u16)
 
             let hmem = GlobalAlloc(GMEM_MOVEABLE, total_size)?;
             let ptr = GlobalLock(hmem);
@@ -222,45 +247,60 @@ impl ContextMenuHost {
             *(ptr as *mut u16).add(offset / 2 + 1) = 0;
 
             GlobalUnlock(hmem);
-            OpenClipboard(None)?;
+
+            // Open clipboard — if this fails, free the allocated memory to avoid leak.
+            if OpenClipboard(None).is_err() {
+                let _ = GlobalFree(hmem);
+                anyhow::bail!("Failed to open clipboard");
+            }
             EmptyClipboard()?;
 
+            // Set CF_HDROP data — Windows takes ownership of hmem on success
             let hdrop = HANDLE(hmem.0 as isize);
-            let _ = SetClipboardData(CF_HDROP, hdrop);
+            let set_result = SetClipboardData(CF_HDROP, hdrop);
+
+            // Set preferred drop effect so paste handler knows whether to delete source
+            if set_result.is_ok() {
+                let format_name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
+                let cf_drop_effect =
+                    RegisterClipboardFormatW(windows::core::PCWSTR(format_name.as_ptr()));
+                if cf_drop_effect != 0 {
+                    let effect_hmem = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>())?;
+                    let effect_ptr = GlobalLock(effect_hmem) as *mut u32;
+                    // DROPEFFECT_MOVE = 2, DROPEFFECT_COPY = 1
+                    *effect_ptr = if is_move { 2 } else { 1 };
+                    GlobalUnlock(effect_hmem);
+                    let _ = SetClipboardData(cf_drop_effect, HANDLE(effect_hmem.0 as isize));
+                }
+            } else {
+                // SetClipboardData failed — Windows didn't take ownership.
+                // Free the memory to avoid leaking it until process exit.
+                let _ = GlobalFree(hmem);
+                tracing::warn!("SetClipboardData failed — HDROP memory freed");
+            }
+
             CloseClipboard()?;
         }
-        tracing::info!("Cut {} items to clipboard", paths.len());
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
-    fn do_cut(&self, paths: &[FilesPath]) -> Result<()> {
-        tracing::warn!("Cut not implemented on non-Windows: {} items", paths.len());
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    fn do_copy(&self, paths: &[FilesPath]) -> Result<()> {
-        self.do_cut(paths) // Same implementation - differs by mode flag at shell level
-    }
-
-    #[cfg(not(windows))]
-    fn do_copy(&self, paths: &[FilesPath]) -> Result<()> {
-        tracing::warn!("Copy not implemented on non-Windows: {} items", paths.len());
+        tracing::info!(
+            "{} {} items to clipboard",
+            if is_move { "Cut" } else { "Copied" },
+            paths.len()
+        );
         Ok(())
     }
 
     #[cfg(windows)]
     fn do_delete(&self, path: &FilesPath, permanent: bool) -> Result<()> {
-        use std::process::Command;
-        let path_str = path.as_path().to_string_lossy();
-        let args = if permanent {
-            vec!["/C", "del", "/F", "/Q", &path_str]
+        if permanent {
+            let meta = std::fs::metadata(path.as_path());
+            match meta {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(path.as_path())?,
+                _ => std::fs::remove_file(path.as_path())?,
+            }
         } else {
-            vec!["/C", "del", "/F", &path_str]
-        };
-        Command::new("cmd").args(&args).output()?;
-        tracing::info!("Deleted (permanent={}): {:?}", permanent, path);
+            trash::delete(path.as_path())?;
+        }
+        tracing::info!("Deleted (permanent={:?}): {:?}", permanent, path);
         Ok(())
     }
 
@@ -322,8 +362,15 @@ impl ContextMenuHost {
 
     /// Register a custom verb (e.g., Git actions, tag actions)
     pub fn register_verb(&self, name: &str, icon: Option<&str>) -> u32 {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static VERB_ID_COUNTER: AtomicU32 = AtomicU32::new(0x1000);
+
         let mut verbs = self.custom_verbs.lock().unwrap();
-        let id = 0x1000 + verbs.len() as u32;
+        // Check if verb already exists
+        if let Some(existing) = verbs.iter().find(|v| v.name == name) {
+            return existing.id;
+        }
+        let id = VERB_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         verbs.push(CustomVerb {
             id,
             name: name.to_string(),

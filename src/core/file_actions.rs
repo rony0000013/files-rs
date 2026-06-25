@@ -55,14 +55,28 @@ impl FileActionService {
     pub async fn run_with_powershell(path: &FilesPath) -> Result<()> {
         #[cfg(windows)]
         {
-            Command::new("powershell")
-                .arg("-NoProfile")
-                .arg("-Command")
-                .arg(format!(
-                    "Start-Process '{}'",
-                    path.as_path().to_string_lossy()
-                ))
-                .spawn()?;
+            let wide_op: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+            let wide_powershell: Vec<u16> = "powershell.exe"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let wide_args: Vec<u16> = path
+                .as_path()
+                .to_string_lossy()
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    PCWSTR(wide_op.as_ptr()),
+                    PCWSTR(wide_powershell.as_ptr()),
+                    PCWSTR(wide_args.as_ptr()),
+                    None,
+                    windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+                );
+            }
         }
         #[cfg(not(windows))]
         {

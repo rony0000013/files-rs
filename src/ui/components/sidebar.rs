@@ -1132,8 +1132,7 @@ impl SidebarView {
                 .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                     v.update(cx, |this, cx| {
-                        this.state.active_dialog = Some(DialogType::Settings);
-                        cx.notify();
+                        this.open_settings_tab(cx);
                     });
                 });
         }

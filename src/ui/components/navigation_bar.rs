@@ -5,10 +5,10 @@
 //! dropdown arrows between segments, clickable folder path segments,
 //! last segment highlighted/bold, dark background with blue accent.
 
+use crate::core::action_registry::ActionRegistry;
 use crate::core::path_util::FilesPath;
 use crate::ui::components::dialogs::DialogType;
 use crate::ui::constants::UiConstants;
-use crate::core::action_registry::ActionRegistry;
 use gpui::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -20,9 +20,15 @@ pub enum OmnibarMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SuggestionKind {
-    Path { path: FilesPath },
-    SearchHistory { query: String },
-    Command { action: crate::core::action_registry::ActionKind },
+    Path {
+        path: FilesPath,
+    },
+    SearchHistory {
+        query: String,
+    },
+    Command {
+        action: crate::core::action_registry::ActionKind,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -174,7 +180,7 @@ impl NavigationBarState {
                             let docs = home.join("Documents");
                             let downloads = home.join("Downloads");
                             let desktop = home.join("Desktop");
-                            
+
                             for p in &[home, docs, downloads, desktop] {
                                 if p.exists() {
                                     let fp = FilesPath::from(p.clone());
@@ -190,20 +196,26 @@ impl NavigationBarState {
                 } else {
                     // Try to autocomplete the path query
                     let path = std::path::Path::new(query);
-                    let (parent, file_prefix) = if query.ends_with('\\') || query.ends_with('/') || path.is_dir() {
-                        (Some(path), "")
-                    } else {
-                        (path.parent(), path.file_name().and_then(|f| f.to_str()).unwrap_or(""))
-                    };
+                    let (parent, file_prefix) =
+                        if query.ends_with('\\') || query.ends_with('/') || path.is_dir() {
+                            (Some(path), "")
+                        } else {
+                            (
+                                path.parent(),
+                                path.file_name().and_then(|f| f.to_str()).unwrap_or(""),
+                            )
+                        };
 
                     if let Some(parent_path) = parent {
                         if parent_path.exists() {
                             if let Ok(entries) = std::fs::read_dir(parent_path) {
                                 let prefix_lower = file_prefix.to_lowercase();
                                 for entry in entries.filter_map(|e| e.ok()) {
-                                    let entry_name = entry.file_name().to_string_lossy().to_string();
+                                    let entry_name =
+                                        entry.file_name().to_string_lossy().to_string();
                                     if entry_name.to_lowercase().starts_with(&prefix_lower) {
-                                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                                        let is_dir =
+                                            entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                                         let icon = if is_dir {
                                             "\u{E8B7}".to_string() // Folder icon
                                         } else {
@@ -230,16 +242,20 @@ impl NavigationBarState {
                 self.suggestions.push(Suggestion {
                     label: format!("Search for '{}' in current folder", query),
                     icon: "\u{E721}".to_string(), // Search icon
-                    kind: SuggestionKind::SearchHistory { query: query.to_string() },
+                    kind: SuggestionKind::SearchHistory {
+                        query: query.to_string(),
+                    },
                 });
-                
+
                 let mock_histories = vec!["documents", "reports", "todo.txt", "images"];
                 for hist in mock_histories {
                     if hist.contains(query) && hist != query {
                         self.suggestions.push(Suggestion {
                             label: hist.to_string(),
                             icon: "\u{E81C}".to_string(), // History icon
-                            kind: SuggestionKind::SearchHistory { query: hist.to_string() },
+                            kind: SuggestionKind::SearchHistory {
+                                query: hist.to_string(),
+                            },
                         });
                     }
                 }
@@ -274,7 +290,6 @@ impl NavigationBarState {
         }
     }
 
-
     /// Open the breadcrumb sibling dropdown at a given screen position.
     pub fn open_breadcrumb_dropdown(&mut self, parent_path: FilesPath, position: (Pixels, Pixels)) {
         self.breadcrumb_dropdown_siblings.clear();
@@ -282,20 +297,35 @@ impl NavigationBarState {
             for entry in entries.filter_map(|e| e.ok()) {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_dir() {
-                        self.breadcrumb_dropdown_siblings.push(FilesPath::from(entry.path()));
+                        self.breadcrumb_dropdown_siblings
+                            .push(FilesPath::from(entry.path()));
                     }
                 }
             }
         }
         self.breadcrumb_dropdown_siblings.sort_by(|a, b| {
-            let name_a = a.as_path().file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            let name_b = b.as_path().file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let name_a = a
+                .as_path()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            let name_b = b
+                .as_path()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
             name_a.cmp(&name_b)
         });
         self.breadcrumb_dropdown_open = true;
         self.breadcrumb_dropdown_parent = Some(parent_path);
         self.breadcrumb_dropdown_filter.clear();
-        self.breadcrumb_dropdown_selected = if self.breadcrumb_dropdown_siblings.is_empty() { None } else { Some(0) };
+        self.breadcrumb_dropdown_selected = if self.breadcrumb_dropdown_siblings.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         self.breadcrumb_dropdown_position = Some(position);
     }
 
@@ -324,7 +354,11 @@ impl NavigationBarState {
         self.breadcrumb_dropdown_siblings
             .iter()
             .filter(|s| {
-                let name = s.as_path().file_name().unwrap_or_default().to_string_lossy();
+                let name = s
+                    .as_path()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
                 fuzzy_match_indices(&name, &self.breadcrumb_dropdown_filter).is_some()
             })
             .count()
@@ -333,13 +367,21 @@ impl NavigationBarState {
     /// Get filtered siblings as (index_into_original, path) pairs.
     pub fn breadcrumb_dropdown_filtered_siblings(&self) -> Vec<(usize, &FilesPath)> {
         if self.breadcrumb_dropdown_filter.is_empty() {
-            return self.breadcrumb_dropdown_siblings.iter().enumerate().collect();
+            return self
+                .breadcrumb_dropdown_siblings
+                .iter()
+                .enumerate()
+                .collect();
         }
         self.breadcrumb_dropdown_siblings
             .iter()
             .enumerate()
             .filter(|(_, s)| {
-                let name = s.as_path().file_name().unwrap_or_default().to_string_lossy();
+                let name = s
+                    .as_path()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
                 fuzzy_match_indices(&name, &self.breadcrumb_dropdown_filter).is_some()
             })
             .collect()
@@ -440,7 +482,7 @@ impl NavigationBarView {
         let address_bar_pill = {
             let state_mode = state.omnibar_mode;
             let edit_mode = state.edit_mode;
-            
+
             let mut pill = div()
                 .flex()
                 .items_center()
@@ -451,8 +493,10 @@ impl NavigationBarView {
                 .border(px(1.0))
                 .px(px(8.0))
                 .relative();
-                
-            let is_focused = edit_mode || state_mode == OmnibarMode::CommandPalette || state_mode == OmnibarMode::Search;
+
+            let is_focused = edit_mode
+                || state_mode == OmnibarMode::CommandPalette
+                || state_mode == OmnibarMode::Search;
             if is_focused {
                 pill = pill
                     .border_color(rgba(UiConstants::ACCENT_RGBA))
@@ -469,7 +513,12 @@ impl NavigationBarView {
                 v_path.update(cx, |this, cx| {
                     this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
                     this.state.nav_bar.edit_mode = true;
-                    this.state.nav_bar.edit_text = this.state.nav_bar.current_path.to_string_lossy().to_string();
+                    this.state.nav_bar.edit_text = this
+                        .state
+                        .nav_bar
+                        .current_path
+                        .to_string_lossy()
+                        .to_string();
                     let registry = this.state.action_registry.clone();
                     this.state.nav_bar.update_suggestions(&registry);
                     cx.notify();
@@ -537,10 +586,10 @@ impl NavigationBarView {
             // --- MIDDLE: Content area (varies by mode) ---
             if state_mode == OmnibarMode::Path && !edit_mode {
                 let v_pill = view.clone();
-                
+
                 // Build breadcrumbs trail
                 let mut breadcrumb_views = Vec::new();
-                
+
                 // Render dedicated Home icon at the start
                 let v_home = view.clone();
                 breadcrumb_views.push(
@@ -569,7 +618,7 @@ impl NavigationBarView {
                         )
                         .into_any_element()
                 );
-                
+
                 // Add chevrons and crumb segments
                 for (i, crumb_path) in state.breadcrumbs.iter().enumerate() {
                     let label = if i == 0 {
@@ -627,7 +676,7 @@ impl NavigationBarView {
                                     .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
                                     .child("\u{E974}"), // ChevronRight
                             )
-                            .into_any_element()
+                            .into_any_element(),
                     );
 
                     // Add the segment itself
@@ -671,24 +720,30 @@ impl NavigationBarView {
                                             .child(label),
                                     ),
                             )
-                            .into_any_element()
+                            .into_any_element(),
                     );
                 }
-                
+
                 // Spacer fills remaining space and triggers Edit Mode when clicked
-                let spacer = div()
-                    .flex_grow()
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        v_pill.update(cx, |this, cx| {
-                            this.state.nav_bar.edit_mode = true;
-                            this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
-                            this.state.nav_bar.edit_text = this.state.nav_bar.current_path.to_string_lossy().to_string();
-                            let registry = this.state.action_registry.clone();
-                            this.state.nav_bar.update_suggestions(&registry);
-                            cx.notify();
+                let spacer =
+                    div()
+                        .flex_grow()
+                        .h_full()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_pill.update(cx, |this, cx| {
+                                this.state.nav_bar.edit_mode = true;
+                                this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                                this.state.nav_bar.edit_text = this
+                                    .state
+                                    .nav_bar
+                                    .current_path
+                                    .to_string_lossy()
+                                    .to_string();
+                                let registry = this.state.action_registry.clone();
+                                this.state.nav_bar.update_suggestions(&registry);
+                                cx.notify();
+                            });
                         });
-                    });
 
                 pill = pill
                     .child(Self::render_pill_separator())
@@ -697,10 +752,9 @@ impl NavigationBarView {
                             .flex()
                             .items_center()
                             .gap(px(2.0))
-                            .children(breadcrumb_views)
+                            .children(breadcrumb_views),
                     )
                     .child(spacer);
-
             } else if state_mode == OmnibarMode::Path && edit_mode {
                 let edit_text = state.edit_text.clone();
                 let v_confirm = view.clone();
@@ -708,17 +762,12 @@ impl NavigationBarView {
                 pill = pill
                     .child(Self::render_pill_separator())
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .flex_grow()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(format!("{}{}", edit_text, "|"))
-                            )
+                        div().flex().items_center().flex_grow().gap(px(6.0)).child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child(format!("{}{}", edit_text, "|")),
+                        ),
                     )
                     // --- RIGHT: Clear / Confirm / Cancel ---
                     .child(
@@ -746,8 +795,8 @@ impl NavigationBarView {
                                             .text_size(px(12.0))
                                             .font_family(UiConstants::FONT_ICONS)
                                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                            .child("\u{E73E}") // Checkmark
-                                    )
+                                            .child("\u{E73E}"), // Checkmark
+                                    ),
                             )
                             .child(
                                 div()
@@ -771,11 +820,10 @@ impl NavigationBarView {
                                             .text_size(px(12.0))
                                             .font_family(UiConstants::FONT_ICONS)
                                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                            .child("\u{E711}") // Cancel
-                                    )
-                            )
+                                            .child("\u{E711}"), // Cancel
+                                    ),
+                            ),
                     );
-
             } else if state_mode == OmnibarMode::CommandPalette {
                 let command_query = state.command_query.clone();
                 let v_cancel = view.clone();
@@ -791,14 +839,14 @@ impl NavigationBarView {
                                 div()
                                     .text_size(px(13.0))
                                     .text_color(rgba(UiConstants::ACCENT_RGBA))
-                                    .child(">")
+                                    .child(">"),
                             )
                             .child(
                                 div()
                                     .text_size(px(13.0))
                                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(format!("{}{}", command_query, "|"))
-                            )
+                                    .child(format!("{}{}", command_query, "|")),
+                            ),
                     )
                     // --- RIGHT: Close ---
                     .child(
@@ -823,27 +871,21 @@ impl NavigationBarView {
                                     .text_size(px(12.0))
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E711}") // Close
-                            )
+                                    .child("\u{E711}"), // Close
+                            ),
                     );
-
             } else if state_mode == OmnibarMode::Search {
                 let search_query = state.search_query.clone();
                 let v_clear = view.clone();
                 pill = pill
                     .child(Self::render_pill_separator())
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .flex_grow()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(format!("{}{}", search_query, "|"))
-                            )
+                        div().flex().items_center().flex_grow().gap(px(8.0)).child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child(format!("{}{}", search_query, "|")),
+                        ),
                     )
                     // --- RIGHT: Clear ---
                     .child(
@@ -868,8 +910,8 @@ impl NavigationBarView {
                                     .text_size(px(12.0))
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E711}") // Close
-                            )
+                                    .child("\u{E711}"), // Close
+                            ),
                     );
             }
 
@@ -906,7 +948,10 @@ impl NavigationBarView {
                                 this.state.nav_bar.show_suggestions = false;
                                 if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
                                     this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
-                                } else if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::CommandPalette) {
+                                } else if matches!(
+                                    this.state.nav_bar.omnibar_mode,
+                                    OmnibarMode::CommandPalette
+                                ) {
                                     this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
                                 }
                                 let _ = this.navigate_back(cx);
@@ -922,7 +967,10 @@ impl NavigationBarView {
                                 this.state.nav_bar.show_suggestions = false;
                                 if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
                                     this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
-                                } else if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::CommandPalette) {
+                                } else if matches!(
+                                    this.state.nav_bar.omnibar_mode,
+                                    OmnibarMode::CommandPalette
+                                ) {
                                     this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
                                 }
                                 let _ = this.navigate_forward(cx);
@@ -935,7 +983,10 @@ impl NavigationBarView {
                             this.state.nav_bar.show_suggestions = false;
                             if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
                                 this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
-                            } else if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::CommandPalette) {
+                            } else if matches!(
+                                this.state.nav_bar.omnibar_mode,
+                                OmnibarMode::CommandPalette
+                            ) {
                                 this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
                             }
                             let _ = this.navigate_up(cx);
@@ -947,7 +998,10 @@ impl NavigationBarView {
                             this.state.nav_bar.show_suggestions = false;
                             if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
                                 this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
-                            } else if matches!(this.state.nav_bar.omnibar_mode, OmnibarMode::CommandPalette) {
+                            } else if matches!(
+                                this.state.nav_bar.omnibar_mode,
+                                OmnibarMode::CommandPalette
+                            ) {
                                 this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
                             }
                             let _ = this.refresh(cx);
@@ -979,7 +1033,7 @@ pub fn build_suggestions_dropdown(
                     let v_confirm = view.clone();
                     let label = sug.label.clone();
                     let kind = sug.kind.clone();
-                    
+
                     let mut row = div()
                         .flex()
                         .items_center()
@@ -1010,15 +1064,15 @@ pub fn build_suggestions_dropdown(
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_size(px(14.0))
                                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(sug.icon.clone())
+                                    .child(sug.icon.clone()),
                             )
                             .child(
                                 div()
                                     .ml(px(8.0))
                                     .text_size(px(13.0))
                                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(label)
-                            )
+                                    .child(label),
+                            ),
                     )
                     .children({
                         if let SuggestionKind::Command { action } = kind {
@@ -1027,7 +1081,7 @@ pub fn build_suggestions_dropdown(
                                     div()
                                         .text_size(px(11.0))
                                         .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                                        .child(binding.to_string())
+                                        .child(binding.to_string()),
                                 )
                             } else {
                                 None
@@ -1036,7 +1090,7 @@ pub fn build_suggestions_dropdown(
                             None
                         }
                     })
-                }))
+                })),
         )
 }
 
@@ -1063,7 +1117,10 @@ pub fn fuzzy_match_indices(name: &str, filter: &str) -> Option<Vec<usize>> {
     let mut match_indices = Vec::new();
     let mut name_idx = 0;
     for &filter_char in &filter_lower {
-        match name_lower[name_idx..].iter().position(|&c| c == filter_char) {
+        match name_lower[name_idx..]
+            .iter()
+            .position(|&c| c == filter_char)
+        {
             Some(offset) => {
                 let char_idx = name_idx + offset;
                 match_indices.push(char_idx);
@@ -1120,7 +1177,11 @@ pub fn build_breadcrumb_dropdown(
             let mut spans = Vec::new();
             for (ci, &ch) in truncated_chars.iter().enumerate() {
                 // Map truncated index back to original index
-                let orig_idx = if ci < keep { ci } else { original_len - (truncated_chars.len() - ci) };
+                let orig_idx = if ci < keep {
+                    ci
+                } else {
+                    original_len - (truncated_chars.len() - ci)
+                };
                 let ch_str = ch.to_string();
                 if index_set.contains(&orig_idx) {
                     spans.push(
@@ -1239,7 +1300,7 @@ pub fn build_breadcrumb_dropdown(
                             .text_size(px(11.0))
                             .font_family(UiConstants::FONT_ICONS)
                             .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                            .child("\u{E721}")
+                            .child("\u{E721}"),
                     )
                     .child(
                         div()
@@ -1256,6 +1317,6 @@ pub fn build_breadcrumb_dropdown(
                     .overflow_scroll()
                     .py(px(2.0))
                     .children(row_views),
-            )
+            ),
     )
 }

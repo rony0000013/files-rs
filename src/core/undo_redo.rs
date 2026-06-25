@@ -30,20 +30,36 @@ impl UndoRedoManager {
     }
 
     pub fn undo(&mut self) -> Result<()> {
-        if let Some(action) = self.history.pop() {
-            action.undo()?;
-            self.redo_stack.push(action);
-            Ok(())
+        if let Some(mut action) = self.history.pop() {
+            match action.undo() {
+                Ok(()) => {
+                    self.redo_stack.push(action);
+                    Ok(())
+                }
+                Err(e) => {
+                    // Push action back to history so it's not lost
+                    self.history.push(action);
+                    Err(e)
+                }
+            }
         } else {
             Err(anyhow!("Nothing to undo"))
         }
     }
 
     pub fn redo(&mut self) -> Result<()> {
-        if let Some(action) = self.redo_stack.pop() {
-            action.execute()?;
-            self.history.push(action);
-            Ok(())
+        if let Some(mut action) = self.redo_stack.pop() {
+            match action.execute() {
+                Ok(()) => {
+                    self.history.push(action);
+                    Ok(())
+                }
+                Err(e) => {
+                    // Push action back to redo_stack so it's not lost
+                    self.redo_stack.push(action);
+                    Err(e)
+                }
+            }
         } else {
             Err(anyhow!("Nothing to redo"))
         }

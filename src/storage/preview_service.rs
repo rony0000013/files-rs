@@ -78,7 +78,7 @@ pub fn extract_audio_metadata(path: &FilesPath, ext: &str) -> Result<MediaPrevie
                 }
             }
             if let Some(artist) = tag.artist() {
-                info.codec = Some(artist.to_string());
+                info.artist = Some(artist.to_string());
             }
         }
     }

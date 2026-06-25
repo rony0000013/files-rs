@@ -108,16 +108,31 @@ impl TagService {
                 Err(_) => return Ok(None),
             };
 
-            let mut basic_info: FILE_BASIC_INFO = std::mem::zeroed();
-            let result = GetFileInformationByHandle(handle, &mut basic_info as *mut _ as *mut _);
+            // Use GetFileInformationByHandleEx with FileIdInfo to get the actual
+            // file reference number (FRN). FILE_BASIC_INFO does NOT contain the FRN —
+            // it only has timestamps and FileAttributes. The FRN is in FILE_ID_INFO.FileId.
+            use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx};
+            use windows::Win32::Storage::FileSystem::FILE_ID_INFO;
+
+            let mut file_id_info: FILE_ID_INFO = std::mem::zeroed();
+            let result = GetFileInformationByHandleEx(
+                handle,
+                FileIdInfo,
+                &mut file_id_info as *mut _ as *mut _,
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            );
 
             let _ = CloseHandle(handle);
 
             if result.is_ok() {
-                // Get the file index (FRN) from the basic info
-                // In windows 0.52, FILE_BASIC_INFO has an IndexNumber field
-                let frn = basic_info.FileAttributes; // Use attributes as proxy
-                Ok(Some(frn as u64))
+                // FILE_ID_INFO.FileId is a 128-bit FILE_ID_128 (16 bytes).
+                // Take the lower 64 bits as a compact FRN proxy for tag deduplication.
+                let file_id_bytes = file_id_info.FileId.Identifier;
+                let frn = u64::from_ne_bytes([
+                    file_id_bytes[0], file_id_bytes[1], file_id_bytes[2], file_id_bytes[3],
+                    file_id_bytes[4], file_id_bytes[5], file_id_bytes[6], file_id_bytes[7],
+                ]);
+                Ok(Some(frn))
             } else {
                 Ok(None)
             }

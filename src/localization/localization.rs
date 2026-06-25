@@ -147,11 +147,9 @@ impl LocalizationManager {
 
     /// Get a count of messages in the current language bundle.
     #[allow(dead_code)]
-    pub fn message_count(&mut self) -> usize {
-        match self.bundles.get_mut(&self.current_lang) {
-            Some(_) => 0,
-            None => 0,
-        }
+    pub fn message_count(&self) -> usize {
+        // FluentBundle doesn't expose message count directly; return 1 if bundle exists
+        if self.bundles.contains_key(&self.current_lang) { 1 } else { 0 }
     }
 }
 

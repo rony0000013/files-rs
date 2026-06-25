@@ -94,10 +94,8 @@ impl StorageService for LocalFileSystem {
             use std::os::windows::fs::MetadataExt;
 
             let attrs = meta.file_attributes();
-            is_hidden =
-                (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
-            is_system =
-                (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
+            is_hidden = (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
+            is_system = (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
         }
 
         Ok(StorableItem {
@@ -134,6 +132,9 @@ impl FileWatcher {
         let mut watcher = notify::RecommendedWatcher::new(
             move |res: notify::Result<Event>| match res {
                 Ok(event) => {
+                    if event.paths.is_empty() {
+                        return;
+                    }
                     let event_type = match event.kind {
                         EventKind::Create(_) => {
                             Some(FileEvent::Created(FilesPath::new(event.paths[0].clone())))
@@ -322,10 +323,8 @@ async fn get_metadata_from_entry(
 
         // file_attributes() comes from the same metadata() call above — no extra syscall
         let attrs = meta.file_attributes();
-        is_hidden =
-            (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
-        is_system =
-            (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
+        is_hidden = (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0) != 0;
+        is_system = (attrs & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0) != 0;
     }
 
     Ok(StorableItem {

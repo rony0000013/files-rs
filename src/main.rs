@@ -14,7 +14,12 @@ fn main() {
         files_rs::core::logger::Logger::init();
     }
 
-    let db = Arc::new(Database::new(std::path::PathBuf::from(":memory:")).unwrap());
+    let db_path = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("files-rs")
+        .join("tags.db");
+    let _ = std::fs::create_dir_all(db_path.parent().unwrap());
+    let db = Arc::new(Database::new(db_path).unwrap());
     let progress = Arc::new(files_rs::core::progress::ProgressEngine::new());
     let root = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("C:\\"));
 
@@ -48,7 +53,7 @@ fn main() {
                 size(px(1280.0), px(800.0)),
             ))),
             titlebar: None,
-            window_background: WindowBackgroundAppearance::Transparent,
+            window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         };
 

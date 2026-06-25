@@ -200,7 +200,8 @@ impl BouncyScrollState {
         }
 
         // Accumulate velocity with smoothing for momentum phase.
-        self.velocity = self.velocity * VELOCITY_BLEND_HISTORY + delta_y * (1.0 - VELOCITY_BLEND_HISTORY);
+        self.velocity =
+            self.velocity * VELOCITY_BLEND_HISTORY + delta_y * (1.0 - VELOCITY_BLEND_HISTORY);
         self.velocity = self.velocity.clamp(-3000.0, 3000.0);
     }
 
@@ -488,30 +489,34 @@ pub fn start_bouncy_animation(
     let mut async_cx = cx.to_async();
     let executor = cx.background_executor().clone();
 
-    cx.foreground_executor().spawn(async move {
-        loop {
-            executor.timer(std::time::Duration::from_millis(TICK_INTERVAL_MS)).await;
+    cx.foreground_executor()
+        .spawn(async move {
+            loop {
+                executor
+                    .timer(std::time::Duration::from_millis(TICK_INTERVAL_MS))
+                    .await;
 
-            let still = weak.update(&mut async_cx, |this, cx| {
-                let state = get_state(&mut this.state);
+                let still = weak.update(&mut async_cx, |this, cx| {
+                    let state = get_state(&mut this.state);
 
-                // Superseded by newer scroll input — stop without touching animating
-                if state.epoch() != epoch {
-                    return false;
+                    // Superseded by newer scroll input — stop without touching animating
+                    if state.epoch() != epoch {
+                        return false;
+                    }
+
+                    let still_going = state.tick_spring(1.0 / 120.0);
+                    cx.notify();
+                    still_going
+                });
+
+                match still {
+                    Ok(true) => {}      // keep going
+                    Ok(false) => break, // settled or superseded
+                    Err(_) => break,    // entity dropped
                 }
-
-                let still_going = state.tick_spring(1.0 / 120.0);
-                cx.notify();
-                still_going
-            });
-
-            match still {
-                Ok(true) => {}        // keep going
-                Ok(false) => break,   // settled or superseded
-                Err(_) => break,      // entity dropped
             }
-        }
-    }).detach();
+        })
+        .detach();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -627,7 +632,8 @@ where
                 // ── Top overscroll ──
                 // The UniformList clamped to 0. Calculate how much we went past.
                 let overscroll_dist = target; // positive
-                let damped = rubber_band_clamp(overscroll_dist, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL);
+                let damped =
+                    rubber_band_clamp(overscroll_dist, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL);
                 // Store as positive overscroll offset
                 state.offset = damped;
                 state.velocity = state.velocity * VELOCITY_BLEND_HISTORY

@@ -118,14 +118,19 @@ impl SessionService {
 
     /// Start a new session. Sets the running flag and records start time.
     pub fn start_session(&mut self) {
+        let last_path = std::mem::take(&mut self.info.last_path);
+        let crash_count = self.info.crash_count;
+        let window_size = self.info.window_size;
+        let window_position = self.info.window_position;
+        let window_maximized = self.info.window_maximized;
         self.info = SessionInfo {
             start_time: now_secs(),
             clean_shutdown: false,
-            crash_count: self.info.crash_count,
-            last_path: self.info.last_path.clone(),
-            window_size: self.info.window_size,
-            window_position: self.info.window_position,
-            window_maximized: self.info.window_maximized,
+            crash_count,
+            last_path,
+            window_size,
+            window_position,
+            window_maximized,
         };
         self.save();
     }
@@ -263,7 +268,7 @@ mod tests {
     fn test_session_service_start_and_end() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("session.json");
-        let mut service = SessionService::new(path.clone());
+        let mut service = SessionService::new(path);
 
         service.start_session();
         assert!(!service.info().clean_shutdown);
@@ -296,7 +301,7 @@ mod tests {
 
         // Start a new session (this resets, but crash_count increments)
         {
-            let mut service = SessionService::new(path.clone());
+            let mut service = SessionService::new(path);
             assert!(service.detect_crash());
             service.start_session();
             // detect_crash should now return false for current session
@@ -313,7 +318,7 @@ mod tests {
         service.set_window_state(Some((1920.0, 1080.0)), Some((100.0, 50.0)), true);
 
         // Create new service loading from same file
-        let service2 = SessionService::new(path.clone());
+        let service2 = SessionService::new(path);
         assert_eq!(service2.window_size(), Some((1920.0, 1080.0)));
         assert_eq!(service2.window_position(), Some((100.0, 50.0)));
         assert!(service2.window_maximized());
@@ -327,7 +332,7 @@ mod tests {
 
         service.set_last_path(r"C:\Users\Test\Documents");
 
-        let service2 = SessionService::new(path.clone());
+        let service2 = SessionService::new(path);
         assert_eq!(service2.last_path(), r"C:\Users\Test\Documents");
     }
 
@@ -371,7 +376,7 @@ mod tests {
 
         // Fourth session: crash count should be 0
         {
-            let service = SessionService::new(path.clone());
+            let service = SessionService::new(path);
             assert_eq!(service.crash_count(), 0);
             assert!(!service.detect_crash());
         }

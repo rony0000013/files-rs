@@ -106,46 +106,55 @@ impl RecycleBinService {
         Ok(RecycleBinInfo::default())
     }
 
-    /// Restores a specific item from the Recycle Bin by its original path
+    /// Restores a specific item from the Recycle Bin by its original path.
+    ///
+    /// NOTE: Single-item restore from the Recycle Bin requires IShellFolder +
+    /// IContextMenu COM interop with proper PIDL management. This implementation
+    /// uses PowerShell's COM automation as a bridge until full COM is implemented.
+    /// Previously this function incorrectly called SHEmptyRecycleBinW which
+    /// permanently deleted ALL items on the drive — that data-destroying bug is fixed.
     #[cfg(windows)]
     pub async fn restore_item(&self, original_path: &Path) -> Result<RestoreResult> {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use windows::core::PCWSTR;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::Shell::{SHEmptyRecycleBinW, SHERB_NOCONFIRMATION};
+        let path_str = original_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .context("Could not extract filename from path")?;
 
-        let path_str = original_path.to_str().context("Invalid path string")?;
+        // Use PowerShell COM automation to invoke the Recycle Bin's undelete verb.
+        // This is the same mechanism as right-clicking an item in the Recycle Bin
+        // and selecting "Restore" — it restores the single item to its original location.
+        let script = format!(
+            r#"
+            $shell = New-Object -ComObject Shell.Application
+            $rb = $shell.Namespace(0x0A) # CSIDL_BITBUCKET = 0x0A
+            foreach ($item in $rb.Items()) {{
+                if ($item.Name -ieq '{name}') {{
+                    $rb.GetDetailsOf($item, 0) | Out-Null
+                    $verb = $item.Verbs() | Where-Object {{ $_.Name -match 'Restore' }} | Select-Object -First 1
+                    if ($verb) {{ $verb.DoIt() }}
+                    break
+                }}
+            }}
+            "#,
+            name = path_str.replace('\'', "''")
+        );
 
-        // First, get the drive letter from the path
-        let drive = original_path
-            .components()
-            .next()
-            .and_then(|c| c.as_os_str().to_str())
-            .unwrap_or("C:\\");
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()?;
 
-        let drive_path: Vec<u16> = OsStr::new(&format!("{}\\", drive))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Use SHEmptyRecycleBin to restore
-        // Note: This restores ALL items from the drive, not a specific item
-        // For item-specific restore, we would need IFileOperation or shell namespace browsing
-        unsafe {
-            let result = SHEmptyRecycleBinW(
-                HWND(0), // NULL HWND
-                PCWSTR(drive_path.as_ptr()),
-                SHERB_NOCONFIRMATION,
-            );
-
-            match result {
-                Ok(_) => Ok(RestoreResult {
-                    restored_count: 1,
-                    restored_paths: vec![path_str.to_string()],
-                }),
-                Err(e) => anyhow::bail!("Failed to restore item: {}", e),
-            }
+        if output.status.success() {
+            Ok(RestoreResult {
+                restored_count: 1,
+                restored_paths: vec![original_path.to_string_lossy().to_string()],
+            })
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(anyhow::anyhow!(
+                "Failed to restore item '{}': {}",
+                path_str,
+                stderr
+            ))
         }
     }
 
