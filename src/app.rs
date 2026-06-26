@@ -54,6 +54,10 @@ impl AppWindow {
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
+            file_watcher: None,
+            file_event_rx: None,
+            file_watcher_secondary: None,
+            file_event_rx_secondary: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
@@ -787,6 +791,7 @@ impl AppWindow {
             nav.tabs.close_tab(index);
         });
         self.save_session(cx);
+        self.clamp_scroll_offset(cx);
         let new_path = self
             .state
             .navigation
@@ -826,20 +831,29 @@ impl AppWindow {
     }
 
     pub fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let already_active = self
+            .state
+            .navigation
+            .read(cx)
+            .tabs
+            .active_tab_index
+            == index;
+        if already_active {
+            return;
+        }
         self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.switch_tab(index);
         });
         self.save_session(cx);
+
         let (new_path, tab_target) = {
             let nav = self.state.navigation.read(cx);
             let tab = nav.tabs.active_tab();
             (tab.path.clone(), tab.target.clone())
         };
-        // Restore the tab's target (Settings, Home, Directory, etc.)
         self.state.main_view.target = tab_target.clone();
         match tab_target {
             crate::ui::views::types::ViewTarget::Settings => {
-                // For settings tab, don't navigate (which would load files)
                 self.state.nav_bar.update_path(FilesPath::from("Settings"));
                 cx.notify();
             }
@@ -1124,18 +1138,20 @@ impl AppWindow {
         Some(index.min(tab_count - 1))
     }
 
-    /// Complete tab drag (drop).
+    /// Complete tab drag (drop). Only reorders if drag was actually active.
     pub fn end_tab_drag(&mut self, _drop_index: Option<usize>, cx: &mut Context<Self>) {
-        if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
-            if let Some(target_idx) = self.state.tab_drag.drop_target_index {
-                if dragged_idx != target_idx {
-                    self.state.navigation.update(cx, |nav, _cx| {
-                        nav.tabs.reorder_tab(dragged_idx, target_idx);
-                    });
-                    self.save_session(cx);
+        if self.state.tab_drag.drag_active {
+            if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
+                if let Some(target_idx) = self.state.tab_drag.drop_target_index {
+                    if dragged_idx != target_idx {
+                        self.state.navigation.update(cx, |nav, _cx| {
+                            nav.tabs.reorder_tab(dragged_idx, target_idx);
+                        });
+                        self.save_session(cx);
+                    }
+                } else if self.state.tab_drag.is_dragging_out {
+                    tracing::info!("Tab dragged out of window - creating new window");
                 }
-            } else if self.state.tab_drag.is_dragging_out {
-                tracing::info!("Tab dragged out of window - creating new window");
             }
         }
         // Preserve scroll_offset — only reset drag state
@@ -1170,10 +1186,27 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Clamp scroll_offset: reset to 0 if tabs no longer overflow,
+    /// otherwise clamp so we don't scroll past the end.
+    fn clamp_scroll_offset(&mut self, cx: &mut Context<Self>) {
+        let tab_count = self.state.navigation.read(cx).tabs.tabs.len() as f32;
+        let tabs_min_total_w = tab_count * 100.0; // TAB_MIN_W
+        let estimated_strip_w = 800.0;
+        if tabs_min_total_w <= estimated_strip_w {
+            // Tabs fit — exit scroll mode completely
+            self.state.tab_drag.scroll_offset = 0.0;
+        } else {
+            // Tabs still overflow — clamp so we don't scroll past the end
+            let max_scroll = (tab_count * 200.0) - 600.0;
+            let max_scroll = max_scroll.max(0.0);
+            self.state.tab_drag.scroll_offset =
+                self.state.tab_drag.scroll_offset.min(max_scroll);
+        }
+    }
+
     /// Close all tabs except the specified one.
     pub fn close_other_tabs(&mut self, keep_index: usize, cx: &mut Context<Self>) {
         let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
-        // Close tabs from end to start in a single update call
         self.state.navigation.update(cx, |nav, _cx| {
             for i in (0..tab_count).rev() {
                 if i != keep_index {
@@ -1182,19 +1215,20 @@ impl AppWindow {
             }
         });
         self.save_session(cx);
+        self.clamp_scroll_offset(cx);
         cx.notify();
     }
 
     /// Close all tabs to the right of the specified one.
     pub fn close_tabs_to_right(&mut self, from_index: usize, cx: &mut Context<Self>) {
         let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
-        // Close tabs from end to start in a single update call
         self.state.navigation.update(cx, |nav, _cx| {
             for i in (from_index + 1..tab_count).rev() {
                 nav.tabs.close_tab(i);
             }
         });
         self.save_session(cx);
+        self.clamp_scroll_offset(cx);
         cx.notify();
     }
 
@@ -1218,6 +1252,113 @@ impl AppWindow {
     }
 
     // ---- Navigation Operations ----
+    /// Start watching a folder for file system changes.
+    /// `secondary` determines if this is for the secondary pane (split view).
+    pub fn start_file_watcher_for(&mut self, path: FilesPath, secondary: bool) {
+        use notify::{Config, EventKind, RecursiveMode, Watcher};
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let kind = match event.kind {
+                        EventKind::Create(_) => Some(crate::storage::storage::FileEvent::Created(
+                            crate::core::path_util::FilesPath::new(event.paths[0].clone()),
+                        )),
+                        EventKind::Modify(_) => Some(crate::storage::storage::FileEvent::Modified(
+                            crate::core::path_util::FilesPath::new(event.paths[0].clone()),
+                        )),
+                        EventKind::Remove(_) => Some(crate::storage::storage::FileEvent::Removed(
+                            crate::core::path_util::FilesPath::new(event.paths[0].clone()),
+                        )),
+                        _ => None,
+                    };
+                    if let Some(e) = kind {
+                        let _ = tx.send(e);
+                    }
+                }
+            },
+            Config::default(),
+        );
+
+        if let Ok(mut w) = watcher {
+            let _ = w.watch(path.as_path(), RecursiveMode::NonRecursive);
+            if secondary {
+                self.file_watcher_secondary = Some(w);
+                self.file_event_rx_secondary = Some(rx);
+            } else {
+                self.file_watcher = Some(w);
+                self.file_event_rx = Some(rx);
+            }
+        }
+    }
+
+    /// Start watching primary folder
+    pub fn start_file_watcher(&mut self, path: FilesPath) {
+        self.stop_file_watcher(false);
+        self.start_file_watcher_for(path, false);
+    }
+
+    /// Start watching secondary folder (split view)
+    pub fn start_file_watcher_secondary(&mut self, path: FilesPath) {
+        self.stop_file_watcher(true);
+        self.start_file_watcher_for(path, true);
+    }
+
+    /// Stop file watcher. `secondary` determines which watcher to stop.
+    pub fn stop_file_watcher(&mut self, secondary: bool) {
+        if secondary {
+            self.file_watcher_secondary = None;
+            self.file_event_rx_secondary = None;
+        } else {
+            self.file_watcher = None;
+            self.file_event_rx = None;
+        }
+    }
+
+    /// Stop all file watchers
+    pub fn stop_all_file_watchers(&mut self) {
+        self.file_watcher = None;
+        self.file_event_rx = None;
+        self.file_watcher_secondary = None;
+        self.file_event_rx_secondary = None;
+    }
+
+    /// Poll for file system events and refresh if any are received.
+    pub fn poll_file_events(&mut self, cx: &mut Context<Self>) {
+        // Poll primary pane
+        if let Some(rx) = &mut self.file_event_rx {
+            while let Ok(_event) = rx.try_recv() {
+                self.refresh(cx);
+                break;
+            }
+        }
+        // Poll secondary pane
+        if let Some(rx) = &mut self.file_event_rx_secondary {
+            while let Ok(_event) = rx.try_recv() {
+                self.refresh_secondary_pane(cx);
+                break;
+            }
+        }
+    }
+
+    /// Refresh the secondary pane (for split view)
+    pub fn refresh_secondary_pane(&mut self, cx: &mut Context<Self>) {
+        let secondary_path = self
+            .state
+            .navigation
+            .read(cx)
+            .tabs
+            .active_tab()
+            .secondary_pane_path
+            .clone();
+        if let Some(path) = secondary_path {
+            // Trigger a re-render which will pick up the new file list
+            cx.notify();
+        }
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let path = self.state.main_view.primary_path.clone();
         self.navigate(path, cx);

@@ -5,6 +5,7 @@ pub mod icon_cache;
 pub mod metadata;
 pub mod search;
 pub mod tag_service;
+pub mod thumbnail_cache;
 
 // Explicit re-exports
 pub use metadata::FileItem;

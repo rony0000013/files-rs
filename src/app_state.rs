@@ -73,6 +73,8 @@ pub struct AppState {
     pub main_focus: Option<gpui::FocusHandle>,
     /// Whether the window is currently maximized
     pub is_maximized: bool,
+    /// Ultra-fast thumbnail cache with hash-based invalidation
+    pub thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache,
 }
 
 impl AppState {
@@ -127,6 +129,7 @@ impl AppState {
             tab_drag: TabDragState::default(),
             main_focus: None,
             is_maximized: false,
+            thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::new(),
         }
     }
 }
@@ -213,4 +216,14 @@ pub struct AppWindow {
     pub zoom_drag_start: Option<(f32, f32)>,
     /// Column resize drag state (for Details view column headers)
     pub column_resize: Option<ColumnResizeState>,
+    /// File system watcher for auto-refreshing the current folder (primary pane)
+    pub file_watcher: Option<notify::RecommendedWatcher>,
+    /// Channel receiver for file system events (primary pane)
+    pub file_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::storage::storage::FileEvent>>,
+    /// File system watcher for secondary pane (split view)
+    pub file_watcher_secondary: Option<notify::RecommendedWatcher>,
+    /// Channel receiver for file system events (secondary pane)
+    pub file_event_rx_secondary:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::storage::storage::FileEvent>>,
 }

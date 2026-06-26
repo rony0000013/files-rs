@@ -19,6 +19,8 @@ use gpui::*;
 
 impl Render for AppWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Poll file system events — refresh if any folder changes detected
+        self.poll_file_events(cx);
         // file_items is synced in the background task update callback, not during render
         // icon_paths are synced after Phase 1, Phase 2, and icon loading — no per-frame clone needed
 

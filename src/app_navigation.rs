@@ -20,12 +20,9 @@ impl AppWindow {
 
         self.state.main_view.primary_path = path.clone();
         self.state.nav_bar.update_path(path.clone());
-        // Immediately notify so the omnibar dismisses before async item loading
         cx.notify();
-        self.state.main_view.items.clear();
-        // Clear icon_paths to avoid stale entries from previous folder during
-        // the brief window before items are loaded and icon_cache is synced.
-        self.state.main_view.icon_paths.clear();
+        // Don't clear items here — let async load replace them atomically
+        // to avoid blank flash during tab switches
 
         // Sync sidebar active item
         #[cfg(windows)]
@@ -39,6 +36,26 @@ impl AppWindow {
         let branch = GitService::get_branch(&path);
         self.state.status_bar.show_git_actions = branch.is_some();
         self.state.status_bar.git_branch = branch;
+
+        // Start watching this folder for changes
+        self.stop_file_watcher(false);
+        self.start_file_watcher(path.clone());
+
+        // If in split view, also watch the secondary pane
+        let pane_layout = self.state.navigation.read(cx).pane_layout;
+        if pane_layout != crate::core::navigation_manager::PaneLayout::Single {
+            if let Some(secondary_path) = self
+                .state
+                .navigation
+                .read(cx)
+                .tabs
+                .active_tab()
+                .secondary_pane_path
+                .clone()
+            {
+                self.start_file_watcher_secondary(secondary_path);
+            }
+        }
 
         // Early notify removed - will be called when items finish loading
         // cx.notify();
