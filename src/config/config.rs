@@ -201,6 +201,9 @@ pub struct SessionConfig {
     /// Active pane: "primary" or "secondary"
     #[serde(default = "default_active_pane")]
     pub active_pane: String,
+    /// Cycle tabs in most-recently-used order (like Alt+Tab) instead of sequential
+    #[serde(default)]
+    pub mru_tab_cycle: bool,
 }
 
 fn default_pane_layout() -> String {

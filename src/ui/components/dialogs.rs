@@ -66,6 +66,10 @@ pub enum DialogType {
         position: Point<Pixels>,
         tab_count: usize,
     },
+    /// Tab actions dropdown (shown on click of tab actions button)
+    TabActionsDropdown {
+        position: Point<Pixels>,
+    },
     /// Column visibility toggle menu (shown on right-click of column header)
     ColumnVisibilityMenu {
         position: Point<Pixels>,
@@ -264,6 +268,9 @@ impl DialogsView {
                 tab_count,
             } => Self::build_tab_context_menu(*tab_index, *position, *tab_count, view.clone())
                 .into_any_element(),
+            DialogType::TabActionsDropdown { position } => {
+                Self::build_tab_actions_dropdown(*position, view.clone()).into_any_element()
+            }
             DialogType::ColumnVisibilityMenu { position } => {
                 Self::build_column_visibility_menu(*position, view.clone()).into_any_element()
             }
@@ -383,6 +390,7 @@ impl DialogsView {
         match dialog {
             DialogType::ContextMenu { position, .. }
             | DialogType::TabContextMenu { position, .. }
+            | DialogType::TabActionsDropdown { position }
             | DialogType::ColumnVisibilityMenu { position } => {
                 container = container
                     .absolute()

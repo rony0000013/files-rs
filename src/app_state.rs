@@ -63,8 +63,16 @@ pub struct AppState {
     pub thumbnail_service: Arc<ThumbnailService>,
     /// Cache of extracted icon temp file paths, keyed by FilesPath
     pub icon_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
+    /// Cache of tab folder thumbnail paths, keyed by FilesPath
+    pub tab_thumbnail_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
     /// Undo/redo manager for file operations
     pub undo_redo: UndoRedoManager,
+    /// Tab drag state for reordering and cross-window operations
+    pub tab_drag: TabDragState,
+    /// Focus handle for the main content area (for keyboard events)
+    pub main_focus: Option<gpui::FocusHandle>,
+    /// Whether the window is currently maximized
+    pub is_maximized: bool,
 }
 
 impl AppState {
@@ -114,7 +122,11 @@ impl AppState {
             },
             thumbnail_service: Arc::new(ThumbnailService::new()),
             icon_cache: Arc::new(Mutex::new(HashMap::new())),
+            tab_thumbnail_cache: Arc::new(Mutex::new(HashMap::new())),
             undo_redo: UndoRedoManager::new(),
+            tab_drag: TabDragState::default(),
+            main_focus: None,
+            is_maximized: false,
         }
     }
 }
@@ -141,6 +153,49 @@ pub struct HoverTooltipData {
     /// Screen position of the tooltip
     pub position: gpui::Point<gpui::Pixels>,
     pub item: crate::domain::metadata::FileItem,
+}
+
+/// Tab drag state for reordering and cross-window operations
+#[derive(Debug, Clone)]
+pub struct TabDragState {
+    /// Index of the tab being dragged
+    pub dragged_index: Option<usize>,
+    /// Current mouse position during drag
+    pub current_x: f32,
+    pub current_y: f32,
+    /// Whether we're dragging from this window (for cross-window detection)
+    pub is_dragging: bool,
+    /// Whether dragging has actually started (after threshold)
+    pub drag_active: bool,
+    /// Whether we're dragging out of the window (to create new window)
+    pub is_dragging_out: bool,
+    /// Horizontal scroll offset for the tab bar (in pixels)
+    pub scroll_offset: f32,
+    /// Index where the tab will be dropped (based on mouse position)
+    pub drop_target_index: Option<usize>,
+    /// Position where mouse-down occurred (for drag threshold)
+    pub drag_start_x: f32,
+    pub drag_start_y: f32,
+    /// When the mouse-down occurred (for 500ms hold threshold)
+    pub drag_start_time: Option<std::time::Instant>,
+}
+
+impl Default for TabDragState {
+    fn default() -> Self {
+        Self {
+            dragged_index: None,
+            current_x: 0.0,
+            current_y: 0.0,
+            is_dragging: false,
+            drag_active: false,
+            is_dragging_out: false,
+            scroll_offset: 0.0,
+            drop_target_index: None,
+            drag_start_x: 0.0,
+            drag_start_y: 0.0,
+            drag_start_time: None,
+        }
+    }
 }
 
 pub struct AppWindow {

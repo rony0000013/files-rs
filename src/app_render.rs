@@ -44,6 +44,14 @@ impl Render for AppWindow {
             }
         }
 
+        // Initialize main focus handle before borrowing state
+        if self.state.main_focus.is_none() {
+            self.state.main_focus = Some(cx.focus_handle());
+            // Request focus on the main content so keyboard events work
+            let focus = self.state.main_focus.clone().unwrap();
+            _window.focus(&focus);
+        }
+
         let state = &self.state;
         let _nav = state.navigation.read(cx);
 
@@ -70,8 +78,11 @@ impl Render for AppWindow {
                     .flex_col()
                     .w_full()
                     .h_full()
-                    .child(
+                    .child({
+                        let main_focus = self.state.main_focus.clone().unwrap();
                         div()
+                            .id("main-content")
+                            .track_focus(&main_focus)
                             .flex()
                             .flex_row()
                             .w_full()
@@ -85,6 +96,19 @@ impl Render for AppWindow {
                                       cx: &mut App| {
                                     view.update(cx, |this, cx| {
                                         this.handle_key_event(event, cx);
+                                    });
+                                }
+                            })
+                            .border(px(0.0))
+                            .cursor_default()
+                            .on_mouse_down(MouseButton::Left, {
+                                let view = cx.entity().clone();
+                                let main_focus = self.state.main_focus.clone().unwrap();
+                                move |_, window, cx| {
+                                    // Refocus main content so keyboard events work
+                                    window.focus(&main_focus);
+                                    view.update(cx, |this, cx| {
+                                        this.dismiss_omnibar(cx);
                                     });
                                 }
                             })
@@ -107,6 +131,9 @@ impl Render for AppWindow {
                                             .child(TabBarView::build(
                                                 &state.navigation.read(cx),
                                                 cx.entity(),
+                                                &state.tab_thumbnail_cache,
+                                                &state.tab_drag,
+                                                state.is_maximized,
                                             ))
                                     })
                                     .child(
@@ -294,8 +321,8 @@ impl Render for AppWindow {
                                                 ),
                                         )
                                     }),
-                            ),
-                    )
+                            )
+                    })
                     .into_any_element(),
             ],
         );

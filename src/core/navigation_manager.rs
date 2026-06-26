@@ -168,6 +168,9 @@ pub struct TabManagerState {
     pub tabs: Vec<TabState>,
     pub active_tab_index: usize,
     pub closed_tabs: VecDeque<TabState>,
+    /// Most-recently-used order: indices into `tabs`, most recent first.
+    #[serde(default)]
+    pub mru_order: Vec<usize>,
 }
 
 const MAX_CLOSED_TABS: usize = 10;
@@ -178,6 +181,7 @@ impl TabManagerState {
             tabs: vec![TabState::new(initial_path, default_mode)],
             active_tab_index: 0,
             closed_tabs: VecDeque::with_capacity(MAX_CLOSED_TABS),
+            mru_order: vec![0],
         }
     }
 
@@ -189,15 +193,40 @@ impl TabManagerState {
         &mut self.tabs[self.active_tab_index]
     }
 
+    /// Record a tab activation in the MRU order (move to front).
+    fn record_mru(&mut self, index: usize) {
+        self.mru_order.retain(|&i| i != index);
+        // After removal, indices above the removed position shift down.
+        // But since we store actual indices and tabs can be added/removed,
+        // we just rebuild from current state when needed. For now, push front.
+        self.mru_order.insert(0, index);
+    }
+
+    /// Rebuild MRU order from scratch (called after close/remove operations).
+    fn rebuild_mru(&mut self) {
+        self.mru_order.retain(|&i| i < self.tabs.len());
+        // Ensure active tab is at front
+        self.mru_order.retain(|&i| i != self.active_tab_index);
+        self.mru_order.insert(0, self.active_tab_index);
+        // Fill in any tabs not yet in MRU
+        for i in 0..self.tabs.len() {
+            if !self.mru_order.contains(&i) {
+                self.mru_order.push(i);
+            }
+        }
+    }
+
     pub fn add_tab(&mut self, path: FilesPath, mode: ViewMode) {
         self.tabs.push(TabState::new(path, mode));
         self.active_tab_index = self.tabs.len() - 1;
+        self.record_mru(self.active_tab_index);
     }
 
     pub fn add_tab_with_zoom(&mut self, path: FilesPath, mode: ViewMode, zoom_level: f32) {
         self.tabs
             .push(TabState::new_with_zoom(path, mode, zoom_level));
         self.active_tab_index = self.tabs.len() - 1;
+        self.record_mru(self.active_tab_index);
     }
 
     /// Add a new tab that displays the Settings page.
@@ -210,6 +239,7 @@ impl TabManagerState {
         tab.target = ViewTarget::Settings;
         self.tabs.push(tab);
         self.active_tab_index = self.tabs.len() - 1;
+        self.record_mru(self.active_tab_index);
     }
 
     pub fn close_tab(&mut self, index: usize) {
@@ -227,6 +257,7 @@ impl TabManagerState {
         } else if self.active_tab_index >= self.tabs.len() {
             self.active_tab_index = self.tabs.len() - 1;
         }
+        self.rebuild_mru();
     }
 
     pub fn close_all_tabs(&mut self) {
@@ -302,9 +333,28 @@ impl TabManagerState {
         self.active_tab_index = self.tabs.len() - 1;
     }
 
+    /// Reorder a tab by moving it from one index to another.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        // Update active_tab_index if it was affected
+        if self.active_tab_index == from {
+            self.active_tab_index = to;
+        } else if from < self.active_tab_index && to >= self.active_tab_index {
+            self.active_tab_index -= 1;
+        } else if from > self.active_tab_index && to <= self.active_tab_index {
+            self.active_tab_index += 1;
+        }
+        self.rebuild_mru();
+    }
+
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active_tab_index = index;
+            self.record_mru(index);
         }
     }
 
@@ -313,6 +363,7 @@ impl TabManagerState {
             return;
         }
         self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
+        self.record_mru(self.active_tab_index);
     }
 
     pub fn previous_tab(&mut self) {
@@ -323,6 +374,46 @@ impl TabManagerState {
             self.active_tab_index = self.tabs.len() - 1;
         } else {
             self.active_tab_index -= 1;
+        }
+        self.record_mru(self.active_tab_index);
+    }
+
+    /// Cycle to the next tab in MRU order.
+    pub fn next_tab_mru(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        // Find current active tab in MRU list and move to the next one
+        if let Some(pos) = self.mru_order.iter().position(|&i| i == self.active_tab_index) {
+            let next_pos = (pos + 1) % self.mru_order.len();
+            let next_idx = self.mru_order[next_pos];
+            if next_idx < self.tabs.len() {
+                self.active_tab_index = next_idx;
+                // Move to front of MRU
+                self.mru_order.remove(next_pos);
+                self.mru_order.insert(0, next_idx);
+            }
+        } else {
+            // Fallback: not in MRU, just go sequential
+            self.next_tab();
+        }
+    }
+
+    /// Cycle to the previous tab in MRU order.
+    pub fn previous_tab_mru(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        if let Some(pos) = self.mru_order.iter().position(|&i| i == self.active_tab_index) {
+            let prev_pos = if pos == 0 { self.mru_order.len() - 1 } else { pos - 1 };
+            let prev_idx = self.mru_order[prev_pos];
+            if prev_idx < self.tabs.len() {
+                self.active_tab_index = prev_idx;
+                self.mru_order.remove(prev_pos);
+                self.mru_order.insert(0, prev_idx);
+            }
+        } else {
+            self.previous_tab();
         }
     }
 

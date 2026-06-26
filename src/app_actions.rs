@@ -1292,6 +1292,7 @@ impl AppWindow {
                 }
                 "mica_alt" => s.config.appearance.mica_alt = !s.config.appearance.mica_alt,
                 "folder_on_top" => s.config.view.folder_on_top = !s.config.view.folder_on_top,
+                "mru_tab_cycle" => s.config.session.mru_tab_cycle = !s.config.session.mru_tab_cycle,
                 _ => {}
             }
             let _ = s.config.save();

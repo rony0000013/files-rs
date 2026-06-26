@@ -230,6 +230,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     .child(Self::settings_toggle("Show file extensions", config.preferences.show_file_extensions, "show_file_extensions", view.clone()))
                     .child(Self::settings_toggle("Confirm on delete", config.preferences.confirm_delete, "confirm_delete", view.clone()))
                     .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Tabs
+                    .child(Self::settings_group_header("Tabs"))
+                    .child(Self::settings_toggle("Cycle tabs in recently-used order (Ctrl+Tab)", config.session.mru_tab_cycle, "mru_tab_cycle", view.clone()))
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
                     // Group: Startup
                     .child(Self::settings_group_header("Startup"))
                     .child(div().flex().items_center().justify_between()

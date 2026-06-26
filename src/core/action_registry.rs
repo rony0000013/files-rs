@@ -118,6 +118,12 @@ pub enum ActionKind {
     CloseTab,
     ReopenClosedTab,
     NewWindow,
+    NextTab,
+    PreviousTab,
+
+    // Split Panes
+    SplitVertical,
+    SplitHorizontal,
 
     // Commands
     CommandPalette,
@@ -158,6 +164,10 @@ impl ActionKind {
             Self::CloseTab => "Close Tab",
             Self::ReopenClosedTab => "Reopen Closed Tab",
             Self::NewWindow => "New Window",
+            Self::NextTab => "Next Tab",
+            Self::PreviousTab => "Previous Tab",
+            Self::SplitVertical => "Split Vertical",
+            Self::SplitHorizontal => "Split Horizontal",
             Self::CommandPalette => "Command Palette",
             Self::OpenHelp => "Open Help",
             Self::OpenSettings => "Open Settings",
@@ -198,6 +208,10 @@ impl ActionKind {
             CloseTab,
             ReopenClosedTab,
             NewWindow,
+            NextTab,
+            PreviousTab,
+            SplitVertical,
+            SplitHorizontal,
             CommandPalette,
             OpenHelp,
             OpenSettings,
@@ -386,6 +400,21 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         KeyCombination::new("t").with_ctrl_shift(),
     );
     m.insert(ActionKind::NewWindow, KeyCombination::new("n").with_ctrl());
+    m.insert(ActionKind::NextTab, KeyCombination::new("tab").with_ctrl());
+    m.insert(
+        ActionKind::PreviousTab,
+        KeyCombination::new("tab").with_ctrl_shift(),
+    );
+
+    // Split Panes
+    m.insert(
+        ActionKind::SplitVertical,
+        KeyCombination::new("v").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::SplitHorizontal,
+        KeyCombination::new("h").with_ctrl_shift(),
+    );
 
     // Commands
     m.insert(
@@ -415,8 +444,9 @@ impl KeyCombination {
 /// GPUI's `Keystroke` has `key: String` and `modifiers: Modifiers` with
 /// `control`, `alt`, `shift` booleans.
 pub fn from_gpui_keystroke(keystroke: &gpui::Keystroke) -> KeyCombination {
+    let key = keystroke.key.as_str().to_lowercase();
     KeyCombination {
-        key: keystroke.key.clone(),
+        key,
         ctrl: keystroke.modifiers.control,
         alt: keystroke.modifiers.alt,
         shift: keystroke.modifiers.shift,

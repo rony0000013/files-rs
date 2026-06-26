@@ -140,6 +140,7 @@ impl AppWindow {
                 .state
                 .session_service
                 .set_last_path(session_path.to_string_lossy().as_ref());
+            window_view.load_tab_thumbnails(cx);
         } else {
             // No saved session — navigate to the default home path
             window_view.navigate(initial_path, cx);
@@ -159,7 +160,6 @@ impl AppWindow {
         window_view.state.session_service.start_session();
 
         // Splash auto-dismiss timer removed (splash disabled)
-
         // Dismiss omnibar when window loses focus (e.g. user clicks outside the app)
         {
             let focus = cx.focus_handle();
@@ -220,6 +220,46 @@ impl AppWindow {
             crate::core::action_registry::from_gpui_keystroke(keystroke);
 
         use crate::ui::components::dialogs::DialogType;
+
+        // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs (must be before nav bar intercept
+        // so it works even when the omnibar is focused)
+        if keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+            let key = keystroke.key.as_str();
+            match key {
+                "tab" | "Tab" => {
+                    if keystroke.modifiers.shift {
+                        self.cycle_tab_prev(cx);
+                    } else {
+                        self.cycle_tab_next(cx);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Ctrl+1-9: switch to tab by position (browser-style)
+        if keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform && !keystroke.modifiers.shift {
+            let key = keystroke.key.as_str();
+            if let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
+                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+                if digit >= 1 {
+                    let idx = (digit - 1) as usize;
+                    if idx < tab_count {
+                        self.switch_tab(idx, cx);
+                        return;
+                    }
+                }
+            }
+            // Ctrl+9 always switches to the last tab
+            if key == "9" {
+                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+                if tab_count > 0 {
+                    self.switch_tab(tab_count - 1, cx);
+                    return;
+                }
+            }
+        }
 
         // Intercept Navigation Bar input typing
         let is_nav_bar_active = self.state.nav_bar.edit_mode
@@ -692,6 +732,7 @@ impl AppWindow {
             // Restore the zoom level from the active tab
             let restored_zoom = self.state.navigation.read(cx).tabs.active_tab().zoom_level;
             self.state.main_view.zoom_level = restored_zoom;
+            self.load_tab_thumbnails(cx);
         } else {
             let last_path = self.state.session_service.last_path().to_string();
             if !last_path.is_empty() {
@@ -737,6 +778,7 @@ impl AppWindow {
             nav.tabs.add_tab_with_zoom(current_path, mode, zoom);
         });
         self.save_session(cx);
+        self.load_tab_thumbnails(cx);
         cx.notify();
     }
 
@@ -754,6 +796,33 @@ impl AppWindow {
             .path
             .clone();
         self.navigate(new_path, cx);
+    }
+
+    pub fn reopen_closed_tab(&mut self, cx: &mut Context<Self>) {
+        let reopened = self
+            .state
+            .navigation
+            .update(cx, |nav, _cx| nav.tabs.reopen_closed_tab());
+        if reopened {
+            self.save_session(cx);
+            let (new_path, tab_target) = {
+                let nav = self.state.navigation.read(cx);
+                let tab = nav.tabs.active_tab();
+                (tab.path.clone(), tab.target.clone())
+            };
+            self.state.main_view.target = tab_target.clone();
+            match tab_target {
+                crate::ui::views::types::ViewTarget::Settings => {
+                    self.state
+                        .nav_bar
+                        .update_path(FilesPath::from("Settings"));
+                    cx.notify();
+                }
+                _ => {
+                    self.navigate(new_path, cx);
+                }
+            }
+        }
     }
 
     pub fn switch_tab(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -780,6 +849,144 @@ impl AppWindow {
         }
     }
 
+    pub fn cycle_tab_next(&mut self, cx: &mut Context<Self>) {
+        let use_mru = self
+            .state
+            .settings
+            .read(cx)
+            .config
+            .session
+            .mru_tab_cycle;
+        self.state.navigation.update(cx, |nav, _cx| {
+            if use_mru {
+                nav.tabs.next_tab_mru();
+            } else {
+                nav.tabs.next_tab();
+            }
+        });
+        self.save_session(cx);
+        let (new_path, tab_target) = {
+            let nav = self.state.navigation.read(cx);
+            let tab = nav.tabs.active_tab();
+            (tab.path.clone(), tab.target.clone())
+        };
+        self.state.main_view.target = tab_target.clone();
+        match tab_target {
+            crate::ui::views::types::ViewTarget::Settings => {
+                self.state.nav_bar.update_path(FilesPath::from("Settings"));
+                cx.notify();
+            }
+            _ => {
+                self.navigate(new_path, cx);
+            }
+        }
+    }
+
+    pub fn cycle_tab_prev(&mut self, cx: &mut Context<Self>) {
+        let use_mru = self
+            .state
+            .settings
+            .read(cx)
+            .config
+            .session
+            .mru_tab_cycle;
+        self.state.navigation.update(cx, |nav, _cx| {
+            if use_mru {
+                nav.tabs.previous_tab_mru();
+            } else {
+                nav.tabs.previous_tab();
+            }
+        });
+        self.save_session(cx);
+        let (new_path, tab_target) = {
+            let nav = self.state.navigation.read(cx);
+            let tab = nav.tabs.active_tab();
+            (tab.path.clone(), tab.target.clone())
+        };
+        self.state.main_view.target = tab_target.clone();
+        match tab_target {
+            crate::ui::views::types::ViewTarget::Settings => {
+                self.state.nav_bar.update_path(FilesPath::from("Settings"));
+                cx.notify();
+            }
+            _ => {
+                self.navigate(new_path, cx);
+            }
+        }
+    }
+
+    /// Load folder thumbnails for all open tabs (for tab bar icons).
+    #[cfg(windows)]
+    pub fn load_tab_thumbnails(&mut self, cx: &mut Context<Self>) {
+        use crate::platform::windows::thumbnail_service::ThumbnailSize;
+        use crate::app_state::icons_cache_dir;
+
+        let tab_paths: Vec<FilesPath> = {
+            let nav = self.state.navigation.read(cx);
+            nav.tabs.tabs.iter().map(|t| t.path.clone()).collect()
+        };
+
+        let thumbnail_service = self.state.thumbnail_service.clone();
+        let tab_cache = self.state.tab_thumbnail_cache.clone();
+        let icon_dir = icons_cache_dir();
+        let mut async_cx = cx.to_async();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let _com_init = unsafe {
+                    windows::Win32::System::Com::CoInitializeEx(
+                        None,
+                        windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                    )
+                };
+
+                for path in &tab_paths {
+                    // Check cache first
+                    if let Ok(cache) = tab_cache.lock() {
+                        if cache.contains_key(path) {
+                            continue;
+                        }
+                    }
+
+                    // Check disk cache
+                    let sanitized = path.to_string_lossy().replace(
+                        |c: char| !c.is_alphanumeric() && c != '.' && c != '_',
+                        "_",
+                    );
+                    let cached_png = icon_dir.join(format!("tab_{}.png", sanitized));
+                    if cached_png.exists() {
+                        if let Ok(mut cache) = tab_cache.lock() {
+                            cache.insert(path.clone(), cached_png);
+                        }
+                        continue;
+                    }
+
+                    // Extract thumbnail
+                    if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, ThumbnailSize::Small) {
+                        use image::{ImageBuffer, Rgba};
+                        let w = thumb.width;
+                        let h = thumb.height;
+                        if w > 0 && h > 0 && thumb.data.len() as u32 >= w * h * 4 {
+                            let mut rgba_data = thumb.data.clone();
+                            for ch in rgba_data.chunks_exact_mut(4) {
+                                ch.swap(0, 2);
+                            }
+                            if let Some(img) = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data) {
+                                let _ = img.save(&cached_png);
+                                if let Ok(mut cache) = tab_cache.lock() {
+                                    cache.insert(path.clone(), cached_png);
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .detach();
+    }
+
+    #[cfg(not(windows))]
+    pub fn load_tab_thumbnails(&mut self, _cx: &mut Context<Self>) {}
+
     pub fn toggle_dual_pane(&mut self, cx: &mut Context<Self>) {
         self.state.navigation.update(cx, |nav, _cx| {
             nav.toggle_dual_pane();
@@ -805,6 +1012,161 @@ impl AppWindow {
             position,
             tab_count,
         });
+        cx.notify();
+    }
+
+    /// Toggle the tab actions dropdown menu (split pane options).
+    pub fn toggle_tab_actions_menu(&mut self, cx: &mut Context<Self>) {
+        // Toggle: if already open, close it; otherwise open it
+        if matches!(self.state.active_dialog, Some(DialogType::TabActionsDropdown { .. })) {
+            self.state.active_dialog = None;
+        } else {
+            // Position near the tab actions button (top-left area)
+            let position = Point {
+                x: px(4.0),
+                y: px(40.0), // Below the tab bar
+            };
+            self.state.active_dialog = Some(DialogType::TabActionsDropdown { position });
+        }
+        cx.notify();
+    }
+
+    /// Toggle window maximize/restore state.
+    #[cfg(target_os = "windows")]
+    pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use raw_window_handle::HasWindowHandle;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, ShowWindowAsync, SW_MAXIMIZE, SW_RESTORE,
+        };
+
+        if let Ok(raw_handle) = HasWindowHandle::window_handle(window) {
+            if let raw_window_handle::RawWindowHandle::Win32(win32) = raw_handle.as_raw() {
+                unsafe {
+                    let hwnd = HWND(win32.hwnd.get());
+                    if IsZoomed(hwnd).as_bool() {
+                        // Currently maximized → restore
+                        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+                        self.state.is_maximized = false;
+                    } else {
+                        // Currently restored → maximize
+                        let _ = ShowWindowAsync(hwnd, SW_MAXIMIZE);
+                        self.state.is_maximized = true;
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.is_maximized = !self.state.is_maximized;
+        window.zoom_window();
+        cx.notify();
+    }
+
+    /// Start dragging a tab (records position and time for threshold).
+    pub fn start_tab_drag(&mut self, tab_index: usize, cx: &mut Context<Self>) {
+        self.state.tab_drag.dragged_index = Some(tab_index);
+        self.state.tab_drag.is_dragging = true;
+        self.state.tab_drag.drag_active = false;
+        self.state.tab_drag.is_dragging_out = false;
+        self.state.tab_drag.drag_start_x = self.state.tab_drag.current_x;
+        self.state.tab_drag.drag_start_y = self.state.tab_drag.current_y;
+        self.state.tab_drag.drag_start_time = Some(std::time::Instant::now());
+        cx.notify();
+    }
+
+    /// Update tab drag position. Drag activates only after 500ms hold + 5px movement.
+    pub fn update_tab_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+        if self.state.tab_drag.is_dragging {
+            self.state.tab_drag.current_x = x;
+            self.state.tab_drag.current_y = y;
+
+            if !self.state.tab_drag.drag_active {
+                // Check both: 500ms hold AND 5px movement
+                let elapsed = self
+                    .state
+                    .tab_drag
+                    .drag_start_time
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                let dx = x - self.state.tab_drag.drag_start_x;
+                let dy = y - self.state.tab_drag.drag_start_y;
+                let dist_sq = dx * dx + dy * dy;
+                if elapsed >= 500 && dist_sq > 25.0 {
+                    self.state.tab_drag.drag_active = true;
+                }
+            }
+
+            if self.state.tab_drag.drag_active {
+                self.state.tab_drag.is_dragging_out = y < 0.0 || y > 48.0;
+                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+                self.state.tab_drag.drop_target_index =
+                    self.calculate_drop_index(x, tab_count);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Calculate the drop index based on mouse x position.
+    pub fn calculate_drop_index(&self, mouse_x: f32, tab_count: usize) -> Option<usize> {
+        if tab_count == 0 {
+            return None;
+        }
+        // Each tab is approximately TAB_IDEAL_WIDTH (180px) wide
+        // Starting after the scroll buttons and actions button (~80px from left)
+        let tab_start_x = 80.0; // Approximate offset for buttons
+        let tab_width = 180.0; // TAB_IDEAL_WIDTH
+        let relative_x = mouse_x - tab_start_x + self.state.tab_drag.scroll_offset;
+        let index = (relative_x / tab_width) as usize;
+        Some(index.min(tab_count - 1))
+    }
+
+    /// Complete tab drag (drop).
+    pub fn end_tab_drag(&mut self, _drop_index: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
+            if let Some(target_idx) = self.state.tab_drag.drop_target_index {
+                if dragged_idx != target_idx {
+                    self.state.navigation.update(cx, |nav, _cx| {
+                        nav.tabs.reorder_tab(dragged_idx, target_idx);
+                    });
+                    self.save_session(cx);
+                }
+            } else if self.state.tab_drag.is_dragging_out {
+                tracing::info!("Tab dragged out of window - creating new window");
+            }
+        }
+        // Preserve scroll_offset — only reset drag state
+        let saved_offset = self.state.tab_drag.scroll_offset;
+        self.state.tab_drag = crate::app_state::TabDragState::default();
+        self.state.tab_drag.scroll_offset = saved_offset;
+        cx.notify();
+    }
+
+    /// Cancel tab drag.
+    pub fn cancel_tab_drag(&mut self, cx: &mut Context<Self>) {
+        self.state.tab_drag = crate::app_state::TabDragState::default();
+        cx.notify();
+    }
+
+    /// Scroll the tab bar left (smooth pixel increment).
+    pub fn scroll_tab_bar_left(&mut self, cx: &mut Context<Self>) {
+        let step = 30.0;
+        self.state.tab_drag.scroll_offset =
+            (self.state.tab_drag.scroll_offset - step).max(0.0);
+        cx.notify();
+    }
+
+    /// Scroll the tab bar right (smooth pixel increment).
+    pub fn scroll_tab_bar_right(&mut self, cx: &mut Context<Self>) {
+        let step = 30.0;
+        let max_scroll =
+            (self.state.navigation.read(cx).tabs.tabs.len() as f32 * 200.0) - 600.0;
+        let max_scroll = max_scroll.max(0.0);
+        self.state.tab_drag.scroll_offset =
+            (self.state.tab_drag.scroll_offset + step).min(max_scroll);
         cx.notify();
     }
 
@@ -2475,16 +2837,45 @@ impl AppWindow {
                 tracing::debug!("Command Palette activated (Ctrl+Shift+P)");
             }
             crate::core::action_registry::ActionKind::NewTab => {
-                tracing::debug!("New tab requested (Ctrl+T) - not yet implemented");
+                self.new_tab(cx);
             }
             crate::core::action_registry::ActionKind::CloseTab => {
-                tracing::debug!("Close tab requested (Ctrl+W) - not yet implemented");
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.close_tab(active, cx);
             }
             crate::core::action_registry::ActionKind::ReopenClosedTab => {
-                tracing::debug!("Reopen closed tab (Ctrl+Shift+T) - not yet implemented");
+                self.reopen_closed_tab(cx);
             }
             crate::core::action_registry::ActionKind::NewWindow => {
                 tracing::debug!("New window requested (Ctrl+N) - not yet implemented");
+            }
+            crate::core::action_registry::ActionKind::NextTab => {
+                self.cycle_tab_next(cx);
+            }
+            crate::core::action_registry::ActionKind::PreviousTab => {
+                self.cycle_tab_prev(cx);
+            }
+            crate::core::action_registry::ActionKind::SplitVertical => {
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.split_pane_vertical();
+                });
+                let layout = self.state.navigation.read(cx).pane_layout;
+                self.state.main_view.pane_type = match layout {
+                    crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                    _ => crate::ui::views::main_view::PaneType::Dual,
+                };
+                cx.notify();
+            }
+            crate::core::action_registry::ActionKind::SplitHorizontal => {
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.split_pane_horizontal();
+                });
+                let layout = self.state.navigation.read(cx).pane_layout;
+                self.state.main_view.pane_type = match layout {
+                    crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                    _ => crate::ui::views::main_view::PaneType::Dual,
+                };
+                cx.notify();
             }
             crate::core::action_registry::ActionKind::OpenHelp => {
                 self.open_help(cx);

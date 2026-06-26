@@ -1421,6 +1421,142 @@ impl crate::ui::components::dialogs::DialogsView {
             }))
     }
 
+    /// Build the tab actions dropdown menu (split pane options)
+    pub(crate) fn build_tab_actions_dropdown(
+        _position: Point<Pixels>,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v_split_v = view.clone();
+        let v_split_h = view.clone();
+        let v_toggle = view.clone();
+        let v_new_tab = view.clone();
+
+        div()
+            .flex_col()
+            .py(px(4.0))
+            // New Tab
+            .child(Self::context_menu_item("\u{E710}", "New Tab", {
+                let v = v_new_tab.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.new_tab(cx);
+                        this.close_dialog(cx);
+                    });
+                }
+            }))
+            .child(
+                div()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA))
+                    .mx(px(8.0))
+                    .my(px(4.0)),
+            )
+            // Split Vertically (Ctrl+Shift+V)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E8A0}", // SplitVertical icon
+                "Split Vertical",
+                "Ctrl+Shift+V",
+                {
+                    let v = v_split_v.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.state.navigation.update(cx, |nav, _cx| {
+                                nav.split_pane_vertical();
+                            });
+                            let layout = this.state.navigation.read(cx).pane_layout;
+                            this.state.main_view.pane_type = match layout {
+                                crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                                _ => crate::ui::views::main_view::PaneType::Dual,
+                            };
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            // Split Horizontally (Ctrl+Shift+H)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E8A1}", // SplitHorizontal icon
+                "Split Horizontal",
+                "Ctrl+Shift+H",
+                {
+                    let v = v_split_h.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.state.navigation.update(cx, |nav, _cx| {
+                                nav.split_pane_horizontal();
+                            });
+                            let layout = this.state.navigation.read(cx).pane_layout;
+                            this.state.main_view.pane_type = match layout {
+                                crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                                _ => crate::ui::views::main_view::PaneType::Dual,
+                            };
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            .child(
+                div()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA))
+                    .mx(px(8.0))
+                    .my(px(4.0)),
+            )
+            // Toggle Split Pane
+            .child(Self::context_menu_item("\u{E762}", "Toggle Split Pane", {
+                let v = v_toggle.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.toggle_dual_pane(cx);
+                        this.close_dialog(cx);
+                    });
+                }
+            }))
+    }
+
+    /// Helper to build a context menu item with shortcut label
+    fn context_menu_item_with_shortcut(
+        icon: &'static str,
+        label: &'static str,
+        shortcut: &'static str,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .mx(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, move |ev, win, cx| {
+                cx.stop_propagation();
+                on_click(ev, win, cx);
+            })
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(icon),
+            )
+            .child(
+                div()
+                    .flex_grow()
+                    .ml(px(8.0))
+                    .text_size(px(12.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                    .child(shortcut),
+            )
+    }
+
     /// Build column visibility toggle menu (shown on right-click of column header)
     pub(crate) fn build_column_visibility_menu(
         _position: Point<Pixels>,
