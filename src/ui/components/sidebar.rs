@@ -230,6 +230,7 @@ impl SidebarView {
                                     |app_state: &mut crate::app::AppState| {
                                         &mut app_state.sidebar.bouncy_scroll
                                     },
+                                    None,
                                     epoch,
                                 );
                                 cx.notify();
@@ -273,8 +274,9 @@ impl SidebarView {
                                         |app_state: &mut crate::app::AppState| {
                                             &mut app_state.sidebar.bouncy_scroll
                                         },
+                                        None,
                                         epoch,
-                                    );
+                                        );
                                     cx.notify();
                                 }
                             });
@@ -297,8 +299,9 @@ impl SidebarView {
                                             |app_state: &mut crate::app::AppState| {
                                                 &mut app_state.sidebar.bouncy_scroll
                                             },
+                                            None,
                                             epoch,
-                                        );
+                                            );
                                         cx.notify();
                                     }
                                 }

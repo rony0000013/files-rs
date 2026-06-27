@@ -54,6 +54,10 @@ impl AppWindow {
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
+            fps_last_time: None,
+            fps_frame_count: 0,
+            fps_current: 0.0,
+            last_render_time: None,
             file_watcher: None,
             file_event_rx: None,
             file_watcher_secondary: None,
@@ -1340,6 +1344,58 @@ impl AppWindow {
                 self.refresh_secondary_pane(cx);
                 break;
             }
+        }
+    }
+
+    /// Called at the start of render(). Ticks active bouncy scroll physics,
+    /// pushes offsets to scroll handles, and calls cx.notify().
+    /// 
+    /// cx.notify() in render() works: draw() calls set_dirty(false) at its
+    /// START, and notify() sets it back to true — the dirty flag persists
+    /// past draw() and the next frame callback will re-render.
+    pub fn tick_bouncy_scrolls(&mut self, _window: &Window, cx: &mut Context<Self>) {
+        // Compute frame-time delta for frame-rate-independent physics
+        let dt = if let Some(last) = self.last_render_time {
+            let elapsed = std::time::Instant::now()
+                .duration_since(last)
+                .as_secs_f64() as f32;
+            elapsed.clamp(1.0 / 240.0, 1.0 / 15.0)
+        } else {
+            1.0 / 60.0
+        };
+        self.last_render_time = Some(std::time::Instant::now());
+
+        let sidebar_tick;
+        let main_tick;
+        {
+            let bs = &mut self.state.sidebar.bouncy_scroll;
+            sidebar_tick = if bs.animating {
+                bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
+                bs.tick_spring(dt)
+            } else {
+                false
+            };
+        }
+        {
+            let bs = &mut self.state.main_view.bouncy_scroll;
+            main_tick = if bs.animating {
+                bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
+                bs.tick_spring(dt)
+            } else {
+                false
+            };
+        }
+        if sidebar_tick || main_tick {
+            // Push main_view's scroll offset to UniformList handle
+            let offset = self.state.main_view.bouncy_scroll.offset;
+            let handle = &self.state.main_view.uniform_list_scroll_handle;
+            handle.0.borrow().base_handle.set_offset(gpui::point(px(0.0), px(offset)));
+
+            // Mark the window dirty so the next frame callback re-renders.
+            // draw() clears the dirty flag at its START, then calls render(),
+            // which calls this. notify() sets dirty back to true, persisting
+            // past draw()'s completion.
+            cx.notify();
         }
     }
 

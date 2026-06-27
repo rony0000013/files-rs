@@ -19,8 +19,26 @@ use gpui::*;
 
 impl Render for AppWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Tick all active bouncy scroll states (momentum + spring-back) at
+        // display refresh rate — no background timer latency.
+        self.tick_bouncy_scrolls(_window, cx);
+
         // Poll file system events — refresh if any folder changes detected
         self.poll_file_events(cx);
+
+        // FPS counter calculation
+        let now = std::time::Instant::now();
+        if let Some(last) = self.fps_last_time {
+            self.fps_frame_count += 1;
+            let elapsed = now.duration_since(last).as_secs_f64();
+            if elapsed >= 0.5 {
+                self.fps_current = self.fps_frame_count as f64 / elapsed;
+                self.fps_frame_count = 0;
+                self.fps_last_time = Some(now);
+            }
+        } else {
+            self.fps_last_time = Some(now);
+        }
         // file_items is synced in the background task update callback, not during render
         // icon_paths are synced after Phase 1, Phase 2, and icon loading — no per-frame clone needed
 
@@ -803,6 +821,32 @@ impl Render for AppWindow {
                     .detach();
             }
         }
+
+        // FPS counter overlay
+        let fps_text = format!("{:.0} FPS", self.fps_current);
+        let fps_color = if self.fps_current >= 110.0 {
+            rgba(0x00FF00CCu32)
+        } else if self.fps_current >= 60.0 {
+            rgba(0xFFFF00CCu32)
+        } else {
+            rgba(0xFF0000CCu32)
+        };
+        base = base.child(
+            div()
+                .absolute()
+                .top(px(4.0))
+                .left(px(4.0))
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .bg(rgba(0x000000AAu32))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(fps_color)
+                        .child(fps_text),
+                ),
+        );
 
         base
     }

@@ -216,6 +216,12 @@ pub struct AppWindow {
     pub zoom_drag_start: Option<(f32, f32)>,
     /// Column resize drag state (for Details view column headers)
     pub column_resize: Option<ColumnResizeState>,
+    /// FPS counter state
+    pub fps_last_time: Option<std::time::Instant>,
+    pub fps_frame_count: u32,
+    pub fps_current: f64,
+    /// Frame-time tracker for frame-rate-independent scroll physics
+    pub last_render_time: Option<std::time::Instant>,
     /// File system watcher for auto-refreshing the current folder (primary pane)
     pub file_watcher: Option<notify::RecommendedWatcher>,
     /// Channel receiver for file system events (primary pane)

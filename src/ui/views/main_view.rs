@@ -877,6 +877,9 @@ impl MainView {
                                                 |app_state: &mut crate::app::AppState| {
                                                     &mut app_state.main_view.bouncy_scroll
                                                 },
+                                                Some(Box::new(|state: &mut crate::app::AppState, offset: f32| {
+                                                    state.main_view.uniform_list_scroll_handle.0.borrow().base_handle.set_offset(gpui::point(px(0.0), px(offset)));
+                                                })),
                                                 epoch,
                                             );
                                             cx.notify();

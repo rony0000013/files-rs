@@ -263,9 +263,9 @@ impl TabBarView {
                     }
                 })
                 .on_scroll_wheel(move |event, _w, cx| {
+                    cx.stop_propagation();
                     if !tabs_overflow { return; }
                     handle_scroll(event, cx, &v_scroll);
-                    cx.stop_propagation();
                 });
 
             let icon_el: gpui::AnyElement = if is_settings {
@@ -457,9 +457,9 @@ impl TabBarView {
                 .border_b(px(1.0))
                 .border_color(rgba(UiConstants::DIVIDER_RGBA))
                 .on_scroll_wheel(move |event, _w, cx| {
+                    cx.stop_propagation();
                     if !overflow { return; }
                     handle_scroll(event, cx, &v_scroll);
-                    cx.stop_propagation();
                 })
         };
 
@@ -582,8 +582,8 @@ impl TabBarView {
                         }
                     })
                     .on_scroll_wheel(move |event, _w, cx| {
-                        handle_scroll(event, cx, &v_scroll);
                         cx.stop_propagation();
+                        handle_scroll(event, cx, &v_scroll);
                     });
 
                 let icon_el: gpui::AnyElement = if is_settings {
