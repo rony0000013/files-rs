@@ -2140,6 +2140,7 @@ dependencies = [
  "dunce",
  "fluent",
  "fluent-bundle",
+ "futures",
  "git2",
  "gpui",
  "html2text",

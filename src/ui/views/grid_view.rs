@@ -20,16 +20,17 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         cols: usize,
+        pane_w: f32,
     ) -> AnyElement {
         let visible = self.visible_items_rc();
 
         if self.group_by != GroupColumn::None {
             return self
-                .render_grid_view_grouped(&visible, file_items, view, cols)
+                .render_grid_view_grouped(&visible, file_items, view, cols, pane_w)
                 .into_any_element();
         }
 
-        self.grid_view_flat(&visible, file_items, view, cols)
+        self.grid_view_flat(&visible, file_items, view, cols, pane_w)
             .into_any_element()
     }
 
@@ -47,8 +48,8 @@ impl MainViewState {
         // Tile size: small (compact) to large (cards)
         // Files Community style: card has landscape thumbnail area + filename below
         let item_width = 80.0 + zoom * 140.0; // 80 → 220
-        let thumb_height = item_width * 0.85; // ~5:6 portrait-ish thumbnail area
-        let item_height = thumb_height + 65.0; // thumbnail + space for 3-line filename
+        let thumb_height = item_width * 0.76; // landscape thumbnail area
+        let item_height = thumb_height + 46.0; // thumbnail + space for 2-line filename
         let row_height = item_height + 8.0;
         // Thumbnail icon fits inside the thumbnail container
         let icon_size = thumb_height * 0.80;
@@ -66,7 +67,7 @@ impl MainViewState {
         } else {
             10.0
         };
-        let text_size = (item_width / 8.0).clamp(10.0, 13.0);
+        let text_size = (item_width / 8.5).clamp(11.0, 13.0);
         let padding = if zoom < 0.33 { 10.0 } else { 14.0 };
 
         GridLayoutParams {
@@ -91,7 +92,36 @@ impl MainViewState {
             return params.items_per_row;
         }
         let avail = pane_w - params.padding * 2.0;
-        (((avail + params.gap) / slot).floor() as usize).clamp(1, 12)
+        (((avail + params.gap) / slot).floor() as usize).clamp(1, 32)
+    }
+
+    /// Width-fitted layout params: starts from the zoom defaults, then
+    /// stretches tiles (up to 1.35x base width) to absorb leftover fractional
+    /// column slack so full rows align flush with both margins, matching
+    /// Files-community's ItemsWrapGrid behavior.
+    fn grid_layout_params_for_width(pane_w: f32, zoom: f32, cols: usize) -> GridLayoutParams {
+        let base = Self::grid_layout_params(zoom);
+        let cols = cols.max(1);
+        let avail = pane_w - base.padding * 2.0;
+        if avail <= base.item_width {
+            let mut params = base;
+            params.items_per_row = cols;
+            return params;
+        }
+        let total_gaps = base.gap * (cols.saturating_sub(1) as f32);
+        let stretched_w =
+            ((avail - total_gaps) / cols as f32).floor().clamp(base.item_width, base.item_width * 1.35);
+        let thumb_height = stretched_w * 0.76;
+        let item_height = thumb_height + 46.0;
+        GridLayoutParams {
+            items_per_row: cols,
+            item_width: stretched_w,
+            item_height,
+            row_height: item_height + 8.0,
+            icon_size: thumb_height * 0.80,
+            text_size: (stretched_w / 8.5).clamp(11.0, 13.0),
+            ..base
+        }
     }
 
     /// Flat grid view using uniform_list for maximum performance
@@ -101,11 +131,11 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         cols: usize,
+        pane_w: f32,
     ) -> impl IntoElement {
         let visible_clone = self.visible_items_rc();
         let zoom = self.zoom_level;
-        let mut params = Self::grid_layout_params(zoom);
-        params.items_per_row = cols.max(1);
+        let params = Self::grid_layout_params_for_width(pane_w, zoom, cols);
         let items_per_row = params.items_per_row;
         let row_count = (visible.len() + items_per_row - 1) / items_per_row;
 
@@ -206,10 +236,10 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         cols: usize,
+        pane_w: f32,
     ) -> impl IntoElement {
         let zoom = self.zoom_level;
-        let mut params = Self::grid_layout_params(zoom);
-        params.items_per_row = cols.max(1);
+        let params = Self::grid_layout_params_for_width(pane_w, zoom, cols);
         let items_per_row = params.items_per_row;
         let flattened = self.flatten_grouped_grid_items(visible, items_per_row);
         let item_count = flattened.len();
@@ -533,13 +563,13 @@ impl MainViewState {
                         ),
                 )
                 .child(
-                    // 3-line filename below the thumbnail
+                    // 2-line filename below the thumbnail
                     div()
                         .w_full()
                         .px(px(4.0))
                         .mt(px(3.0))
                         .text_center()
-                        .line_clamp(3)
+                        .line_clamp(2)
                         .text_size(px(text_size))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
@@ -737,13 +767,13 @@ impl MainViewState {
                         }),
                 )
                 .child(
-                    // 3-line filename below the icon
+                    // 2-line filename below the icon
                     div()
                         .w_full()
                         .px(px(4.0))
                         .mt(px(2.0))
                         .text_center()
-                        .line_clamp(3)
+                        .line_clamp(2)
                         .text_size(px(text_size))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .child(if renaming_index == Some(index) {

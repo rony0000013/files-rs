@@ -112,3 +112,13 @@ cargo test --release --lib ui::components::bouncy_scroll::tests
 | **Working set during sweeps** | `~191 MB` | ⚠️ over 120 MB but far below the earlier 812 MB spike — high variance, needs STEP 4 |
 
 > **Confounder, read before quoting these numbers:** Phase 3 icon extraction for all 50,000 items was still grinding throughout the sweeps (started `19:07`, no completion line 12 min later). These windows measure the extraction storm, not pure scrolling. Settled-state re-sweep belongs after STEP 4 bounds extraction — that is the scientifically correct order, not a dodge.
+
+### Re-measurement after STEP 4 (viewport-bounded extraction) — `2026-10-15`
+
+| Metric | Measured | Before STEP 4 | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Working set, 50k load steady state** | `~120 MB` flat | `812 MB` climbing | ✅ **at budget, stable instead of spiking** |
+| **Working set during sweeps** | `~138 MB` | `~191 MB` | ✅ near budget (120 MB), variance now small |
+| **Scroll frames (8 × 0.5 s windows)** | median `18 fps`, all `< 60 fps` | median `16 fps` | ⚠️ barely moved — extraction no longer the mask; see hitch |
+| **Worst frame** | p50 `129 ms`, one **`25.2 s` hitch** | p95 `1.4 s` | ❌ a single synchronous stall dominates; needs root-causing (suspect: foreground icon batch or UI-thread COM/sync scan, not scroll physics) |
+| **Config restored** | User `settings.json` (6 tabs) restored after run | — | ✅ |

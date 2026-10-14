@@ -112,6 +112,10 @@ pub struct AppState {
     /// LRU-bounded at MAX_ICON_CACHE_ENTRIES so session-long browsing
     /// cannot grow icon RAM without limit.
     pub icon_cache: Arc<Mutex<lru::LruCache<FilesPath, std::path::PathBuf>>>,
+    /// Bounded GPU image cache entity for file-view thumbnails (created in
+    /// `AppWindow::new`; the file viewport is wrapped in its
+    /// `ImageCacheElement` so evicted textures actually free atlas memory).
+    pub image_cache: Option<Entity<crate::ui::components::bounded_image_cache::BoundedImageCache>>,
     /// Cache of tab folder thumbnail paths, keyed by FilesPath
     pub tab_thumbnail_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
     /// Undo/redo manager for file operations
@@ -178,6 +182,7 @@ impl AppState {
                 NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
             ))),
             tab_thumbnail_cache: Arc::new(Mutex::new(HashMap::new())),
+            image_cache: None,
             undo_redo: UndoRedoManager::new(),
             tab_drag: TabDragState::default(),
             main_focus: None,

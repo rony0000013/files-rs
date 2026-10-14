@@ -7,7 +7,7 @@ pub struct ToolbarView;
 
 impl ToolbarView {
     pub fn build(
-        view_mode: &ViewMode,
+        _view_mode: &ViewMode,
         toolbar_customization: &ToolbarCustomizationState,
         has_selection: bool,
         single_selection: bool,
@@ -52,37 +52,87 @@ impl ToolbarView {
         // LEFT-ALIGNED GROUP: Context Commands
         let mut left_group = div().flex().items_center().gap(px(2.0));
 
-        // New Folder button
-        if toolbar_customization.is_visible("new_folder") {
-            left_group = left_group.child(ToolbarButton::build(
-                "\u{E8F4}",
-                "New Folder (Ctrl+Shift+N)",
-                true,
-                move |_event, _window, cx| {
-                    view_new_folder.update(cx, |this, cx| {
-                        this.new_folder(cx);
-                    });
-                },
-            ));
-        }
-
-        // New File button
-        if toolbar_customization.is_visible("new_file") {
-            left_group = left_group.child(ToolbarButton::build(
-                "\u{E7C3}",
-                "New File",
-                true,
-                move |_event, _window, cx| {
-                    view_new_file.update(cx, |this, cx| {
-                        this.new_file(cx);
-                    });
-                },
-            ));
-        }
-
+        // Files-style labeled [ ⊕ New ⌄ ] split pill: label creates a folder,
+        // chevron creates a file. Reuses the existing AddItem dialogs.
         if toolbar_customization.is_visible("new_folder")
             || toolbar_customization.is_visible("new_file")
         {
+            let show_folder = toolbar_customization.is_visible("new_folder");
+            let show_file = toolbar_customization.is_visible("new_file");
+            let v_label = view_new_folder.clone();
+            let v_chev = view_new_file.clone();
+            let pill = div()
+                .flex()
+                .items_center()
+                .h(px(32.0))
+                .rounded(px(6.0))
+                .bg(rgba(0xFFFFFF0Du32))
+                .border(px(1.0))
+                .border_color(rgba(0xFFFFFF18u32))
+                .hover(|s| s.bg(rgba(0xFFFFFF18u32)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .h_full()
+                        .px(px(10.0))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                            v_label.update(cx, |this, cx| {
+                                if show_folder {
+                                    this.new_folder(cx);
+                                } else {
+                                    this.new_file(cx);
+                                }
+                            });
+                        })
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                .child("\u{E710}"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child("New"),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(18.0))
+                        .bg(rgba(0xFFFFFF18u32)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h_full()
+                        .w(px(24.0))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                            v_chev.update(cx, |this, cx| {
+                                if show_file {
+                                    this.new_file(cx);
+                                } else {
+                                    this.new_folder(cx);
+                                }
+                            });
+                        })
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                .child("\u{E70D}"),
+                        ),
+                );
+            left_group = left_group.child(pill);
             left_group = left_group.child(ToolbarDivider::build());
         }
 
@@ -246,34 +296,33 @@ impl ToolbarView {
 
         right_group = right_group.child(ToolbarDivider::build());
 
-        // View Mode Switchers
-        right_group = right_group.child(ViewModeButton::build(
-            "\u{E8C0}",
-            "Details View",
-            ViewMode::Details,
-            view_mode,
-            view.clone(),
+        // Sort + View buttons (compact replacements for the 4 separate
+        // view-mode icons). Preview/Info pane buttons follow below unchanged.
+        right_group = right_group.child(ToolbarButton::build(
+            "\u{E8CB}",
+            "Sort: cycle Name / Date / Size / Type",
+            true,
+            {
+                let v = view.clone();
+                move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.cycle_sort_column(cx);
+                    });
+                }
+            },
         ));
-        right_group = right_group.child(ViewModeButton::build(
-            "\u{E8B9}",
-            "List View",
-            ViewMode::List,
-            view_mode,
-            view.clone(),
-        ));
-        right_group = right_group.child(ViewModeButton::build(
+        right_group = right_group.child(ToolbarButton::build(
             "\u{E80A}",
-            "Grid View",
-            ViewMode::Grid,
-            view_mode,
-            view.clone(),
-        ));
-        right_group = right_group.child(ViewModeButton::build(
-            "\u{E8F1}",
-            "Columns View",
-            ViewMode::Columns,
-            view_mode,
-            view.clone(),
+            "View: cycle Details / List / Grid / Columns",
+            true,
+            {
+                let v = view.clone();
+                move |_event, _window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.cycle_view_mode(cx);
+                    });
+                }
+            },
         ));
 
         right_group = right_group.child(ToolbarDivider::build());
@@ -363,48 +412,5 @@ impl ToolbarDivider {
             .h(Pixels::from(20.0))
             .mx(Pixels::from(6.0))
             .bg(rgba(UiConstants::DIVIDER_RGBA))
-    }
-}
-
-struct ViewModeButton;
-
-impl ViewModeButton {
-    fn build(
-        glyph: &str,
-        _label: &str,
-        mode: ViewMode,
-        current: &ViewMode,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let is_active = std::mem::discriminant(current) == std::mem::discriminant(&mode);
-        let glyph = glyph.to_string();
-        let mut btn = div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(Pixels::from(32.0))
-            .h(Pixels::from(28.0))
-            .cursor_pointer()
-            .rounded(Pixels::from(4.0));
-
-        if is_active {
-            btn = btn.bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA));
-        } else {
-            btn = btn.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
-        }
-
-        btn.on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-            let mode = mode.clone();
-            view.update(cx, |this, cx| {
-                this.set_view_mode(mode, cx);
-            });
-        })
-        .child(
-            div()
-                .text_size(AbsoluteLength::Pixels(Pixels::from(16.0)))
-                .font_family(UiConstants::FONT_ICONS)
-                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                .child(glyph),
-        )
     }
 }

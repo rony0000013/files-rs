@@ -341,13 +341,21 @@ impl Render for AppWindow {
                                                                 } else {
                                                                     0.0
                                                                 };
-                                                            MainView::build(
+                                                            let tree = MainView::build(
                                                                 &state.main_view,
                                                                 state.file_items.clone(),
                                                                 cx.entity(),
                                                                 settings_data,
                                                                 content_w,
-                                                            )
+                                                            );
+                                                            // NOTE: bounded GPU image-cache wrap
+                                                            // (gpui::image_cache) reverted 2026-10-15:
+                                                            // it blanked the whole viewport (no files
+                                                            // rendered despite 401 counted). The
+                                                            // BoundedImageCache entity stays allocated
+                                                            // until the blanking root cause is found.
+                                                            let _ = &state.image_cache;
+                                                            tree.into_any_element()
                                                         }),
                                                 )
                                                 .child(

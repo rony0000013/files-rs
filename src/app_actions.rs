@@ -1,5 +1,6 @@
 use crate::app_state::{AppWindow, SidebarPinnedDragState, TagState};
 use crate::config::config::ViewMode;
+use crate::config::config::SortBy;
 use crate::core::path_util::FilesPath;
 use crate::ui::components::clipboard_manager::{ClipboardItem, ClipboardState};
 use crate::ui::components::dialogs::{DialogType, SettingsTab};
@@ -1694,6 +1695,34 @@ impl AppWindow {
             }
         });
         self.save_session(cx);
+        cx.notify();
+    }
+
+    /// Cycle Details -> List -> Grid -> Columns (toolbar View button).
+    pub fn cycle_view_mode(&mut self, cx: &mut Context<Self>) {
+        use crate::config::config::ViewMode as VM;
+        let next = match self.state.main_view.view_mode {
+            VM::Details => VM::List,
+            VM::List => VM::Grid,
+            VM::Grid => VM::Columns,
+            VM::Columns => VM::Details,
+            _ => VM::Details,
+        };
+        self.set_view_mode(next, cx);
+    }
+
+    /// Cycle Name -> DateModified -> Size -> Type (toolbar Sort button).
+    /// Same column twice flips direction via toggle_sort.
+    pub fn cycle_sort_column(&mut self, cx: &mut Context<Self>) {
+        use crate::config::config::SortBy as SB;
+        let next = match self.state.main_view.sort.column {
+            SB::Name => SB::DateModified,
+            SB::DateModified => SB::Size,
+            SB::Size => SB::Type,
+            _ => SB::Name,
+        };
+        self.state.main_view.toggle_sort(next);
+        self.state.main_view.bump_items_revision();
         cx.notify();
     }
 

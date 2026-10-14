@@ -13,8 +13,24 @@ use crate::platform::windows::recycle_bin_service::RecycleBinService;
 
 impl AppWindow {
     pub fn navigate(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        // Cancel any previous in-flight directory load immediately
-        let cancel_token = self.state.nav_cancel_guard.reset();
+        // Same-path refresh (file-watcher events): keep in-flight pipelines
+        // alive. Resetting the guard on every refresh aborts Phase 3 icon
+        // extraction in a hot folder faster than it can finish, so icons
+        // never resolve. Only a real directory change cancels.
+        let cancel_token = if path == self.state.main_view.primary_path {
+            tracing::debug!(
+                "navigate: same-path refresh, keeping guard (path={:?})",
+                path.as_path()
+            );
+            self.state.nav_cancel_guard.token()
+        } else {
+            tracing::debug!(
+                "navigate: directory change, resetting guard ({} -> {:?})",
+                self.state.main_view.primary_path.as_path().display(),
+                path.as_path()
+            );
+            self.state.nav_cancel_guard.reset()
+        };
 
         // Update navigation history
         self.state.navigation.update(cx, |nav, _cx| {

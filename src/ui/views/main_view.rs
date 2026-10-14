@@ -810,7 +810,7 @@ impl MainView {
                                     state.zoom_level,
                                 );
                             state
-                                .render_grid_view(file_items, view.clone(), cols)
+                                .render_grid_view(file_items, view.clone(), cols, pane_w)
                                 .into_any_element()
                         }
                         ViewMode::Columns => state

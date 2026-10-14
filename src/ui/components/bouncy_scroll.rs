@@ -42,32 +42,32 @@ use gpui::*;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spring stiffness for overscroll pull-back (k). Higher = faster return.
-/// 120 is ~1.5x faster than default, still in iOS range.
-const SPRING_STIFFNESS: f32 = 120.0;
+/// 220 with damping 32 is critically damped (2 * sqrt(220) ≈ 29.7).
+const SPRING_STIFFNESS: f32 = 220.0;
 
-/// Spring damping coefficient (b). Higher = less oscillation, smoother return.
-/// Critical damping for k=120 is roughly 2*sqrt(k) ≈ 21.9.
-const SPRING_DAMPING: f32 = 22.0;
+/// Spring damping coefficient (b). Critically damped: zero oscillation,
+/// single smooth glide back to the boundary.
+const SPRING_DAMPING: f32 = 32.0;
 
 /// Rubber-band resistance. Lower = stretchier/more visible overscroll.
-/// iOS uses ~60-100 on different contexts.
-pub(crate) const RUBBER_BAND_RESISTANCE: f32 = 60.0;
+pub(crate) const RUBBER_BAND_RESISTANCE: f32 = 30.0;
 
 /// Hard cap on overscroll distance.
-pub(crate) const MAX_OVERSCROLL: f32 = 250.0;
+pub(crate) const MAX_OVERSCROLL: f32 = 48.0;
 
 /// Velocity below which animation stops.
-const SETTLE_VELOCITY: f32 = 0.5;
+const SETTLE_VELOCITY: f32 = 1.0;
 
 /// Offset distance below which we snap to boundary target.
-const SETTLE_OFFSET: f32 = 0.5;
+const SETTLE_OFFSET: f32 = 0.75;
 
 /// Animation tick interval (~120 fps).
 const TICK_INTERVAL_MS: u64 = 8;
 
 /// How many ticks with no input before momentum kicks in (scroll wheel only).
-/// At 120fps: 6 ticks ≈ 48ms debounce.
-pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 6;
+/// ~115ms grace so wheel notches (~80-120ms apart) don't each trigger a
+/// separate stretch-and-snap-back cycle at the boundary.
+pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 14;
 
 /// Per-tick friction multiplier for momentum phase.
 /// Lower = less coasting (stops faster).
@@ -335,18 +335,22 @@ impl BouncyScrollState {
             // Scale velocity by dt so total distance is frame-rate independent
             self.offset += self.velocity * (dt * 60.0);
 
-            // Check if momentum carried us past a boundary
-            if self.offset > 0.0 {
-                // Hit top edge — soft energy loss, spring takes over next tick
+            // Check if momentum carried us past a boundary: clamp and stop
+            // cleanly. Never leave offset pinned at the edge with non-zero
+            // velocity — that re-arms the spring and rings repeatedly.
+            if self.offset >= 0.0 {
                 self.offset = 0.0;
-                self.velocity *= 0.4;
-                return true;
+                self.velocity = 0.0;
+                self.animating = false;
+                self.post_settle_cooldown = 12;
+                return false;
             }
-            if self.offset < self.max_offset {
-                // Hit bottom edge
+            if self.offset <= self.max_offset {
                 self.offset = self.max_offset;
-                self.velocity *= 0.4;
-                return true;
+                self.velocity = 0.0;
+                self.animating = false;
+                self.post_settle_cooldown = 12;
+                return false;
             }
 
             // Settled?
@@ -369,8 +373,16 @@ impl BouncyScrollState {
     }
 
     /// Spring integration toward `target` using damped harmonic oscillator.
+    /// Clamps zero-crossings immediately so an overscroll return NEVER crosses
+    /// the target into the in-bounds momentum branch (which uses different
+    /// velocity units) or oscillates back and forth: one smooth glide.
     fn tick_spring_toward(&mut self, target: f32, dt: f32) -> bool {
         let displacement = self.offset - target;
+        // If velocity is still pushing AWAY from target (residual wheel
+        // velocity), kill it immediately instead of fighting the spring.
+        if displacement * self.velocity > 0.0 {
+            self.velocity = 0.0;
+        }
         let spring_force = -SPRING_STIFFNESS * displacement;
         let damping_force = -SPRING_DAMPING * self.velocity;
         let acceleration = spring_force + damping_force;
@@ -378,12 +390,15 @@ impl BouncyScrollState {
         self.velocity += acceleration * dt;
         self.offset += self.velocity * dt;
 
-        // Check if settled near target
-        let dist = (self.offset - target).abs();
-        if dist < SETTLE_OFFSET && self.velocity.abs() < SETTLE_VELOCITY {
+        // Clamp immediately if we reached/crossed target or settled within threshold
+        let new_disp = self.offset - target;
+        let dist = new_disp.abs();
+        if (new_disp * displacement <= 0.0) || (dist < SETTLE_OFFSET && self.velocity.abs() < SETTLE_VELOCITY) {
             self.offset = target;
             self.velocity = 0.0;
+            self.raw_overscroll = 0.0;
             self.animating = false;
+            self.post_settle_cooldown = 12;
             return false;
         }
 
@@ -598,16 +613,28 @@ where
                 state.offset = current_y;
             }
 
-            // Apply delta with rubber-band clamping at edges
+            // Accumulate raw (unclamped) overscroll past the boundary and derive
+            // the visual offset from it. Re-clamping an already-clamped offset
+            // applies resistance twice and stalls the stretch mid-gesture.
             let new_offset = state.offset + delta_y;
             if new_offset > 0.0 {
-                state.offset = rubber_band_clamp(new_offset, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL);
+                // Pushing past the top: grow positive exceed; scrolling back
+                // unwinds it through zero before going in-bounds again.
+                state.raw_overscroll = (state.raw_overscroll + delta_y).max(0.0);
+                state.offset = rubber_band_clamp(
+                    state.raw_overscroll,
+                    RUBBER_BAND_RESISTANCE,
+                    MAX_OVERSCROLL,
+                );
             } else if new_offset < state.max_offset {
-                let exceed = (state.max_offset - new_offset).max(0.0);
+                // Pushing past the bottom: grow negative exceed symmetrically.
+                state.raw_overscroll = (state.raw_overscroll + delta_y).min(0.0);
+                let exceed = (-state.raw_overscroll).max(0.0);
                 state.offset = state.max_offset
                     - rubber_band_clamp(exceed, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL);
             } else {
                 state.offset = new_offset;
+                state.raw_overscroll = 0.0;
             }
 
             // Accumulate velocity
@@ -630,6 +657,13 @@ where
             let _ = &view_inner;
             let _ = &get_state_inner;
             let state = get_state(&mut this.state);
+            // Fresh wheel input unwinds the post-settle cooldown one notch at
+            // a time: the immediate residual burst after a settle is still
+            // absorbed, but deliberate scrolling re-arms animation within a
+            // few notches instead of staying dead until renders drain it.
+            if state.post_settle_cooldown > 0 {
+                state.post_settle_cooldown -= 1;
+            }
             if state.post_settle_cooldown == 0 {
                 state.animating = true;
             }

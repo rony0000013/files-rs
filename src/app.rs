@@ -32,7 +32,12 @@ pub use app_state::{
 };
 use gpui::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Round-robin cursor for background thumbnail trickle-fill (see load_icons).
+/// Guarantees every item eventually gets queued even if viewport tracking
+/// ever reports a stale range — the viewport slice always goes first.
+static TRICKLE_CURSOR: AtomicUsize = AtomicUsize::new(0);
 use std::sync::{Arc, Mutex};
 
 use crate::platform::windows::recycle_bin_service::RecycleBinService;
@@ -67,6 +72,14 @@ impl AppWindow {
             focus_out_subscription: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
+
+        // Bounded GPU image cache for file-view thumbnails (replaces GPUI's
+        // never-evicting global cache for our tiles; see bounded_image_cache).
+        window_view.state.image_cache = Some(cx.new(|_| {
+            crate::ui::components::bounded_image_cache::BoundedImageCache::new(
+                crate::ui::components::bounded_image_cache::MAX_GPU_IMAGE_ENTRIES,
+            )
+        }));
 
         // Restore tabs from saved session if available (BEFORE initial navigate,
         // so the saved session data is still intact in memory)
@@ -1404,8 +1417,12 @@ impl AppWindow {
         let main_tick;
         {
             let bs = &mut self.state.sidebar.bouncy_scroll;
+            // Drain the post-settle cooldown every frame, even when idle:
+            // gating it behind `animating` deadlocks scrolling permanently
+            // after the first settle (wheel input needs cooldown == 0 to
+            // re-arm, but nothing would ever decrement it).
+            bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
             sidebar_tick = if bs.animating {
-                bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
                 bs.tick_spring(dt)
             } else {
                 false
@@ -1413,8 +1430,9 @@ impl AppWindow {
         }
         {
             let bs = &mut self.state.main_view.bouncy_scroll;
+            // Same unconditional drain as sidebar (see above).
+            bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
             main_tick = if bs.animating {
-                bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
                 bs.tick_spring(dt)
             } else {
                 false
@@ -2635,24 +2653,54 @@ impl AppWindow {
             let items = std::sync::Arc::new(self.state.main_view.items.clone());
             let thumbnail_service = self.state.thumbnail_service.clone();
             let icon_cache = self.state.icon_cache.clone();
+            // Abort stale extractions when the user navigates away mid-flight.
+            let cancel = self.state.nav_cancel_guard.token();
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
-            // Build a priority-ordered item list: visible items first, then the rest.
-            // Process ALL items so the persistent disk cache is fully populated —
-            // subsequent navigations to the same folder load cached thumbnails instantly.
+            // Viewport-bounded extraction: only the visible window (+ 32-item
+            // lookahead) is queued. The full-directory storm (all 50k items)
+            // saturated CPU/disk and spiked RAM past 800 MB; the persistent
+            // disk cache still warms incrementally as the user scrolls.
+            // Viewport handles report 0..0 before first layout — fall back to
+            // the first 120 items so icons still populate on cold open.
             let total = items.len();
-            let mut priority_items: Vec<usize> = (0..total).collect();
-            if visible_end > visible_start && visible_start < total {
-                // Rotate so visible range comes first
-                let end = visible_end.min(total);
-                let start = visible_start.min(total);
-                let visible_range: Vec<usize> = (start..end).collect();
-                let others: Vec<usize> = (0..start)
-                    .chain(end..total)
-                    .filter(|i| *i < total)
-                    .collect();
-                priority_items = visible_range.into_iter().chain(others).collect();
+            let mut priority_items: Vec<usize> = if visible_end > visible_start
+                && visible_start < total
+            {
+                let end = (visible_end + 32).min(total).max(visible_start);
+                (visible_start..end).collect()
+            } else {
+                (0..total.min(120)).collect()
+            };
+            // Trickle-fill: append the next uncached chunk (round-robin) so
+            // rows outside any reported viewport still resolve within minutes
+            // instead of waiting on viewport tracking alone. Batches that find
+            // everything cached set no flags and trigger no re-render.
+            // Scan is windowed (<= 4,096 slots/call) to stay off the UI budget.
+            if total > 0 {
+                if let Ok(cache) = icon_cache.lock() {
+                    let queued: std::collections::HashSet<usize> =
+                        priority_items.iter().copied().collect();
+                    let start = TRICKLE_CURSOR.load(Ordering::Relaxed) % total;
+                    let mut added = 0usize;
+                    let mut scanned = 0usize;
+                    while added < 25 && scanned < 4_096 {
+                        let idx = (start + scanned) % total;
+                        scanned += 1;
+                        if queued.contains(&idx) {
+                            continue;
+                        }
+                        match items.get(idx) {
+                            Some(item) if !cache.contains(&item.path) => {
+                                priority_items.push(idx);
+                                added += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    TRICKLE_CURSOR.store(start + scanned, Ordering::Relaxed);
+                }
             }
 
             let batch_size = 25;
@@ -2662,6 +2710,13 @@ impl AppWindow {
             cx.foreground_executor()
                 .spawn(async move {
                     for chunk in priority_items.chunks(batch_size) {
+                        // Navigated away mid-flight: drop remaining batches.
+                        if cancel.is_cancelled() {
+                            tracing::debug!(
+                                "load_icons: batch aborted by nav generation change"
+                            );
+                            break;
+                        }
                         let chunk_vec = chunk.to_vec();
                         // Clone only Send types for the background task
                         let items_clone = items.clone();
@@ -2778,6 +2833,12 @@ impl AppWindow {
                             let _ = weak_entity.update(&mut async_cx, |this, cx| {
                                 let dir =
                                     this.state.main_view.primary_path.as_path().to_path_buf();
+                                let cache_len = this
+                                    .state
+                                    .icon_cache
+                                    .lock()
+                                    .map(|cache| cache.len())
+                                    .unwrap_or(0);
                                 this.state.main_view.icon_paths = this
                                     .state
                                     .icon_cache
@@ -2786,6 +2847,12 @@ impl AppWindow {
                                         crate::app_state::icon_paths_for_dir(&cache, &dir)
                                     })
                                     .unwrap_or_default();
+                                tracing::debug!(
+                                    "load_icons: published {} icon_paths for {:?} (cache {})",
+                                    this.state.main_view.icon_paths.len(),
+                                    dir,
+                                    cache_len
+                                );
                                 cx.notify();
                             });
                         }
@@ -2813,12 +2880,44 @@ impl AppWindow {
         let limit = bottom.min(items.len().saturating_sub(1));
 
         // Check if any visible items in the viewport still lack icons
-        let needs_reload = (top..=limit).any(|i| {
+        let mut needs_reload = (top..=limit).any(|i| {
             if i >= items.len() {
                 return false;
             }
             !icon_paths.contains_key(&items[i].path)
         });
+
+        // Viewport tracking can report a stale (e.g. 0..0) range even after
+        // scrolling, which would permanently gate all loading behind row 0.
+        // Fall back to a bounded scan of the trickle window: if uncached
+        // items exist anywhere ahead of the cursor, keep pumping. Windowed
+        // (<= 4,096 slots) to stay off the UI budget. Scoped to directories
+        // that fit the LRU cap — beyond it, eviction would make "everything
+        // cached" unreachable and the pump would churn forever.
+        if !needs_reload {
+            let total = items.len();
+            if total > 0 && total <= crate::app_state::MAX_ICON_CACHE_ENTRIES {
+                if let Ok(cache) = self.state.icon_cache.lock() {
+                    let start =
+                        TRICKLE_CURSOR.load(Ordering::Relaxed) % total;
+                    needs_reload = (0..4_096.min(total)).any(|o| {
+                        let idx = (start + o) % total;
+                        items
+                            .get(idx)
+                            .map_or(false, |it| !cache.contains(&it.path))
+                    });
+                }
+            }
+        }
+
+        tracing::debug!(
+            "refresh_icons_for_viewport: range {}..{} of {}, cached views {}, reload={}",
+            top,
+            bottom,
+            self.state.main_view.items.len(),
+            self.state.main_view.icon_paths.len(),
+            needs_reload
+        );
 
         if needs_reload {
             tracing::debug!(

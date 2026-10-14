@@ -19,8 +19,8 @@ use std::time::Duration;
 // Layout constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SECTION_HEADER_HEIGHT: f32 = 32.0;
-const SECTION_ITEM_HEIGHT: f32 = 36.0;
+const SECTION_HEADER_HEIGHT: f32 = 28.0;
+const SECTION_ITEM_HEIGHT: f32 = 30.0;
 const SECTION_MARGIN_BOTTOM: f32 = 8.0;
 const COLLAPSED_SECTION_ICON_SIZE: f32 = 36.0;
 const TOOLTIP_WIDTH: f32 = 220.0;
@@ -525,6 +525,48 @@ impl SidebarView {
             })
     }
 
+    /// Colored Fluent glyph per sidebar section (Files-community parity).
+    /// Returns (glyph, rgb color).
+    fn section_glyph(section_id: SectionId) -> (&'static str, u32) {
+        match section_id {
+            SectionId::Favorites => ("\u{E718}", 0x60CDFF),
+            SectionId::Tags => ("\u{E8EC}", 0xB4A0FF),
+            SectionId::Libraries => ("\u{E8B7}", 0xFCE100),
+            SectionId::ThisPc => ("\u{E770}", 0x4CC2FF),
+            SectionId::CloudDrives => ("\u{E753}", 0x60CDFF),
+            SectionId::Network => ("\u{E802}", 0x6CCB5F),
+            SectionId::Wsl => ("\u{E756}", 0xFF99A4),
+        }
+    }
+
+    /// Fluent icon tint per sidebar item kind (replaces flat grey).
+    fn item_icon_color(item: &SidebarItem) -> u32 {
+        match &item.id {
+            SidebarItemId::Tag(_) => 0xB4A0FF,
+            SidebarItemId::Library(_) => 0xFCE100,
+            SidebarItemId::Drive { .. } => 0x60CDFF,
+            SidebarItemId::CloudDrive(_) => 0x60CDFF,
+            SidebarItemId::Network => 0x6CCB5F,
+            SidebarItemId::WslDistro(_) => 0xFF99A4,
+            SidebarItemId::RecycleBin => 0x4CC2FF,
+            SidebarItemId::Pinned(path) => {
+                let name = path
+                    .as_path()
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                match name.as_str() {
+                    "downloads" => 0x4CC2FF,
+                    "pictures" => 0xB4A0FF,
+                    "videos" => 0x60CDFF,
+                    "music" => 0xFF8C00,
+                    _ => 0xF5B942,
+                }
+            }
+        }
+    }
+
     fn render_section_header(
         section: &SidebarSectionData,
         section_idx: usize,
@@ -532,10 +574,15 @@ impl SidebarView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let title = section.title.clone();
-        let item_count = section.items.len();
         let section_id = section.id;
         let reorder_mode = state.reorder_mode;
         let is_dragging_this = state.drag_section_idx == Some(section_idx);
+        let collapsed = section.collapsed;
+
+        // Chevron (Fluent convention: down = expanded, up = collapsed) +
+        // colored section glyph, replacing the old right-aligned count badge.
+        let (glyph, glyph_color) = Self::section_glyph(section_id);
+        let chevron = if collapsed { "\u{E76C}" } else { "\u{E70D}" };
 
         let mut header = div()
             .id(SharedString::from(format!(
@@ -545,20 +592,30 @@ impl SidebarView {
             .h(px(SECTION_HEADER_HEIGHT))
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(6.0))
             .px(px(16.0))
+            .child(
+                div()
+                    .w(px(16.0))
+                    .text_size(px(10.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(chevron.to_string()),
+            )
+            .child(
+                div()
+                    .w(px(18.0))
+                    .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(rgb(glyph_color))
+                    .child(glyph.to_string()),
+            )
             .child(
                 div()
                     .text_size(px(12.0))
                     .font_weight(FontWeight(600.0))
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(title.to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                    .child(item_count.to_string()),
             );
 
         if reorder_mode {
@@ -915,7 +972,7 @@ impl SidebarView {
                     .text_color(if is_active {
                         rgb(UiConstants::ACCENT_COLOR_RGB)
                     } else {
-                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                        rgb(Self::item_icon_color(item))
                     })
                     .child(icon_src),
             )

@@ -236,7 +236,7 @@ impl TabBarView {
                 rgba(UiConstants::TEXT_SECONDARY_RGBA)
             };
             let bg = if is_active {
-                rgba(0xFFFFFF14u32)
+                rgba(0x242424FFu32)
             } else {
                 rgba(0x00000000u32)
             };
@@ -255,9 +255,10 @@ impl TabBarView {
                 .max_w(px(TAB_MAX_W))
                 .w(px(TAB_W)) // Fixed width for smooth scroll
                 .bg(bg)
-                .rounded_t(px(6.0))
-                .border_b(px(2.0))
-                .border_color(bc)
+                .rounded_t(px(8.0))
+                .border(px(1.0))
+                .border_color(rgba(0xFFFFFF14u32))
+                .border_b(px(0.0))
                 .cursor_pointer();
 
             if is_dragged {
@@ -351,7 +352,7 @@ impl TabBarView {
                     div()
                         .text_size(px(14.0))
                         .font_family(UiConstants::FONT_MDL2)
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .text_color(rgb(0xF5B942u32))
                         .mr(px(8.0))
                         .child("\u{E8B7}")
                         .into_any_element()
@@ -598,7 +599,7 @@ impl TabBarView {
                     rgba(UiConstants::TEXT_SECONDARY_RGBA)
                 };
                 let bg = if is_active {
-                    rgba(0xFFFFFF14u32)
+                    rgba(0x242424FFu32)
                 } else {
                     rgba(0x00000000u32)
                 };
@@ -617,9 +618,10 @@ impl TabBarView {
                     .max_w(px(TAB_MAX_W))
                     .w(px(TAB_W))
                     .bg(bg)
-                    .rounded_t(px(6.0))
-                    .border_b(px(2.0))
-                    .border_color(bc)
+                    .rounded_t(px(8.0))
+                    .border(px(1.0))
+                    .border_color(rgba(0xFFFFFF14u32))
+                    .border_b(px(0.0))
                     .cursor_pointer();
 
                 if is_dragged {
@@ -712,7 +714,7 @@ impl TabBarView {
                         div()
                             .text_size(px(14.0))
                             .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .text_color(rgb(0xF5B942u32))
                             .mr(px(8.0))
                             .child("\u{E8B7}")
                             .into_any_element()
