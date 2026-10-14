@@ -1,4 +1,4 @@
-HERMES AGENT — Next-Phase Visual Parity, Physics & Performance Execution Plan (files-rs)
+HERMES AGENT — Autonomous CUA Workflow & Deeperformance Execution Plan (files-rs)
 
 Target Agent: Hermes Agent
 
@@ -53,6 +53,7 @@ pub fn grid_columns_for_width(pane_w: f32, zoom: f32) -> usize {
 }
 
 
+
 Add a helper MainViewState::grid_layout_params_for_width(pane_w: f32, zoom: f32, cols: usize) -> GridLayoutParams in src/ui/views/grid_view.rs that distributes any leftover fractional row width across item_width so every full row aligns flush with both left and right margins (matching Files-community ItemsWrapGrid):
 
 fn grid_layout_params_for_width(pane_w: f32, zoom: f32, cols: usize) -> GridLayoutParams {
@@ -69,6 +70,7 @@ fn grid_layout_params_for_width(pane_w: f32, zoom: f32, cols: usize) -> GridLayo
     }
     params
 }
+
 
 
 (Or update params.item_width directly in grid_view_flat and render_grid_view_grouped by passing pane_w: f32 into render_grid_view(&self, file_items, view, cols, pane_w) from src/ui/views/main_view.rs:813.)
@@ -103,6 +105,7 @@ drop(state);
 cx.notify();
 
 
+
 (AppWindow::render() already ticks tick_bouncy_scrolls() on every frame and calls cx.notify() while animating is true.)
 
 Increase MOMENTUM_GRACE_TICKS and tighten overscroll caps at the top of src/ui/components/bouncy_scroll.rs (lines 46–70):
@@ -114,6 +117,7 @@ pub(crate) const MAX_OVERSCROLL: f32 = 48.0;
 const SETTLE_VELOCITY: f32 = 1.0;
 const SETTLE_OFFSET: f32 = 0.75;
 pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 14; // ~115ms grace so wheel notches don't bounce mid-scroll
+
 
 
 Fix tick_spring_toward (src/ui/components/bouncy_scroll.rs:372–391) to clamp zero-crossings immediately so an overscroll return NEVER crosses target into the in-bounds momentum branch or oscillates back and forth:
@@ -147,8 +151,8 @@ fn tick_spring_toward(&mut self, target: f32, dt: f32) -> bool {
 }
 
 
-Fix the in-bounds momentum boundary hit (src/ui/components/bouncy_scroll.rs:338–350):
-When in-bounds momentum reaches 0.0 or self.max_offset, clamp and stop cleanly instead of leaving self.offset = 0.0 with non-zero velocity:
+
+Fix the in-bounds momentum boundary hit (src/ui/components/bouncy_scroll.rs:338–350): When in-bounds momentum reaches 0.0 or self.max_offset, clamp and stop cleanly instead of leaving self.offset = 0.0 with non-zero velocity:
 
 if self.offset >= 0.0 {
     self.offset = 0.0;
@@ -166,8 +170,8 @@ if self.offset <= self.max_offset {
 }
 
 
-Fix cumulative overscroll tracking in bouncy_scroll_handler_with_handle (src/ui/components/bouncy_scroll.rs:601–612):
-Instead of adding raw delta_y to an already rubber-band-clamped state.offset, accumulate into state.raw_overscroll when past the boundary and compute state.offset = rubber_band_clamp(state.raw_overscroll, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL).
+
+Fix cumulative overscroll tracking in bouncy_scroll_handler_with_handle (src/ui/components/bouncy_scroll.rs:601–612): Instead of adding raw delta_y to an already rubber-band-clamped state.offset, accumulate into state.raw_overscroll when past the boundary and compute state.offset = rubber_band_clamp(state.raw_overscroll, RUBBER_BAND_RESISTANCE, MAX_OVERSCROLL).
 
 Acceptance Criteria:
 
@@ -233,8 +237,7 @@ src/app_navigation.rs (Phase 3)
 
 docs/benchmarks/PERF_AND_TELEMETRY.md
 
-Problem Statement:
-As identified in your Step 3 telemetry finding, navigating to the 50,000-file fixture spiked RAM to 812 MB and dropped scroll sweeps to 16 FPS because this.load_icons(cx) in src/app.rs queued thumbnail/icon extraction across all 50,000 items at once.
+Problem Statement: As identified in your Step 3 telemetry finding, navigating to the 50,000-file fixture spiked RAM to 812 MB and dropped scroll sweeps to 16 FPS because this.load_icons(cx) in src/app.rs queued thumbnail/icon extraction across all 50,000 items at once.
 
 Concrete Changes:
 
