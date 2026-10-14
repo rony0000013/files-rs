@@ -63,13 +63,13 @@ fn main() {
         );
 
         // gpui 0.2.2 only exposes Opaque/Transparent/Blurred (no native Mica
-        // variants); backdrop blur + the window_vibrancy Mica calls below
-        // produce the actual Mica/MicaAlt effect.
-        let window_background = if mica_enabled {
-            WindowBackgroundAppearance::Blurred
-        } else {
-            WindowBackgroundAppearance::Opaque
-        };
+        // variants). Use Opaque (ACCENT_DISABLED: no legacy composition
+        // policy): both Transparent (TRANSPARENTGRADIENT) and Blurred
+        // (ACRYLICBLURBEHIND) install legacy accent policies that fight
+        // window_vibrancy's DWMWA_SYSTEMBACKDROP_TYPE and composite opaque.
+        // The actual Mica comes from apply_mica below; translucency comes
+        // from the RGBA fills in the scene, not the window policy.
+        let window_background = WindowBackgroundAppearance::Opaque;
 
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Maximized(Bounds::new(
@@ -85,9 +85,15 @@ fn main() {
             #[cfg(windows)]
             if mica_enabled {
                 if mica_alt {
-                    let _ = window_vibrancy::apply_tabbed(&*window, Some(true));
+                    if let Err(e) = window_vibrancy::apply_tabbed(&*window, Some(true)) {
+                        tracing::error!("apply_tabbed (MicaAlt) failed: {:?}", e);
+                    } else {
+                        tracing::info!("apply_tabbed (MicaAlt) applied");
+                    }
+                } else if let Err(e) = window_vibrancy::apply_mica(&*window, Some(true)) {
+                    tracing::error!("apply_mica failed: {:?}", e);
                 } else {
-                    let _ = window_vibrancy::apply_mica(&*window, Some(true));
+                    tracing::info!("apply_mica applied");
                 }
             }
             let rx = progress.subscribe();

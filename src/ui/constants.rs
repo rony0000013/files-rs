@@ -9,12 +9,12 @@ impl UiConstants {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Main window background (Translucent layer over Mica, or solid fallback)
-    pub const BG_MAIN_RGBA: u32 = 0x1C1C1CD8;
+    pub const BG_MAIN_RGBA: u32 = 0x1C1C1CFF;
     pub const BG_MAIN_MICA_ALT_RGBA: u32 = 0x141414CC;
     pub const BG_MAIN_RGB: u32 = 0x1C1C1C;
 
     /// Sidebar background (Translucent so DWM Mica shows through)
-    pub const BG_SIDEBAR_RGBA: u32 = 0x202020B8;
+    pub const BG_SIDEBAR_RGBA: u32 = 0x202020FF;
     pub const BG_SIDEBAR_RGB: u32 = 0x202020;
 
     /// Dialog background (Acrylic / Elevated Flyout surface)
@@ -29,7 +29,7 @@ impl UiConstants {
     pub const BG_NAV_BAR_RGB: u32 = 0x1C1C1C;
 
     /// Toolbar background (WinUI 3 LayerFillColorDefault card layer)
-    pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CD9;
+    pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CFF;
     pub const BG_TOOLBAR_RGB: u32 = 0x2C2C2C;
 
     /// Status bar background (Translucent footer over Mica)

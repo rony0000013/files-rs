@@ -10,7 +10,7 @@ impl crate::ui::components::dialogs::DialogsView {
         selected_path: Option<crate::core::path_util::FilesPath>,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
-    ) -> Div {
+    ) -> impl IntoElement {
         // Clone view for closures
         let v_close = view.clone();
         let v_open = view.clone();
@@ -758,7 +758,14 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
         }
-        menu
+        // Fluent MenuPopupThemeTransition: quick opacity entrance on the
+        // finished menu (AnimationElement wraps the whole tree; it cannot
+        // be chained mid-build).
+        menu.with_animation(
+            "ctx-menu-entrance",
+            Animation::new(std::time::Duration::from_millis(120)),
+            |elem, delta| elem.opacity(delta),
+        )
     }
 
     /// Build context menu items for all available tags with toggle logic
@@ -870,12 +877,12 @@ impl crate::ui::components::dialogs::DialogsView {
             .child(
                 div()
                     .text_size(px(14.0))
-                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(px(14.0))
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.to_string()),
             )
@@ -900,7 +907,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .child(
                 div()
                     .text_size(px(16.0))
-                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
             .child(
