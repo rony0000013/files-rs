@@ -13,6 +13,7 @@ use crate::ui::constants::UiConstants;
 use crate::ui::views::main_view::{ColumnResizeState, ColumnWidths, FileItems, MainViewState};
 use gpui::*;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use crate::core::undo_redo::UndoRedoManager;
@@ -53,6 +54,25 @@ pub fn disk_cache_key(path: &crate::core::path_util::FilesPath) -> String {
     format!("{}_{:016x}", stem, h.finish())
 }
 
+/// Maximum icon temp-path entries retained in RAM (LRU-evicted beyond this).
+/// Bounds the per-batch full-cache clones in `load_icons` to a small constant
+/// instead of one entry per file ever seen this session.
+pub const MAX_ICON_CACHE_ENTRIES: usize = 4_096;
+
+/// Collects only the cached icon paths belonging to `dir` (children whose
+/// parent is `dir`), so `MainViewState::icon_paths` stays proportional to the
+/// visible directory instead of the whole session history.
+pub fn icon_paths_for_dir(
+    cache: &lru::LruCache<FilesPath, std::path::PathBuf>,
+    dir: &std::path::Path,
+) -> HashMap<FilesPath, std::path::PathBuf> {
+    cache
+        .iter()
+        .filter(|(p, _)| p.as_path().parent() == Some(dir))
+        .map(|(p, v)| (p.clone(), v.clone()))
+        .collect()
+}
+
 /// State of a tag across selected items
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagState {
@@ -88,8 +108,10 @@ pub struct AppState {
     pub session_service: crate::core::session_service::SessionService,
     pub splash_state: SplashState,
     pub thumbnail_service: Arc<ThumbnailService>,
-    /// Cache of extracted icon temp file paths, keyed by FilesPath
-    pub icon_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
+    /// Cache of extracted icon temp file paths, keyed by FilesPath.
+    /// LRU-bounded at MAX_ICON_CACHE_ENTRIES so session-long browsing
+    /// cannot grow icon RAM without limit.
+    pub icon_cache: Arc<Mutex<lru::LruCache<FilesPath, std::path::PathBuf>>>,
     /// Cache of tab folder thumbnail paths, keyed by FilesPath
     pub tab_thumbnail_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
     /// Undo/redo manager for file operations
@@ -152,7 +174,9 @@ impl AppState {
                 crate::core::session_service::SessionService::new(session_path)
             },
             thumbnail_service: Arc::new(ThumbnailService::new()),
-            icon_cache: Arc::new(Mutex::new(HashMap::new())),
+            icon_cache: Arc::new(Mutex::new(lru::LruCache::new(
+                NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
+            ))),
             tab_thumbnail_cache: Arc::new(Mutex::new(HashMap::new())),
             undo_redo: UndoRedoManager::new(),
             tab_drag: TabDragState::default(),
@@ -269,4 +293,53 @@ pub struct AppWindow {
     /// Focus-out subscription (omnibar auto-dismiss). Held, not dropped:
     /// dropping a GPUI `Subscription` unsubscribes immediately.
     pub focus_out_subscription: Option<Subscription>,
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_icon_cache_lru_cap_bounds_session_growth() {
+        let cache = Arc::new(Mutex::new(lru::LruCache::new(
+            NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
+        )));
+        // Simulate browsing well past capacity: 5,000 distinct files.
+        {
+            let mut guard = cache.lock().unwrap();
+            for i in 0..5_000 {
+                guard.put(
+                    FilesPath::new(format!("C:/dir/file_{:05}.txt", i)),
+                    std::path::PathBuf::from(format!("C:/tmp/{}.png", i)),
+                );
+            }
+            // LRU eviction keeps RAM bounded no matter how much was seen.
+            assert!(guard.len() <= MAX_ICON_CACHE_ENTRIES);
+        }
+    }
+
+    #[test]
+    fn test_icon_paths_for_dir_stays_within_active_directory() {
+        // 10 directories x 1,000 files each, cache large enough to hold all.
+        let mut cache = lru::LruCache::new(NonZeroUsize::new(20_000).unwrap());
+        for d in 0..10 {
+            for i in 0..1_000 {
+                cache.put(
+                    FilesPath::new(format!("C:/dir_{}/file_{:04}.txt", d, i)),
+                    std::path::PathBuf::from(format!("C:/tmp/{}_{}.png", d, i)),
+                );
+            }
+        }
+        // Navigating across all 10 directories: each view sees at most its own 1,000.
+        for d in 0..10 {
+            let dir = std::path::PathBuf::from(format!("C:/dir_{}", d));
+            let view = icon_paths_for_dir(&cache, &dir);
+            assert!(
+                view.len() <= 1_000,
+                "dir {} leaked {} entries",
+                d,
+                view.len()
+            );
+            assert!(view.keys().all(|p| p.as_path().parent() == Some(dir.as_path())));
+        }
+    }
 }

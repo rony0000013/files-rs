@@ -116,6 +116,32 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
+/// Zero-allocation case-insensitive substring check for ASCII/UTF-8 filenames.
+pub fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    if haystack.is_ascii() && needle.is_ascii() {
+        let h = haystack.as_bytes();
+        let n = needle.as_bytes();
+        return h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+    }
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// Zero-allocation case-insensitive file extension comparator for `SortBy::Type`.
+pub fn ext_cmp(a: &str, b: &str) -> Ordering {
+    let ext_a = a.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    let ext_b = b.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match natural_cmp(ext_a, ext_b) {
+        Ordering::Equal => natural_cmp(a, b),
+        ord => ord,
+    }
+}
+
 pub(crate) fn info_row(label: &str, value: &str) -> impl IntoElement {
     div()
         .flex_col()

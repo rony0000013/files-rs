@@ -174,6 +174,7 @@ impl AppWindow {
                     this_weak
                         .update(&mut async_cx, |this, cx| {
                             this.state.main_view.items = fast_items;
+                            this.state.main_view.bump_items_revision();
                             this.state.file_items.update(cx, |m, _| {
                                 m.items = this.state.main_view.items.clone();
                                 m.selected_indices =
@@ -203,7 +204,12 @@ impl AppWindow {
                                 .state
                                 .icon_cache
                                 .lock()
-                                .map(|cache| cache.clone())
+                                .map(|cache| {
+                                    crate::app_state::icon_paths_for_dir(
+                                        &cache,
+                                        p1.as_path(),
+                                    )
+                                })
                                 .unwrap_or_default();
                             cx.notify();
                         })
@@ -297,6 +303,7 @@ impl AppWindow {
                                             item.is_system = is_system;
                                         }
                                     }
+                                    this.state.main_view.bump_items_revision();
                                     this.state.file_items.update(cx, |m, _| {
                                         m.items = this.state.main_view.items.clone();
                                     });
@@ -357,7 +364,12 @@ impl AppWindow {
                                 .state
                                 .icon_cache
                                 .lock()
-                                .map(|cache| cache.clone())
+                                .map(|cache| {
+                                    crate::app_state::icon_paths_for_dir(
+                                        &cache,
+                                        p3.as_path(),
+                                    )
+                                })
                                 .unwrap_or_default();
                             cx.notify();
                         })

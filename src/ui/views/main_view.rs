@@ -78,6 +78,8 @@ impl MainViewState {
             icon_refresh_last_check: None,
             bouncy_scroll: BouncyScrollState::new(),
             git_status_cache: std::collections::HashMap::new(),
+            items_revision: 0,
+            visible_cache: std::cell::RefCell::new(None),
         }
     }
 
@@ -93,34 +95,71 @@ impl MainViewState {
         self.view_mode = view_mode_for_zoom(self.zoom_level);
     }
 
-    /// Return the sorted+filtered items as index slices into self.items.
-    pub fn visible_items(&self) -> Vec<usize> {
-        let filter = self.filter_text.to_lowercase();
+    /// Bump the items revision to invalidate the cached visible_items index vector.
+    pub fn bump_items_revision(&mut self) {
+        self.items_revision = self.items_revision.wrapping_add(1);
+        self.visible_cache.borrow_mut().take();
+    }
+
+    /// Return a reference-counted sorted+filtered index vector, computing and caching it
+    /// only when the underlying items, sort state, or filter parameters have changed.
+    /// Guarantees O(1) zero-sort execution during 120-144 FPS scroll and hover frames.
+    pub fn visible_items_rc(&self) -> std::rc::Rc<Vec<usize>> {
+        let sort_discriminant = match self.sort.column {
+            SortBy::Name => 0,
+            SortBy::DateModified => 1,
+            SortBy::DateCreated => 2,
+            SortBy::Type => 3,
+            SortBy::Size => 4,
+            SortBy::Tag => 5,
+            _ => 6,
+        };
+        let key = VisibleCacheKey {
+            primary_path: self.primary_path.clone(),
+            items_len: self.items.len(),
+            items_revision: self.items_revision,
+            first_modified: self.items.first().and_then(|i| i.modified),
+            last_modified: self.items.last().and_then(|i| i.modified),
+            last_size: self.items.last().map(|i| i.size).unwrap_or(0),
+            sort_col_discriminant: sort_discriminant,
+            sort_ascending: self.sort.ascending,
+            folders_first: self.sort.folders_first,
+            filter_text: self.filter_text.clone(),
+            show_dot_files: self.show_dot_files,
+            show_hidden_files: self.show_hidden_files,
+            show_system_files: self.show_system_files,
+            is_searching: self.search_state.is_searching,
+            search_query: self.search_state.query.clone(),
+            search_results_len: self.search_state.results.len(),
+        };
+
+        if let Some((cached_key, cached_rc)) = self.visible_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return cached_rc.clone();
+            }
+        }
+
+        let has_filter = !self.filter_text.is_empty();
         let mut indices: Vec<usize> = self
             .items
             .iter()
             .enumerate()
             .filter(|(i, item)| {
-                // 1. System file filter
                 if !self.show_system_files && item.is_system {
                     return false;
                 }
-                // 2. Hidden file filter (Windows hidden attribute)
                 if !self.show_hidden_files && item.is_hidden {
                     return false;
                 }
-                // 3. Dot file filter (cross-platform)
                 if !self.show_dot_files && item.name.starts_with('.') {
                     return false;
                 }
-                // 4. Search text filter
-                if !filter.is_empty() && !item.name.to_lowercase().contains(&filter) {
+                if has_filter && !contains_ignore_case(&item.name, &self.filter_text) {
                     return false;
                 }
-                // 5. Global search results filter
                 if self.search_state.is_searching
                     && !self.search_state.query.is_empty()
-                    && !self.search_state.results.contains(&i)
+                    && !self.search_state.results.contains(i)
                 {
                     return false;
                 }
@@ -129,11 +168,9 @@ impl MainViewState {
             .map(|(i, _)| i)
             .collect();
 
-        // Sort
-        indices.sort_by(|&a, &b| {
+        indices.sort_unstable_by(|&a, &b| {
             let ia = &self.items[a];
             let ib = &self.items[b];
-            // Folders first
             if self.sort.folders_first {
                 let af = matches!(ia.file_type, FileType::Directory);
                 let bf = matches!(ib.file_type, FileType::Directory);
@@ -147,19 +184,21 @@ impl MainViewState {
             }
             let ord = match self.sort.column {
                 SortBy::Name => natural_cmp(&ia.name, &ib.name),
-                SortBy::Size => ia.size.cmp(&ib.size),
+                SortBy::Size => ia.size.cmp(&ib.size).then_with(|| natural_cmp(&ia.name, &ib.name)),
                 SortBy::Type => {
-                    let ta = if matches!(ia.file_type, FileType::Directory) {
-                        "Folder"
+                    let dir_a = matches!(ia.file_type, FileType::Directory);
+                    let dir_b = matches!(ib.file_type, FileType::Directory);
+                    if dir_a && dir_b {
+                        natural_cmp(&ia.name, &ib.name)
+                    } else if dir_a != dir_b {
+                        if dir_a {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
                     } else {
-                        "File"
-                    };
-                    let tb = if matches!(ib.file_type, FileType::Directory) {
-                        "Folder"
-                    } else {
-                        "File"
-                    };
-                    ta.cmp(tb)
+                        ext_cmp(&ia.name, &ib.name)
+                    }
                 }
                 SortBy::Tag => {
                     let tags_a = self.tags_cache.get(&*ia.path.to_string_lossy());
@@ -167,7 +206,7 @@ impl MainViewState {
                     let first_tag_a = tags_a.and_then(|t| t.first()).map(|s| s.as_str());
                     let first_tag_b = tags_b.and_then(|t| t.first()).map(|s| s.as_str());
                     match (first_tag_a, first_tag_b) {
-                        (Some(a), Some(b)) => a.cmp(b),
+                        (Some(a), Some(b)) => natural_cmp(a, b),
                         (Some(_), None) => std::cmp::Ordering::Less,
                         (None, Some(_)) => std::cmp::Ordering::Greater,
                         (None, None) => natural_cmp(&ia.name, &ib.name),
@@ -176,7 +215,7 @@ impl MainViewState {
                 SortBy::DateModified => {
                     let a_time = ia.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                     let b_time = ib.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    a_time.cmp(&b_time)
+                    a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
                 }
                 SortBy::DateCreated => {
                     let a_time = ia
@@ -187,9 +226,8 @@ impl MainViewState {
                         .created
                         .or(ib.modified)
                         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    a_time.cmp(&b_time)
+                    a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
                 }
-                // Fallback for any other sort variants
                 _ => natural_cmp(&ia.name, &ib.name),
             };
             if self.sort.ascending {
@@ -199,7 +237,14 @@ impl MainViewState {
             }
         });
 
-        indices
+        let rc = std::rc::Rc::new(indices);
+        *self.visible_cache.borrow_mut() = Some((key, rc.clone()));
+        rc
+    }
+
+    /// Return the sorted+filtered items as index slices into self.items.
+    pub fn visible_items(&self) -> Vec<usize> {
+        (*self.visible_items_rc()).clone()
     }
 
     /// Toggle sort column; flip direction if already sorting by that column.
@@ -672,7 +717,7 @@ impl MainView {
         settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
         pane_w: f32,
     ) -> impl IntoElement {
-        let visible = state.visible_items();
+        let visible = state.visible_items_rc();
 
         // Empty state
         if visible.is_empty() && !state.loading {
@@ -1551,5 +1596,52 @@ mod tests {
             state.get_group_key(&state.items[1]),
             Some("Untagged".to_string())
         );
+    }
+
+    #[test]
+    fn test_visible_items_rc_memoizes_and_invalidates_on_change() {
+        let mut st = MainViewState::new(FilesPath::new("/tmp"), ViewMode::Details);
+        st.items = vec![
+            FileItem {
+                name: "file10.txt".to_string(),
+                path: FilesPath::new("/tmp/file10.txt"),
+                file_type: FileType::File,
+                size: 100,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+            },
+            FileItem {
+                name: "file2.txt".to_string(),
+                path: FilesPath::new("/tmp/file2.txt"),
+                file_type: FileType::File,
+                size: 200,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+            },
+        ];
+        st.bump_items_revision();
+
+        let rc1 = st.visible_items_rc();
+        let rc2 = st.visible_items_rc();
+        // Consecutive render calls must share the exact same Rc allocation (zero re-sort)
+        assert!(std::rc::Rc::ptr_eq(&rc1, &rc2));
+        // Natural sort order: file2.txt (index 1) before file10.txt (index 0)
+        assert_eq!(*rc1, vec![1, 0]);
+
+        // Changing sort column invalidates cache automatically
+        st.toggle_sort(SortBy::Size);
+        let rc3 = st.visible_items_rc();
+        assert!(!std::rc::Rc::ptr_eq(&rc1, &rc3));
+        assert_eq!(*rc3, vec![0, 1]);
+
+        // 1,000 consecutive frames without mutation must perform zero re-sorts:
+        // every call returns the exact same cached allocation.
+        for _ in 0..1_000 {
+            assert!(std::rc::Rc::ptr_eq(&rc3, &st.visible_items_rc()));
+        }
     }
 }

@@ -318,7 +318,7 @@ impl MainViewState {
             return;
         }
 
-        let visible = self.visible_items();
+        let visible = self.visible_items_rc();
         let flattened = self.flatten_grouped_items(&visible);
 
         // Find actual item indices (skip headers in flattened list)

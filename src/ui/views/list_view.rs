@@ -20,7 +20,7 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
-        let visible = self.visible_items();
+        let visible = self.visible_items_rc();
 
         if self.group_by != GroupColumn::None {
             return self
@@ -39,7 +39,7 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
     ) -> Div {
-        let visible_clone = visible.to_vec();
+        let visible_clone = self.visible_items_rc();
         let zoom = self.zoom_level;
         let row_h = 24.0 + zoom * 32.0;
         let icon_size = 16.0 + zoom * 24.0;
@@ -245,7 +245,7 @@ impl MainViewState {
         div().flex_col().w_full().flex_grow().child(
             uniform_list("list-grouped-scroll", item_count, {
                 let view = view.clone();
-                let visible_clone = visible.to_vec();
+                let visible_clone = self.visible_items_rc();
                 move |range, _win, cx| {
                     let fi = file_items.read(cx);
                     let app_state = view.read(cx);

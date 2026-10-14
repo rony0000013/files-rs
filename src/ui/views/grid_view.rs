@@ -21,7 +21,7 @@ impl MainViewState {
         view: Entity<crate::app::AppWindow>,
         cols: usize,
     ) -> AnyElement {
-        let visible = self.visible_items();
+        let visible = self.visible_items_rc();
 
         if self.group_by != GroupColumn::None {
             return self
@@ -102,7 +102,7 @@ impl MainViewState {
         view: Entity<crate::app::AppWindow>,
         cols: usize,
     ) -> impl IntoElement {
-        let visible_clone = visible.to_vec();
+        let visible_clone = self.visible_items_rc();
         let zoom = self.zoom_level;
         let mut params = Self::grid_layout_params(zoom);
         params.items_per_row = cols.max(1);
@@ -222,7 +222,7 @@ impl MainViewState {
             .child(
                 uniform_list("grid-grouped-scroll", item_count, {
                     let view = view.clone();
-                    let visible_clone = visible.to_vec();
+                    let visible_clone = self.visible_items_rc();
                     move |range, _win, cx| {
                         let fi = file_items.read(cx);
                         let app_state = view.read(cx);

@@ -616,6 +616,12 @@ pub struct MainViewState {
     #[serde(skip)]
     pub git_status_cache:
         std::collections::HashMap<FilesPath, crate::domain::git_service::GitFileStatus>,
+    /// Monotonic revision counter bumped whenever `items` or metadata batches update
+    #[serde(skip)]
+    pub items_revision: u64,
+    /// Interior-mutable per-generation cache of filtered+sorted item indices (eliminates per-frame sorting)
+    #[serde(skip)]
+    pub visible_cache: std::cell::RefCell<Option<(VisibleCacheKey, std::rc::Rc<Vec<usize>>)>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -645,3 +651,25 @@ pub enum GroupedGridItem {
 // FileItems is defined in main_view.rs (required by GPUI uniform_list pattern)
 // Re-exported here for convenience
 pub use super::main_view::FileItems;
+
+
+/// Key used to validate whether the cached `visible_items()` index vector is still current.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleCacheKey {
+    pub primary_path: FilesPath,
+    pub items_len: usize,
+    pub items_revision: u64,
+    pub first_modified: Option<std::time::SystemTime>,
+    pub last_modified: Option<std::time::SystemTime>,
+    pub last_size: u64,
+    pub sort_col_discriminant: usize,
+    pub sort_ascending: bool,
+    pub folders_first: bool,
+    pub filter_text: String,
+    pub show_dot_files: bool,
+    pub show_hidden_files: bool,
+    pub show_system_files: bool,
+    pub is_searching: bool,
+    pub search_query: String,
+    pub search_results_len: usize,
+}

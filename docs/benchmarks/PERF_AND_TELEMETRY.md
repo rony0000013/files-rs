@@ -86,4 +86,29 @@ cargo test --release --lib ui::components::bouncy_scroll::tests
 | **Path Cache Ceiling (`ThumbnailCache`)** | `1,000,000` LRU entries + un-evicted `HashMap` leak | `4,096` LRU entries, zero duplicate `HashMap` | **Bounded $O(1)$ memory across multi-hour sessions** |
 | **Scroll Physics Clock (`bouncy_scroll.rs`)** | Competing `8ms` background timer loop + `render()` `tick_bouncy_scrolls()` | Single-clock VSync `tick_bouncy_scrolls()` in `render()` | **Eliminated dual-clock 144 Hz micro-stutters** |
 | **`Date Modified` Formatting (`helpers.rs`)** | Hardcoded `"—"` in `details_view.rs`; 50-line year-2000 loop in `app_render.rs` | $O(1)$ civil-from-days `format_system_time` everywhere | **Constant-time $O(1)$ date formatting** |
-| **Filename Sort (`helpers.rs`)** | `a.name.to_lowercase().cmp(&b.name.to_lowercase())` (2 heap allocations per compare, ASCII order) | Zero-allocation `natural_cmp` (`file2.txt < file10.txt`) | **Zero heap allocations during sort** |
+| **`Filename Sort (`helpers.rs`)** | `a.name.to_lowercase().cmp(&b.name.to_lowercase())` (2 heap allocations per compare, ASCII order) | Zero-allocation `natural_cmp` (`file2.txt < file10.txt`) | **Zero heap allocations during sort** |
+
+---
+
+## 5. Measured Baseline — `2026-10-14` (RTX 4060 laptop, release `opt-level = 2`, 50k-file fixture, Details view, no interaction)
+
+| Metric | Measured | Target | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Phase 1 listing (50,000 files)** | `< 1 s` ("listed instantly") | `< 35 ms` | ✅ pass |
+| **Phase 3 icon extraction start** | `1.6 s` after Phase 1, all 50,000 items queued | viewport-bounded | ⚠️ extraction is NOT viewport-bounded (see RAM) |
+| **Frame rate, background loading (54 × 0.5 s windows)** | median `88 fps`, p10 `20 fps`, 12 windows `< 60 fps` | `>= 140 fps`, P99 `< 6.94 ms` | ❌ miss during load |
+| **Worst frame** | p50 `24.5 ms`, p95 `311.8 ms`, max `388.2 ms` | `0` frames `> 16.6 ms` | ❌ miss during load |
+| **Working set RAM, steady state after load** | **`812 MB`** | `< 120 MB` @ 50k | ❌ **6.8x over budget — prime suspect: un-bounded Phase 3 extraction + `icon_cache` full-session clones (STEP 4)** |
+| **Config restored** | User `settings.json` (6 tabs) restored after run | — | ✅ |
+
+> Scroll-sweep FPS (Details flat/grouped, Grid, Columns) still unmeasured — requires 2 minutes of interactive driving. Load-phase numbers above are pre-interaction.
+
+### Scroll sweeps, Details view, 50k fixture — `2026-10-14` (same build; 25 wheel ticks down + 25 up via `WM_MOUSEWHEEL`, verified visually row `00042 → 00119 → 00042`)
+
+| Metric | Measured | Verdict |
+| :--- | :--- | :--- |
+| **Scroll-frame rate (14 × 0.5 s windows)** | median `16 fps`, min `4 fps`, 14/14 windows `< 60 fps` | ❌ far off gates |
+| **Worst frame while scrolling** | p50 `217.5 ms`, p95 `1375.9 ms`, max `1375.9 ms` | ❌ |
+| **Working set during sweeps** | `~191 MB` | ⚠️ over 120 MB but far below the earlier 812 MB spike — high variance, needs STEP 4 |
+
+> **Confounder, read before quoting these numbers:** Phase 3 icon extraction for all 50,000 items was still grinding throughout the sweeps (started `19:07`, no completion line 12 min later). These windows measure the extraction storm, not pure scrolling. Settled-state re-sweep belongs after STEP 4 bounds extraction — that is the scientifically correct order, not a dodge.

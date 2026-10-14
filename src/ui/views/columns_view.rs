@@ -20,7 +20,7 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
-        let visible = self.visible_items();
+        let visible = self.visible_items_rc();
 
         if self.group_by != GroupColumn::None {
             return self
@@ -39,7 +39,7 @@ impl MainViewState {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
     ) -> Div {
-        let visible_clone = visible.to_vec();
+        let visible_clone = self.visible_items_rc();
         let selected_item = self
             .selected_indices
             .iter()

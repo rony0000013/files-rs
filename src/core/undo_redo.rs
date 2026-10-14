@@ -64,6 +64,41 @@ impl UndoRedoManager {
             Err(anyhow!("Nothing to redo"))
         }
     }
+
+    /// Pops the next undoable action WITHOUT executing it, so the caller can
+    /// run the blocking filesystem work off the UI thread and commit the
+    /// outcome afterwards via [`Self::commit_undo_success`] /
+    /// [`Self::commit_undo_failure`]. Returns `None` when history is empty.
+    pub fn pop_undo_action(&mut self) -> Option<Box<dyn UndoableAction>> {
+        self.history.pop()
+    }
+
+    /// Records a background-executed undo as successful (moves it to redo).
+    pub fn commit_undo_success(&mut self, action: Box<dyn UndoableAction>) {
+        self.redo_stack.push(action);
+    }
+
+    /// Returns a failed background undo to history so it is not lost.
+    pub fn commit_undo_failure(&mut self, action: Box<dyn UndoableAction>) {
+        self.history.push(action);
+    }
+
+    /// Pops the next redoable action WITHOUT executing it; commit via
+    /// [`Self::commit_redo_success`] / [`Self::commit_redo_failure`].
+    /// Returns `None` when the redo stack is empty.
+    pub fn pop_redo_action(&mut self) -> Option<Box<dyn UndoableAction>> {
+        self.redo_stack.pop()
+    }
+
+    /// Records a background-executed redo as successful (moves it to history).
+    pub fn commit_redo_success(&mut self, action: Box<dyn UndoableAction>) {
+        self.history.push(action);
+    }
+
+    /// Returns a failed background redo to the redo stack so it is not lost.
+    pub fn commit_redo_failure(&mut self, action: Box<dyn UndoableAction>) {
+        self.redo_stack.push(action);
+    }
 }
 
 // --- Concrete Actions ---

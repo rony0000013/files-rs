@@ -1337,32 +1337,77 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Undo the last file operation (Ctrl+Z)
+    /// Undo the last file operation (Ctrl+Z).
+    /// Stack pop happens on the UI thread; the blocking filesystem mutation
+    /// runs on the background executor, then the outcome is committed back
+    /// on the foreground with a view refresh — the UI thread never blocks.
     pub fn undo(&mut self, cx: &mut Context<Self>) {
-        match self.state.undo_redo.undo() {
-            Ok(()) => {
-                tracing::info!("Undo successful");
-                self.refresh(cx);
-            }
-            Err(e) => {
-                tracing::debug!("Nothing to undo: {}", e);
-            }
-        }
-        cx.notify();
+        let Some(action) = self.state.undo_redo.pop_undo_action() else {
+            tracing::debug!("Nothing to undo");
+            cx.notify();
+            return;
+        };
+        let weak_entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                // Blocking fs mutation runs on the thread pool; only Send
+                // state (the action) crosses into it, and comes back with the result.
+                let (action, result) =
+                    bg.spawn(async move { let r = action.undo(); (action, r) }).await;
+                let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                    match result {
+                        Ok(()) => {
+                            tracing::info!("Undo successful");
+                            this.state.undo_redo.commit_undo_success(action);
+                            this.state.main_view.bump_items_revision();
+                            this.refresh(cx);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Undo failed: {}", e);
+                            this.state.undo_redo.commit_undo_failure(action);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
     }
 
-    /// Redo the last undone operation (Ctrl+Y)
+    /// Redo the last undone operation (Ctrl+Y). Same off-thread pattern as [`Self::undo`].
     pub fn redo(&mut self, cx: &mut Context<Self>) {
-        match self.state.undo_redo.redo() {
-            Ok(()) => {
-                tracing::info!("Redo successful");
-                self.refresh(cx);
-            }
-            Err(e) => {
-                tracing::debug!("Nothing to redo: {}", e);
-            }
-        }
-        cx.notify();
+        let Some(action) = self.state.undo_redo.pop_redo_action() else {
+            tracing::debug!("Nothing to redo");
+            cx.notify();
+            return;
+        };
+        let weak_entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                // Blocking fs mutation runs on the thread pool; only Send
+                // state (the action) crosses into it, and comes back with the result.
+                let (action, result) =
+                    bg.spawn(async move { let r = action.execute(); (action, r) }).await;
+                let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                    match result {
+                        Ok(()) => {
+                            tracing::info!("Redo successful");
+                            this.state.undo_redo.commit_redo_success(action);
+                            this.state.main_view.bump_items_revision();
+                            this.refresh(cx);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Redo failed: {}", e);
+                            this.state.undo_redo.commit_redo_failure(action);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
     }
 
     pub fn new_folder(&mut self, cx: &mut Context<Self>) {

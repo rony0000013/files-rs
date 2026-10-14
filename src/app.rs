@@ -1897,7 +1897,7 @@ impl AppWindow {
     pub fn end_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         use gpui::Point;
         let point = Point::new(x, y);
-        let visible = self.state.main_view.visible_items();
+        let visible = self.state.main_view.visible_items_rc();
 
         // Check if we're over a valid drop target (directory)
         if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
@@ -1942,7 +1942,7 @@ impl AppWindow {
             return None;
         }
         let point = self.state.main_view.drag_state.current;
-        let visible = self.state.main_view.visible_items();
+        let visible = self.state.main_view.visible_items_rc();
         self.state.main_view.get_drop_target(point, &visible)
     }
 
@@ -2168,6 +2168,7 @@ impl AppWindow {
                         .collect();
 
                     this.state.main_view.items = file_items.clone();
+                    this.state.main_view.bump_items_revision();
                     this.state.file_items.update(cx, |m, _| {
                         m.items = file_items;
                         m.selected_indices.clear();
@@ -2630,7 +2631,8 @@ impl AppWindow {
                 .bottom_item();
 
             let icon_dir = icons_cache_dir();
-            let items = self.state.main_view.items.clone();
+            // Arc: per-batch clones below are refcount bumps, not 50k-item copies.
+            let items = std::sync::Arc::new(self.state.main_view.items.clone());
             let thumbnail_service = self.state.thumbnail_service.clone();
             let icon_cache = self.state.icon_cache.clone();
             let weak_entity = cx.weak_entity();
@@ -2692,7 +2694,7 @@ impl AppWindow {
 
                                     {
                                         if let Ok(cache) = cache_clone.lock() {
-                                            if cache.contains_key(path) {
+                                            if cache.contains(path) {
                                                 continue;
                                             }
                                         }
@@ -2707,7 +2709,7 @@ impl AppWindow {
                                         ));
                                         if cached_png.exists() {
                                             if let Ok(mut cache) = cache_clone.lock() {
-                                                cache.insert(path.clone(), cached_png);
+                                                cache.put(path.clone(), cached_png);
                                                 batch_extracted = true;
                                             }
                                             continue;
@@ -2752,7 +2754,7 @@ impl AppWindow {
                                                 ));
                                                 if img.save(&cache_path).is_ok() {
                                                     if let Ok(mut cache) = cache_clone.lock() {
-                                                        cache.insert(path.clone(), cache_path);
+                                                        cache.put(path.clone(), cache_path);
                                                         batch_extracted = true;
                                                     }
                                                 }
@@ -2769,14 +2771,20 @@ impl AppWindow {
                             })
                             .await;
 
-                        // Back on foreground — update UI with extracted batch
+                        // Back on foreground — publish only this directory's icons.
+                        // The LRU cache spans the session; icon_paths stays
+                        // proportional to the visible folder.
                         if batch {
                             let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                                let dir =
+                                    this.state.main_view.primary_path.as_path().to_path_buf();
                                 this.state.main_view.icon_paths = this
                                     .state
                                     .icon_cache
                                     .lock()
-                                    .map(|cache| cache.clone())
+                                    .map(|cache| {
+                                        crate::app_state::icon_paths_for_dir(&cache, &dir)
+                                    })
                                     .unwrap_or_default();
                                 cx.notify();
                             });
