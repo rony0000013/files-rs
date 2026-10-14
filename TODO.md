@@ -699,3 +699,23 @@
 
 ---
 
+## 17. 2026-10 Deep Audit & GPUI Rectification Completed Items
+
+- [x] **True Windows 11 Mica / Mica Alt Backdrop** (`src/main.rs`, `src/ui/constants.rs`, `src/ui/components/app_background.rs`)
+- [x] **Segoe UI Variable Text & Segoe Fluent Icons Typography** (`src/ui/constants.rs`)
+- [x] **Zero-Allocation Natural Alphanumeric Sort (`natural_cmp`)** (`src/ui/views/helpers.rs`, `src/ui/views/main_view.rs`)
+  - Tests: `test_natural_cmp_numeric_ordering`, `test_natural_cmp_leading_zeros`
+- [x] **$O(1)$ Civil-From-Days Date Modified Formatting (`format_system_time`)** (`src/ui/views/helpers.rs`, `src/ui/views/details_view.rs`, `src/app_render.rs`)
+  - Tests: `test_format_system_time_epoch_and_none`
+- [x] **Virtualized Grouped Details View (`GroupedDetailsRow` + `uniform_list`)** (`src/ui/views/details_view.rs`)
+- [x] **Cooperative Cancellation (`CancelGuard`) Wired into `AppWindow::navigate`** (`src/app_state.rs`, `src/app_navigation.rs`)
+- [x] **$O(1)$-Indexed 2,048-Item Batch Metadata Enrichment in Phase 2** (`src/app_navigation.rs`)
+- [x] **Single-Pass Git Repository Status Scan (`GitService::get_directory_statuses`)** (`src/domain/git_service.rs`, `src/app_navigation.rs`)
+  - Tests: `test_get_directory_statuses_batch`
+- [x] **Bounded Thumbnail Caches (`<= 32 MB` raw RGBA LRU + `4,096`-entry path LRU)** (`src/platform/windows/thumbnail_service.rs`, `src/domain/thumbnail_cache.rs`)
+  - Tests: `test_thumbnail_cache_new_and_bounded_capacity`, `test_thumbnail_cache_lru_eviction`, `test_sanitize_path_collision_free`
+- [x] **Status Bar Git Branch Pill (`#status-git-branch`) & Selected Size Summary** (`src/ui/components/status_bar.rs`)
+  - Tests: `test_status_bar_format_size`, `test_status_bar_state_sync`
+- [x] **Single-Clock Display-Refresh-Rate Spring Physics & WinUI 3 Cubic-Bezier Easing** (`src/ui/components/bouncy_scroll.rs`)
+  - Tests: `test_fluent_cubic_bezier_curves`, `test_spring_settles_without_overshoot_explosion`
+- [x] **Cross-Platform Target Hygiene (Windows, macOS, Linux)** (`Cargo.toml`, `src/main.rs`, `src/app_render.rs`, `src/app_navigation.rs`, `src/core/ipc.rs`, `src/core/path_util.rs`, `src/platform/windows/windows_interop.rs`, `src/platform/windows/wmi_service.rs`, `src/platform/windows/thumbnail_service.rs`)

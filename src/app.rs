@@ -57,11 +57,14 @@ impl AppWindow {
             fps_last_time: None,
             fps_frame_count: 0,
             fps_current: 0.0,
+            fps_prev_frame: None,
+            fps_worst_ms: 0.0,
             last_render_time: None,
             file_watcher: None,
             file_event_rx: None,
             file_watcher_secondary: None,
             file_event_rx_secondary: None,
+            focus_out_subscription: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
@@ -168,30 +171,69 @@ impl AppWindow {
         window_view.state.session_service.start_session();
 
         // Splash auto-dismiss timer removed (splash disabled)
-        // Dismiss omnibar when window loses focus (e.g. user clicks outside the app)
+        // Dismiss omnibar when window loses focus (e.g. user clicks outside the app).
+        // NOTE: the Subscription must be stored on the view — dropping it
+        // unsubscribes immediately and the handler would never fire.
         {
             let focus = cx.focus_handle();
-            cx.on_focus_out(&focus, _window, move |this, _event, _window, cx| {
+            let sub = cx.on_focus_out(&focus, _window, move |this, _event, _window, cx| {
+                // Pointer capture is lost with focus: a drag (scrollbar,
+                // resize, tab, sidebar) would otherwise stick forever since
+                // its mouse-up never arrives. Cancel first, then dismiss.
+                this.cancel_pointer_tracking(cx);
                 this.dismiss_omnibar(cx);
             });
+            window_view.focus_out_subscription = Some(sub);
         }
 
-        // Progress listener removed (prevents entity lease conflicts)
-        // let this_weak = cx.weak_entity();
-        // let mut async_cx = cx.to_async();
-        // cx.foreground_executor()
-        //     .spawn(async move {
-        //         while let Some(update) = rx.recv().await {
-        //             this_weak
-        //                 .update(&mut async_cx, |this, cx| {
-        //                     this.handle_job_update(update, cx);
-        //                 })
-        //                 .ok();
-        //         }
-        //     })
-        //     .detach();
+        // Progress listener: forwards engine JobUpdates to the status center.
+        // Drain-per-wake (one re-render per burst, not per update) and no
+        // entity is held across an await, avoiding the lease conflicts that
+        // got the previous version commented out.
+        {
+            let this_weak = cx.weak_entity();
+            let mut async_cx = cx.to_async();
+            cx.foreground_executor()
+                .spawn(async move {
+                    while let Some(first) = rx.recv().await {
+                        let mut pending = vec![first];
+                        while let Ok(u) = rx.try_recv() {
+                            pending.push(u);
+                        }
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                for update in pending {
+                                    this.handle_job_update(update, cx);
+                                }
+                            })
+                            .ok();
+                    }
+                })
+                .detach();
+        }
 
         window_view
+    }
+
+    /// Cancel all active pointer-tracking states (drag scroll, column
+    /// resize, zoom drag, tab drag, sidebar resize/reorder drags).
+    /// Called on window focus loss: without this, a drag in progress sticks
+    /// forever because its mouse-up is delivered to another app (or never).
+    pub fn cancel_pointer_tracking(&mut self, cx: &mut Context<Self>) {
+        self.state.main_view.bouncy_scroll.release();
+        self.column_resize = None;
+        self.zoom_drag_start = None;
+        self.sidebar_pinned_drag = None;
+        self.state.tab_drag = crate::app_state::TabDragState::default();
+        self.state.sidebar.resize_start_x = None;
+        self.state.sidebar.resize_start_width = None;
+        self.state.sidebar.drag_section_idx = None;
+        self.state.sidebar.drag_item = None;
+        // Tab strip drag: preserve scroll position, drop the drag.
+        let saved_tab_scroll = self.state.tab_drag.scroll_offset;
+        self.state.tab_drag = crate::app_state::TabDragState::default();
+        self.state.tab_drag.scroll_offset = saved_tab_scroll;
+        cx.notify();
     }
 
     fn handle_job_update(
@@ -966,12 +1008,11 @@ impl AppWindow {
                         }
                     }
 
-                    // Check disk cache
-                    let sanitized = path.to_string_lossy().replace(
-                        |c: char| !c.is_alphanumeric() && c != '.' && c != '_',
-                        "_",
-                    );
-                    let cached_png = icon_dir.join(format!("tab_{}.png", sanitized));
+                    // Check disk cache (full-path hash key: no cross-folder collisions)
+                    let cached_png = icon_dir.join(format!(
+                        "tab_{}.png",
+                        crate::app_state::disk_cache_key(path)
+                    ));
                     if cached_png.exists() {
                         if let Ok(mut cache) = tab_cache.lock() {
                             cache.insert(path.clone(), cached_png);
@@ -1061,7 +1102,7 @@ impl AppWindow {
         if let Ok(raw_handle) = HasWindowHandle::window_handle(window) {
             if let raw_window_handle::RawWindowHandle::Win32(win32) = raw_handle.as_raw() {
                 unsafe {
-                    let hwnd = HWND(win32.hwnd.get());
+                    let hwnd = HWND(win32.hwnd.get() as *mut _);
                     if IsZoomed(hwnd).as_bool() {
                         // Currently maximized → restore
                         let _ = ShowWindowAsync(hwnd, SW_RESTORE);
@@ -1103,17 +1144,12 @@ impl AppWindow {
             self.state.tab_drag.current_y = y;
 
             if !self.state.tab_drag.drag_active {
-                // Check both: 500ms hold AND 5px movement
-                let elapsed = self
-                    .state
-                    .tab_drag
-                    .drag_start_time
-                    .map(|t| t.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
+                // Files-like: drag engages on movement alone (5px). The old
+                // 500ms hold requirement made reordering feel broken.
                 let dx = x - self.state.tab_drag.drag_start_x;
                 let dy = y - self.state.tab_drag.drag_start_y;
                 let dist_sq = dx * dx + dy * dy;
-                if elapsed >= 500 && dist_sq > 25.0 {
+                if dist_sq > 25.0 {
                     self.state.tab_drag.drag_active = true;
                 }
             }
@@ -1133,10 +1169,9 @@ impl AppWindow {
         if tab_count == 0 {
             return None;
         }
-        // Each tab is approximately TAB_IDEAL_WIDTH (180px) wide
-        // Starting after the scroll buttons and actions button (~80px from left)
-        let tab_start_x = 80.0; // Approximate offset for buttons
-        let tab_width = 180.0; // TAB_IDEAL_WIDTH
+        // Tabs are TAB_W wide starting after the strip chrome (~40px).
+        let tab_start_x = 40.0;
+        let tab_width = 150.0;
         let relative_x = mouse_x - tab_start_x + self.state.tab_drag.scroll_offset;
         let index = (relative_x / tab_width) as usize;
         Some(index.min(tab_count - 1))
@@ -2631,7 +2666,10 @@ impl AppWindow {
                         let thumb_clone = thumbnail_service.clone();
                         let cache_clone = icon_cache.clone();
                         let dir_clone = icon_dir.clone();
-                        let size = ThumbnailSize::Medium;
+                        // Grid tiles render up to ~220px wide: extract at Large
+                        // (256) so downscaling stays sharp. Medium (96) tiles
+                        // upscaled look washed out next to Files Community.
+                        let size = ThumbnailSize::Large;
 
                         // Blocking thumbnail extraction runs on background thread pool
                         let batch = async_cx
@@ -2662,12 +2700,11 @@ impl AppWindow {
                                         // re-extraction for items already processed in a
                                         // previous session. Populates in-memory cache so
                                         // thumbnails appear instantly on fresh start.
-                                        let sanitized = path.to_string_lossy().replace(
-                                            |c: char| !c.is_alphanumeric() && c != '.' && c != '_',
-                                            "_",
-                                        );
-                                        let cached_png =
-                                            dir_clone.join(format!("{}.png", sanitized));
+                                        // Check persistent disk cache (full-path hash key)
+                                        let cached_png = dir_clone.join(format!(
+                                            "{}.png",
+                                            crate::app_state::disk_cache_key(path)
+                                        ));
                                         if cached_png.exists() {
                                             if let Ok(mut cache) = cache_clone.lock() {
                                                 cache.insert(path.clone(), cached_png);
@@ -2686,17 +2723,33 @@ impl AppWindow {
                                             for ch in rgba_data.chunks_exact_mut(4) {
                                                 ch.swap(0, 2);
                                             }
+                                            // Reject blank extractions (single solid color or
+                                            // fully transparent): caching them poisons the
+                                            // disk cache with white/empty tiles forever.
+                                            // Real shell thumbnails always vary + have
+                                            // opaque pixels, so this never fires on good data.
+                                            let mut distinct =
+                                                std::collections::HashSet::new();
+                                            let mut any_opaque = false;
+                                            for px in rgba_data.chunks_exact(4).step_by(64) {
+                                                if px[3] != 0 {
+                                                    any_opaque = true;
+                                                }
+                                                distinct.insert((px[0], px[1], px[2], px[3]));
+                                                if distinct.len() > 4 {
+                                                    break;
+                                                }
+                                            }
+                                            if distinct.len() <= 1 || !any_opaque {
+                                                continue;
+                                            }
                                             if let Some(img) = ImageBuffer::<Rgba<u8>, _>::from_raw(
                                                 w, h, rgba_data,
                                             ) {
-                                                let sanitized = path.to_string_lossy().replace(
-                                                    |c: char| {
-                                                        !c.is_alphanumeric() && c != '.' && c != '_'
-                                                    },
-                                                    "_",
-                                                );
-                                                let cache_path =
-                                                    dir_clone.join(format!("{}.png", sanitized));
+                                                let cache_path = dir_clone.join(format!(
+                                                    "{}.png",
+                                                    crate::app_state::disk_cache_key(path)
+                                                ));
                                                 if img.save(&cache_path).is_ok() {
                                                     if let Ok(mut cache) = cache_clone.lock() {
                                                         cache.insert(path.clone(), cache_path);

@@ -143,7 +143,7 @@ impl InstallService {
                 SW_SHOW,
             );
 
-            let success = result.0 > 32;
+            let success = result.0 as usize > 32;
 
             Ok(InstallResult {
                 success,

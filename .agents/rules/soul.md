@@ -6,101 +6,30 @@ trigger: always_on
 
 ## Objective
 
-A high-performance, idiidiomatic Rust port of the "Files" (Files-community) file manager.
-Targeting 120fps UI using GPUI, with a focus on Windows (Mica/Fluent) while maintaining a clean abstraction for macOS/Linux. Rmember to look into the Files-community before porting.
+A fast, memory-efficient, cross-platform, idiomatic Rust port of the `Files` (`Files-community`) file manager built on Zed's **GPUI (`0.2.2`)** GPU-accelerated UI framework.
+- **Primary UI Focus:** **GPUI implementation** (`src/ui/`, `src/app*.rs`) targeting locked **120+ FPS / 144 Hz** frame pacing (`< 6.94 ms` frame time), `< 60–80 MB` idle/standard working set (`< 120 MB` at 50,000+ items), and pixel-accurate Windows 11 Fluent Design (Mica / Mica Alt, `#FFFFFF0F` 1px card strokes, `Segoe UI Variable Text`, `Segoe Fluent Icons`).
+- **Deferred Port:** Any alternative frontend (such as Slint) is deferred to a future port after the GPUI implementation and core engine are 100% complete.
+- **Cross-Platform Mandate:** While Windows 11 receives native Win32/COM/Shell/Mica integration (`#[cfg(windows)]`), all core navigation, views, sidebar, toolbar, status bar, thumbnails, and file operations must compile and run cleanly on **Windows, macOS, and Linux**.
 
-## Core Stack
+## Core Stack (Rust 2024 Edition)
 
-- **UI:** `gpui` (Metal/Vulkan/DirectX backed rendering).
-- **Shell Integration (Windows):** `windows-rs` for COM/Shell API access.
-- **Vibrancy:** `window-vibrancy` for Mica/Acrylic.
-- **I/O:** `tokio` for async FS operations, `rayon` for CPU-bound metadata processing.
-- **Database:** `sqlite` (via `rusqlite`) for indexing and file tagging (replacing C# internal caches).
-- **Serialization:** `serde` for settings and state.
+- **UI & GPU Pipeline:** `gpui = "0.2.2"` (DirectX / Metal / Vulkan / Blade hardware-accelerated rendering, `uniform_list` viewport virtualization).
+- **Window Vibrancy:** `window-vibrancy = "0.7.1"` (`apply_tabbed` for Mica Alt, `apply_mica` for standard Mica) paired with GPUI `WindowBackgroundAppearance::MicaAltBackdrop` / `MicaBackdrop`.
+- **Async & Parallel Runtime:** `tokio = "1.53"`, `rayon = "1.11"`, `jwalk = "0.8"`.
+- **Database & Caching:** `rusqlite = "0.40"` (bundled SQLite for tags/indexing, with automatic `:memory:` fallback), `lru = "0.18"` (strictly bounded in-memory caches).
+- **Windows Shell Interop (`[target.'cfg(windows)'.dependencies]`):** `windows = "0.62"`, `winreg = "0.56"`.
 
-## Architecture & Design Patterns
+## Non-Negotiable Engineering Invariants
 
-### 1. Model-View-Action (MVA)
+1. **Zero Main-Thread Blocking:** Never run uncached `std::fs`, `git2`, or Shell COM calls on the UI thread during `render()`. Use `cx.background_executor()` and `CancelGuard` (`nav_cancel_guard`) to abort stale loads on rapid navigation.
+2. **Strict Viewport Virtualization:** Every flat and grouped file view (`details_view`, `grid_view`, `columns_view`) must use GPUI's `uniform_list` so layout and GPU cost remain $O(\text{viewport rows})$.
+3. **Bounded Memory Caches:** Never allocate unbounded `HashMap` or multi-million-entry caches for bitmaps. Raw RGBA bitmaps in `ThumbnailService` are capped at `128` entries (`<= 32 MB`), and path-level `ThumbnailCache` is capped at `4,096` entries.
+4. **Single-Clock Animation Physics:** Drive scroll momentum and spring physics exclusively from `AppWindow::render()` (`tick_bouncy_scrolls`) at the monitor's native VSync rate. Never spawn detached `8ms` timer loops that fight the render loop.
+5. **Cross-Platform `#[cfg(windows)]` Hygiene:** Keep `windows` and `winreg` under `[target.'cfg(windows)'.dependencies]` and never hide core UI components (`SidebarView`, `StatusBarView`, `NavigationBarView`) behind `#[cfg(windows)]`.
 
-Instead of MVVM, we use GPUI's native patterns:
+## Behavioral Guidelines
 
-- **Models:** Managed by `ModelContext`, representing the state (e.g., `FolderContents`, `Sidebar`).
-- **Views:** Reactive components that render based on Model state.
-- **Actions:** Centrally defined structs for user intent (e.g., `OpenFile`, `NavigateBack`).
-
-### 2. The Storage Abstract Layer (SAL)
-
-Mirroring `Files.Core.Storage` but idiomatic:
-
-- `Storable` trait: Common interface for Files and Folders.
-- `StorageService` trait: Implementation for `LocalFS`, `FTP`, `Archive`, and `Cloud`.
-- **Abstraction implementation:** Use `opendal` to provide a unified interface for local and cloud storage.
-
-### 3. Virtualized Layouts
-
-GPUI's `List` and `UniformList` will handle high-cardinality directories (100k+ items) with zero UI lag, replacing the XAML `GridView/ListView`.
-
-# Behavior
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+1. **Think Before Coding:** Verify against `Files-community/` and `zed/` reference implementations in the repo, and consult `docs/specs/` and `docs/tasks/HERMES_EXECUTION_PLAN.md`.
+2. **Simplicity First:** Delete dead/duplicate view implementations instead of leaving unreachable code.
+3. **Surgical Changes:** Touch only what is needed and clean up any orphaned imports or files.
+4. **Goal-Driven Execution & High-Value Testing:** Write unit and performance tests that exercise real production functions (`natural_cmp`, `format_system_time`, `GitService::get_directory_statuses`, `ThumbnailCache` LRU eviction, `BouncyScrollState::tick_spring`).

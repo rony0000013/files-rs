@@ -61,14 +61,14 @@ impl ArchiveService {
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let outpath = std::path::PathBuf::from(destination.as_path()).join(file.mangled_name());
+            let outpath = std::path::PathBuf::from(destination.as_path()).join(file.mangled_name()?);
 
             // Zip slip protection: validate the resolved path stays within destination
             let canonical = std::fs::canonicalize(&outpath).unwrap_or_else(|_| outpath.clone());
             if !canonical.starts_with(&dest_root) {
                 anyhow::bail!(
                     "Zip slip detected: entry '{}' resolves to '{}' which is outside destination '{}'",
-                    file.name(),
+                    file.name()?,
                     canonical.display(),
                     dest_root.display()
                 );
@@ -97,7 +97,7 @@ impl ArchiveService {
 
         for i in 0..archive.len() {
             let file = archive.by_index(i)?;
-            names.push(file.name().to_string());
+            names.push(file.name()?.to_string());
         }
         Ok(names)
     }
@@ -109,7 +109,7 @@ impl ArchiveService {
 
         for i in 0..archive.len() {
             let file = archive.by_index(i)?;
-            let name = file.name().to_string();
+            let name = file.name()?.to_string();
 
             // Get first path component
             let top = name.split('/').next().unwrap_or(&name).to_string();

@@ -5,41 +5,43 @@ pub struct UiConstants;
 
 impl UiConstants {
     // ─────────────────────────────────────────────────────────────────────────────
-    // COLORS — Backgrounds (Layered for Mica)
+    // COLORS — Backgrounds (Layered for Windows 11 Mica / Mica Alt)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// Main window background (Solid)
-    pub const BG_MAIN_RGBA: u32 = 0x1C1C1CFF;
+    /// Main window background (Translucent layer over Mica, or solid fallback)
+    pub const BG_MAIN_RGBA: u32 = 0x1C1C1CD8;
+    pub const BG_MAIN_MICA_ALT_RGBA: u32 = 0x141414CC;
     pub const BG_MAIN_RGB: u32 = 0x1C1C1C;
 
-    /// Sidebar background (Solid dark)
-    pub const BG_SIDEBAR_RGBA: u32 = 0x202020FF;
+    /// Sidebar background (Translucent so DWM Mica shows through)
+    pub const BG_SIDEBAR_RGBA: u32 = 0x202020B8;
     pub const BG_SIDEBAR_RGB: u32 = 0x202020;
 
-    /// Dialog background
-    pub const BG_DIALOG_RGB: u32 = 0x202020;
+    /// Dialog background (Acrylic / Elevated Flyout surface)
+    pub const BG_DIALOG_RGB: u32 = 0x2B2B2B;
+    pub const BG_DIALOG_RGBA: u32 = 0x2B2B2BF2;
 
-    /// Tab Bar background
-    pub const BG_TAB_BAR_RGBA: u32 = 0x1A1A1AFF;
+    /// Tab Bar background (Transparent over Mica titlebar)
+    pub const BG_TAB_BAR_RGBA: u32 = 0x1A1A1A00;
 
     /// Navigation / Breadcrumb Bar background
-    pub const BG_NAV_BAR_RGBA: u32 = 0x1C1C1CFF;
+    pub const BG_NAV_BAR_RGBA: u32 = 0x1C1C1CE6;
     pub const BG_NAV_BAR_RGB: u32 = 0x1C1C1C;
 
-    /// Toolbar background (Solid card)
-    pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CFF;
+    /// Toolbar background (WinUI 3 LayerFillColorDefault card layer)
+    pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CD9;
     pub const BG_TOOLBAR_RGB: u32 = 0x2C2C2C;
 
-    /// Status bar background
-    pub const BG_STATUS_BAR_RGBA: u32 = 0x2C2C2CFF;
+    /// Status bar background (Translucent footer over Mica)
+    pub const BG_STATUS_BAR_RGBA: u32 = 0x202020CC;
 
     /// Inactive pane dimming
-    pub const BG_INACTIVE_PANE_RGBA: u32 = 0x00000014;
+    pub const BG_INACTIVE_PANE_RGBA: u32 = 0x00000018;
 
     /// Item hover: SubtleFillColorSecondary (~6% white)
     pub const BG_ITEM_HOVER_RGBA: u32 = 0xFFFFFF0F;
 
-    /// Item selected: SubtleFillColorTertiary (~9% white)
+    /// Item selected: SubtleFillColorTertiary (~9.4% white)
     pub const BG_ITEM_SELECTED_RGBA: u32 = 0xFFFFFF18;
 
     /// Item selected+hover
@@ -55,9 +57,9 @@ impl UiConstants {
     // COLORS — Accent & State
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// Files-community blue accent (#005FB8), fully opaque
-    pub const ACCENT_RGBA: u32 = 0x005FB8FF;
-    pub const ACCENT_COLOR_RGB: u32 = 0x005FB8;
+    /// Files-community blue accent (#0078D4 / #005FB8), fully opaque
+    pub const ACCENT_RGBA: u32 = 0x0078D4FF;
+    pub const ACCENT_COLOR_RGB: u32 = 0x0078D4;
     pub const DANGER_RGBA: u32 = 0xFF99A4FF;
     pub const SYSTEM_FILL_COLOR_CRITICAL_RGB: u32 = 0xC42B1C;
 
@@ -76,13 +78,15 @@ impl UiConstants {
     pub const TEXT_MUTED_RGB: u32 = 0x5C5C5C;
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Borders & Dividers
+    // Borders & Dividers (WinUI 3 Fluent 1px Strokes)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// ~8% white divider
+    /// Subtle 1px card border stroke (#FFFFFF0F on dark mode)
+    pub const CARD_STROKE_RGBA: u32 = 0xFFFFFF0F;
+    /// ~8% white divider (DividerStrokeColorDefault)
     pub const DIVIDER_RGBA: u32 = 0xFFFFFF15;
     pub const DIVIDER_RGB: u32 = 0x333333;
-    /// ~7% white stroke
+    /// ~7% white control stroke (ControlStrokeColorDefault)
     pub const STROKE_RGBA: u32 = 0xFFFFFF12;
     pub const STROKE_RGB: u32 = 0x404040;
 
@@ -110,10 +114,10 @@ impl UiConstants {
     // TYPOGRAPHY & SPACING
     // ─────────────────────────────────────────────────────────────────────────────
 
-    pub const FONT_MAIN: &'static str = "Segoe UI";
-    pub const FONT_FAMILY_DEFAULT: &'static str = "Segoe UI";
+    pub const FONT_MAIN: &'static str = "Segoe UI Variable Text";
+    pub const FONT_FAMILY_DEFAULT: &'static str = "Segoe UI Variable Text";
     pub const FONT_ICONS: &'static str = "Segoe Fluent Icons";
-    pub const FONT_MDL2: &'static str = "Segoe MDL2 Assets";
+    pub const FONT_MDL2: &'static str = "Segoe Fluent Icons";
 
     pub const ITEM_FONT_SIZE_RAW: f64 = 13.0;
     pub const SECTION_HEADER_FONT_SIZE_RAW: f64 = 11.0;
@@ -133,5 +137,5 @@ impl UiConstants {
     pub const NAV_BTN_WIDTH: f64 = 36.0;
     pub const NAV_BTN_HEIGHT: f64 = 32.0;
 
-    pub const SELECTED_BORDER_WIDTH: f64 = 2.0;
+    pub const SELECTED_BORDER_WIDTH: f64 = 3.0;
 }

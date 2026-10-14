@@ -1,8 +1,120 @@
 use crate::config::config::ViewMode;
 use crate::ui::constants::UiConstants;
 use gpui::*;
+use std::cmp::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
+
+/// Format a `SystemTime` into `YYYY-MM-DD HH:MM` using O(1) civil-from-days arithmetic
+/// (zero loops, zero intermediate heap allocations). Returns `"—"` if `None`.
+pub fn format_system_time(time: Option<SystemTime>) -> String {
+    let Some(t) = time else {
+        return "\u{2014}".to_string();
+    };
+    let Ok(dur) = t.duration_since(UNIX_EPOCH) else {
+        return "\u{2014}".to_string();
+    };
+    let total_secs = dur.as_secs();
+    let days = (total_secs / 86_400) as i64 + 719_468;
+    let rem_secs = total_secs % 86_400;
+    let hours = rem_secs / 3600;
+    let minutes = (rem_secs % 3600) / 60;
+
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = (days - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_095) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, m, d, hours, minutes)
+}
+
+/// Zero-allocation, case-insensitive natural alphanumeric comparator
+/// (equivalent to Windows `StrCmpLogicalW`, cross-platform).
+/// Ensures `"file2.txt" < "file10.txt"` without allocating lowercase `String`s inside `sort_by`.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let mut ia = a.as_bytes().iter().copied().peekable();
+    let mut ib = b.as_bytes().iter().copied().peekable();
+
+    loop {
+        match (ia.peek(), ib.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&ca), Some(&cb)) => {
+                if ca.is_ascii_digit() && cb.is_ascii_digit() {
+                    // Skip leading zeros while tracking count for tie-breaking
+                    let mut zeros_a = 0usize;
+                    while ia.peek() == Some(&b'0') {
+                        ia.next();
+                        zeros_a += 1;
+                    }
+                    let mut zeros_b = 0usize;
+                    while ib.peek() == Some(&b'0') {
+                        ib.next();
+                        zeros_b += 1;
+                    }
+
+                    // Compare numeric run length and first differing digit in one pass
+                    let mut len_a = 0usize;
+                    let mut len_b = 0usize;
+                    let mut first_diff = Ordering::Equal;
+
+                    loop {
+                        let da = ia.peek().copied().filter(|c| c.is_ascii_digit());
+                        let db = ib.peek().copied().filter(|c| c.is_ascii_digit());
+                        match (da, db) {
+                            (Some(x), Some(y)) => {
+                                ia.next();
+                                ib.next();
+                                len_a += 1;
+                                len_b += 1;
+                                if first_diff == Ordering::Equal && x != y {
+                                    first_diff = x.cmp(&y);
+                                }
+                            }
+                            (Some(_), None) => {
+                                ia.next();
+                                len_a += 1;
+                            }
+                            (None, Some(_)) => {
+                                ib.next();
+                                len_b += 1;
+                            }
+                            (None, None) => break,
+                        }
+                    }
+
+                    match len_a.cmp(&len_b) {
+                        Ordering::Equal => {
+                            if first_diff != Ordering::Equal {
+                                return first_diff;
+                            }
+                            if zeros_a != zeros_b {
+                                // Fewer leading zeros comes first (e.g. "2" < "02")
+                                return zeros_a.cmp(&zeros_b);
+                            }
+                        }
+                        non_eq => return non_eq,
+                    }
+                } else {
+                    ia.next();
+                    ib.next();
+                    let la = ca.to_ascii_lowercase();
+                    let lb = cb.to_ascii_lowercase();
+                    if la != lb {
+                        return la.cmp(&lb);
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub(crate) fn info_row(label: &str, value: &str) -> impl IntoElement {
     div()
@@ -44,8 +156,7 @@ pub(crate) fn get_extension(filename: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Get the MDL2 glyph for a file based on its extension
-/// Uses Segoe MDL2 Assets glyphs for file type icons
+/// Get the MDL2/Fluent glyph for a file based on its extension
 pub(crate) fn get_file_type_icon(extension: &str) -> &'static str {
     match extension.to_lowercase().as_str() {
         // Documents
@@ -137,4 +248,62 @@ pub fn zoom_mode_icon(mode: &ViewMode) -> &'static str {
 /// ViewMode display names.
 pub fn zoom_mode_name(mode: &ViewMode) -> &'static str {
     zoom_mode_label(mode).1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_natural_cmp_numeric_ordering() {
+        let mut names = vec![
+            "file10.txt",
+            "file2.txt",
+            "file1.txt",
+            "file20.txt",
+            "File3.txt",
+        ];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "file1.txt",
+                "file2.txt",
+                "File3.txt",
+                "file10.txt",
+                "file20.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_natural_cmp_leading_zeros() {
+        assert_eq!(natural_cmp("img2.png", "img02.png"), Ordering::Less);
+        assert_eq!(natural_cmp("img02.png", "img10.png"), Ordering::Less);
+    }
+
+    #[test]
+    fn test_format_system_time_epoch_and_none() {
+        assert_eq!(format_system_time(None), "\u{2014}");
+        assert_eq!(format_system_time(Some(UNIX_EPOCH)), "1970-01-01 00:00");
+        // 2026-06-25 12:30:00 UTC = 1782390600 secs
+        let t = UNIX_EPOCH + Duration::from_secs(1_782_390_600);
+        assert_eq!(format_system_time(Some(t)), "2026-06-25 12:30");
+    }
+
+    #[test]
+    fn bench_natural_sort_50k_filenames_under_budget() {
+        let mut names: Vec<String> = (0..50_000)
+            .map(|i| format!("Project_Asset_{}_v{}.png", (i * 7919) % 50_000, i % 20))
+            .collect();
+        let start = std::time::Instant::now();
+        names.sort_unstable_by(|a, b| natural_cmp(a, b));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 250,
+            "Sorting 50,000 filenames took {:?} (expected < 250ms in debug / < 15ms in release)",
+            elapsed
+        );
+    }
 }

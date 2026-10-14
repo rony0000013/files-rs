@@ -1,24 +1,38 @@
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow};
 
 pub fn focus_existing_window(window_title: &str) -> Result<(), String> {
-    let title: Vec<u16> = window_title
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let pcwstr = PCWSTR(title.as_ptr());
+    #[cfg(windows)]
+    {
+        let title: Vec<u16> = window_title
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let pcwstr = PCWSTR(title.as_ptr());
 
-    unsafe {
-        let hwnd = FindWindowW(None, pcwstr);
-        if hwnd == HWND(0) {
-            return Err("Could not find existing window".to_string());
+        unsafe {
+            let hwnd = match FindWindowW(None, pcwstr) {
+                Ok(hwnd) => hwnd,
+                Err(_) => return Err("Could not find existing window".to_string()),
+            };
+            if hwnd == HWND(std::ptr::null_mut()) {
+                return Err("Could not find existing window".to_string());
+            }
+            if !SetForegroundWindow(hwnd).as_bool() {
+                return Err("Failed to set foreground window".to_string());
+            }
         }
-        if !SetForegroundWindow(hwnd).as_bool() {
-            return Err("Failed to set foreground window".to_string());
-        }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        let _ = window_title;
+        Err("Could not find existing window (unsupported platform)".to_string())
+    }
 }
 
 pub struct ComThread {
@@ -35,9 +49,15 @@ impl ComThread {
         let (tx, rx) = std::sync::mpsc::channel::<ComTask>();
 
         let handle = std::thread::spawn(move || {
-            use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-            unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); }
-            println!("COM STA Thread started.");
+            #[cfg(windows)]
+            {
+                use windows::Win32::System::Com::{
+                    CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+                };
+                unsafe {
+                    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                }
+            }
 
             while let Ok(task) = rx.recv() {
                 match task {
@@ -47,8 +67,10 @@ impl ComThread {
                 }
             }
 
-            unsafe { CoUninitialize(); }
-            println!("COM STA Thread shutting down.");
+            #[cfg(windows)]
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
         });
 
         Ok(Self {
@@ -64,16 +86,24 @@ impl ComThread {
         let _ = self.tx.send(ComTask::Execute(Box::new(f)));
     }
 }
+
 pub fn windows_build_number() -> u32 {
-    use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
-    unsafe {
-        let mut info: OSVERSIONINFOW = std::mem::zeroed();
-        info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
-        if GetVersionExW(&mut info).is_ok() {
-            info.dwBuildNumber
-        } else {
-            0
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+        unsafe {
+            let mut info: OSVERSIONINFOW = std::mem::zeroed();
+            info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
+            if GetVersionExW(&mut info).is_ok() {
+                info.dwBuildNumber
+            } else {
+                0
+            }
         }
+    }
+    #[cfg(not(windows))]
+    {
+        0
     }
 }
 
@@ -110,20 +140,18 @@ pub fn read_accent_color() -> gpui::Rgba {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_system_font_win11() {
-        // Test that system_font returns a string (either Segoe UI or Segoe UI Variable)
         let font = system_font();
         assert!(font.contains("Segoe UI"));
     }
 
     #[test]
     fn test_focus_existing_window_invalid_title() {
-        // Test that invalid window title returns error
         let result = focus_existing_window("NonExistentWindowTitleXYZ123");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Could not find"));
@@ -131,10 +159,7 @@ mod tests {
 
     #[test]
     fn test_com_task_execute_box() {
-        // Test that ComTask::Execute can hold a boxed closure
-        let task = ComTask::Execute(Box::new(|| {
-            println!("Test closure executed");
-        }));
+        let task = ComTask::Execute(Box::new(|| {}));
         match task {
             ComTask::Execute(f) => {
                 f();
@@ -156,29 +181,18 @@ mod tests {
         assert_eq!(build, 0);
     }
 
-    #[cfg(windows)]
     #[test]
     fn test_read_accent_color() {
         let color = read_accent_color();
-        // Check that color values are in valid range
         assert!(color.r >= 0.0 && color.r <= 1.0);
         assert!(color.g >= 0.0 && color.g <= 1.0);
         assert!(color.b >= 0.0 && color.b <= 1.0);
         assert!(color.a >= 0.0 && color.a <= 1.0);
     }
 
-    #[cfg(windows)]
     #[test]
-    fn test_com_thread_creation() {
-        let result = ComThread::new();
-        assert!(result.is_ok());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_com_thread_execute() {
+    fn test_com_thread_creation_and_execute() {
         use std::sync::Arc;
-
         let com_thread = ComThread::new().unwrap();
         let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let executed_clone = executed.clone();
@@ -187,9 +201,7 @@ mod tests {
             executed_clone.store(true, std::sync::atomic::Ordering::SeqCst);
         });
 
-        // Give some time for the task to be executed
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(executed.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

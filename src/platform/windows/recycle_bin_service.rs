@@ -191,7 +191,7 @@ impl RecycleBinService {
 
                 unsafe {
                     let result = SHEmptyRecycleBinW(
-                        HWND(0), // NULL HWND
+                        None, // NULL HWND
                         PCWSTR(drive_path.as_ptr()),
                         SHERB_NOCONFIRMATION,
                     );
@@ -240,7 +240,7 @@ impl RecycleBinService {
 
                 unsafe {
                     let _ = SHEmptyRecycleBinW(
-                        HWND(0), // NULL HWND
+                        None, // NULL HWND
                         PCWSTR(drive_path.as_ptr()),
                         SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
                     );

@@ -624,53 +624,17 @@ where
             let handle = get_handle_inner(&mut this.state);
             handle.0.borrow().base_handle.set_offset(gpui::point(px(0.0), px(offset)));
 
-            // Start animation for momentum/spring-back
+            // Flag animating = true so AppWindow::render() ticks momentum/spring-back
+            // at the native display refresh rate via tick_bouncy_scrolls() without
+            // spawning a competing 8ms background timer loop.
+            let _ = &view_inner;
+            let _ = &get_state_inner;
             let state = get_state(&mut this.state);
             if state.post_settle_cooldown == 0 {
                 state.animating = true;
             }
-            let tick_epoch = state.epoch();
+            let _ = state.epoch();
             drop(state);
-
-            // Start timer loop for continuous animation at ~120fps
-            let weak = view_inner.downgrade();
-            let mut async_cx_for_task = cx.to_async();
-            let bg_exec = cx.background_executor().clone();
-            let get_state_for_task = get_state_inner.clone();
-            let gh_for_task = get_handle_inner.clone();
-
-            cx.foreground_executor()
-                .spawn(async move {
-                    loop {
-                        bg_exec
-                            .timer(std::time::Duration::from_millis(TICK_INTERVAL_MS))
-                            .await;
-
-                        let cont = weak.update(&mut async_cx_for_task, |this, cx| {
-                            let st = get_state_for_task(&mut this.state);
-                            if st.epoch() != tick_epoch {
-                                return false;
-                            }
-                            if st.post_settle_cooldown > 0 {
-                                st.post_settle_cooldown -= 1;
-                            }
-                            let going = st.tick_spring(1.0 / 120.0);
-                            let off = st.offset;
-                            drop(st);
-                            let h = gh_for_task(&mut this.state);
-                            h.0.borrow().base_handle
-                                .set_offset(gpui::point(px(0.0), px(off)));
-                            cx.notify();
-                            going
-                        });
-
-                        match cont {
-                            Ok(true) => {}
-                            _ => break,
-                        }
-                    }
-                })
-                .detach();
 
             cx.notify();
         });
@@ -834,4 +798,86 @@ pub fn uniform_list_scrollbar(
                 .bg(rgba(0xFFFFFF22)),
         )
         .into_any_element()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WinUI 3 Fluent Design Cubic-Bezier Easing Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Evaluate a cubic-bezier curve with control points `(x1, y1)` and `(x2, y2)` at progress `t` in `[0.0, 1.0]`.
+/// Uses Newton-Raphson iteration for fast, deterministic convergence.
+pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t == 0.0 || t == 1.0 {
+        return t;
+    }
+    let sample_x = |u: f32| -> f32 {
+        let inv = 1.0 - u;
+        3.0 * inv * inv * u * x1 + 3.0 * inv * u * u * x2 + u * u * u
+    };
+    let sample_dx = |u: f32| -> f32 {
+        let inv = 1.0 - u;
+        3.0 * inv * inv * x1 + 6.0 * inv * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2)
+    };
+    let sample_y = |u: f32| -> f32 {
+        let inv = 1.0 - u;
+        3.0 * inv * inv * u * y1 + 3.0 * inv * u * u * y2 + u * u * u
+    };
+
+    let mut u = t;
+    for _ in 0..6 {
+        let err = sample_x(u) - t;
+        if err.abs() < 1e-5 {
+            break;
+        }
+        let dx = sample_dx(u);
+        if dx.abs() < 1e-5 {
+            break;
+        }
+        u = (u - err / dx).clamp(0.0, 1.0);
+    }
+    sample_y(u)
+}
+
+/// Windows 11 WinUI 3 Direct Enter curve: `cubic-bezier(0.1, 0.9, 0.2, 1.0)`
+pub fn fluent_entrance_ease(t: f32) -> f32 {
+    cubic_bezier(0.1, 0.9, 0.2, 1.0, t)
+}
+
+/// Windows 11 WinUI 3 Fast Exit curve: `cubic-bezier(0.7, 0.0, 1.0, 0.5)`
+pub fn fluent_exit_ease(t: f32) -> f32 {
+    cubic_bezier(0.7, 0.0, 1.0, 0.5, t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fluent_cubic_bezier_curves() {
+        assert_eq!(fluent_entrance_ease(0.0), 0.0);
+        assert_eq!(fluent_entrance_ease(1.0), 1.0);
+        // Fast initial acceleration on WinUI 3 entrance curve: at t=0.2, y > 0.5
+        assert!(fluent_entrance_ease(0.2) > 0.5);
+        // Slow initial acceleration on WinUI 3 exit curve: at t=0.5, y < 0.3
+        assert!(fluent_exit_ease(0.5) < 0.3);
+    }
+
+    #[test]
+    fn test_spring_settles_without_overshoot_explosion() {
+        let mut st = BouncyScrollState::new();
+        st.update_bounds(2000.0, 500.0);
+        st.offset = 45.0; // Top overscroll
+        st.velocity = 0.0;
+        st.is_active = false;
+        st.graceful_counter = 0;
+        st.animating = true;
+
+        let mut frames = 0;
+        while st.tick_spring(1.0 / 120.0) && frames < 240 {
+            frames += 1;
+        }
+        assert!(st.offset.abs() < 1.0, "Spring must settle back to 0.0 within 2 seconds");
+        assert!(frames < 180, "Spring settled in {} frames", frames);
+    }
 }

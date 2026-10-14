@@ -146,7 +146,7 @@ impl MainViewState {
                 }
             }
             let ord = match self.sort.column {
-                SortBy::Name => ia.name.to_lowercase().cmp(&ib.name.to_lowercase()),
+                SortBy::Name => natural_cmp(&ia.name, &ib.name),
                 SortBy::Size => ia.size.cmp(&ib.size),
                 SortBy::Type => {
                     let ta = if matches!(ia.file_type, FileType::Directory) {
@@ -170,7 +170,7 @@ impl MainViewState {
                         (Some(a), Some(b)) => a.cmp(b),
                         (Some(_), None) => std::cmp::Ordering::Less,
                         (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => ia.name.to_lowercase().cmp(&ib.name.to_lowercase()),
+                        (None, None) => natural_cmp(&ia.name, &ib.name),
                     }
                 }
                 SortBy::DateModified => {
@@ -190,7 +190,7 @@ impl MainViewState {
                     a_time.cmp(&b_time)
                 }
                 // Fallback for any other sort variants
-                _ => ia.name.to_lowercase().cmp(&ib.name.to_lowercase()),
+                _ => natural_cmp(&ia.name, &ib.name),
             };
             if self.sort.ascending {
                 ord
@@ -253,12 +253,20 @@ impl MainView {
         state: &MainViewState,
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
-        settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
+        settings_data: Option<crate::ui::components::dialogs::SettingsPreReadData>,
+        content_w: f32,
     ) -> impl IntoElement {
         let has_side_pane = state.side_pane != SidePaneMode::None;
         let show_shelf = state.shelf_visible;
         let v2 = view.clone();
         let v3 = view.clone();
+        // Side preview pane eats horizontal space: grid columns must fit
+        // what's left, not the full content width.
+        let content_w = if has_side_pane {
+            content_w - state.side_pane_width.unwrap_or(300.0) - 4.0
+        } else {
+            content_w
+        };
 
         // Collect lasso overlay element if active
         let lasso_overlay = Self::render_lasso_overlay(state);
@@ -277,7 +285,7 @@ impl MainView {
                     .flex_grow()
                     .w_full()
                     // NO overflow_hidden() - would block child scroll events
-                    .child(Self::render_panes(state, file_items, view.clone(), settings_data))
+                    .child(Self::render_panes(state, file_items, view.clone(), settings_data.as_ref(), content_w))
                     .children(if show_shelf {
                         vec![Self::render_shelf_pane(state, v2).into_any_element()]
                     } else {
@@ -335,6 +343,7 @@ impl MainView {
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
+        content_w: f32,
     ) -> impl IntoElement {
         match state.pane_type {
             PaneType::Single => div()
@@ -343,10 +352,17 @@ impl MainView {
                 .flex_grow()
                 .w_full()
                 // NO overflow_hidden() - would block child scroll events
-                .child(Self::render_file_view(state, file_items, view, true, settings_data)),
+                .child(Self::render_file_view(state, file_items, view, true, settings_data, content_w)),
             PaneType::Dual => {
                 // Horizontal = side-by-side; Vertical = stacked
                 let is_horiz = matches!(state.dual_pane_split, DualPaneSplit::Horizontal);
+                // Each pane only gets part of the width: grid columns must
+                // fit the pane, not the whole content area.
+                let pane_w = if is_horiz {
+                    (content_w - 4.0) / 2.0
+                } else {
+                    content_w
+                };
                 let splitter_w = Pixels::from(UiConstants::SPLITTER_WIDTH_RAW);
                 let base = div().flex().flex_grow().w_full();
 
@@ -364,6 +380,7 @@ impl MainView {
                             view.clone(),
                             is_primary_active,
                             settings_data,
+                            pane_w,
                         )))
                         .child(div().w(splitter_w).bg(rgb(UiConstants::BG_NAV_BAR_RGB)))
                         .child(div().flex_grow().child(Self::render_file_view(
@@ -372,6 +389,7 @@ impl MainView {
                             view,
                             is_secondary_active,
                             settings_data,
+                            pane_w,
                         )))
                 } else {
                     base.flex_col()
@@ -381,6 +399,7 @@ impl MainView {
                             view.clone(),
                             is_primary_active,
                             settings_data,
+                            pane_w,
                         )))
                         .child(
                             div()
@@ -394,6 +413,7 @@ impl MainView {
                             view,
                             is_secondary_active,
                             settings_data,
+                            pane_w,
                         )))
                 }
             }
@@ -650,6 +670,7 @@ impl MainView {
         view: Entity<crate::app::AppWindow>,
         is_active: bool,
         settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
+        pane_w: f32,
     ) -> impl IntoElement {
         let visible = state.visible_items();
 
@@ -738,7 +759,14 @@ impl MainView {
                             state.render_list_view(file_items, view.clone()).into_any_element()
                         }
                         ViewMode::Grid => {
-                            state.render_grid_view(file_items, view.clone()).into_any_element()
+                            let cols =
+                                crate::ui::views::types::MainViewState::grid_columns_for_width(
+                                    pane_w,
+                                    state.zoom_level,
+                                );
+                            state
+                                .render_grid_view(file_items, view.clone(), cols)
+                                .into_any_element()
                         }
                         ViewMode::Columns => state
                             .render_columns_view(file_items, view.clone())
@@ -907,407 +935,6 @@ impl MainView {
             .into_any_element()
     }
 
-    /// Finder-style columns (blade) view: Parent | Current | Preview
-    fn columns_view(
-        state: &MainViewState,
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let visible = state.visible_items();
-        let visible_clone = visible.to_vec();
-        let selected_item = state
-            .selected_indices
-            .iter()
-            .next()
-            .and_then(|&i| state.items.get(i));
-        let parent_path = state
-            .primary_path
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "—".to_string());
-        let zoom = state.zoom_level;
-        let row_h = 20.0 + zoom * 28.0;
-        let icon_size = (row_h - 8.0).max(16.0).min(40.0);
-        let text_size = 11.0 + zoom * 5.0;
-        let text_size_sm = 10.0 + zoom * 3.0;
-
-        div()
-            .flex()
-            .flex_row()
-            .flex_grow()
-            .h_full()
-            .overflow_hidden()
-            // Column 1: Parent path label
-            .child(
-                div()
-                    .w(px(220.0))
-                    .h_full()
-                    .flex_col()
-                    .border_r(px(1.0))
-                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                    .child(
-                        div()
-                            .h(px(32.0))
-                            .px(px(12.0))
-                            .flex()
-                            .items_center()
-                            .border_b(px(1.0))
-                            .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight(600.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(parent_path),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("col1-content")
-                            .flex_grow()
-                            .flex_col()
-                            .p(px(4.0))
-                            .overflow_y_scroll()
-                            .track_scroll(&state.scroll_handle)
-                            .child(
-                                div()
-                                    .h(px(28.0))
-                                    .px(px(8.0))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.0))
-                                    .bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                            .child(
-                                                state
-                                                    .primary_path
-                                                    .file_name()
-                                                    .map(|n| n.to_string_lossy().into_owned())
-                                                    .unwrap_or_else(|| {
-                                                        state
-                                                            .primary_path
-                                                            .to_string_lossy()
-                                                            .into_owned()
-                                                    }),
-                                            ),
-                                    ),
-                            ),
-                    ),
-            )
-            // Column 2: Current directory contents
-            .child(
-                div()
-                    .w(px(240.0))
-                    .h_full()
-                    .flex_col()
-                    .border_r(px(1.0))
-                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                    .child(
-                        div()
-                            .h(px(32.0))
-                            .px(px(12.0))
-                            .flex()
-                            .items_center()
-                            .border_b(px(1.0))
-                            .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight(600.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(
-                                        state
-                                            .primary_path
-                                            .file_name()
-                                            .map(|n| n.to_string_lossy().into_owned())
-                                            .unwrap_or_default(),
-                                    ),
-                            ),
-                    )
-                    .child(uniform_list(
-                        "col2-scroll",
-                        visible_clone.len(),
-                        move |range, _win, cx| {
-                            let fi = file_items.read(cx);
-                            let app_state = view.read(cx);
-                            let main_state = &app_state.state.main_view;
-                            let icon_paths = &main_state.icon_paths;
-
-                            range
-                                .map(|i| {
-                                    let idx = visible_clone[i];
-                                    let item = &fi.items[idx];
-                                    let is_selected = fi.selected_indices.contains(&idx);
-                                    let is_dir = matches!(item.file_type, FileType::Directory);
-                                    let name = item.name.clone();
-                                    let path = item.path.clone();
-                                    let v = view.clone();
-
-                                    div()
-                                        .id(ElementId::from(50000 + idx))
-                                        .flex()
-                                        .flex_row()
-                                        .h(px(row_h))
-                                        .px(px(8.0))
-                                        .items_center()
-                                        .gap(px(6.0))
-                                        .rounded(px(4.0))
-                                        .mx(px(4.0))
-                                        .bg(if is_selected {
-                                            rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                                        } else {
-                                            rgba(0x00000000)
-                                        })
-                                        .hover(|s| {
-                                            if !is_selected {
-                                                s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
-                                            } else {
-                                                s
-                                            }
-                                        })
-                                        .cursor_pointer()
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let v = v.clone();
-                                            let path = path.clone();
-                                            move |_, _, cx| {
-                                                cx.stop_propagation();
-                                                v.update(cx, |this, cx| {
-                                                    if is_dir {
-                                                        this.navigate(path.clone(), cx);
-                                                    } else {
-                                                        this.select_item(idx, false, false, cx);
-                                                    }
-                                                });
-                                            }
-                                        })
-                                        .child(
-                                            div()
-                                                .w(px(icon_size))
-                                                .h(px(icon_size))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .child(
-                                                    if let Some(icon_path) = icon_paths.get(&path) {
-                                                        img(icon_path.clone())
-                                                            .w(px(icon_size))
-                                                            .h(px(icon_size))
-                                                            .into_any_element()
-                                                    } else {
-                                                        div()
-                                                            .text_size(px(icon_size * 0.7))
-                                                            .text_color(rgba(
-                                                                UiConstants::TEXT_SECONDARY_RGBA,
-                                                            ))
-                                                            .child(if is_dir {
-                                                                "\u{E8B7}"
-                                                            } else {
-                                                                "\u{E8A5}"
-                                                            })
-                                                            .into_any_element()
-                                                    },
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_grow()
-                                                .text_size(px(text_size))
-                                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                                .child(name),
-                                        )
-                                        .into_any_element()
-                                })
-                                .collect::<Vec<_>>()
-                        },
-                    )),
-            )
-            // Column 3: Preview panel
-            .child(
-                div()
-                    .flex_grow()
-                    .h_full()
-                    .flex_col()
-                    .bg(rgba(0xFFFFFF05u32))
-                    .child(match selected_item {
-                        None => div()
-                            .flex_grow()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(0xFFFFFF40u32))
-                                    .child("Select a file to preview"),
-                            )
-                            .into_any_element(),
-                        Some(item) => div()
-                            .flex_grow()
-                            .p(px(16.0))
-                            .child(Self::render_details_pane(state, item))
-                            .into_any_element(),
-                    }),
-            )
-    }
-
-    /// Cards view — large card per file with icon, name, size, and type badge
-    fn cards_view(
-        state: &MainViewState,
-        visible: &[usize],
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let visible_clone = visible.to_vec();
-        let items_per_row = 4;
-        let row_count = (visible.len() + items_per_row - 1) / items_per_row;
-        let row_height = 212.0; // 200 card + 12 gap
-
-        div()
-            .flex_col()
-            .w_full()
-            .flex_grow()
-            .h_full()
-            .overflow_hidden()
-            .child(
-                uniform_list("cards-scroll", row_count, move |range, _win, cx| {
-                    let fi = file_items.read(cx);
-                    let app_state = view.read(cx);
-                    let main_state = &app_state.state.main_view;
-                    let icon_paths = &main_state.icon_paths;
-
-                    range
-                        .map(|row_idx| {
-                            let start = row_idx * items_per_row;
-                            let end = (start + items_per_row).min(visible_clone.len());
-
-                            div()
-                                .flex()
-                                .flex_row()
-                                .h(px(row_height))
-                                .gap(px(12.0))
-                                .px(px(16.0))
-                                .children((start..end).map(|i| {
-                                    let idx = visible_clone[i];
-                                    let item = &fi.items[idx];
-                                    let is_selected = fi.selected_indices.contains(&idx);
-                                    let name = item.name.clone();
-                                    let path = item.path.clone();
-                                    let size_str = format_size(item.size);
-                                    let is_dir = matches!(item.file_type, FileType::Directory);
-                                    let v_card = view.clone();
-
-                                    div()
-                                        .id(ElementId::from(30000 + idx))
-                                        .w(px(160.0))
-                                        .h(px(200.0))
-                                        .flex_col()
-                                        .rounded(px(8.0))
-                                        .border(px(1.0))
-                                        .border_color(if is_selected {
-                                            rgba(UiConstants::ACCENT_RGBA)
-                                        } else {
-                                            rgba(UiConstants::DIVIDER_RGBA)
-                                        })
-                                        .bg(if is_selected {
-                                            rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                                        } else {
-                                            rgba(0xFFFFFF08u32)
-                                        })
-                                        .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
-                                        .cursor_pointer()
-                                        .overflow_hidden()
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let v = v_card.clone();
-                                            move |ev, _, cx| {
-                                                cx.stop_propagation();
-                                                v.update(cx, |this, cx| {
-                                                    this.select_item(
-                                                        idx,
-                                                        ev.modifiers.shift,
-                                                        ev.modifiers.control,
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        })
-                                        .on_click({
-                                            let v = v_card.clone();
-                                            let item_type = item.file_type;
-                                            let path = path.clone();
-                                            move |ev, _win, cx| {
-                                                if ev.click_count() == 2 {
-                                                    v.update(cx, |this, cx| {
-                                                        if item_type == FileType::Directory {
-                                                            this.navigate(path.clone(), cx);
-                                                        } else {
-                                                            this.open_item(idx, cx);
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        })
-                                        .on_mouse_down(MouseButton::Right, {
-                                            let v = v_card.clone();
-                                            move |ev, _, cx| {
-                                                cx.stop_propagation();
-                                                v.update(cx, |this, cx| {
-                                                    this.show_context_menu(
-                                                        Some(idx),
-                                                        ev.position,
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        })
-                                        .child(div().justify_center().w_full().flex_grow().child(
-                                            if let Some(icon_path) = icon_paths.get(&path) {
-                                                img(icon_path.clone())
-                                                    .w(px(64.0))
-                                                    .h(px(64.0))
-                                                    .into_any_element()
-                                            } else {
-                                                div()
-                                                    .text_size(px(48.0))
-                                                    .text_color(rgba(UiConstants::ACCENT_RGBA))
-                                                    .child(if is_dir {
-                                                        "\u{E8B7}"
-                                                    } else {
-                                                        "\u{E8A5}"
-                                                    })
-                                                    .into_any_element()
-                                            },
-                                        ))
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .p(px(8.0))
-                                                .bg(rgba(0x00000044u32))
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.0))
-                                                        .text_color(rgb(0xFFFFFF))
-                                                        .child(name),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.0))
-                                                        .text_color(rgba(0xFFFFFF88u32))
-                                                        .child(size_str),
-                                                ),
-                                        )
-                                        .into_any_element()
-                                }))
-                                .into_any_element()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .track_scroll(state.uniform_list_scroll_handle.clone()),
-            )
-    }
-
     fn filter_header(
         state: &MainViewState,
         view: Entity<crate::app::AppWindow>,
@@ -1438,563 +1065,6 @@ impl MainView {
             )
     }
 
-    fn list_view(
-        state: &MainViewState,
-        visible: &[usize],
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let visible_clone = visible.to_vec();
-        let zoom = state.zoom_level;
-        let row_h = 24.0 + zoom * 32.0;
-        let icon_size = 16.0 + zoom * 24.0;
-        let text_size = 11.0 + zoom * 5.0;
-
-        div()
-            .flex_col()
-            .w_full()
-            .flex_grow()
-            .h_full()
-            .overflow_hidden()
-            .child(
-                uniform_list(
-                    "list-scroll",
-                    visible_clone.len(),
-                    move |range, _win, cx| {
-                        let fi = file_items.read(cx);
-                        let app_state = view.read(cx);
-                        let main_state = &app_state.state.main_view;
-                        let icon_paths = &main_state.icon_paths;
-
-                        range
-                            .map(|i| {
-                                let idx = visible_clone[i];
-                                let item = &fi.items[idx];
-                                let is_selected = fi.selected_indices.contains(&idx);
-                                let path = item.path.clone();
-                                let view_row = view.clone();
-
-                                div()
-                                    .id(ElementId::from(idx + 20000))
-                                    .flex()
-                                    .items_center()
-                                    .w_full()
-                                    .h(px(row_h))
-                                    .px(px(16.0))
-                                    .py(px(2.0))
-                                    .bg(if is_selected {
-                                        rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                                    } else {
-                                        rgba(UiConstants::BG_TRANSPARENT_RGBA)
-                                    })
-                                    .hover(|s| {
-                                        s.bg(if is_selected {
-                                            rgba(UiConstants::BG_ITEM_SELECTED_HOVER_RGBA)
-                                        } else {
-                                            rgba(UiConstants::BG_ITEM_HOVER_RGBA)
-                                        })
-                                    })
-                                    .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let v = view_row.clone();
-                                        move |_event, _, cx| {
-                                            cx.stop_propagation();
-                                            v.update(cx, |this, cx| {
-                                                this.select_item(idx, false, false, cx);
-                                            });
-                                        }
-                                    })
-                                    .on_mouse_down(MouseButton::Right, {
-                                        let v = view_row.clone();
-                                        move |ev, _, cx| {
-                                            cx.stop_propagation();
-                                            v.update(cx, |this, cx| {
-                                                this.show_context_menu(Some(idx), ev.position, cx);
-                                            });
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .w(px(icon_size))
-                                            .h(px(icon_size))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(
-                                                if let Some(icon_path) = icon_paths.get(&path) {
-                                                    img(icon_path.clone())
-                                                        .w(px(icon_size))
-                                                        .h(px(icon_size))
-                                                        .into_any_element()
-                                                } else {
-                                                    div()
-                                                        .text_size(px(icon_size * 0.5))
-                                                        .text_color(rgba(
-                                                            UiConstants::TEXT_SECONDARY_RGBA,
-                                                        ))
-                                                        .child(
-                                                            if matches!(
-                                                                item.file_type,
-                                                                FileType::Directory
-                                                            ) {
-                                                                "\u{E8B7}"
-                                                            } else {
-                                                                "\u{E8A5}"
-                                                            },
-                                                        )
-                                                        .into_any_element()
-                                                },
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml(px(8.0))
-                                            .text_size(px(text_size))
-                                            .text_color(if is_selected {
-                                                rgb(UiConstants::TEXT_PRIMARY_RGB)
-                                            } else {
-                                                rgba(UiConstants::TEXT_PRIMARY_RGBA)
-                                            })
-                                            .child(item.name.clone()),
-                                    )
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    },
-                )
-                .track_scroll(state.uniform_list_scroll_handle.clone()),
-            )
-    }
-
-    fn grid_view(
-        state: &MainViewState,
-        visible: &[usize],
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        if state.group_by != GroupColumn::None {
-            return Self::grid_view_grouped(state, visible, view).into_any_element();
-        }
-
-        let visible_clone = visible.to_vec();
-        let items_per_row = Self::grid_items_per_row();
-        let row_count = (visible.len() + items_per_row - 1) / items_per_row;
-
-        let zoom = state.zoom_level;
-        let base_size = 80.0 + zoom * 120.0;
-        let row_height = base_size + 32.0;
-
-        div()
-            .flex_col()
-            .w_full()
-            .flex_grow()
-            .h_full()
-            .overflow_hidden()
-            .id("grid-container")
-            .on_mouse_down(MouseButton::Right, {
-                let v = view.clone();
-                move |event, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.show_context_menu(None, event.position, cx);
-                    });
-                }
-            })
-            .child(
-                uniform_list("grid-scroll", row_count, move |range, _win, cx| {
-                    let fi = file_items.read(cx);
-                    let app_state = view.read(cx);
-                    let main_state = &app_state.state.main_view;
-                    let icon_paths = &main_state.icon_paths;
-                    let zoom = main_state.zoom_level;
-                    let sel_mode = main_state.selection_mode.clone();
-
-                    range
-                        .map(|row_idx| {
-                            let start = row_idx * items_per_row;
-                            let end = (start + items_per_row).min(visible_clone.len());
-
-                            div()
-                                .flex()
-                                .flex_row()
-                                .h(px(row_height))
-                                .gap(px(UiConstants::GRID_GAP_RAW as f32))
-                                .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-                                .children((start..end).map(|i| {
-                                    let idx = visible_clone[i];
-                                    let item = &fi.items[idx];
-                                    let is_selected = fi.selected_indices.contains(&idx);
-                                    Self::grid_item(
-                                        item,
-                                        idx,
-                                        is_selected,
-                                        sel_mode.clone(),
-                                        view.clone(),
-                                        icon_paths,
-                                        zoom,
-                                    )
-                                    .into_any_element()
-                                }))
-                                .into_any_element()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .track_scroll(state.uniform_list_scroll_handle.clone()),
-            )
-            .into_any_element()
-    }
-
-    pub(crate) fn grid_item(
-        item: &FileItem,
-        index: usize,
-        selected: bool,
-        selection_mode: SelectionMode,
-        view: Entity<crate::app::AppWindow>,
-        icon_paths: &std::collections::HashMap<
-            crate::core::path_util::FilesPath,
-            std::path::PathBuf,
-        >,
-        zoom: f32,
-    ) -> impl IntoElement {
-        let v_click = view.clone();
-        let v_hover = view.clone();
-        let v_timer = view.clone();
-        let v_checkbox = view.clone();
-        let is_dir = matches!(item.file_type, FileType::Directory);
-        let extension = get_extension(&item.name);
-        let is_thumbnail = !is_dir && is_thumbnail_image(&extension);
-        let show_checkbox = selection_mode == SelectionMode::Checkbox;
-        let is_hover_select = selection_mode == SelectionMode::HoverSelect;
-        // Clone values needed by closures to avoid borrow issues
-        let item_path = item.path.clone();
-        let item_name = item.name.clone();
-
-        // Check for cached Windows Shell icon
-        let cached_icon_path: Option<std::path::PathBuf> = icon_paths.get(&item_path).cloned();
-        let use_cached_icon = cached_icon_path.is_some();
-
-        // For thumbnail images, use GPUUI's img() to display the image
-        // For other items, use text-based icon
-
-        // Calculate dynamic dimensions — continuous from min to max zoom
-        let item_size = 80.0 + zoom * 160.0; // 80 (min) to 240 (max)
-        let item_height = item_size + 30.0;
-        let icon_size_val = item_size * 0.6;
-
-        if is_thumbnail {
-            // Show image thumbnail with optional checkbox
-            let mut item_div = div()
-                .id(ElementId::from(70000 + index))
-                .w(px(item_size))
-                .h(px(item_height))
-                .flex_col()
-                .items_center()
-                .py(px(item_size * 0.25)) // Proportional padding
-                .rounded(px(4.0))
-                .relative()
-                .border(px(if selected { 2.0 } else { 1.5 }))
-                .border_color(if selected {
-                    rgba(UiConstants::ACCENT_RGBA)
-                } else {
-                    rgba(0x00000000u32)
-                })
-                .bg(rgba(0x00000000u32))
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
-
-            // Add checkbox if in checkbox mode
-            if show_checkbox {
-                item_div = item_div.child(
-                    div()
-                        .absolute()
-                        .top(px(4.0))
-                        .left(px(4.0))
-                        .w(px(20.0))
-                        .h(px(20.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            v_checkbox.update(cx, |this, cx| {
-                                this.toggle_checkbox_selection(index, cx);
-                            });
-                        })
-                        .child(
-                            div()
-                                .w(px(14.0))
-                                .h(px(14.0))
-                                .border(px(1.5))
-                                .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                .rounded(px(3.0))
-                                .bg(if selected {
-                                    rgba(UiConstants::ACCENT_RGBA)
-                                } else {
-                                    rgba(0x00000000)
-                                })
-                                .child(if selected {
-                                    div()
-                                        .text_size(px(9.0))
-                                        .font_family(UiConstants::FONT_MDL2)
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child("\u{E73E}")
-                                } else {
-                                    div()
-                                }),
-                        ),
-                );
-            }
-
-            let path_clone = item_path.clone();
-            item_div
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-                    cx.stop_propagation();
-                    v_click.update(cx, |this, cx| {
-                        if event.click_count == 2 {
-                            if is_dir {
-                                this.navigate(path_clone.clone(), cx);
-                            } else {
-                                this.open_item(index, cx);
-                            }
-                        } else {
-                            this.select_item(index, false, false, cx);
-                        }
-                    });
-                })
-                .on_mouse_down(MouseButton::Right, {
-                    let v = view.clone();
-                    move |event, _, cx| {
-                        cx.stop_propagation();
-                        v.update(cx, |this, cx| {
-                            this.show_context_menu(Some(index), event.position, cx);
-                        });
-                    }
-                })
-                .on_mouse_move({
-                    let v_hover = v_hover.clone();
-                    let v_timer = v_timer.clone();
-                    move |ev, _, cx| {
-                        if is_hover_select {
-                            v_hover.update(cx, |this, cx| {
-                                this.handle_item_hover(index, cx);
-                            });
-                        } else {
-                            v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, ev.position, cx);
-                            });
-                        }
-                    }
-                })
-                .on_mouse_up_out(MouseButton::Left, {
-                    let v_timer = v_timer.clone();
-                    move |_, _, cx| {
-                        // Stop the hover timer when mouse leaves
-                        v_timer.update(cx, |this, cx| {
-                            this.stop_hover_timer(cx);
-                        });
-                    }
-                })
-                .child(
-                    // Thumbnail image
-                    img(item_path.as_path().to_path_buf())
-                        .w(px(icon_size_val))
-                        .h(px(icon_size_val))
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .rounded(px(4.0)),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .px(px(4.0))
-                        .mt(px(4.0))
-                        .text_center()
-                        .overflow_hidden()
-                        .text_size(px((item_size / 11.0).clamp(10.0, 14.0)))
-                        .font_family(UiConstants::FONT_MAIN)
-                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(item_name.clone()),
-                )
-        } else {
-            // Show icon for directories and non-image files
-            let file_icon = if is_dir {
-                "\u{E8B7}".to_string()
-            } else {
-                get_file_type_icon(&extension).to_string()
-            };
-
-            let mut item_div = div()
-                .id(ElementId::from(70000 + index))
-                .w(px(item_size))
-                .h(px(item_height))
-                .flex_col()
-                .items_center()
-                .py(px(item_size * 0.25))
-                .rounded(px(4.0))
-                .relative()
-                .border(px(if selected { 2.0 } else { 1.5 }))
-                .border_color(if selected {
-                    rgba(UiConstants::ACCENT_RGBA)
-                } else {
-                    rgba(0x00000000u32)
-                })
-                .bg(rgba(0x00000000u32))
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
-
-            // Add checkbox if in checkbox mode
-            if show_checkbox {
-                let v_checkbox = view.clone();
-                item_div = item_div.child(
-                    div()
-                        .absolute()
-                        .top(px(4.0))
-                        .left(px(4.0))
-                        .w(px(20.0))
-                        .h(px(20.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            v_checkbox.update(cx, |this, cx| {
-                                this.toggle_checkbox_selection(index, cx);
-                            });
-                        })
-                        .child(
-                            div()
-                                .w(px(14.0))
-                                .h(px(14.0))
-                                .border(px(1.5))
-                                .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                .rounded(px(3.0))
-                                .bg(if selected {
-                                    rgba(UiConstants::ACCENT_RGBA)
-                                } else {
-                                    rgba(0x00000000)
-                                })
-                                .child(if selected {
-                                    div()
-                                        .text_size(px(9.0))
-                                        .font_family(UiConstants::FONT_MDL2)
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child("\u{E73E}")
-                                } else {
-                                    div()
-                                }),
-                        ),
-                );
-            }
-
-            let path_clone = item_path.clone();
-            item_div
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-                    cx.stop_propagation();
-                    v_click.update(cx, |this, cx| {
-                        if event.click_count == 2 {
-                            if is_dir {
-                                this.navigate(path_clone.clone(), cx);
-                            } else {
-                                this.open_item(index, cx);
-                            }
-                        } else {
-                            this.select_item(index, false, false, cx);
-                        }
-                    });
-                })
-                .on_mouse_down(MouseButton::Right, {
-                    let v = view.clone();
-                    move |event, _, cx| {
-                        cx.stop_propagation();
-                        v.update(cx, |this, cx| {
-                            this.show_context_menu(Some(index), event.position, cx);
-                        });
-                    }
-                })
-                .on_mouse_move({
-                    let v_hover = v_hover.clone();
-                    let v_timer = v_timer.clone();
-                    move |ev, _, cx| {
-                        if is_hover_select {
-                            v_hover.update(cx, |this, cx| {
-                                this.handle_item_hover(index, cx);
-                            });
-                        } else {
-                            v_timer.update(cx, |this, cx| {
-                                this.start_hover_timer(index, ev.position, cx);
-                            });
-                        }
-                    }
-                })
-                .on_mouse_up_out(MouseButton::Left, {
-                    let v_timer = v_timer.clone();
-                    move |_, _, cx| {
-                        // Stop the hover timer when mouse leaves
-                        v_timer.update(cx, |this, cx| {
-                            this.stop_hover_timer(cx);
-                        });
-                    }
-                })
-                .child(
-                    // Centered icon
-                    div().flex().items_center().justify_center().w_full().child(
-                        // Icon: use cached shell icon if available (shows folder thumbnails on Windows),
-                        // otherwise MDL2 text glyph
-                        if let Some(icon_path) = &cached_icon_path {
-                            img(icon_path.clone())
-                                .w(px(icon_size_val))
-                                .h(px(icon_size_val))
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .into_any_element()
-                        } else {
-                            div()
-                                .text_size(px(icon_size_val * 0.8))
-                                .font_family(UiConstants::FONT_MDL2)
-                                .text_color(if is_dir {
-                                    rgba(UiConstants::ACCENT_RGBA)
-                                } else {
-                                    rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                })
-                                .child(file_icon)
-                                .into_any_element()
-                        },
-                    ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .px(px(4.0))
-                        .mt(px(4.0))
-                        .text_center()
-                        .overflow_hidden()
-                        .text_size(px((item_size / 11.0).clamp(10.0, 14.0)))
-                        .font_family(UiConstants::FONT_MAIN)
-                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(item_name.clone()),
-                )
-        }
-    }
-
-    fn file_grid(
-        state: &MainViewState,
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let visible = state.visible_items();
-        Self::grid_view(state, &visible, file_items, view)
-    }
-
-    #[allow(dead_code)]
-    fn file_list(
-        state: &MainViewState,
-        file_items: Entity<FileItems>,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let visible = state.visible_items();
-        Self::details_view(state, &visible, file_items, view)
-    }
-
-    /// Calculate the number of items per row for the grid view.
-    /// Uses sensible defaults based on grid vs card mode; TODO: make responsive to container width.
-    pub(crate) fn grid_items_per_row() -> usize {
-        6
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

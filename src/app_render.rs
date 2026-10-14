@@ -8,7 +8,6 @@ use crate::ui::components::dialogs::{DialogType, DialogsView, SettingsTab};
 use crate::ui::components::navigation_bar::{
     build_breadcrumb_dropdown, build_suggestions_dropdown, NavigationBarView,
 };
-#[cfg(windows)]
 use crate::ui::components::sidebar::{SidebarSplitter, SidebarView};
 use crate::ui::components::status_bar::StatusBarView;
 use crate::ui::components::tab_bar::TabBarView;
@@ -26,14 +25,33 @@ impl Render for AppWindow {
         // Poll file system events — refresh if any folder changes detected
         self.poll_file_events(cx);
 
-        // FPS counter calculation
+        // FPS counter calculation (+ worst-frame tracking for stutter checks)
         let now = std::time::Instant::now();
+        if let Some(prev) = self.fps_prev_frame {
+            let dt_ms = now.duration_since(prev).as_secs_f64() * 1000.0;
+            if dt_ms > self.fps_worst_ms {
+                self.fps_worst_ms = dt_ms;
+            }
+        }
+        self.fps_prev_frame = Some(now);
         if let Some(last) = self.fps_last_time {
             self.fps_frame_count += 1;
             let elapsed = now.duration_since(last).as_secs_f64();
             if elapsed >= 0.5 {
                 self.fps_current = self.fps_frame_count as f64 / elapsed;
+                // Log per window so scrolling fps is verifiable from the run
+                // log (PresentMon needs admin; this doesn't). Only windows
+                // with real continuous output; a lone window after a pause
+                // may show one bad worst-frame — ignore single outliers.
+                if self.fps_frame_count > 5 {
+                    tracing::info!(
+                        "frame stats: {:.0} fps avg, worst frame {:.1} ms",
+                        self.fps_current,
+                        self.fps_worst_ms
+                    );
+                }
                 self.fps_frame_count = 0;
+                self.fps_worst_ms = 0.0;
                 self.fps_last_time = Some(now);
             }
         } else {
@@ -256,19 +274,16 @@ impl Render for AppWindow {
                                                 }
                                             });
                                         if state.sidebar_visible {
-                                            #[cfg(windows)]
-                                            {
-                                                row = row
-                                                    .child(SidebarView::build(
-                                                        &state.sidebar,
-                                                        state,
-                                                        cx.entity(),
-                                                    ))
-                                                    .child(SidebarSplitter::build(
-                                                        &state.sidebar,
-                                                        cx.entity(),
-                                                    ));
-                                            }
+                                            row = row
+                                                .child(SidebarView::build(
+                                                    &state.sidebar,
+                                                    state,
+                                                    cx.entity(),
+                                                ))
+                                                .child(SidebarSplitter::build(
+                                                    &state.sidebar,
+                                                    cx.entity(),
+                                                ));
                                         }
                                         row.child(
                                             div()
@@ -318,11 +333,20 @@ impl Render for AppWindow {
                                                             } else {
                                                                 None
                                                             };
+                                                            let vp_w: f32 =
+                                                                _window.viewport_size().width.into();
+                                                            let content_w = vp_w
+                                                                - if state.sidebar_visible {
+                                                                    state.sidebar.width
+                                                                } else {
+                                                                    0.0
+                                                                };
                                                             MainView::build(
                                                                 &state.main_view,
                                                                 state.file_items.clone(),
                                                                 cx.entity(),
-                                                                settings_data.as_ref(),
+                                                                settings_data,
+                                                                content_w,
                                                             )
                                                         }),
                                                 )
@@ -578,62 +602,7 @@ impl Render for AppWindow {
             let pos = tip.position;
 
             // ── Date formatting ──
-            let date_str = item
-                .modified
-                .as_ref()
-                .map(|t| {
-                    use std::time::{SystemTime, UNIX_EPOCH};
-                    let since_epoch = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                    let secs_per_day: u64 = 86400;
-                    let days = since_epoch / secs_per_day;
-                    let remaining = since_epoch % secs_per_day;
-                    let hours = remaining / 3600;
-                    let minutes = (remaining % 3600) / 60;
-                    let mut y = 2000i64;
-                    let mut d = days as i64 - (11017i64);
-                    loop {
-                        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-                            366
-                        } else {
-                            365
-                        };
-                        if d < days_in_year {
-                            break;
-                        }
-                        d -= days_in_year;
-                        y += 1;
-                    }
-                    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-                    let month_days = [
-                        31u64,
-                        if leap { 29 } else { 28 },
-                        31,
-                        30,
-                        31,
-                        30,
-                        31,
-                        31,
-                        30,
-                        31,
-                        30,
-                        31,
-                    ];
-                    let mut m = 0usize;
-                    while d as u64 >= month_days[m] {
-                        d -= month_days[m] as i64;
-                        m += 1;
-                    }
-                    let day = d + 1;
-                    format!(
-                        "{:04}-{:02}-{:02} {:02}:{:02}",
-                        y,
-                        m + 1,
-                        day,
-                        hours,
-                        minutes
-                    )
-                })
-                .unwrap_or_default();
+            let date_str = crate::ui::views::helpers::format_system_time(item.modified);
             let size_bytes = item.size;
             let size_hr = format_size(size_bytes);
 

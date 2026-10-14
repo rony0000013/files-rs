@@ -19,16 +19,17 @@ impl MainViewState {
         &self,
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
+        cols: usize,
     ) -> AnyElement {
         let visible = self.visible_items();
 
         if self.group_by != GroupColumn::None {
             return self
-                .render_grid_view_grouped(&visible, file_items, view)
+                .render_grid_view_grouped(&visible, file_items, view, cols)
                 .into_any_element();
         }
 
-        self.grid_view_flat(&visible, file_items, view)
+        self.grid_view_flat(&visible, file_items, view, cols)
             .into_any_element()
     }
 
@@ -81,16 +82,30 @@ impl MainViewState {
         }
     }
 
+    /// Columns that fit the actual pane width (Files-style: fill the row).
+    /// Falls back to the zoom default when the width is unknown/tiny.
+    pub fn grid_columns_for_width(pane_w: f32, zoom: f32) -> usize {
+        let params = Self::grid_layout_params(zoom);
+        let slot = params.item_width + params.gap;
+        if pane_w <= slot || slot <= 0.0 {
+            return params.items_per_row;
+        }
+        let avail = pane_w - params.padding * 2.0;
+        (((avail + params.gap) / slot).floor() as usize).clamp(1, 12)
+    }
+
     /// Flat grid view using uniform_list for maximum performance
     fn grid_view_flat(
         &self,
         visible: &[usize],
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
+        cols: usize,
     ) -> impl IntoElement {
         let visible_clone = visible.to_vec();
         let zoom = self.zoom_level;
-        let params = Self::grid_layout_params(zoom);
+        let mut params = Self::grid_layout_params(zoom);
+        params.items_per_row = cols.max(1);
         let items_per_row = params.items_per_row;
         let row_count = (visible.len() + items_per_row - 1) / items_per_row;
 
@@ -117,7 +132,8 @@ impl MainViewState {
                         let main_state = &app_state.state.main_view;
                         let icon_paths = &main_state.icon_paths;
                         let zoom = main_state.zoom_level;
-                        let params = MainViewState::grid_layout_params(zoom);
+                        // Reuse the outer width-fitted params (same cols as row_count).
+                        let params = params.clone();
                         let selected = main_state.selected_indices.clone();
                         let sel_mode = main_state.selection_mode.clone();
                         let compact = main_state.compact_mode;
@@ -155,8 +171,10 @@ impl MainViewState {
                                 for _ in items_in_row..params.items_per_row {
                                     row_children.push(
                                         div()
-                                            .min_w(px(params.item_width))
-                                            .flex_1()
+                                            // Fixed width like real tiles: rows left-align
+                                            // Files-style instead of stretching full width.
+                                            .w(px(params.item_width))
+                                            .flex_shrink_0()
                                             .invisible()
                                             .into_any_element(),
                                     );
@@ -187,9 +205,11 @@ impl MainViewState {
         visible: &[usize],
         file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
+        cols: usize,
     ) -> impl IntoElement {
         let zoom = self.zoom_level;
-        let params = Self::grid_layout_params(zoom);
+        let mut params = Self::grid_layout_params(zoom);
+        params.items_per_row = cols.max(1);
         let items_per_row = params.items_per_row;
         let flattened = self.flatten_grouped_grid_items(visible, items_per_row);
         let item_count = flattened.len();
@@ -209,7 +229,8 @@ impl MainViewState {
                         let main_state = &app_state.state.main_view;
                         let icon_paths = &main_state.icon_paths;
                         let zoom = main_state.zoom_level;
-                        let params = MainViewState::grid_layout_params(zoom);
+                        // Reuse the outer width-fitted params (same cols as row_count).
+                        let params = params.clone();
                         let sel_mode = main_state.selection_mode.clone();
                         let collapsed_groups = main_state.collapsed_groups.clone();
                         let compact = main_state.compact_mode;
@@ -299,8 +320,10 @@ impl MainViewState {
                                     for _ in items_in_row..params.items_per_row {
                                         row_children.push(
                                             div()
-                                                .min_w(px(params.item_width))
-                                                .flex_1()
+                                                // Fixed width like real tiles: rows left-align
+                                                // Files-style instead of stretching full width.
+                                                .w(px(params.item_width))
+                                                .flex_shrink_0()
                                                 .invisible()
                                                 .into_any_element(),
                                         );
@@ -370,8 +393,10 @@ impl MainViewState {
             // Show image thumbnail with optional checkbox
             let mut item_div = div()
                 .id(ElementId::from(70000 + index))
-                .min_w(px(item_width))
-                .flex_1()
+            // Fixed-width tiles (Files-style): box hugs the thumbnail
+                // instead of stretching across the row.
+                .w(px(item_width))
+                .flex_shrink_0()
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
@@ -544,8 +569,10 @@ impl MainViewState {
 
             let mut item_div = div()
                 .id(ElementId::from(70000 + index))
-                .min_w(px(item_width))
-                .flex_1()
+            // Fixed-width tiles (Files-style): box hugs the thumbnail
+                // instead of stretching across the row.
+                .w(px(item_width))
+                .flex_shrink_0()
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
@@ -760,6 +787,7 @@ pub fn shorten_filename_middle(name: &str, max_len: usize) -> String {
 }
 
 /// Layout parameters computed from zoom level
+#[derive(Clone, Copy)]
 pub struct GridLayoutParams {
     pub items_per_row: usize,
     pub item_width: f32,

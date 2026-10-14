@@ -20,10 +20,10 @@ pub struct CancellationToken {
 impl CancellationToken {
     /// Create a new token with the given shared counter.
     pub fn new(counter: Arc<AtomicU64>) -> Self {
-        let gen = counter.load(Ordering::Relaxed);
+        let generation = counter.load(Ordering::Relaxed);
         Self {
             current: counter,
-            generation: gen,
+            generation,
         }
     }
 
@@ -61,6 +61,12 @@ impl CancelGuard {
     /// Cancel all in-flight operations by incrementing the generation.
     pub fn cancel(&self) {
         self.counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Cancel all in-flight operations and issue a fresh token for the new generation.
+    pub fn reset(&self) -> CancellationToken {
+        self.cancel();
+        self.token()
     }
 
     /// Get the current generation number.
@@ -212,5 +218,21 @@ mod tests {
         };
         assert_eq!(handle.path, "/tmp/test");
         assert_eq!(handle.generation, 42);
+    }
+
+    #[test]
+    fn test_rapid_navigation_cancels_all_intermediate_tokens() {
+        let guard = CancelGuard::new();
+        let tokens: Vec<CancellationToken> = (0..100).map(|_| guard.reset()).collect();
+        for token in &tokens[..99] {
+            assert!(
+                token.is_cancelled(),
+                "All superseded navigation tokens must be cancelled"
+            );
+        }
+        assert!(
+            !tokens[99].is_cancelled(),
+            "Only the latest navigation token must remain active"
+        );
     }
 }

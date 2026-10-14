@@ -248,6 +248,7 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[ignore = "writes a live HKCU file association; run explicitly with --ignored"]
     #[test]
     fn test_set_as_default() {
         let service = DefaultFileManagerService::with_path(r"C:\test\files-rs.exe");

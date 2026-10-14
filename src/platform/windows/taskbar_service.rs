@@ -110,7 +110,7 @@ impl TaskbarProgressService {
         let hwnd = {
             let hwnd_guard = self.hwnd.lock().unwrap();
             match *hwnd_guard {
-                Some(h) => HWND(h as isize),
+                Some(h) => HWND(h as *mut _),
                 None => {
                     tracing::debug!("No HWND set, cannot update taskbar progress");
                     return Ok(());
@@ -170,7 +170,7 @@ impl TaskbarProgressService {
         let hwnd = {
             let hwnd_guard = self.hwnd.lock().unwrap();
             match *hwnd_guard {
-                Some(h) => HWND(h as isize),
+                Some(h) => HWND(h as *mut _),
                 None => {
                     tracing::debug!("No HWND set, cannot update taskbar progress");
                     return Ok(());

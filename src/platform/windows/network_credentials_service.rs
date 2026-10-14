@@ -80,7 +80,7 @@ impl NetworkCredentialsService {
             match CredReadW(
                 PCWSTR(wide_target.as_ptr()),
                 CRED_TYPE_DOMAIN_PASSWORD,
-                0,
+                Some(0),
                 &mut credential,
             ) {
                 Ok(_) => {
@@ -133,7 +133,7 @@ impl NetworkCredentialsService {
             .collect();
 
         unsafe {
-            CredDeleteW(PCWSTR(wide_target.as_ptr()), CRED_TYPE_DOMAIN_PASSWORD, 0)
+            CredDeleteW(PCWSTR(wide_target.as_ptr()), CRED_TYPE_DOMAIN_PASSWORD, Some(0))
                 .map_err(|e| anyhow!("Failed to delete credentials: {}", e))?;
         }
 
@@ -158,7 +158,7 @@ impl NetworkCredentialsService {
 
             CredEnumerateW(
                 PCWSTR(wide_filter.as_ptr()),
-                CRED_ENUMERATE_ALL_CREDENTIALS,
+                Some(CRED_ENUMERATE_ALL_CREDENTIALS),
                 &mut count,
                 &mut credentials,
             )?;
@@ -205,7 +205,7 @@ impl NetworkCredentialsService {
             let result = CredReadW(
                 PCWSTR(wide_target.as_ptr()),
                 CRED_TYPE_DOMAIN_PASSWORD,
-                0,
+                Some(0),
                 &mut credential,
             );
             if result.is_ok() {

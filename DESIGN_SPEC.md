@@ -1632,3 +1632,25 @@ The application provides a "Terminal Detection Service" that scans the registry 
 5. **WSL** (invoked via `wsl.exe ~`)
 
 ---
+
+## 22. GPUI 0.2.2 Implementation & Cross-Platform Architecture Notes (2026-10 Update)
+
+### 22.1 DWM Mica / Mica Alt & Translucent Surface Layering
+- **`src/main.rs`:** Sets `WindowOptions.window_background` to `WindowBackgroundAppearance::MicaAltBackdrop` (when `appearance.mica_alt` is true) or `WindowBackgroundAppearance::MicaBackdrop` (when `appearance.mica_enabled` is true), paired with `window_vibrancy::apply_tabbed(&win, Some(true))` or `window_vibrancy::apply_mica(&win, Some(true))`.
+- **`src/ui/constants.rs` (`UiConstants`):**
+  - `FONT_MAIN` / `FONT_FAMILY_DEFAULT` = `"Segoe UI Variable Text"`
+  - `FONT_MDL2` = `"Segoe Fluent Icons"`
+  - `BG_MAIN_RGBA = 0x191919CC` (80% alpha)
+  - `BG_MAIN_MICA_ALT_RGBA = 0x141414CC` (80% alpha, deeper Mica Alt tint)
+  - `BG_SIDEBAR_RGBA = 0x1F1F1FB3` (70% alpha)
+  - `BG_TAB_BAR_RGBA = 0x14141499` (60% alpha)
+  - `BG_STATUS_BAR_RGBA = 0x1F1F1FB3` (70% alpha)
+  - `CARD_STROKE_RGBA = 0xFFFFFF0F` (1px subtle Fluent card border)
+- **`src/ui/components/app_background.rs` (`AppBackground::build`):** Composites custom per-folder background images (`desktop.ini` `image_path`, `opacity`, `BackgroundFit`) beneath the translucent Mica tint layer.
+
+### 22.2 Strict Viewport Virtualization (`uniform_list`)
+- Both flat and grouped views in `src/ui/views/details_view.rs` (`details_view_flat` and `details_view_grouped`), `src/ui/views/grid_view.rs`, and `src/ui/views/columns_view.rs` use GPUI's `uniform_list` so layout and GPU draw calls scale strictly with the visible viewport rows ($O(\text{viewport})$) rather than total directory size.
+
+### 22.3 Zero-Allocation Natural Sort & $O(1)$ Civil-From-Days Timestamp Formatting
+- **`src/ui/views/helpers.rs` (`natural_cmp`):** Compares filenames case-insensitively with numeric runs compared by magnitude (`file2.txt` < `file10.txt`), matching Windows Explorer `StrCmpLogicalW` across Windows, macOS, and Linux with zero heap allocations.
+- **`src/ui/views/helpers.rs` (`format_system_time`):** Converts `Option<SystemTime>` to `"YYYY-MM-DD HH:MM"` in $O(1)$ time using Howard Hinnant's civil-from-days algorithm, powering both `details_view.rs` and hover tooltips in `app_render.rs`.

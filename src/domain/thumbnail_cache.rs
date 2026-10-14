@@ -1,21 +1,22 @@
-//! Ultra-fast Thumbnail Cache with hash-based invalidation.
+//! Ultra-fast Thumbnail Cache with hash-based invalidation and bounded LRU memory.
 //!
 //! Features:
-//! - LRU cache with 1M max entries
+//! - Bounded LRU cache with 4,096 max entries (prevents unbounded heap growth)
 //! - Hash-based invalidation using file size + mtime
-//! - Disk cache for persistence across sessions
+//! - Collision-free disk cache keys (filename stem + 64-bit path hash)
 //! - Thread-safe with Arc<Mutex<>>
-//! - Dynamic loading for any folder, tab thumbnail, etc.
 
 use crate::core::path_util::FilesPath;
 use lru::LruCache;
-use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// Maximum number of thumbnails to keep in memory
-const MAX_CACHE_SIZE: usize = 1_000_000;
+/// Maximum number of thumbnail path entries to keep in memory
+pub const MAX_CACHE_SIZE: usize = 4_096;
 
 /// File identity for cache invalidation (size + mtime)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -42,7 +43,9 @@ impl FileIdentity {
 
     /// Check if this identity matches another (for cache validation)
     pub fn matches(&self, other: &FileIdentity) -> bool {
-        self.size == other.size && self.mtime_secs == other.mtime_secs && self.mtime_nanos == other.mtime_nanos
+        self.size == other.size
+            && self.mtime_secs == other.mtime_secs
+            && self.mtime_nanos == other.mtime_nanos
     }
 }
 
@@ -59,26 +62,27 @@ pub struct ThumbnailEntry {
 
 /// Ultra-fast thumbnail cache with hash-based invalidation
 pub struct ThumbnailCache {
-    /// In-memory LRU cache: path -> ThumbnailEntry
+    /// Bounded in-memory LRU cache: path -> ThumbnailEntry
     cache: Arc<Mutex<LruCache<String, ThumbnailEntry>>>,
     /// Disk cache directory
     cache_dir: PathBuf,
-    /// Index of all cached entries for fast lookup
-    index: Arc<Mutex<HashMap<String, ThumbnailEntry>>>,
 }
 
 impl ThumbnailCache {
-    /// Create a new thumbnail cache
+    /// Create a new thumbnail cache with default capacity (`MAX_CACHE_SIZE`)
     pub fn new() -> Self {
+        Self::with_capacity(MAX_CACHE_SIZE)
+    }
+
+    /// Create a new thumbnail cache with explicit capacity
+    pub fn with_capacity(capacity: usize) -> Self {
         let cache_dir = std::env::temp_dir().join("files-rs-thumbnails");
         let _ = std::fs::create_dir_all(&cache_dir);
+        let cap = NonZeroUsize::new(capacity.max(1)).unwrap();
 
         Self {
-            cache: Arc::new(Mutex::new(
-                LruCache::new(std::num::NonZeroUsize::new(MAX_CACHE_SIZE).unwrap()),
-            )),
+            cache: Arc::new(Mutex::new(LruCache::new(cap))),
             cache_dir,
-            index: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -94,14 +98,12 @@ impl ThumbnailCache {
         // Check in-memory cache first
         if let Ok(mut cache) = self.cache.lock() {
             if let Some(entry) = cache.get(&key) {
-                // Validate the cached thumbnail is still current
                 if let Ok(meta) = std::fs::metadata(path.as_path()) {
                     let current_identity = FileIdentity::from_metadata(&meta);
                     if entry.identity.matches(&current_identity) && entry.png_path.exists() {
                         return Some(entry.png_path.clone());
                     }
                 }
-                // Stale entry — remove it
                 cache.pop(&key);
             }
         }
@@ -117,12 +119,8 @@ impl ThumbnailCache {
                     identity,
                     last_access: SystemTime::now(),
                 };
-                // Add to in-memory cache
                 if let Ok(mut cache) = self.cache.lock() {
-                    cache.put(key.clone(), entry.clone());
-                }
-                if let Ok(mut index) = self.index.lock() {
-                    index.insert(key, entry);
+                    cache.put(key, entry);
                 }
                 return Some(disk_path);
             }
@@ -138,17 +136,13 @@ impl ThumbnailCache {
         if let Ok(meta) = std::fs::metadata(path.as_path()) {
             let identity = FileIdentity::from_metadata(&meta);
             let entry = ThumbnailEntry {
-                png_path: png_path.clone(),
+                png_path,
                 identity,
                 last_access: SystemTime::now(),
             };
 
-            // Add to in-memory cache
             if let Ok(mut cache) = self.cache.lock() {
-                cache.put(key.clone(), entry.clone());
-            }
-            if let Ok(mut index) = self.index.lock() {
-                index.insert(key, entry);
+                cache.put(key, entry);
             }
         }
     }
@@ -157,15 +151,10 @@ impl ThumbnailCache {
     pub fn invalidate(&self, path: &FilesPath) {
         let key = path.as_path().to_string_lossy().to_string();
 
-        // Remove from in-memory cache
         if let Ok(mut cache) = self.cache.lock() {
             cache.pop(&key);
         }
-        if let Ok(mut index) = self.index.lock() {
-            index.remove(&key);
-        }
 
-        // Remove from disk cache
         let sanitized = self.sanitize_path(path);
         let disk_path = self.cache_dir.join(format!("{}.png", sanitized));
         let _ = std::fs::remove_file(disk_path);
@@ -175,7 +164,6 @@ impl ThumbnailCache {
     pub fn invalidate_directory(&self, dir: &FilesPath) {
         let dir_str = dir.as_path().to_string_lossy().to_string();
 
-        // Remove from in-memory cache
         if let Ok(mut cache) = self.cache.lock() {
             let keys_to_remove: Vec<String> = cache
                 .iter()
@@ -183,19 +171,7 @@ impl ThumbnailCache {
                 .map(|(k, _)| k.clone())
                 .collect();
             for key in keys_to_remove {
-                cache.pop(&key);
-            }
-        }
-
-        // Remove from index
-        if let Ok(mut index) = self.index.lock() {
-            let keys_to_remove: Vec<String> = index
-                .keys()
-                .filter(|k| k.starts_with(&dir_str))
-                .cloned()
-                .collect();
-            for key in keys_to_remove {
-                if let Some(entry) = index.remove(&key) {
+                if let Some(entry) = cache.pop(&key) {
                     let _ = std::fs::remove_file(entry.png_path);
                 }
             }
@@ -204,20 +180,38 @@ impl ThumbnailCache {
 
     /// Get cache statistics
     pub fn stats(&self) -> CacheStats {
-        let cache_len = self.cache.lock().map(|c| c.len()).unwrap_or(0);
-        let index_len = self.index.lock().map(|i| i.len()).unwrap_or(0);
+        let (cache_len, cap) = self
+            .cache
+            .lock()
+            .map(|c| (c.len(), c.cap().get()))
+            .unwrap_or((0, MAX_CACHE_SIZE));
         CacheStats {
             in_memory_entries: cache_len,
-            index_entries: index_len,
-            max_entries: MAX_CACHE_SIZE,
+            index_entries: cache_len,
+            max_entries: cap,
         }
     }
 
-    /// Sanitize a file path for use as a cache filename
+    /// Sanitize a file path for use as a collision-free cache filename
     fn sanitize_path(&self, path: &FilesPath) -> String {
-        path.as_path()
-            .to_string_lossy()
-            .replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '_', "_")
+        let s = path.as_path().to_string_lossy();
+        let stem: String = s
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("item")
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(48)
+            .collect();
+        let mut h = DefaultHasher::new();
+        s.hash(&mut h);
+        format!("{}_{:016x}", stem, h.finish())
     }
 }
 
@@ -248,27 +242,64 @@ mod tests {
 
     #[test]
     fn test_file_identity_match() {
-        let a = FileIdentity { size: 100, mtime_secs: 1000, mtime_nanos: 0 };
-        let b = FileIdentity { size: 100, mtime_secs: 1000, mtime_nanos: 0 };
-        let c = FileIdentity { size: 200, mtime_secs: 1000, mtime_nanos: 0 };
+        let a = FileIdentity {
+            size: 100,
+            mtime_secs: 1000,
+            mtime_nanos: 0,
+        };
+        let b = FileIdentity {
+            size: 100,
+            mtime_secs: 1000,
+            mtime_nanos: 0,
+        };
+        let c = FileIdentity {
+            size: 200,
+            mtime_secs: 1000,
+            mtime_nanos: 0,
+        };
         assert!(a.matches(&b));
         assert!(!a.matches(&c));
     }
 
     #[test]
-    fn test_thumbnail_cache_new() {
+    fn test_thumbnail_cache_new_and_bounded_capacity() {
         let cache = ThumbnailCache::new();
         let stats = cache.stats();
         assert_eq!(stats.in_memory_entries, 0);
         assert_eq!(stats.max_entries, MAX_CACHE_SIZE);
+        assert_eq!(MAX_CACHE_SIZE, 4_096);
     }
 
     #[test]
-    fn test_sanitize_path() {
+    fn test_thumbnail_cache_lru_eviction() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::with_capacity(2);
+        let f1 = temp_dir.path().join("a.txt");
+        let f2 = temp_dir.path().join("b.txt");
+        let f3 = temp_dir.path().join("c.txt");
+        std::fs::write(&f1, b"1").unwrap();
+        std::fs::write(&f2, b"2").unwrap();
+        std::fs::write(&f3, b"3").unwrap();
+
+        cache.insert(&FilesPath::new(&f1), f1.clone());
+        cache.insert(&FilesPath::new(&f2), f2.clone());
+        assert_eq!(cache.stats().in_memory_entries, 2);
+
+        // Inserting a 3rd entry must evict the oldest entry so memory never exceeds capacity
+        cache.insert(&FilesPath::new(&f3), f3.clone());
+        assert_eq!(cache.stats().in_memory_entries, 2);
+        assert_eq!(cache.stats().index_entries, 2);
+    }
+
+    #[test]
+    fn test_sanitize_path_collision_free() {
         let cache = ThumbnailCache::new();
-        let path = FilesPath::new(std::path::PathBuf::from("C:\\Users\\test\\file.txt"));
-        let sanitized = cache.sanitize_path(&path);
-        assert!(!sanitized.contains('\\'));
-        assert!(!sanitized.contains(':'));
+        let path_a = FilesPath::new(std::path::PathBuf::from("C:\\Users\\test\\file.txt"));
+        let path_b = FilesPath::new(std::path::PathBuf::from("D:\\Users\\test\\file.txt"));
+        let san_a = cache.sanitize_path(&path_a);
+        let san_b = cache.sanitize_path(&path_b);
+        assert!(!san_a.contains('\\'));
+        assert!(!san_a.contains(':'));
+        assert_ne!(san_a, san_b);
     }
 }

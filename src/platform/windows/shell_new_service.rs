@@ -300,8 +300,13 @@ mod tests {
     #[test]
     fn test_get_template_by_extension() {
         let service = ShellNewService::new();
-        // This test should work on both platforms
-        let txt_template = service.get_template_by_extension(".txt");
-        let _ = txt_template; // May be None on some systems
+        // Unknown extensions never match a template, on any machine.
+        assert!(service
+            .get_template_by_extension(".files-rs-nonexistent-xyz")
+            .is_none());
+        // Lookup is case-insensitive; whether .txt exists depends on the system registry.
+        let lower = service.get_template_by_extension(".txt");
+        let upper = service.get_template_by_extension(".TXT");
+        assert_eq!(lower.is_some(), upper.is_some());
     }
 }

@@ -194,7 +194,8 @@ impl ContextMenuHost {
     #[cfg(windows)]
     fn do_clipboard_drop_files(&self, paths: &[FilesPath], is_move: bool) -> Result<()> {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Foundation::{BOOL, GlobalFree, HANDLE};
+        use windows::Win32::Foundation::{GlobalFree, HANDLE};
+        use windows::core::BOOL;
         use windows::Win32::System::DataExchange::{
             CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
             SetClipboardData,
@@ -250,14 +251,14 @@ impl ContextMenuHost {
 
             // Open clipboard — if this fails, free the allocated memory to avoid leak.
             if OpenClipboard(None).is_err() {
-                let _ = GlobalFree(hmem);
+                let _ = GlobalFree(Some(hmem));
                 anyhow::bail!("Failed to open clipboard");
             }
             EmptyClipboard()?;
 
             // Set CF_HDROP data — Windows takes ownership of hmem on success
-            let hdrop = HANDLE(hmem.0 as isize);
-            let set_result = SetClipboardData(CF_HDROP, hdrop);
+            let hdrop = HANDLE(hmem.0);
+            let set_result = SetClipboardData(CF_HDROP, Some(hdrop));
 
             // Set preferred drop effect so paste handler knows whether to delete source
             if set_result.is_ok() {
@@ -270,12 +271,12 @@ impl ContextMenuHost {
                     // DROPEFFECT_MOVE = 2, DROPEFFECT_COPY = 1
                     *effect_ptr = if is_move { 2 } else { 1 };
                     GlobalUnlock(effect_hmem);
-                    let _ = SetClipboardData(cf_drop_effect, HANDLE(effect_hmem.0 as isize));
+                    let _ = SetClipboardData(cf_drop_effect, Some(HANDLE(effect_hmem.0)));
                 }
             } else {
                 // SetClipboardData failed — Windows didn't take ownership.
                 // Free the memory to avoid leaking it until process exit.
-                let _ = GlobalFree(hmem);
+                let _ = GlobalFree(Some(hmem));
                 tracing::warn!("SetClipboardData failed — HDROP memory freed");
             }
 

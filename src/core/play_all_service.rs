@@ -180,7 +180,7 @@ impl PlayAllService {
                     SW_SHOW,
                 );
 
-                player_launched = result.0 > 32;
+                player_launched = result.0 as usize > 32;
             }
         }
 

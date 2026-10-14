@@ -26,6 +26,33 @@ pub fn icons_cache_dir() -> std::path::PathBuf {
     dir
 }
 
+/// Disk cache filename for a path's extracted thumbnail/icon PNG.
+/// Keyed by a hash of the FULL path: sanitized bare filenames collide
+/// across folders (C:\a\doc.pdf vs D:\b\doc.pdf shared one PNG) and go
+/// stale silently. Old un-hashed files are simply orphaned, never read.
+pub fn disk_cache_key(path: &crate::core::path_util::FilesPath) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let s = path.to_string_lossy();
+    let stem: String = s
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or("item")
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{}_{:016x}", stem, h.finish())
+}
+
 /// State of a tag across selected items
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagState {
@@ -75,6 +102,8 @@ pub struct AppState {
     pub is_maximized: bool,
     /// Ultra-fast thumbnail cache with hash-based invalidation
     pub thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache,
+    /// Cooperative cancellation guard for in-flight directory navigation tasks
+    pub nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard,
 }
 
 impl AppState {
@@ -130,6 +159,7 @@ impl AppState {
             main_focus: None,
             is_maximized: false,
             thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::new(),
+            nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard::new(),
         }
     }
 }
@@ -220,6 +250,10 @@ pub struct AppWindow {
     pub fps_last_time: Option<std::time::Instant>,
     pub fps_frame_count: u32,
     pub fps_current: f64,
+    /// Previous frame instant (worst-frame / stutter tracking)
+    pub fps_prev_frame: Option<std::time::Instant>,
+    /// Worst single frame interval in the current fps window, in ms
+    pub fps_worst_ms: f64,
     /// Frame-time tracker for frame-rate-independent scroll physics
     pub last_render_time: Option<std::time::Instant>,
     /// File system watcher for auto-refreshing the current folder (primary pane)
@@ -232,4 +266,7 @@ pub struct AppWindow {
     /// Channel receiver for file system events (secondary pane)
     pub file_event_rx_secondary:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::storage::storage::FileEvent>>,
+    /// Focus-out subscription (omnibar auto-dismiss). Held, not dropped:
+    /// dropping a GPUI `Subscription` unsubscribes immediately.
+    pub focus_out_subscription: Option<Subscription>,
 }

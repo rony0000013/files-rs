@@ -1,6 +1,5 @@
 //! Status Bar component — per DESIGN_SPEC.md section 9.
-//! Displays: item count, selection info, free drive space.
-//! Layout: 3-column grid [LEFT: info] [CENTER: git actions] [RIGHT: branch].
+//! Displays: item count, selection info, git branch badge, view lock, and zoom controls.
 
 use crate::app::AppState;
 use crate::ui::constants::UiConstants;
@@ -48,7 +47,7 @@ impl StatusBarState {
     }
 }
 
-/// Format bytes as human-readable string (KB, MB, GB).
+/// Format bytes as human-readable string (KB, MB, GB, TB).
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -72,8 +71,8 @@ pub struct StatusBarView;
 
 impl StatusBarView {
     /// Build the status bar per DESIGN_SPEC.md 9.
-    /// Height: 32px, padding: 8px left.
-    /// 3-column grid: [LEFT: info] [CENTER: git actions] [RIGHT: branch]
+    /// Height: 32px, padding: 12px horizontal.
+    /// Layout: [LEFT: counts & selection] [RIGHT: git branch + view lock + zoom controls]
     pub fn build(
         state: &StatusBarState,
         _app: &AppState,
@@ -98,7 +97,7 @@ impl StatusBarView {
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .child(
-                // LEFT: folder count + file count
+                // LEFT: folder count + file count + selection info
                 div()
                     .flex()
                     .items_center()
@@ -144,6 +143,15 @@ impl StatusBarView {
                             ),
                     )
                     .children(if state.selected_count > 0 {
+                        let sel_label = if state.selected_size_bytes > 0 {
+                            format!(
+                                "{} selected ({})",
+                                state.selected_count,
+                                format_size(state.selected_size_bytes)
+                            )
+                        } else {
+                            format!("{} selected", state.selected_count)
+                        };
                         Some(
                             div()
                                 .flex()
@@ -159,7 +167,7 @@ impl StatusBarView {
                                     div()
                                         .text_size(px(12.0))
                                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                        .child(format!("{} selected", state.selected_count)),
+                                        .child(sel_label),
                                 ),
                         )
                     } else {
@@ -167,11 +175,42 @@ impl StatusBarView {
                     }),
             )
             .child(
-                // RIGHT: zoom mode button + zoom percentage
+                // RIGHT: git branch badge + view lock + zoom mode button + zoom percentage
                 div()
                     .flex()
                     .items_center()
                     .gap(px(4.0))
+                    // Git branch badge (when inside a Git repository)
+                    .children(if state.show_git_actions {
+                        state.git_branch.as_ref().map(|branch| {
+                            div()
+                                .id("status-git-branch")
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .rounded(px(4.0))
+                                .px(px(8.0))
+                                .py(px(3.0))
+                                .mr(px(4.0))
+                                .bg(rgba(UiConstants::BG_BADGE_RGBA))
+                                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                        .child("\u{E8AD}"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                        .child(branch.clone()),
+                                )
+                        })
+                    } else {
+                        None
+                    })
                     // Lock icon for per-directory view/zoom memory
                     .child(
                         div()
@@ -237,10 +276,9 @@ impl StatusBarView {
                                 let v = v.clone();
                                 move |event, _win, cx| {
                                     v.update(cx, |this, cx| {
-                                        // Open dialog above the button
                                         let mut pos = event.position;
-                                        pos.y -= px(320.0); // Offset upwards
-                                        pos.x -= px(260.0); // Offset left to prevent overflow
+                                        pos.y -= px(320.0);
+                                        pos.x -= px(260.0);
                                         this.open_zoom_slider(pos, cx);
                                     });
                                 }
@@ -278,13 +316,12 @@ impl StatusBarView {
                                     .py(px(2.0))
                                     .overflow_hidden()
                                     .child(
-                                        // Progress bar fill (clamped so it never exceeds badge width visually)
                                         div()
                                             .absolute()
                                             .inset_0()
                                             .w(px((zoom_pct as f32 * 0.46).clamp(4.0, 46.0)))
                                             .h_full()
-                                            .bg(rgba(0x005FB840u32)) // accent at 25% opacity
+                                            .bg(rgba(0x005FB840u32))
                                             .rounded(px(4.0)),
                                     )
                                     .child(
@@ -296,5 +333,28 @@ impl StatusBarView {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_bar_format_size() {
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn test_status_bar_state_sync() {
+        let mut st = StatusBarState::new();
+        st.selected_count = 5;
+        st.sync(120, 20, 100);
+        assert_eq!(st.total_count, 120);
+        assert_eq!(st.folder_count, 20);
+        assert_eq!(st.file_count, 100);
+        assert_eq!(st.selected_count, 0);
     }
 }

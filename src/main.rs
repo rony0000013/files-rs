@@ -9,31 +9,46 @@ use gpui::*;
 use std::sync::Arc;
 
 fn main() {
-    #[cfg(windows)]
-    {
-        files_rs::core::logger::Logger::init();
-    }
+    files_rs::core::logger::Logger::init();
 
     let db_path = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("files-rs")
         .join("tags.db");
-    let _ = std::fs::create_dir_all(db_path.parent().unwrap());
-    let db = Arc::new(Database::new(db_path).unwrap());
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let db = Arc::new(
+        Database::new(db_path).unwrap_or_else(|_| {
+            Database::new(std::path::PathBuf::from(":memory:"))
+                .expect("Failed to initialize fallback in-memory database")
+        }),
+    );
     let progress = Arc::new(files_rs::core::progress::ProgressEngine::new());
-    let root = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("C:\\"));
+    let root = dirs::home_dir().unwrap_or_else(|| {
+        #[cfg(windows)]
+        {
+            std::path::PathBuf::from("C:\\")
+        }
+        #[cfg(not(windows))]
+        {
+            std::path::PathBuf::from("/")
+        }
+    });
 
     Application::new().run(move |cx| {
         let config = AppConfig::load();
         let initial_view_mode = config.view.last_view_mode.clone();
-        let settings = cx.new(|cx| SettingsModel::new(config));
-        let nav = cx.new(|cx| {
+        let mica_enabled = config.appearance.mica_enabled;
+        let mica_alt = config.appearance.mica_alt;
+        let settings = cx.new(|_cx| SettingsModel::new(config));
+        let nav = cx.new(|_cx| {
             files_rs::core::navigation_manager::NavigationState::new(
                 FilesPath::new(&root),
                 initial_view_mode,
             )
         });
-        let loc = cx.new(|cx| files_rs::localization::localization::LocalizationManager::new());
+        let loc = cx.new(|_cx| files_rs::localization::localization::LocalizationManager::new());
         let slot = cx.reserve_entity();
         let file_items = cx.insert_entity(slot, |_| FileItems::default());
         let state = AppState::new(
@@ -47,20 +62,33 @@ fn main() {
             cx,
         );
 
+        // gpui 0.2.2 only exposes Opaque/Transparent/Blurred (no native Mica
+        // variants); backdrop blur + the window_vibrancy Mica calls below
+        // produce the actual Mica/MicaAlt effect.
+        let window_background = if mica_enabled {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
+
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Maximized(Bounds::new(
                 point(px(0.0), px(0.0)),
                 size(px(1280.0), px(800.0)),
             ))),
             titlebar: None,
-            window_background: WindowBackgroundAppearance::Opaque,
+            window_background,
             ..Default::default()
         };
 
         cx.open_window(opts, move |window, cx| {
             #[cfg(windows)]
-            {
-                let _ = window_vibrancy::apply_mica(&*window, Some(true));
+            if mica_enabled {
+                if mica_alt {
+                    let _ = window_vibrancy::apply_tabbed(&*window, Some(true));
+                } else {
+                    let _ = window_vibrancy::apply_mica(&*window, Some(true));
+                }
             }
             let rx = progress.subscribe();
             cx.new(|cx| AppWindow::new(state, rx, window, cx))

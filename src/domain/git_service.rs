@@ -94,7 +94,7 @@ impl GitService {
         let last_commit = format!(
             "{} - {}",
             commit.id().to_string().get(0..7).unwrap_or(""),
-            commit.summary().unwrap_or("No summary")
+            commit.summary().ok().flatten().unwrap_or("No summary")
         );
 
         Ok(Some(GitProperties {
@@ -113,7 +113,53 @@ impl GitService {
     pub fn get_branch(path: &FilesPath) -> Option<String> {
         let repo = Repository::discover(path.as_path()).ok()?;
         let head = repo.head().ok()?;
-        head.shorthand().map(|s| s.to_string())
+        head.shorthand().ok().map(|s| s.to_string())
+    }
+
+    /// Batch-compute git statuses for all non-clean files in the repository containing `dir_path`.
+    /// Opens the repository once and runs a single status scan instead of per-file repo discovery.
+    pub fn get_directory_statuses(
+        dir_path: &FilesPath,
+    ) -> std::collections::HashMap<FilesPath, GitFileStatus> {
+        let mut map = std::collections::HashMap::new();
+        let repo = match Repository::discover(dir_path.as_path()) {
+            Ok(r) => r,
+            Err(_) => return map,
+        };
+        let workdir = match repo.workdir() {
+            Some(w) => w.to_path_buf(),
+            None => return map,
+        };
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(false)
+            .include_ignored(false);
+        if let Ok(statuses) = repo.statuses(Some(&mut opts)) {
+            for entry in statuses.iter() {
+                if let Ok(rel_path) = entry.path() {
+                    let st = entry.status();
+                    use git2::Status;
+                    let file_status = if st == Status::CURRENT {
+                        GitFileStatus::Clean
+                    } else if st.contains(Status::WT_NEW) || st.contains(Status::INDEX_NEW) {
+                        GitFileStatus::Added
+                    } else if st.contains(Status::WT_MODIFIED) || st.contains(Status::INDEX_MODIFIED) {
+                        GitFileStatus::Modified
+                    } else if st.contains(Status::WT_DELETED) || st.contains(Status::INDEX_DELETED) {
+                        GitFileStatus::Deleted
+                    } else if st.contains(Status::WT_RENAMED) || st.contains(Status::INDEX_RENAMED) {
+                        GitFileStatus::Renamed
+                    } else if st.contains(Status::IGNORED) {
+                        GitFileStatus::Ignored
+                    } else {
+                        GitFileStatus::Modified
+                    };
+                    let full_path = FilesPath::new(workdir.join(rel_path));
+                    map.insert(full_path, file_status);
+                }
+            }
+        }
+        map
     }
 
     /// Get the git status of a specific file within a repository
@@ -206,7 +252,7 @@ impl GitService {
             if diff.deltas().len() > 0 {
                 // This commit touched our file
                 let author = commit.author().name().unwrap_or("Unknown").to_string();
-                let message = commit.summary().unwrap_or("No message").to_string();
+                let message = commit.summary().ok().flatten().unwrap_or("No message").to_string();
                 let time = commit.time();
                 let seconds = time.seconds();
                 let datetime = if seconds >= 0 {
@@ -234,7 +280,7 @@ impl GitService {
         let head = repo.head().ok()?;
         let commit = head.peel_to_commit().ok()?;
         let author = commit.author().name().unwrap_or("Unknown").to_string();
-        let message = commit.summary().unwrap_or("No message").to_string();
+        let message = commit.summary().ok().flatten().unwrap_or("No message").to_string();
         let time = commit.time();
         let seconds = time.seconds();
         let datetime = if seconds >= 0 {
@@ -490,5 +536,22 @@ mod tests {
         assert_eq!(info.author, "Test Author");
         assert!(info.message.contains("My test commit message"));
         assert!(!info.date.is_empty());
+    }
+
+    #[test]
+    fn test_get_directory_statuses_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+        let _repo = git2::Repository::init(repo_path).unwrap();
+
+        let untracked_file = repo_path.join("untracked.rs");
+        std::fs::write(&untracked_file, b"fn main() {}").unwrap();
+
+        let dir_files_path = FilesPath::new(repo_path);
+        let statuses = GitService::get_directory_statuses(&dir_files_path);
+        assert!(
+            statuses.values().any(|s| *s == GitFileStatus::Added || *s == GitFileStatus::Untracked),
+            "Batch directory status scan should detect newly created file in a single pass"
+        );
     }
 }

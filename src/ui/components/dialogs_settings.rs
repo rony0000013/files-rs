@@ -5,145 +5,6 @@ use crate::ui::constants::UiConstants;
 use gpui::*;
 
 impl crate::ui::components::dialogs::DialogsView {
-    pub(crate) fn build_settings_dialog(
-        data: &SettingsPreReadData,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let active_tab = data.active_tab;
-        let config = &data.config;
-        let v_close = view.clone();
-
-        div()
-            .flex_col()
-            .w(px(700.0))
-            .h(px(500.0))
-            .bg(rgb(UiConstants::BG_DIALOG_RGB))
-            .rounded(px(8.0))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            .child(
-                // Header
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .border_b(px(1.0))
-                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                    .child(
-                        div()
-                            .text_size(AbsoluteLength::Pixels(px(18.0)))
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .font_weight(FontWeight(600.0))
-                            .child("Settings"),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_close.update(cx, |this, cx| this.close_dialog(cx));
-                            })
-                            .child("\u{E8BB}"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_grow()
-                    .overflow_hidden()
-                    .child(
-                        // Settings Sidebar
-                        div()
-                            .w(px(180.0))
-                            .flex()
-                            .flex_col()
-                            .border_r(px(1.0))
-                            .border_color(rgba(UiConstants::DIVIDER_RGBA))
-                            .p(px(8.0))
-                            .gap(px(4.0))
-                            .child(Self::settings_tab_btn(
-                                "General",
-                                SettingsTab::General,
-                                active_tab == SettingsTab::General,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Appearance",
-                                SettingsTab::Appearance,
-                                active_tab == SettingsTab::Appearance,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Layout",
-                                SettingsTab::Layout,
-                                active_tab == SettingsTab::Layout,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Folders",
-                                SettingsTab::Folders,
-                                active_tab == SettingsTab::Folders,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Tags",
-                                SettingsTab::Tags,
-                                active_tab == SettingsTab::Tags,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Actions",
-                                SettingsTab::Actions,
-                                active_tab == SettingsTab::Actions,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Toolbar",
-                                SettingsTab::Toolbar,
-                                active_tab == SettingsTab::Toolbar,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "Advanced",
-                                SettingsTab::Advanced,
-                                active_tab == SettingsTab::Advanced,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "DevTools",
-                                SettingsTab::DevTools,
-                                active_tab == SettingsTab::DevTools,
-                                view.clone(),
-                            ))
-                            .child(Self::settings_tab_btn(
-                                "About",
-                                SettingsTab::About,
-                                active_tab == SettingsTab::About,
-                                view.clone(),
-                            )),
-                    )
-                    .child(
-                        // Settings Content (scrollable)
-                        div()
-                            .id("settings-scroll")
-                            .flex_col()
-                            .w_full()
-                            .flex_grow()
-                            .overflow_y_scroll()
-                            .px(px(24.0))
-                            .py(px(16.0))
-                            .gap(px(16.0))
-                            .child(Self::build_settings_content(
-                                active_tab,
-                                config,
-                                data,
-                                view.clone(),
-                            )),
-                    ),
-            )
-    }
-
     pub(crate) fn settings_group_header(label: &str) -> impl IntoElement {
         div()
             .text_size(px(11.0))
@@ -569,13 +430,13 @@ impl crate::ui::components::dialogs::DialogsView {
 
     pub(crate) fn settings_text_input(
         label: &str,
-        value: &str,
+        value: impl Into<String>,
         key: &'static str,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v_edit = view.clone();
         let label_str = label.to_string();
-        let val = value.to_string();
+        let val = value.into();
         div()
             .flex()
             .items_center()
@@ -614,6 +475,6 @@ impl crate::ui::components::dialogs::DialogsView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let val_str = format!("{:.1}", value);
-        Self::settings_text_input(label, &val_str, key, view)
+        Self::settings_text_input(label, val_str, key, view)
     }
 }

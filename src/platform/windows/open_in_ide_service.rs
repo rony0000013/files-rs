@@ -192,7 +192,7 @@ impl OpenInIDEService {
                 SW_SHOW,
             );
 
-            let success = result.0 > 32;
+            let success = result.0 as usize > 32;
 
             Ok(OpenInIDEResult {
                 success,
@@ -202,7 +202,7 @@ impl OpenInIDEService {
                 } else {
                     Some(format!(
                         "Failed to open {} in IDE (error code: {})",
-                        path_str, result.0
+                        path_str, result.0 as usize
                     ))
                 },
             })

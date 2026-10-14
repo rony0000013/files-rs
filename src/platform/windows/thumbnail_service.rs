@@ -27,8 +27,10 @@ impl ThumbnailSize {
 
 /// Windows Thumbnail Service
 /// Provides thumbnails for files
+/// Maximum number of raw RGBA bitmaps retained in RAM (128 * 256 * 256 * 4 = 32 MB max)
+pub const MAX_RAW_BITMAP_CACHE_ENTRIES: usize = 128;
+
 pub struct ThumbnailService {
-    #[cfg(windows)]
     cache: Mutex<lru::LruCache<FilesPath, ThumbnailResult>>,
 }
 
@@ -62,8 +64,9 @@ impl std::fmt::Display for ImageFormat {
 impl ThumbnailService {
     pub fn new() -> Self {
         Self {
-            #[cfg(windows)]
-            cache: Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(2000).unwrap())),
+            cache: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(MAX_RAW_BITMAP_CACHE_ENTRIES).unwrap(),
+            )),
         }
     }
 
@@ -120,13 +123,10 @@ impl ThumbnailService {
     ) -> Result<ThumbnailResult> {
         // Check cache first
         {
-            #[cfg(windows)]
-            {
-                let mut cache = self.cache.lock().unwrap();
-                if let Some(cached) = cache.get(&path) {
-                    tracing::debug!("Thumbnail cache hit for {:?}", path);
-                    return Ok(cached.clone());
-                }
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(cached) = cache.get(path) {
+                tracing::debug!("Thumbnail cache hit for {:?}", path);
+                return Ok(cached.clone());
             }
         }
 
@@ -135,14 +135,48 @@ impl ThumbnailService {
 
         // Cache result
         {
-            #[cfg(windows)]
-            {
-                let mut cache = self.cache.lock().unwrap();
-                cache.put(path.clone(), result.clone());
-            }
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(path.clone(), result.clone());
         }
 
         Ok(result)
+    }
+
+    #[cfg(not(windows))]
+    pub fn extract_thumbnail(
+        &self,
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Result<ThumbnailResult> {
+        let (cx, cy) = size.dimensions();
+        if let Ok(img) = image::open(path.as_path()) {
+            let resized = img.resize_exact(cx, cy, image::imageops::FilterType::Lanczos3);
+            let rgba = resized.to_rgba8();
+            let mut bgra = rgba.into_raw();
+            for px in bgra.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            return Ok(ThumbnailResult {
+                data: bgra,
+                width: cx,
+                height: cy,
+                format: ImageFormat::Png,
+            });
+        }
+        let color = self.get_color_for_extension(path);
+        let mut data = vec![0u8; (cx * cy * 4) as usize];
+        for px in data.chunks_exact_mut(4) {
+            px[0] = color.b;
+            px[1] = color.g;
+            px[2] = color.r;
+            px[3] = 255;
+        }
+        Ok(ThumbnailResult {
+            data,
+            width: cx,
+            height: cy,
+            format: ImageFormat::Bmp,
+        })
     }
 
     #[cfg(windows)]
@@ -388,7 +422,7 @@ impl ThumbnailService {
             .ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
 
         unsafe {
-            let _ = DeleteObject(hbitmap);
+            let _ = DeleteObject(hbitmap.into());
         };
 
         // Core quality fix: if we got 256×256 from ISIF, downscale to (cx × cy)
@@ -434,7 +468,7 @@ impl ThumbnailService {
 
         let mut bitmap = std::mem::zeroed::<BITMAP>();
         if GetObjectW(
-            hbitmap,
+            hbitmap.into(),
             std::mem::size_of::<BITMAP>() as i32,
             Some(&mut bitmap as *mut _ as *mut _),
         ) == 0
@@ -453,7 +487,7 @@ impl ThumbnailService {
             return None;
         }
 
-        let old_obj = SelectObject(hdc, hbitmap);
+        let old_obj = SelectObject(hdc, hbitmap.into());
 
         let bmp_info_header = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -628,7 +662,7 @@ impl ThumbnailService {
                 // Get bitmap info
                 let mut bitmap = std::mem::zeroed::<BITMAP>();
                 if GetObjectW(
-                    hbitmap,
+                    hbitmap.into(),
                     std::mem::size_of::<BITMAP>() as i32,
                     Some(&mut bitmap as *mut _ as *mut _),
                 ) != 0
@@ -642,7 +676,7 @@ impl ThumbnailService {
                         let hdc = CreateCompatibleDC(None);
                         if !hdc.is_invalid() {
                             // Select the bitmap into the DC
-                            let old_obj = SelectObject(hdc, hbitmap);
+                            let old_obj = SelectObject(hdc, hbitmap.into());
 
                             // Prepare BITMAPINFO structure for GetDIBits
                             let bmp_info_header = BITMAPINFOHEADER {
@@ -691,9 +725,9 @@ impl ThumbnailService {
                                 // Successfully extracted pixel data
                                 // Resize if needed to match requested dimensions
                                 if bmp_width == width && bmp_height == height {
-                                        let _ = DeleteObject(hbitmap);
+                                        let _ = DeleteObject(hbitmap.into());
                                         if !icon_info.hbmMask.is_invalid() {
-                                            let _ = DeleteObject(icon_info.hbmMask);
+                                            let _ = DeleteObject(icon_info.hbmMask.into());
                                         }
                                         return Some(pixel_data);
                                 } else {
@@ -719,9 +753,9 @@ impl ThumbnailService {
                                             chunk.swap(0, 2);
                                         }
                                         let resized = resized_img.into_raw();
-                                        let _ = DeleteObject(hbitmap);
+                                        let _ = DeleteObject(hbitmap.into());
                                         if !icon_info.hbmMask.is_invalid() {
-                                            let _ = DeleteObject(icon_info.hbmMask);
+                                            let _ = DeleteObject(icon_info.hbmMask.into());
                                         }
                                         return Some(resized);
                                     }
@@ -731,11 +765,11 @@ impl ThumbnailService {
                     }
                 }
                 // Clean up bitmap if we didn't extract successfully
-                let _ = DeleteObject(hbitmap);
+                let _ = DeleteObject(hbitmap.into());
             }
             // Clean up mask bitmap if present
             if !icon_info.hbmMask.is_invalid() {
-                let _ = DeleteObject(icon_info.hbmMask);
+                let _ = DeleteObject(icon_info.hbmMask.into());
             }
         }
         None

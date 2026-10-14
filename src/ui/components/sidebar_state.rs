@@ -3,8 +3,6 @@
 //!
 //! On non-Windows, this module provides a stub implementation.
 
-#![recursion_limit = "256"]
-
 use crate::core::path_util::FilesPath;
 use crate::ui::components::bouncy_scroll::BouncyScrollState;
 use crate::ui::constants::UiConstants;

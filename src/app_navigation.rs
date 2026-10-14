@@ -13,6 +13,9 @@ use crate::platform::windows::recycle_bin_service::RecycleBinService;
 
 impl AppWindow {
     pub fn navigate(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        // Cancel any previous in-flight directory load immediately
+        let cancel_token = self.state.nav_cancel_guard.reset();
+
         // Update navigation history
         self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.active_tab_mut().navigate(path.clone());
@@ -21,15 +24,11 @@ impl AppWindow {
         self.state.main_view.primary_path = path.clone();
         self.state.nav_bar.update_path(path.clone());
         cx.notify();
-        // Don't clear items here — let async load replace them atomically
-        // to avoid blank flash during tab switches
 
-        // Sync sidebar active item
-        #[cfg(windows)]
+        // Sync sidebar active item across all platforms
         self.state.sidebar.set_active(&path);
 
         // Status bar counts will be updated when items finish loading (Phase 1 callback).
-        // Don't count from the just-cleared items list — it would always show 0.
         self.state.status_bar.sync(0, 0, 0);
 
         // Update git info in status bar
@@ -56,9 +55,6 @@ impl AppWindow {
                 self.start_file_watcher_secondary(secondary_path);
             }
         }
-
-        // Early notify removed - will be called when items finish loading
-        // cx.notify();
 
         let active_tab = self.state.navigation.read(cx).tabs.active_tab().clone();
         let settings_model = self.state.settings.read(cx);
@@ -106,16 +102,14 @@ impl AppWindow {
         let this_weak = cx.weak_entity();
         cx.foreground_executor()
             .spawn(async move {
-                tracing::info!(
-                    "Progressive loading started for: {:?}",
-                    path_clone
-                );
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+                tracing::info!("Progressive loading started for: {:?}", path_clone);
                 // =================================================================
                 // PHASE 1: Fast initial listing (uses entry.file_type() — no stat)
-                // This uses d_type from readdir, avoiding a per-file stat syscall
-                // which is slow on WSL/9P. Items appear instantly with basic info;
-                // full metadata (size, modified, hidden) is enriched in Phase 2.
                 // =================================================================
+                let token_p1 = cancel_token.clone();
                 let fast_items: Vec<crate::domain::metadata::FileItem> = async_cx
                     .background_executor()
                     .spawn({
@@ -124,13 +118,11 @@ impl AppWindow {
                             let mut items = Vec::new();
                             if let Ok(rd) = std::fs::read_dir(p.as_path()) {
                                 for entry in rd.filter_map(|e| e.ok()) {
+                                    if token_p1.is_cancelled() {
+                                        break;
+                                    }
                                     let path = FilesPath::new(entry.path());
-                                    let name = entry
-                                        .file_name()
-                                        .to_string_lossy()
-                                        .into_owned();
-                                    // entry.file_type() uses d_type from readdir —
-                                    // no stat call, very fast
+                                    let name = entry.file_name().to_string_lossy().into_owned();
                                     let file_type = entry
                                         .file_type()
                                         .map(|t| {
@@ -141,12 +133,13 @@ impl AppWindow {
                                             }
                                         })
                                         .unwrap_or(FileType::File);
+                                    let is_hidden = name.starts_with('.');
                                     items.push(crate::domain::metadata::FileItem {
                                         name,
                                         path,
                                         file_type,
                                         size: 0,
-                                        is_hidden: false,
+                                        is_hidden,
                                         is_system: false,
                                         modified: None,
                                         created: None,
@@ -158,9 +151,16 @@ impl AppWindow {
                     })
                     .await;
 
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+
                 let total_count = fast_items.len();
-                let item_paths: Vec<FilesPath> =
-                    fast_items.iter().map(|i| i.path.clone()).collect();
+                let indexed_paths: Vec<(usize, FilesPath)> = fast_items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, i)| (idx, i.path.clone()))
+                    .collect();
 
                 tracing::info!(
                     "Phase 1: {} items listed instantly from {:?}",
@@ -174,10 +174,6 @@ impl AppWindow {
                     this_weak
                         .update(&mut async_cx, |this, cx| {
                             this.state.main_view.items = fast_items;
-                            // Sync file_items model for uniform_list closures
-                            // NOTE: Cannot use std::mem::swap here because main_view.items
-                            // is read again on lines 168-176 for folder/file counting.
-                            // Clone is required to keep both copies in sync.
                             this.state.file_items.update(cx, |m, _| {
                                 m.items = this.state.main_view.items.clone();
                                 m.selected_indices =
@@ -193,8 +189,7 @@ impl AppWindow {
                                 .iter()
                                 .filter(|i| matches!(i.file_type, FileType::Directory))
                                 .count();
-                            let file_count =
-                                this.state.main_view.items.len() - folder_count;
+                            let file_count = this.state.main_view.items.len() - folder_count;
                             this.state.status_bar.sync(
                                 this.state.main_view.items.len(),
                                 folder_count,
@@ -204,9 +199,6 @@ impl AppWindow {
                             this.state.status_bar.show_git_actions = branch.is_some();
                             this.state.status_bar.git_branch = branch;
 
-                            // Sync cached icon paths so revisited folders show
-                            // thumbnails instantly (Phase 3 will trigger load_icons
-                            // for uncached items).
                             this.state.main_view.icon_paths = this
                                 .state
                                 .icon_cache
@@ -219,45 +211,56 @@ impl AppWindow {
                 }
 
                 // =================================================================
-                // PHASE 2: Enrich items with full metadata in background batches
-                // Each batch fetches size, modified, is_hidden, is_system via stat
-                // and updates the UI progressively.
+                // PHASE 2: Enrich items with full metadata in O(1)-indexed batches
+                // Uses 2,048-item batches and direct slice indexing (O(N) total,
+                // eliminating the previous O(N^2) linear find + 500x vector clones).
                 // =================================================================
-                if !item_paths.is_empty() {
-                    let batch_size = 100;
-                    for chunk in item_paths.chunks(batch_size) {
+                if !indexed_paths.is_empty() {
+                    let batch_size = 2048;
+                    for chunk in indexed_paths.chunks(batch_size) {
+                        if cancel_token.is_cancelled() {
+                            return;
+                        }
                         let chunk = chunk.to_vec();
+                        let token_p2 = cancel_token.clone();
                         let enriched = async_cx
                             .background_executor()
                             .spawn(async move {
                                 let mut results: Vec<(
-                                    FilesPath,
+                                    usize,
                                     u64,
                                     Option<std::time::SystemTime>,
                                     Option<std::time::SystemTime>,
                                     bool,
                                     bool,
-                                )> = Vec::new();
-                                for path in &chunk {
+                                )> = Vec::with_capacity(chunk.len());
+                                for (idx, path) in &chunk {
+                                    if token_p2.is_cancelled() {
+                                        break;
+                                    }
                                     if let Ok(meta) = std::fs::metadata(path.as_path()) {
                                         let size = meta.len();
                                         let modified = meta.modified().ok();
                                         let created = meta.created().ok();
-                                        let mut is_hidden = false;
+                                        let mut is_hidden = path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().starts_with('.'))
+                                            .unwrap_or(false);
                                         let mut is_system = false;
                                         #[cfg(windows)]
                                         {
                                             use std::os::windows::fs::MetadataExt;
                                             let attrs = meta.file_attributes();
-                                            is_hidden = (attrs
-                                                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0)
-                                                != 0;
+                                            is_hidden = is_hidden
+                                                || (attrs
+                                                    & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN.0)
+                                                    != 0;
                                             is_system = (attrs
                                                 & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM.0)
                                                 != 0;
                                         }
                                         results.push((
-                                            path.clone(),
+                                            *idx,
                                             size,
                                             modified,
                                             created,
@@ -270,18 +273,22 @@ impl AppWindow {
                             })
                             .await;
 
+                        if cancel_token.is_cancelled() {
+                            return;
+                        }
+
                         if !enriched.is_empty() {
+                            let target_dir = path_clone.clone();
                             this_weak
                                 .update(&mut async_cx, |this, cx| {
-                                    for (path, size, modified, created, is_hidden, is_system) in
+                                    if this.state.main_view.primary_path != target_dir {
+                                        return;
+                                    }
+                                    for (idx, size, modified, created, is_hidden, is_system) in
                                         enriched
                                     {
-                                        if let Some(item) = this
-                                            .state
-                                            .main_view
-                                            .items
-                                            .iter_mut()
-                                            .find(|i| i.path == path)
+                                        if let Some(item) =
+                                            this.state.main_view.items.get_mut(idx)
                                         {
                                             item.size = size;
                                             item.modified = modified;
@@ -301,36 +308,42 @@ impl AppWindow {
                 }
 
                 // =================================================================
-                // PHASE 2.5: Compute git status for all items in background
+                // PHASE 2.5: Single-pass Git status scan in background
                 // =================================================================
-                {
-                    let git_paths = item_paths.clone();
+                if !cancel_token.is_cancelled() {
                     let git_path = path_clone.clone();
                     let git_weak = this_weak.clone();
-                    async_cx
-                        .background_executor()
-                        .spawn(async move {
-                            use crate::domain::git_service::GitService;
-                            let mut git_statuses: Vec<(FilesPath, crate::domain::git_service::GitFileStatus)> = Vec::new();
-                            // Only compute git status if we're in a repo
-                            if GitService::is_repo(&git_path) {
-                                for path in &git_paths {
-                                    let status = GitService::get_file_status(path);
-                                    git_statuses.push((path.clone(), status));
+                    let mut git_cx = async_cx.clone();
+                    let token_git = cancel_token.clone();
+                    let token_outer = cancel_token.clone();
+                    let fg = git_cx.foreground_executor().clone();
+                    let bg = git_cx.background_executor().clone();
+                    fg.spawn(async move {
+                        let git_statuses = bg
+                            .spawn(async move {
+                                if token_git.is_cancelled() {
+                                    return std::collections::HashMap::new();
                                 }
-                            }
-                            git_statuses
-                        })
-                        .detach();
-                    // Note: To properly wire this back, we'd need to use the same
-                    // callback pattern as Phase 2. For now, the git status is computed
-                    // synchronously on first access in details_view via the cache.
+                                GitService::get_directory_statuses(&git_path)
+                            })
+                            .await;
+                        if token_outer.is_cancelled() || git_statuses.is_empty() {
+                            return;
+                        }
+                        git_weak
+                            .update(&mut git_cx, |this, cx| {
+                                this.state.main_view.git_status_cache.extend(git_statuses);
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
                 }
 
                 // =================================================================
-                // PHASE 3: Start icon extraction for all items
+                // PHASE 3: Start icon extraction for visible viewport items
                 // =================================================================
-                {
+                if !cancel_token.is_cancelled() {
                     let p3 = path_clone.clone();
                     this_weak
                         .update(&mut async_cx, |this, cx| {
@@ -340,7 +353,6 @@ impl AppWindow {
                                 p3
                             );
                             this.load_icons(cx);
-                            // Re-sync icon cache (may have been populated by load_icons)
                             this.state.main_view.icon_paths = this
                                 .state
                                 .icon_cache
@@ -358,16 +370,13 @@ impl AppWindow {
         let path_str = path.to_string_lossy().into_owned();
         if !path_str.is_empty() {
             tracing::info!("Adding {} to jump list", path_str);
-            // In a real app, we'd call WindowsJumpListService::add_recent(path_str)
         }
 
         // Check if we should switch to Home or Recycle Bin view
         let path_str = path.to_string_lossy();
         if path_str.is_empty() || path_str == "Home" {
             self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
-            // Load tags for Home page
             if let Ok(tags) = self.state.tag_service.get_all_tags() {
-                // Convert (name, count) to (name, color, count) with default color
                 self.state.main_view.home_tags_cache = tags
                     .into_iter()
                     .map(|(name, count)| (name, "#808080".to_string(), count))
@@ -377,11 +386,17 @@ impl AppWindow {
             }
         } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
             self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
-            // Load recycle bin items synchronously
-            let service = RecycleBinService::new();
-            if let Ok(items) = service.list_contents_sync() {
-                self.state.main_view.recycle_bin_items = items;
-            } else {
+            #[cfg(windows)]
+            {
+                let service = RecycleBinService::new();
+                if let Ok(items) = service.list_contents_sync() {
+                    self.state.main_view.recycle_bin_items = items;
+                } else {
+                    self.state.main_view.recycle_bin_items = Vec::new();
+                }
+            }
+            #[cfg(not(windows))]
+            {
                 self.state.main_view.recycle_bin_items = Vec::new();
             }
         } else {
@@ -390,8 +405,6 @@ impl AppWindow {
         }
 
         self.save_session(cx);
-
-        // Save session path for crash recovery
         self.save_session_path(cx);
     }
 
@@ -426,14 +439,12 @@ impl AppWindow {
     pub fn navigate_home(&mut self, cx: &mut Context<Self>) {
         match crate::core::navigation_service::NavigationService::get_home_path() {
             Ok(home_path) => {
-                // Update navigation history
                 self.state.navigation.update(cx, |nav, _cx| {
                     nav.tabs.active_tab_mut().navigate(home_path.clone());
                 });
                 self.navigate(home_path, cx);
             }
             Err(_) => {
-                // Fallback: try user's home directory
                 if let Some(home) = dirs::home_dir() {
                     self.navigate(crate::core::path_util::FilesPath::from(home), cx);
                 }
@@ -444,11 +455,10 @@ impl AppWindow {
     /// Navigate to the root of the current drive/path
     pub fn navigate_to_root(&mut self, cx: &mut Context<Self>) {
         let path = self.state.main_view.primary_path.clone();
-        // Get root by climbing up until we hit a drive letter or "/"
         let mut current = path.clone();
         while let Ok(parent) = NavigationService::get_parent_path(&current) {
             if parent.as_path().to_string_lossy() == current.as_path().to_string_lossy() {
-                break; // Reached root
+                break;
             }
             current = parent;
         }
@@ -462,12 +472,9 @@ impl AppWindow {
         if let Some(item) = self.state.main_view.items.get(index) {
             match item.file_type {
                 FileType::Directory => {
-                    // Navigate into folder
                     self.navigate(item.path.clone(), cx);
                 }
                 FileType::File => {
-                    // Open file with default handler — use ShellExecuteW so the
-                    // opened app runs as an independent process (not a child).
                     #[cfg(windows)]
                     {
                         use std::ffi::OsStr;
@@ -491,9 +498,20 @@ impl AppWindow {
                             );
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = std::process::Command::new("open")
+                            .arg(item.path.as_path())
+                            .spawn();
+                    }
+                    #[cfg(all(unix, not(target_os = "macos")))]
+                    {
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg(item.path.as_path())
+                            .spawn();
+                    }
                 }
                 FileType::Symlink => {
-                    // TODO: Resolve symlink and open target
                     tracing::debug!("Opening symlink: {}", item.name);
                 }
             }
@@ -533,9 +551,7 @@ impl AppWindow {
     }
 
     pub fn open_in_new_window(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        // Use the existing new_window function but set the initial path
         let progress_engine = self.state.progress_engine.clone();
-        // Create a new database for the new window (shared same file)
         let db_path = dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("Files-Rust")
@@ -551,7 +567,7 @@ impl AppWindow {
             crate::ui::views::main_view::FileItems::default()
         });
         let app_state = AppState::new(
-            path.clone(), // Use the provided path as initial path
+            path.clone(),
             file_items,
             self.state.settings.clone(),
             self.state.localization.clone(),

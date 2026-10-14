@@ -109,13 +109,16 @@ impl WallpaperService {
                 .chain(std::iter::once(0))
                 .collect();
 
-            let style_value = match style {
-                WallpaperStyle::Fill => ("Crop", "00"),
-                WallpaperStyle::Fit => ("Fit", "00"),
-                WallpaperStyle::Stretch => ("Stretch", "00"),
-                WallpaperStyle::Tile => ("Tile", "00"),
-                WallpaperStyle::Center => ("Center", "00"),
-                WallpaperStyle::Span => ("Span", "00"),
+            // WallpaperStyle / TileWallpaper documented numeric values:
+            // Center = (0, 0), Tile = (1, 0), Stretch = (0, 2),
+            // Fit = (0, 6), Fill = (0, 10), Span = (0, 22).
+            let (tile_value, style_value) = match style {
+                WallpaperStyle::Fill => ("0", "10"),
+                WallpaperStyle::Fit => ("0", "6"),
+                WallpaperStyle::Stretch => ("0", "2"),
+                WallpaperStyle::Tile => ("1", "0"),
+                WallpaperStyle::Center => ("0", "0"),
+                WallpaperStyle::Span => ("0", "22"),
             };
 
             unsafe {
@@ -123,32 +126,52 @@ impl WallpaperService {
                 let _ = RegOpenKeyExW(
                     HKEY_CURRENT_USER,
                     PCWSTR(key_path.as_ptr()),
-                    0,
+                    Some(0),
                     KEY_WRITE,
                     &mut hkey,
                 );
 
-                // Set Wallpaper style
-                let style_name: Vec<u16> = style_value
-                    .0
+                // Set Wallpaper style (names and REG_SZ data are NUL-terminated UTF-16)
+                let wallpaper_style_name: Vec<u16> = "WallpaperStyle"
                     .encode_utf16()
                     .chain(std::iter::once(0))
                     .collect();
-
+                let tile_wallpaper_name: Vec<u16> = "TileWallpaper"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let tile_wide: Vec<u16> = tile_value
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let style_wide: Vec<u16> = style_value
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                // Byte views include the trailing NUL, as REG_SZ requires.
+                let tile_bytes = unsafe {
+                    std::slice::from_raw_parts(tile_wide.as_ptr() as *const u8, tile_wide.len() * 2)
+                };
+                let style_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        style_wide.as_ptr() as *const u8,
+                        style_wide.len() * 2,
+                    )
+                };
                 let _ = RegSetValueExW(
                     hkey,
-                    PCWSTR("WallpaperStyle\0".as_ptr() as *const _),
-                    0,
+                    PCWSTR(wallpaper_style_name.as_ptr()),
+                    Some(0),
                     REG_SZ,
-                    Some(style_value.1.as_bytes()),
+                    Some(style_bytes),
                 );
 
                 let _ = RegSetValueExW(
                     hkey,
-                    PCWSTR("TileWallpaper\0".as_ptr() as *const _),
-                    0,
+                    PCWSTR(tile_wallpaper_name.as_ptr()),
+                    Some(0),
                     REG_SZ,
-                    Some(style_value.1.as_bytes()),
+                    Some(tile_bytes),
                 );
 
                 let _ = RegCloseKey(hkey);
@@ -238,19 +261,34 @@ impl WallpaperService {
                 let _ = RegOpenKeyExW(
                     HKEY_CURRENT_USER,
                     PCWSTR(key_path.as_ptr()),
-                    0,
+                    Some(0),
                     KEY_WRITE,
                     &mut hkey,
                 );
 
-                // Enable slideshow
-                let enable_value: [u8; 1] = [1];
+                // Enable slideshow (names and REG_SZ data are NUL-terminated UTF-16)
+                let enable_status_name: Vec<u16> = "EnableStatus"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let image_path_name: Vec<u16> = "ImagePath"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let enable_wide: Vec<u16> =
+                    "1".encode_utf16().chain(std::iter::once(0)).collect();
+                let enable_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        enable_wide.as_ptr() as *const u8,
+                        enable_wide.len() * 2,
+                    )
+                };
                 let _ = RegSetValueExW(
                     hkey,
-                    PCWSTR("EnableStatus\0".as_ptr() as *const _),
-                    0,
+                    PCWSTR(enable_status_name.as_ptr()),
+                    Some(0),
                     REG_SZ,
-                    Some(&enable_value),
+                    Some(enable_bytes),
                 );
 
                 // Set slideshow folder
@@ -261,8 +299,8 @@ impl WallpaperService {
 
                 let _ = RegSetValueExW(
                     hkey,
-                    PCWSTR("ImagePath\0".as_ptr() as *const _),
-                    0,
+                    PCWSTR(image_path_name.as_ptr()),
+                    Some(0),
                     REG_SZ,
                     Some(unsafe {
                         std::slice::from_raw_parts(

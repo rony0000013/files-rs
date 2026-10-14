@@ -1,14 +1,17 @@
 use directories::UserDirs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use windows::core::{GUID, PWSTR};
-use windows::Win32::Foundation::HANDLE;
+
+#[cfg(windows)]
+use windows::core::GUID;
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FilesPath(PathBuf);
 
 // GUIDs for known folders (Windows API)
+#[cfg(windows)]
 pub mod known_folders {
     use super::*;
     pub const FOLDERID_DOCUMENTS: GUID = GUID::from_u128(0x4BED8C30_C1B7_4B89_9173_F9260C476B70);
@@ -35,19 +38,13 @@ impl FilesPath {
         Ok(Self(path))
     }
 
+    #[cfg(windows)]
     pub fn resolve_known_folder(folder_id: &GUID) -> anyhow::Result<Self> {
         unsafe {
-            let mut path_ptr: PWSTR = PWSTR::null();
-            // In windows-rs 0.52, SHGetKnownFolderPath's 3rd arg is an htoken.
-            // To get the path, we pass the token (None for current user).
-            // The return value is the PWSTR.
             let path_ptr = SHGetKnownFolderPath(folder_id, KNOWN_FOLDER_FLAG(0), None)?;
-
             let path_str = path_ptr.to_string()?;
             let path = PathBuf::from(path_str);
-
             windows::Win32::System::Com::CoTaskMemFree(Some(path_ptr.as_ptr() as *const _));
-
             Ok(Self::new(path))
         }
     }
@@ -105,18 +102,35 @@ impl FilesPath {
         }
 
         let folder_name = &s[6..];
-        let folder_id = match folder_name {
-            "RecycleBinFolder" => &known_folders::FOLDERID_RECYCLE_BIN,
-            "MyComputerFolder" => &known_folders::FOLDERID_BUILDS,
-            "NetworkPlacesFolder" => &known_folders::FOLDERID_NETWORK_HOOD,
-            "Documents" => &known_folders::FOLDERID_DOCUMENTS,
-            "Pictures" => &known_folders::FOLDERID_PICTURES,
-            "Music" => &known_folders::FOLDERID_MUSIC,
-            "Videos" => &known_folders::FOLDERID_VIDEOS,
-            _ => return Err(anyhow::anyhow!("Unsupported shell folder: {}", folder_name)),
-        };
-
-        Self::resolve_known_folder(folder_id)
+        #[cfg(windows)]
+        {
+            let folder_id = match folder_name {
+                "RecycleBinFolder" => &known_folders::FOLDERID_RECYCLE_BIN,
+                "MyComputerFolder" => &known_folders::FOLDERID_BUILDS,
+                "NetworkPlacesFolder" => &known_folders::FOLDERID_NETWORK_HOOD,
+                "Documents" => &known_folders::FOLDERID_DOCUMENTS,
+                "Pictures" => &known_folders::FOLDERID_PICTURES,
+                "Music" => &known_folders::FOLDERID_MUSIC,
+                "Videos" => &known_folders::FOLDERID_VIDEOS,
+                _ => return Err(anyhow::anyhow!("Unsupported shell folder: {}", folder_name)),
+            };
+            return Self::resolve_known_folder(folder_id);
+        }
+        #[cfg(not(windows))]
+        {
+            let user_dirs = UserDirs::new();
+            let resolved = match folder_name {
+                "Documents" => user_dirs.and_then(|u| u.document_dir().map(PathBuf::from)),
+                "Pictures" => user_dirs.and_then(|u| u.picture_dir().map(PathBuf::from)),
+                "Music" => user_dirs.and_then(|u| u.audio_dir().map(PathBuf::from)),
+                "Videos" => user_dirs.and_then(|u| u.video_dir().map(PathBuf::from)),
+                "MyComputerFolder" => Some(PathBuf::from("/")),
+                _ => None,
+            };
+            resolved
+                .map(Self::new)
+                .ok_or_else(|| anyhow::anyhow!("Unsupported shell folder: {}", folder_name))
+        }
     }
 }
 

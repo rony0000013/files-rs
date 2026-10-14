@@ -34,19 +34,15 @@ impl CrashReporter {
 
                 tracing::info!("SENTRY_DSN found — initializing Sentry crash reporter");
 
-                let guard = sentry::init((
-                    dsn_str,
-                    sentry::ClientOptions {
-                        release: Some(format!("files-rs@{}", env!("CARGO_PKG_VERSION")).into()),
-                        environment: Some(
-                            std::env::var("SENTRY_ENVIRONMENT")
-                                .unwrap_or_else(|_| "production".to_string())
-                                .into(),
-                        ),
-                        auto_session_tracking: true,
-                        ..Default::default()
-                    },
-                ));
+                let mut options = sentry::ClientOptions::new();
+                options.release = Some(format!("files-rs@{}", env!("CARGO_PKG_VERSION")).into());
+                options.environment = Some(
+                    std::env::var("SENTRY_ENVIRONMENT")
+                        .unwrap_or_else(|_| "production".to_string())
+                        .into(),
+                );
+                options.auto_session_tracking = true;
+                let guard = sentry::init((dsn_str, options));
 
                 // Configure sentry-tracing integration (breadcrumbs from tracing events)
                 // In sentry 0.34, this is automatic via the `tracing` feature

@@ -24,16 +24,16 @@ pub fn extract_pdf_metadata(path: &FilesPath) -> Result<PdfPreviewInfo> {
             if let Some(info_dict) = doc.get_object(info_dict_ref).ok() {
                 if let lopdf::Object::Dictionary(dict) = info_dict {
                     if let Ok(obj) = dict.get(b"Title") {
-                        title = obj.as_string().ok().map(|s| s.to_string());
+                        title = obj.as_str().ok().map(|s| String::from_utf8_lossy(s).into_owned());
                     }
                     if let Ok(obj) = dict.get(b"Author") {
-                        author = obj.as_string().ok().map(|s| s.to_string());
+                        author = obj.as_str().ok().map(|s| String::from_utf8_lossy(s).into_owned());
                     }
                     if let Ok(obj) = dict.get(b"Subject") {
-                        subject = obj.as_string().ok().map(|s| s.to_string());
+                        subject = obj.as_str().ok().map(|s| String::from_utf8_lossy(s).into_owned());
                     }
                     if let Ok(obj) = dict.get(b"Creator") {
-                        creator = obj.as_string().ok().map(|s| s.to_string());
+                        creator = obj.as_str().ok().map(|s| String::from_utf8_lossy(s).into_owned());
                     }
                 }
             }

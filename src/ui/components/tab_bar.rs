@@ -17,10 +17,10 @@ fn start_window_move(window: &Window) {
             unsafe {
                 let _ = ReleaseCapture();
                 let _ = SendMessageW(
-                    HWND(win32.hwnd.get()),
+                    HWND(win32.hwnd.get() as *mut _),
                     WM_NCLBUTTONDOWN,
-                    WPARAM(HTCAPTION as usize),
-                    LPARAM(0),
+                    Some(WPARAM(HTCAPTION as usize)),
+                    Some(LPARAM(0)),
                 );
             }
         }
@@ -52,6 +52,51 @@ fn handle_scroll(event: &ScrollWheelEvent, cx: &mut App, view: &Entity<crate::ap
     } else if dy < 0.0 {
         view.update(cx, |this, cx| this.scroll_tab_bar_left(cx));
     }
+}
+
+/// Floating drag ghost + "Move tab here" tooltip (Files-style).
+/// Rendered just below the tab strip (never over the tabs themselves:
+/// an overlay covering the tabs would swallow the mouse-move events
+/// that drive the drag). Follows the cursor when dragged out of the strip.
+fn drag_overlay(label: String, x: f32, y: f32, out: bool) -> Vec<gpui::AnyElement> {
+    let ghost_left = (x - TAB_W / 2.0).max(0.0);
+    let ghost_top = if out { y.max(0.0) } else { TAB_H + 2.0 };
+    let ghost = div()
+        .absolute()
+        .left(px(ghost_left))
+        .top(px(ghost_top))
+        .w(px(TAB_W))
+        .h(px(TAB_H))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .bg(rgba(0x2D2D2DFFu32))
+        .border(px(1.0))
+        .border_color(rgba(UiConstants::ACCENT_RGBA))
+        .rounded(px(6.0))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                .overflow_hidden()
+                .child(label),
+        )
+        .into_any_element();
+    let tip = div()
+        .absolute()
+        .left(px(ghost_left))
+        .top(px(ghost_top + TAB_H + 6.0))
+        .px(px(8.0))
+        .py(px(4.0))
+        .bg(rgba(0x1F1F1FFFu32))
+        .border(px(1.0))
+        .border_color(rgba(UiConstants::DIVIDER_RGBA))
+        .rounded(px(4.0))
+        .text_size(px(11.0))
+        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+        .child("Move tab here")
+        .into_any_element();
+    vec![ghost, tip]
 }
 
 impl TabBarView {
@@ -224,6 +269,11 @@ impl TabBarView {
                     .border_color(rgba(UiConstants::ACCENT_RGBA));
             }
 
+            if !is_active {
+                // Files-like hover: inactive tabs lift on hover.
+                t = t.hover(|s| s.bg(rgba(0xFFFFFF0Au32)));
+            }
+
             t = t
                 .on_mouse_down(MouseButton::Left, {
                     let vd2 = vd.clone();
@@ -246,6 +296,14 @@ impl TabBarView {
                     let vd2 = vd.clone();
                     move |_ev, _w, cx| {
                         vd2.update(cx, |this, cx| this.end_tab_drag(Some(i), cx));
+                    }
+                })
+                // Release outside the tab still ends the drag (drop at last
+                // known position) instead of sticking until the next click.
+                .on_mouse_up_out(MouseButton::Left, {
+                    let vd2 = vd.clone();
+                    move |_ev, _w, cx| {
+                        vd2.update(cx, |this, cx| this.end_tab_drag(None, cx));
                     }
                 })
                 .on_mouse_down(MouseButton::Middle, {
@@ -442,12 +500,42 @@ impl TabBarView {
                     start_window_move(window);
                 }
             });
+        // Files-style drag feedback, built per branch (moved, not shared).
+        let make_overlay = || -> Vec<gpui::AnyElement> {
+            if !drag_active {
+                return vec![];
+            }
+            let Some(di) = dragged_index else {
+                return vec![];
+            };
+            let Some(tab) = state.tabs.tabs.get(di) else {
+                return vec![];
+            };
+            let label = if matches!(tab.target, crate::ui::views::types::ViewTarget::Settings) {
+                "Settings".to_string()
+            } else {
+                tab.path
+                    .as_path()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            };
+            drag_overlay(
+                label,
+                tab_drag.current_x,
+                tab_drag.current_y,
+                tab_drag.is_dragging_out,
+            )
+        };
         // ── Tab bar with mouse wheel scroll (only when overflow)
+        // relative(): anchor for the absolute drag ghost + tooltip overlay.
         let bar = {
             let v_scroll = vref.clone();
             let overflow = tabs_overflow;
             div()
                 .id("tab-bar")
+                .relative()
                 .flex()
                 .flex_nowrap()
                 .items_center()
@@ -543,6 +631,11 @@ impl TabBarView {
                         .border_color(rgba(UiConstants::ACCENT_RGBA));
                 }
 
+                if !is_active {
+                    // Files-like hover: inactive tabs lift on hover.
+                    t = t.hover(|s| s.bg(rgba(0xFFFFFF0Au32)));
+                }
+
                 t = t
                     .on_mouse_down(MouseButton::Left, {
                         let vd2 = vd.clone();
@@ -565,6 +658,14 @@ impl TabBarView {
                         let vd2 = vd.clone();
                         move |_ev, _w, cx| {
                             vd2.update(cx, |this, cx| this.end_tab_drag(Some(i), cx));
+                        }
+                    })
+                    // Release outside the tab still ends the drag (drop at last
+                    // known position) instead of sticking until the next click.
+                    .on_mouse_up_out(MouseButton::Left, {
+                        let vd2 = vd.clone();
+                        move |_ev, _w, cx| {
+                            vd2.update(cx, |this, cx| this.end_tab_drag(None, cx));
                         }
                     })
                     .on_mouse_down(MouseButton::Middle, {
@@ -676,6 +777,7 @@ impl TabBarView {
                 .child(scroll_r)
                 .child(add_btn)
                 .child(drag_gap)
+                .children(make_overlay())
                 .child(caption)
         } else {
             // NO SCROLL: tabs take natural width, +btn right after last tab,
@@ -701,9 +803,10 @@ impl TabBarView {
                             } else {
                                 start_window_move(window);
                             }
-                        }),
-                )
-                .child(caption)
+                            }),
+                    )
+                    .children(make_overlay())
+                    .child(caption)
         }
     }
 }
