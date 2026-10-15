@@ -130,10 +130,10 @@ impl Render for AppWindow {
                             .on_key_down({
                                 let view = cx.entity().clone();
                                 move |event: &gpui::KeyDownEvent,
-                                      _window: &mut Window,
+                                      window: &mut Window,
                                       cx: &mut App| {
                                     view.update(cx, |this, cx| {
-                                        this.handle_key_event(event, cx);
+                                        this.handle_key_event(event, window, cx);
                                     });
                                 }
                             })

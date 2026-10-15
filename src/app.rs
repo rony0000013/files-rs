@@ -276,6 +276,7 @@ impl AppWindow {
     pub fn handle_key_event(
         &mut self,
         event: &gpui::KeyDownEvent,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
@@ -283,6 +284,23 @@ impl AppWindow {
             crate::core::action_registry::from_gpui_keystroke(keystroke);
 
         use crate::ui::components::dialogs::DialogType;
+
+        // Menu key (VK_APPS) / Shift+F10: open the context menu for the
+        // current selection, like Files does (Files-community parity).
+        // Anchored at viewport center; mouse users get item-anchored menus.
+        let key_name = keystroke.key.as_str();
+        if key_name == "menu"
+            || (key_name.eq_ignore_ascii_case("f10") && keystroke.modifiers.shift)
+        {
+            let vp = window.viewport_size();
+            let pos = gpui::Point {
+                x: (vp.width - gpui::px(250.0)) / 2.0,
+                y: vp.height * 0.4,
+            };
+            let first_selected = self.state.main_view.selected_indices.iter().next().copied();
+            self.show_context_menu(first_selected, pos, cx);
+            return;
+        }
 
         // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs (must be before nav bar intercept
         // so it works even when the omnibar is focused)

@@ -69,3 +69,7 @@
 - Removed tracked stale `navigation_bar.rs.bak` (41KB Jun23 leftover).
 - Scrollbars: custom 6px minimal (bouncy_scroll.rs) — close to Files overlay style, leave.
 - Home (Quick Access/Drives/Recent/Tags/Network), empty-state, details pane (thumbnail/name/Properties/Dimensions/Dates) all structurally conformant.
+
+### 08:05 — §8 Functional gap: keyboard context menu
+- Synthetic right-click/Apps-key never reached either app (message-level limitation), which exposed a REAL gap: our app had no keyboard path to context menus at all.
+- Added Menu-key (VK_APPS→"menu" in GPUI) + Shift+F10 → `show_context_menu(first_selected, viewport-center)`; threaded `&mut Window` through `handle_key_event` (single caller).
