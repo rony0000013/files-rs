@@ -433,16 +433,23 @@ impl MainViewState {
                 .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
-                .border(px(if selected { 2.0 } else { 1.5 }))
+                .border(px(1.0))
                 .border_color(if selected {
-                    rgba(UiConstants::ACCENT_RGBA)
+                    // #60CDFF selection outline (Files-community parity).
+                    rgba(0x60CDFFFFu32)
                 } else {
                     rgba(0x00000000u32)
                 })
-                .bg(rgba(0x00000000u32))
+                .bg(if selected {
+                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
                 .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
 
-            if show_checkbox {
+            // Files shows the checkbox on hover/selection even outside
+            // checkbox mode (GPUI hover is stateless, so show on selected).
+            if show_checkbox || selected {
                 item_div = item_div.child(
                     div()
                         .absolute()
@@ -609,16 +616,23 @@ impl MainViewState {
                 .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
-                .border(px(if selected { 2.0 } else { 1.5 }))
+                .border(px(1.0))
                 .border_color(if selected {
-                    rgba(UiConstants::ACCENT_RGBA)
+                    // #60CDFF selection outline (Files-community parity).
+                    rgba(0x60CDFFFFu32)
                 } else {
                     rgba(0x00000000u32)
                 })
-                .bg(rgba(0x00000000u32))
+                .bg(if selected {
+                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
                 .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
 
-            if show_checkbox {
+            // Files shows the checkbox on hover/selection even outside
+            // checkbox mode (GPUI hover is stateless, so show on selected).
+            if show_checkbox || selected {
                 item_div = item_div.child(
                     div()
                         .absolute()

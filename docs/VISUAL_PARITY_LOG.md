@@ -49,3 +49,11 @@
 - RULE: never trust prose vision for elements <=4px. Verify micro-geometry with pixel scans: load PNG in PIL, threshold the exact token color, find vertical/horizontal runs, report coordinates. One 30-line script beats ten crop analyses.
 - Almost "fixed" working code with a width-toggle refactor based on false vision; reverted (conditional child proven on pixels). Width-toggle also would have shifted every row's content via flex gap.
 - Also fixed: flat-details pill used stray gold 0xF5B942 instead of ACCENT blue → now ACCENT_COLOR_RGB everywhere.
+
+### 07:00 — §9 Dialog entrances
+- Inventory: tooltip fade + menu fade + cursor blink existed. Added 120ms dialog-container fade (same pattern) in `dialogs.rs` render.
+- Skipped (low value / high risk): tab open/close layout animation, sidebar collapse animation, hover fades (GPUI hover is stateless).
+
+### 07:15 — §6 Grid cards
+- Selection was 2px accent border, no fill → now 1px #60CDFF + faint selected fill (reference tokens).
+- Checkbox only in checkbox-mode → now also on selected cards (reference shows on hover/select; hover-structure impossible in GPUI).

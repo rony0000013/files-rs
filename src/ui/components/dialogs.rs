@@ -442,6 +442,12 @@ impl DialogsView {
             }
         }
 
+        // Fluent DialogThemeTransition: quick fade on open.
+        let container = container.with_animation(
+            "dialog-entrance",
+            Animation::new(std::time::Duration::from_millis(120)),
+            |elem, delta| elem.opacity(delta),
+        );
         overlay.child(container)
     }
 
