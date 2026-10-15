@@ -57,3 +57,6 @@
 ### 07:15 — §6 Grid cards
 - Selection was 2px accent border, no fill → now 1px #60CDFF + faint selected fill (reference tokens).
 - Checkbox only in checkbox-mode → now also on selected cards (reference shows on hover/select; hover-structure impossible in GPUI).
+
+### 07:30 — §6 Columns view
+- Rows had fill only → added 3x16 accent pill (same proven pattern; all five surfaces now unified: sidebar/details/list/grid-checkbox/columns).

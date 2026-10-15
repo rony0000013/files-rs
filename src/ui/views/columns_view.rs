@@ -205,6 +205,18 @@ impl MainViewState {
                                                 }
                                             })
                                             .child(
+                                                // 3x16 Fluent selection pill.
+                                                if is_selected {
+                                                    div()
+                                                        .w(px(3.0))
+                                                        .h(px(16.0))
+                                                        .rounded(px(1.5))
+                                                        .bg(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                                } else {
+                                                    div()
+                                                },
+                                            )
+                                            .child(
                                                 div()
                                                     .w(px(i_size))
                                                     .h(px(i_size))
