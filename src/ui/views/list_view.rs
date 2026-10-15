@@ -158,6 +158,16 @@ impl MainViewState {
                                         })
                                     })
                                     .cursor_pointer()
+                                    .child(if is_selected {
+                                        // 3x16 Fluent selection pill.
+                                        div()
+                                            .w(px(3.0))
+                                            .h(px(16.0))
+                                            .rounded(px(1.5))
+                                            .bg(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    } else {
+                                        div()
+                                    })
                                     .on_mouse_down(MouseButton::Left, {
                                         let v = view_row.clone();
                                         move |_event, _, cx| {
@@ -339,6 +349,16 @@ impl MainViewState {
                                         })
                                     })
                                     .cursor_pointer()
+                                    .child(if is_selected {
+                                        // 3x16 Fluent selection pill.
+                                        div()
+                                            .w(px(3.0))
+                                            .h(px(16.0))
+                                            .rounded(px(1.5))
+                                            .bg(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    } else {
+                                        div()
+                                    })
                                     .on_mouse_down(MouseButton::Left, {
                                         let v = v.clone();
                                         move |_event, _, cx| {

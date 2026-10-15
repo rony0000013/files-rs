@@ -196,15 +196,20 @@ impl MainView {
                                         if is_selected {
                                             row = row
                                                 .bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA))
-                                                .border_l(px(
-                                                    UiConstants::SELECTED_BORDER_WIDTH as f32
-                                                ))
-                                                .border_color(rgba(UiConstants::ACCENT_RGBA))
                                                 .hover(|s| {
                                                     s.bg(rgba(
                                                         UiConstants::BG_ITEM_SELECTED_HOVER_RGBA,
                                                     ))
-                                                });
+                                                })
+                                                .child(
+                                                    // 3x16 Fluent selection pill
+                                                    // (Files-community parity).
+                                                    div()
+                                                        .w(px(3.0))
+                                                        .h(px(16.0))
+                                                        .rounded(px(1.5))
+                                                        .bg(rgb(UiConstants::ACCENT_COLOR_RGB)),
+                                                );
                                         } else {
                                             row = row.hover(|s| {
                                                 s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
@@ -495,8 +500,13 @@ impl MainView {
                                 if is_selected {
                                     row = row
                                         .bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA))
-                                        .border_l(px(UiConstants::SELECTED_BORDER_WIDTH as f32))
-                                        .border_color(rgba(UiConstants::ACCENT_RGBA));
+                                        .child(
+                                            div()
+                                                .w(px(3.0))
+                                                .h(px(16.0))
+                                                .rounded(px(1.5))
+                                                .bg(rgb(UiConstants::ACCENT_COLOR_RGB)),
+                                        );
                                 } else {
                                     row = row.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
                                 }

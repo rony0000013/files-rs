@@ -31,3 +31,14 @@
 - Conclusion: visible translucency is NOT a differentiator. Dark-theme Mica Alt is ~opaque by design; the model's "translucent tokens" chased something the reference doesn't exhibit.
 - Decision: opaque fills matching reference tokens exactly; keep vibrancy call (harmless, matters for light mode); drop transparency tuning. Geometry/typography/iconography are the real gaps.
 - Reference numbers captured: tabs 32px h, 8px top radius, 4-8px gaps, active = navbar-color fill; sidebar rows 28-30px, selection = full-width #3D3D3D rounded + 2-3px blue left bar; toolbar 40-44px, blue Cut/Copy; cards 110-120x130-150, checkbox 16px top-left on hover/select, selection = 1px #60CDFF border + faint fill; label 12px, 2 lines + ellipsis.
+
+### 05:45 — §8 Context menus (structure + motion)
+- Compared canonical order vs `ContentPageContextFlyoutFactory.cs`: ours already matches (Open, Open With, New Tab/Window, Terminal, pins, clipboard, Properties).
+- Live Files menu via synthetic VK_APPS: ignored, no menu opened. Structural parity asserted from XAML tokens instead (radius 8, 250px width, 480px max, separators).
+- Diffs fixed: all glyphs were accent-blue (Files: monochrome secondary) → secondary; labels 13px → 14px; added 120ms opacity entrance on finished menu.
+- Learned: `with_animation` returns AnimationElement (no `.child`) — must wrap at return; changed return type to `impl IntoElement`.
+
+### 06:15 — §3 Nav bar + §5/§6 selection pills
+- Nav bar 44px → 48px, buttons 32x32 → 36x32, dropped bottom divider (reference is seamless).
+- Details flat/grouped + List flat/grouped: full-height accent border → 3x16 rounded pill child (matches sidebar pill + reference rows).
+- Sidebar selection already conformant (translucent block + 3x16 pill); status bar 32px with counts/git/mode conformant; fonts already Variable/Fluent.
