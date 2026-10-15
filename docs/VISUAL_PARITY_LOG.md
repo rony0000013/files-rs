@@ -63,3 +63,9 @@
 
 ### 07:35 — §1 Caption buttons: conformant, no change
 - 46x32, Segoe glyphs E921/E922/E923/E8BB, red #E81123 close-hover. Matches Windows/Files spec.
+
+### 07:50 — §3 Nav buttons, scrollbars, home/empty/preview
+- Up glyph was E197 (Upload) → E74A (Up, Files token). Back E72B / Forward E72A / Refresh E72C already correct.
+- Removed tracked stale `navigation_bar.rs.bak` (41KB Jun23 leftover).
+- Scrollbars: custom 6px minimal (bouncy_scroll.rs) — close to Files overlay style, leave.
+- Home (Quick Access/Drives/Recent/Tags/Network), empty-state, details pane (thumbnail/name/Properties/Dimensions/Dates) all structurally conformant.

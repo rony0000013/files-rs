@@ -975,7 +975,7 @@ impl NavigationBarView {
                             });
                         },
                     ))
-                    .child(Self::render_nav_btn("\u{E197}", true, move |_, cx| {
+                    .child(Self::render_nav_btn("\u{E74A}", true, move |_, cx| {
                         v_up.update(cx, |this, cx| {
                             this.state.nav_bar.edit_mode = false;
                             this.state.nav_bar.show_suggestions = false;
