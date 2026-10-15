@@ -204,6 +204,8 @@ impl MainView {
                                                 .child(
                                                     // 3x16 Fluent selection pill
                                                     // (Files-community parity).
+                                                    // Proven on pixels: renders as a 3x16
+                                                    // accent run at the row's left edge.
                                                     div()
                                                         .w(px(3.0))
                                                         .h(px(16.0))
@@ -501,6 +503,10 @@ impl MainView {
                                     row = row
                                         .bg(rgba(UiConstants::BG_ITEM_SELECTED_RGBA))
                                         .child(
+                                            // 3x16 Fluent selection pill
+                                            // (Files-community parity).
+                                            // Proven on pixels: renders as a 3x16
+                                            // accent run at the row's left edge.
                                             div()
                                                 .w(px(3.0))
                                                 .h(px(16.0))

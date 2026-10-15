@@ -42,3 +42,10 @@
 - Nav bar 44px → 48px, buttons 32x32 → 36x32, dropped bottom divider (reference is seamless).
 - Details flat/grouped + List flat/grouped: full-height accent border → 3x16 rounded pill child (matches sidebar pill + reference rows).
 - Sidebar selection already conformant (translucent block + 3x16 pill); status bar 32px with counts/git/mode conformant; fonts already Variable/Fluent.
+
+### 06:40 — Pill verification: vision lies, pixels don't (READ THIS)
+- After adding pills, 4 separate vision_analyze crops all reported "no pill, tint only" — including a 4x nearest-neighbor enlargement where the model mistook the zip icon's blue spine for the only blue.
+- Pixel scan (PIL, accent-blue runs >=12px vertical) found the truth: 3px-wide x 14-16px-tall ACCENT run at x=258-260, y=539-554 — exactly the selected row's left edge. The pill was rendering all along.
+- RULE: never trust prose vision for elements <=4px. Verify micro-geometry with pixel scans: load PNG in PIL, threshold the exact token color, find vertical/horizontal runs, report coordinates. One 30-line script beats ten crop analyses.
+- Almost "fixed" working code with a width-toggle refactor based on false vision; reverted (conditional child proven on pixels). Width-toggle also would have shifted every row's content via flex gap.
+- Also fixed: flat-details pill used stray gold 0xF5B942 instead of ACCENT blue → now ACCENT_COLOR_RGB everywhere.
