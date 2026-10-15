@@ -60,3 +60,6 @@
 
 ### 07:30 — §6 Columns view
 - Rows had fill only → added 3x16 accent pill (same proven pattern; all five surfaces now unified: sidebar/details/list/grid-checkbox/columns).
+
+### 07:35 — §1 Caption buttons: conformant, no change
+- 46x32, Segoe glyphs E921/E922/E923/E8BB, red #E81123 close-hover. Matches Windows/Files spec.
