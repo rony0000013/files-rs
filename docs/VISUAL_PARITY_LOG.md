@@ -142,7 +142,19 @@
   toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
   glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
   submenu anchor follows (left 290), viewport clamp 284->300.
-### 19 Oct (night) — strip/grace/icons/geometry/modes
+### 19 Oct (night) — bg parity, instant flyout, nested auto-expand
+- Bg menu now matches Files: added "Paste shortcut", "Open in Terminal" is
+  "Open in Windows Terminal", separators after Refresh and after Pin to
+  Sidebar (none before Show more options).
+- Speed: classic items preload the moment the menu opens (not on hover), in
+  two phases — labels in ~50ms so the flyout renders instantly with fallback
+  glyphs, real icons filling in right after. Hovering ShowMore is now a
+  cache hit, not a COM round-trip.
+- Nested auto-expand fixed: the open-path test required `open` to be LONGER
+  than the row path, so hovering WinRAR/Send to/Kaspersky › could never show
+  children. Children now show whenever the row is on the open path.
+- Third-level placement: flipped nested panels flip back right when the menu
+  hugs the left edge; bottom-anchor + caps kept so nothing clips.
 - Black strip: outer container squeezed the 292px menu into 280px, leaving a
   10px gap before the flyout. Outer is now exactly 292 for context menus.
 - Flyout no longer dies mid-travel: leaving a row starts a 350ms grace-close
