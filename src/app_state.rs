@@ -274,6 +274,10 @@ pub struct AppWindow {
     pub hover_timer_task: Option<Task<()>>,
     /// In-flight context-menu background work (classic items load / invoke).
     pub menu_task: Option<Task<()>>,
+    /// Pending submenu grace-close timer + its generation. Dropped/cancelled
+    /// whenever the cursor re-enters a row or panel.
+    pub submenu_grace: Option<Task<()>>,
+    pub submenu_grace_gen: u64,
     /// Drag state for sidebar pinned item reordering
     pub sidebar_pinned_drag: Option<SidebarPinnedDragState>,
     /// Whether the zoom slider is currently being dragged.

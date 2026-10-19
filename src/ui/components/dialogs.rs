@@ -429,8 +429,17 @@ impl DialogsView {
         }
 
         match dialog {
-            DialogType::ContextMenu { position, .. }
-            | DialogType::TabContextMenu { position, .. }
+            DialogType::ContextMenu { position, .. } => {
+                // Exactly the menu width: the inner menu paints its own
+                // border, so any slack here would read as a dark strip and
+                // any squeeze would open a gap before the flyout panels.
+                container = container
+                    .absolute()
+                    .top(position.y)
+                    .left(position.x)
+                    .w(px(292.0));
+            }
+            DialogType::TabContextMenu { position, .. }
             | DialogType::TabActionsDropdown { position }
             | DialogType::ColumnVisibilityMenu { position } => {
                 container = container

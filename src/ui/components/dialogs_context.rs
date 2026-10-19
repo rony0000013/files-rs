@@ -213,7 +213,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Open With",
                     SubmenuKind::OpenWith,
                     ow_open,
-                    Self::submenu_panel(ow_rows),
+                    Self::submenu_panel(ow_rows, SubmenuKind::OpenWith, v_sub.clone()),
                     v_sub.clone(),
                     move |_, _, cx| {
                         if let Some(ref p) = path {
@@ -1570,7 +1570,7 @@ impl crate::ui::components::dialogs::DialogsView {
         label: &str,
         kind: SubmenuKind,
         is_open: bool,
-        submenu: Div,
+        submenu: impl IntoElement,
         view: Entity<crate::app::AppWindow>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> gpui::Stateful<Div> {
@@ -1580,9 +1580,23 @@ impl crate::ui::components::dialogs::DialogsView {
             .child(Self::context_menu_row(glyph, label, MenuTrailing::Chevron, on_click))
             .id(("ctx-submenu", kind as usize));
         let mut wrapper = stateful.on_hover(move |hovering: &bool, _, cx| {
-            v_hover.update(cx, |this, cx| {
-                this.set_open_submenu(if *hovering { Some(kind) } else { None }, cx);
-            });
+            // Flyout panels live outside the row bounds, so an immediate
+            // close on leave would kill the panel mid-travel (including
+            // diagonal cursor paths). Grace-close instead; entering the
+            // panel (or returning to the row) cancels it.
+            if *hovering {
+                v_hover.update(cx, |this, cx| {
+                    this.set_open_submenu(Some(kind), cx);
+                });
+            } else {
+                let v = v_hover.clone();
+                v.update(cx, |this, cx| {
+                    this.submenu_grace_close(
+                        |this, cx| this.set_open_submenu(None, cx),
+                        cx,
+                    )
+                });
+            }
         });
         if is_open {
             wrapper = wrapper.child(submenu);
@@ -1591,7 +1605,12 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     /// Flyout panel anchored to the right of its parent row.
-    pub(crate) fn submenu_panel(rows: Vec<Div>) -> Div {
+    pub(crate) fn submenu_panel(
+        rows: Vec<Div>,
+        kind: SubmenuKind,
+        view: Entity<crate::app::AppWindow>,
+    ) -> gpui::Stateful<Div> {
+        let v = view.clone();
         let mut panel = div()
             .absolute()
             .top(px(-8.0))
@@ -1604,6 +1623,24 @@ impl crate::ui::components::dialogs::DialogsView {
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0))
+            .id(("ctx-panel", kind as usize))
+            .on_hover(move |hovering: &bool, _, cx| {
+                // Re-assert while the cursor travels the panel; grace-close
+                // once it truly leaves, so diagonal entry never kills it.
+                if *hovering {
+                    v.update(cx, |this, cx| {
+                        this.set_open_submenu(Some(kind), cx);
+                    });
+                } else {
+                    let v2 = v.clone();
+                    v2.update(cx, |this, cx| {
+                        this.submenu_grace_close(
+                            |this, cx| this.set_open_submenu(None, cx),
+                            cx,
+                        )
+                    });
+                }
+            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         for row in rows {
@@ -1622,11 +1659,11 @@ impl crate::ui::components::dialogs::DialogsView {
         view: Entity<crate::app::AppWindow>,
         paths: Vec<std::path::PathBuf>,
         dir: std::path::PathBuf,
-    ) -> Div {
+    ) -> gpui::Stateful<Div> {
         let rows: Vec<gpui::Stateful<Div>> = match classic {
             Some(entries) if !entries.is_empty() => {
                 let mut next_id: usize = 0;
-                Self::classic_rows(&entries, &open, &[], view, paths, dir, &mut next_id)
+                Self::classic_rows(&entries, &open, &[], view.clone(), paths, dir, &mut next_id)
             }
             Some(_) => {
                 vec![Self::classic_note_row("(No extended options)", &mut 0usize)]
@@ -1646,6 +1683,25 @@ impl crate::ui::components::dialogs::DialogsView {
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0))
+            .id(("ctx-panel", SubmenuKind::ShowMore as usize))
+            .on_hover({
+                let v = view.clone();
+                move |hovering: &bool, _, cx| {
+                    if *hovering {
+                        v.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
+                        });
+                    } else {
+                        let v2 = v.clone();
+                        v2.update(cx, |this, cx| {
+                            this.submenu_grace_close(
+                                |this, cx| this.set_open_submenu(None, cx),
+                                cx,
+                            )
+                        });
+                    }
+                }
+            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         for row in rows {
@@ -1670,6 +1726,59 @@ impl crate::ui::components::dialogs::DialogsView {
                     .text_color(rgba(0xFFFFFF60u32))
                     .child(label.to_string()),
             )
+    }
+
+    /// Fallback MDL2 glyph for classic verbs that ship no bitmap (Files shows
+    /// an icon for every standard verb; the shell only provides bitmaps for
+    /// some). Matched case-insensitively on the mnemonic-stripped label.
+    fn classic_fallback_glyph(label: &str) -> Option<&'static str> {
+        let l = label.to_lowercase();
+        let has = |s: &str| l.contains(s);
+        if has("pin to") || has("add to") && has("favorites") || l.starts_with("pin ") {
+            Some("\u{E718}")
+        } else if has("search") {
+            Some("\u{E721}")
+        } else if has("restore previous") || has("version history") {
+            Some("\u{E7AD}")
+        } else if has("give access to") || has("share") {
+            Some("\u{E72D}")
+        } else if has("rename") || has("powerrename") {
+            Some("\u{E8AC}")
+        } else if has("delete") || has("remove") {
+            Some("\u{E74D}")
+        } else if has("terminal") || has("powershell") || has("command prompt") || has("warp") {
+            Some("\u{E756}")
+        } else if has("properties") || has("file locksmith") {
+            Some("\u{E946}")
+        } else if l.starts_with("open") || has("play with") || has("run as") {
+            Some("\u{E8DA}")
+        } else if has("cut") {
+            Some("\u{E8C6}")
+        } else if has("copy") {
+            Some("\u{E8C8}")
+        } else if has("paste") {
+            Some("\u{E77F}")
+        } else if has("new folder") || has("new ") {
+            Some("\u{E8B7}")
+        } else if has("compress") || has("zip") || has("rar") || has("7-zip") {
+            Some("\u{E8B7}")
+        } else if has("extract") {
+            Some("\u{E896}")
+        } else if has("scan") || has("kaspersky") || has("antivirus") {
+            Some("\u{E72E}")
+        } else if has("edit") || has("notepad") {
+            Some("\u{E70F}")
+        } else if has("print") {
+            Some("\u{E749}")
+        } else if has("send to") || has("bluetooth") || has("mail recipient") {
+            Some("\u{E725}")
+        } else if has("upload") || has("sharex") {
+            Some("\u{E725}")
+        } else if has("teracopy") || has("copy handler") {
+            Some("\u{E8C8}")
+        } else {
+            None
+        }
     }
 
     /// Build classic rows recursively. `prefix` is the index path of these
@@ -1705,14 +1814,24 @@ impl crate::ui::components::dialogs::DialogsView {
             let v_click = view.clone();
             let label = entry.label.clone();
             let tip = entry.label.clone();
-            let icon_el: Option<Div> = entry.icon.clone().map(|arc| {
-                div()
+            let icon_el: Div = match entry.icon.clone() {
+                Some(arc) => div()
                     .w(px(16.0))
                     .h(px(16.0))
                     .overflow_hidden()
                     .flex_shrink_0()
-                    .child(img(gpui::ImageSource::Render(arc)))
-            });
+                    .child(img(gpui::ImageSource::Render(arc))),
+                None => match Self::classic_fallback_glyph(&entry.label) {
+                    Some(glyph) => div()
+                        .w(px(16.0))
+                        .flex_shrink_0()
+                        .text_size(px(15.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(glyph.to_string()),
+                    None => div().w(px(16.0)).h(px(16.0)).flex_shrink_0(),
+                },
+            };
             let mut inner = div()
                 .flex()
                 .items_center()
@@ -1722,11 +1841,7 @@ impl crate::ui::components::dialogs::DialogsView {
             if entry.enabled {
                 inner = inner.cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF15u32)));
             }
-            if let Some(icon) = icon_el {
-                inner = inner.child(icon);
-            } else {
-                inner = inner.child(div().w(px(16.0)).h(px(16.0)).flex_shrink_0());
-            }
+            inner = inner.child(icon_el);
             inner = inner.child(
                 div()
                     .text_size(px(14.0))
@@ -1766,7 +1881,14 @@ impl crate::ui::components::dialogs::DialogsView {
                             let mut parent = hover_path.clone();
                             parent.pop();
                             v_hover.update(cx, |this, cx| {
-                                this.set_classic_open(parent, cx);
+                                // Diagonal travel into the nested panel gets
+                                // the same grace as top-level flyouts.
+                                this.submenu_grace_close(
+                                    move |this, cx| this.set_classic_open(parent, cx),
+                                    cx,
+                                )
+                            });
+                            v_hover.update(cx, |this, _| {
                                 this.menu_tip = None;
                             });
                         }
@@ -1816,6 +1938,30 @@ impl crate::ui::components::dialogs::DialogsView {
                     .rounded(px(8.0))
                     .shadow_lg()
                     .py(px(4.0))
+                    .id(("ctx-nested", id))
+                    .on_hover({
+                        let v = view.clone();
+                        let keep = path.clone();
+                        let mut up = path.clone();
+                        up.pop();
+                        move |hovering: &bool, _, cx| {
+                            if *hovering {
+                                let keep = keep.clone();
+                                v.update(cx, |this, cx| {
+                                    this.set_classic_open(keep, cx)
+                                });
+                            } else {
+                                let v2 = v.clone();
+                                let up = up.clone();
+                                v2.update(cx, |this, cx| {
+                                    this.submenu_grace_close(
+                                        move |this, cx| this.set_classic_open(up, cx),
+                                        cx,
+                                    )
+                                });
+                            }
+                        }
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
                 for row in kids {
@@ -1829,7 +1975,7 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     /// Layout › flyout (Details / List / Grid / Columns).
-    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
         let modes = [
             ("\u{E8A1}", "Details", crate::config::config::ViewMode::Details),
             ("\u{E8A1}", "List", crate::config::config::ViewMode::List),
@@ -1850,11 +1996,11 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows)
+        Self::submenu_panel(rows, SubmenuKind::Layout, view.clone())
     }
 
     /// Sort by › flyout.
-    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
         let cols = [
             ("\u{E2C7}", "Name", crate::config::config::SortBy::Name),
             ("\u{E2C7}", "Date modified", crate::config::config::SortBy::DateModified),
@@ -1876,11 +2022,11 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows)
+        Self::submenu_panel(rows, SubmenuKind::SortBy, view.clone())
     }
 
     /// Group by › flyout.
-    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
         let groups = [
             ("\u{E2C7}", "None", crate::config::config::GroupColumn::None),
             ("\u{E2C7}", "Name", crate::config::config::GroupColumn::Name),
@@ -1905,21 +2051,25 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows)
+        Self::submenu_panel(rows, SubmenuKind::GroupBy, view.clone())
     }
 
     /// New › flyout.
-    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
         let v1 = view.clone();
         let v2 = view.clone();
-        Self::submenu_panel(vec![
-            Self::context_menu_item("\u{E8F4}", "New Folder", move |_, _, cx| {
-                v1.update(cx, |this, cx| this.create_new_folder(cx));
-            }),
-            Self::context_menu_item("\u{E7C3}", "New Text Document", move |_, _, cx| {
-                v2.update(cx, |this, cx| this.create_new_text_document(cx));
-            }),
-        ])
+        Self::submenu_panel(
+            vec![
+                Self::context_menu_item("\u{E8F4}", "New Folder", move |_, _, cx| {
+                    v1.update(cx, |this, cx| this.create_new_folder(cx));
+                }),
+                Self::context_menu_item("\u{E7C3}", "New Text Document", move |_, _, cx| {
+                    v2.update(cx, |this, cx| this.create_new_text_document(cx));
+                }),
+            ],
+            SubmenuKind::New,
+            view.clone(),
+        )
     }
 
     /// Compress › flyout (ZIP creation + conditional Extract Here).
@@ -1927,7 +2077,7 @@ impl crate::ui::components::dialogs::DialogsView {
         view: Entity<crate::app::AppWindow>,
         is_archive: bool,
         archive_path: Option<crate::core::path_util::FilesPath>,
-    ) -> Div {
+    ) -> gpui::Stateful<Div> {
         let v = view.clone();
         let mut rows = vec![Self::context_menu_item(
             "\u{E8B7}",
@@ -1988,12 +2138,12 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
         }
-        Self::submenu_panel(rows)
+        Self::submenu_panel(rows, SubmenuKind::Compress, view.clone())
     }
 
     /// Send to › flyout, populated live from the Windows SendTo folder.
     /// Non-Windows builds show a single disabled row (native provider hook).
-    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
         let mut rows = Vec::new();
         #[cfg(windows)]
         {
@@ -2031,6 +2181,6 @@ impl crate::ui::components::dialogs::DialogsView {
         if rows.is_empty() {
             rows.push(Self::context_menu_item("\u{E8A5}", "(No targets)", |_, _, _| {}));
         }
-        Self::submenu_panel(rows)
+        Self::submenu_panel(rows, SubmenuKind::SendTo, view.clone())
     }
 }

@@ -1780,6 +1780,8 @@ impl AppWindow {
         kind: Option<crate::ui::components::dialogs::SubmenuKind>,
         cx: &mut Context<Self>,
     ) {
+        // Any submenu hover (re)entry invalidates a pending grace-close.
+        self.submenu_grace_cancel();
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             open_submenu,
             selected_paths,
@@ -1841,6 +1843,7 @@ impl AppWindow {
 
     /// Set the open path inside nested classic ("Show more options") submenus.
     pub fn set_classic_open(&mut self, path: Vec<usize>, cx: &mut Context<Self>) {
+        self.submenu_grace_cancel();
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             classic_open,
             ..
@@ -1851,6 +1854,41 @@ impl AppWindow {
                 cx.notify();
             }
         }
+    }
+
+    /// Invalidate any pending submenu grace-close (cursor re-entered).
+    pub fn submenu_grace_cancel(&mut self) {
+        self.submenu_grace_gen += 1;
+        self.submenu_grace = None;
+    }
+
+    /// Close the open flyout after a short grace delay so diagonal cursor
+    /// travel from a row into its (outside-bounds) flyout panel doesn't kill
+    /// it mid-flight. `close` runs on expiry unless invalidated first.
+    pub fn submenu_grace_close(
+        &mut self,
+        close: impl FnOnce(&mut Self, &mut Context<Self>) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.submenu_grace_gen += 1;
+        let grace = self.submenu_grace_gen;
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(350))
+                    .await;
+                weak
+                    .update(&mut async_app, |this, cx| {
+                        if this.submenu_grace_gen == grace {
+                            close(this, cx);
+                        }
+                    })
+                    .ok();
+            },
+        );
+        self.submenu_grace = Some(task);
     }
 
     /// Invoke a classic verb, then close the menu. The invoke runs on a

@@ -58,6 +58,8 @@ impl AppWindow {
             menu_tip: None,
             hover_timer_task: None,
             menu_task: None,
+            submenu_grace: None,
+            submenu_grace_gen: 0,
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
