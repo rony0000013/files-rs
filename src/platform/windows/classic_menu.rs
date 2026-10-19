@@ -287,7 +287,11 @@ unsafe fn read_menu_level(
             continue;
         }
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        let label = String::from_utf16_lossy(&buf[..len]);
+        // Strip '&' mnemonic markers (Files hides them too; "&&" → literal &).
+        let label = String::from_utf16_lossy(&buf[..len])
+            .replace("&&", "\u{1}")
+            .replace('&', "")
+            .replace('\u{1}', "&");
         if label.is_empty() && mii.hSubMenu.0.is_null() {
             continue;
         }
