@@ -85,6 +85,53 @@
 - Deviations kept: no submenu flyouts yet (chevron rows fire the default action — flat sections instead), Rename kept in item menu (no Show-more dialog to host it), Paste kept on bg menu, extras section, Properties on bg menu.
 - Verified on pixels: item menu (toolbar + 12 rows + hints + chevrons), bg menu (View/Sort/Group sections), 5-col grid, "420 items | 1 item selected | 164.9 KB".
 
+### 19 Oct (evening) — Files-canonical menus, shell extensions, behavior fixes
+- Read Files-community `ContentPageContextFlyoutFactory.cs` (`GetBaseItemMenuItems`):
+  item menu = toolbar + Open / Open with › / Paste shortcut / Copy item path /
+  Create folder with selection / Create shortcut / Compress › / Send to › /
+  (pins, extras) / Show more options; bg menu = Layout › / Sort by › /
+  Group by › / Refresh / New › / Pin to Sidebar / Open in Terminal /
+  Show more options. Rebuilt both menus to exactly this.
+- Hover flyout submenus (`SubmenuKind` + `on_hover` on stateful row wrappers,
+  panel child of the row so hover persists into the flyout): Layout, Sort by,
+  Group by, New, Open With (Default app + Choose another app...), Compress
+  (Compress to ZIP + conditional Extract Here), Send to (live %APPDATA%
+  SendTo entries; folder targets copy, executables launch with paths).
+- "Show more options" opens the NATIVE classic shell menu via `IContextMenu`
+  on a dedicated STA thread (`shell_menu_service.rs`: SHParseDisplayName →
+  SHBindToParent → BindToObject → GetUIObjectOf → QueryContextMenu →
+  TrackPopupMenuEx → InvokeCommand). All third-party extensions (WinRAR,
+  7-Zip, Kaspersky, ...) + verbs (Paste, Properties, Send to, sharing)
+  included; works for item/multi/background. Windows-only row (cfg-gated).
+- Right-click now SELECTS first (exclusive unless already in selection, so
+  multi-select is preserved); right-click on empty space clears selection and
+  opens the background menu. Menu open also kills any visible hover tooltip.
+- Grid: card height now reserves 2 text lines from measured `text_size`
+  (label can no longer spill past the selection border) + `overflow_hidden`
+  on cards; labels already middle-ellipsis at 48 chars.
+- Details: header Date/Type/Size columns now align with rows (rows gained the
+  same 8px spacers as the in-flow resize handles: 8/16/24px drift fixed).
+- Properties error fixed everywhere (3rd rundll32 PropertiesDialogW in bg
+  row found too): all go through ShellExecuteExW "properties" verb.
+- Refresh hint is now Ctrl+R (Ctrl+R bound in key handler; F5 still works);
+  Open in Terminal hint is Ctrl+` (Ctrl+` bound too).
+- Hover tooltip delay 350ms → 900ms; never appears over an open menu.
+- New actions: `create_new_folder`, `create_new_text_document`,
+  `create_folder_with_selection` (New folder + move selection in),
+  `paste_as_shortcut` (.lnk per clipboard item via ShortcutService),
+  `send_to_target`, `show_classic_menu_for`, `set_open_submenu`.
+- Deferred with reason: "Edit file tags" row (tag_service exists but there is
+  no tag editor dialog — needs a new dialog, say so if wanted); submenu items
+  apply + close the menu (Files keeps it open with checkmarks — needs
+  checkable rows); IContextMenu2 owner-draw (most extensions fine without).
+- VERIFICATION STATUS: `cargo check --lib` clean, release build finished, app
+  relaunched and running. Pixel verification BLOCKED — machine is at the lock
+  screen (captures show only Bloom wallpaper + clock, no taskbar), so no
+  input or screenshot proves the new menus yet. On unlock, test: right-click
+  file (selects + new menu) → hover Compress/Send to (flyouts) → "Show more
+  options" (classic menu with WinRAR etc.) → right-click empty (deselect +
+  bg menu with Layout/Sort/Group flyouts) → Properties (no error dialog).
+
 ### 19 Oct (later) — user screenshot teardown, menu was still broken
 - User screenshot proved 3 live defects my captures missed: (1) menu bg rendered
   REDDISH — `rgba()` takes 0xRRGGBBAA but menu bg was written AARRGGBB
