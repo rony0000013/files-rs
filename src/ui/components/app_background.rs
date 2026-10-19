@@ -15,7 +15,7 @@ impl AppBackground {
             if mica_alt {
                 rgba(UiConstants::BG_MAIN_MICA_ALT_RGBA)
             } else {
-                rgba(UiConstants::BG_MAIN_RGBA)
+                rgba(UiConstants::BG_MICA_ROOT_RGBA)
             }
         } else {
             rgb(UiConstants::BG_MAIN_RGB)

@@ -322,7 +322,7 @@ impl MainView {
             .flex_grow()
             .w_full()
             // NO overflow_hidden() - would block child scroll events
-            .bg(rgb(UiConstants::BG_MAIN_RGB))
+            .bg(rgba(UiConstants::BG_MICA_CONTENT_RGBA))
             .child(
                 div()
                     .flex()

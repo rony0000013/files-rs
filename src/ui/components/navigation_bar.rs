@@ -1010,7 +1010,7 @@ impl NavigationBarView {
             .w_full()
             .px(Pixels::from(12.0))
             .gap(px(8.0))
-            .bg(rgb(UiConstants::BG_MAIN_RGB))
+            .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
             .child(
                 div()
                     .flex()

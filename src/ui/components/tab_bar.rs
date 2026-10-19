@@ -542,7 +542,7 @@ impl TabBarView {
                 .items_center()
                 .h(px(40.0))
                 .w_full()
-                .bg(rgb(UiConstants::BG_MAIN_RGB))
+                .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
                 .border_b(px(1.0))
                 .border_color(rgba(UiConstants::DIVIDER_RGBA))
                 .on_scroll_wheel(move |event, _w, cx| {

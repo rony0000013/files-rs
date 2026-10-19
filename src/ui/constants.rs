@@ -8,6 +8,13 @@ impl UiConstants {
     // COLORS — Backgrounds (Layered for Windows 11 Mica / Mica Alt)
     // ─────────────────────────────────────────────────────────────────────────────
 
+    /// Mica recipe (dark): DWM draws blurred-wallpaper Mica behind the window;
+    /// every full-area fill below is translucent so it shows through.
+    /// Root + chrome ~65% (Mica clearly visible), content ~85% (readable),
+    /// menus ~95% (solid for contrast).
+    pub const BG_MICA_ROOT_RGBA: u32 = 0x1F1F1FA6;
+    pub const BG_MICA_CHROME_RGBA: u32 = 0x232323A6;
+    pub const BG_MICA_CONTENT_RGBA: u32 = 0x1C1C1CD9;
     /// Main window background (Translucent layer over Mica, or solid fallback)
     pub const BG_MAIN_RGBA: u32 = 0x1C1C1CFF;
     pub const BG_MAIN_MICA_ALT_RGBA: u32 = 0x141414CC;

@@ -115,7 +115,7 @@ impl SidebarView {
             .flex_col()
             .flex_shrink_0() // Prevent sidebar from shrinking when content needs space
             .overflow_hidden() // Clip content to explicit width
-            .bg(rgb(UiConstants::BG_SIDEBAR_RGB))
+            .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
             .border_r(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .relative() // For absolute-positioned tooltip
