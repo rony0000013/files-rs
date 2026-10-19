@@ -84,9 +84,10 @@ pub enum DialogType {
         parent_path: crate::core::path_util::FilesPath,
         siblings: Vec<crate::core::path_util::FilesPath>,
     },
-    /// Status Center showing active operations
+    /// Status Center showing live transfer jobs (snapshot refreshed on engine updates)
     StatusCenter {
-        active_operations: Vec<OperationInfo>,
+        active_operations: Vec<crate::core::progress::FileOperationJob>,
+        expanded: Vec<uuid::Uuid>,
         position: Option<Point<Pixels>>,
     },
     /// Tab context menu (shown on right-click of tab)
@@ -148,14 +149,6 @@ pub enum DialogType {
     UnhideSections {
         hidden_sections: Vec<crate::ui::components::sidebar_state::SectionId>,
     },
-}
-
-/// Info about an in-progress operation for StatusCenter
-#[derive(Debug, Clone, PartialEq)]
-pub struct OperationInfo {
-    pub name: String,
-    pub progress: Option<f32>,
-    pub status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,8 +244,11 @@ impl DialogsView {
             } => Self::build_sibling_dropdown(parent_path, siblings, view.clone(), cx)
                 .into_any_element(),
             DialogType::StatusCenter {
-                active_operations, ..
-            } => Self::build_status_center(active_operations, view.clone()).into_any_element(),
+                active_operations,
+                expanded,
+                ..
+            } => Self::build_status_center(active_operations, expanded, view.clone())
+                .into_any_element(),
             DialogType::Dynamic { title, message } => {
                 Self::build_dynamic_dialog(title, message, view.clone()).into_any_element()
             }
@@ -870,91 +866,444 @@ impl DialogsView {
             )
     }
 
+    /// StatusCenter flyout (Files parity): header + "Clear completed", one
+    /// card per job with state icon, progress bar, speed/ETA message,
+    /// expandable 88px speed graph, cancel (running) / dismiss (finished).
     fn build_status_center(
-        operations: &[OperationInfo],
+        operations: &[crate::core::progress::FileOperationJob],
+        expanded: &[uuid::Uuid],
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let v_close = view.clone();
+        use crate::core::progress::{OpKind, OperationStatus};
+        let v_head = view.clone();
 
-        let content = if operations.is_empty() {
-            div()
-                .flex_col()
-                .gap(px(12.0))
-                .items_center()
-                .py(px(24.0))
-                .child(
-                    div()
-                        .text_size(px(32.0))
-                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                        .child("\u{E9D9}"),
-                )
-                .child(
-                    div()
-                        .text_size(AbsoluteLength::Pixels(px(14.0)))
-                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                        .child("No active operations"),
-                )
-        } else {
-            div()
-                .flex_col()
-                .gap(px(8.0))
-                .children(operations.iter().map(|op| {
-                    div()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_size(AbsoluteLength::Pixels(px(13.0)))
-                                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                        .child(op.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(AbsoluteLength::Pixels(px(12.0)))
-                                        .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                        .child(op.status.clone()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(4.0))
-                                .bg(rgba(0xFFFFFF30u32))
-                                .rounded(px(2.0))
-                                .child(
-                                    div()
-                                        .h(px(4.0))
-                                        .bg(rgba(UiConstants::ACCENT_RGBA))
-                                        .rounded(px(2.0))
-                                        .w(px(100.0)),
-                                ),
-                        )
-                }))
-        };
-
-        div()
-            .flex_col()
-            .gap(px(16.0))
-            .w(px(400.0))
-            .child(
+        let any_finished = operations.iter().any(|j| {
+            matches!(
+                j.status,
+                OperationStatus::Completed
+                    | OperationStatus::Failed(_)
+                    | OperationStatus::Cancelled
+            )
+        });
+        let mut col = div().flex_col().gap(px(12.0)).w(px(368.0)).child(
+            div().flex().items_center().justify_between().child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(18.0)))
+                    .text_size(px(15.0))
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .font_weight(FontWeight(600.0))
                     .child("Status Center"),
-            )
-            .child(content)
-            .child(div().flex().justify_end().child(Self::build_button(
-                "Close",
-                false,
-                move |_, _, cx| {
-                    v_close.update(cx, |this, cx| this.close_dialog(cx));
+            ).child(if any_finished {
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_head.update(cx, |this, cx| {
+                            this.state.status_center.clear_finished();
+                            cx.notify();
+                        });
+                    })
+                    .child("Clear completed")
+            } else {
+                div()
+            }),
+        );
+
+        if operations.is_empty() {
+            col = col.child(
+                div()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .items_center()
+                    .py(px(24.0))
+                    .child(
+                        div()
+                            .text_size(px(32.0))
+                            .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                            .child("\u{E9D9}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                            .child("No active operations"),
+                    ),
+            );
+        }
+
+        // Newest first (engine appends; Files inserts at index 0).
+        for job in operations.iter().rev() {
+            let is_exp = expanded.iter().any(|e| *e == job.id);
+            col = col.child(Self::status_card(job, is_exp, view.clone()));
+        }
+        col
+    }
+
+    fn status_card(
+        job: &crate::core::progress::FileOperationJob,
+        expanded: bool,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        use crate::core::progress::{OpKind, OperationStatus};
+        let running = matches!(job.status, OperationStatus::InProgress { .. });
+        let (ring, glyph, glyph_color) = match &job.status {
+            OperationStatus::Pending => (
+                rgba(0xFFFFFF20u32),
+                match job.kind {
+                    OpKind::Copy => "\u{E8C8}",
+                    OpKind::Move => "\u{E8C6}",
+                    OpKind::Delete => "\u{E74D}",
+                    OpKind::Other => "\u{E9D9}",
                 },
-            )))
+                rgba(UiConstants::TEXT_SECONDARY_RGBA),
+            ),
+            OperationStatus::InProgress { .. } => (
+                rgba(0x0078D440u32),
+                match job.kind {
+                    OpKind::Copy => "\u{E8C8}",
+                    OpKind::Move => "\u{E8C6}",
+                    OpKind::Delete => "\u{E74D}",
+                    OpKind::Other => "\u{E9D9}",
+                },
+                rgba(UiConstants::ACCENT_RGBA),
+            ),
+            OperationStatus::Completed => (
+                rgba(0x107C1040u32),
+                "\u{E73E}",
+                rgba(0x6CCB5Fu32),
+            ),
+            OperationStatus::Failed(_) => (
+                rgba(0xE8112340u32),
+                "\u{E783}",
+                rgba(0xF1707Bu32),
+            ),
+            OperationStatus::Cancelled => (
+                rgba(0xFFFFFF20u32),
+                "\u{E711}",
+                rgba(UiConstants::TEXT_SECONDARY_RGBA),
+            ),
+        };
+        // Row 1: state icon | title + message | actions
+        let mut card = div()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(10.0))
+            .rounded(px(8.0))
+            .bg(rgba(0xFFFFFF0Au32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .child(
+                div().flex().items_center().gap(px(10.0)).child(
+                    div()
+                        .w(px(32.0))
+                        .h(px(32.0))
+                        .rounded(px(16.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(ring)
+                        .child(
+                            div()
+                                .text_size(px(15.0))
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_color(glyph_color)
+                                .child(glyph.to_string()),
+                        ),
+                ).child(
+                    div().flex_col().flex_grow().overflow_hidden().child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .child(job.name.clone()),
+                    ).child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                            .child(Self::status_message(job)),
+                    ),
+                ).child(Self::status_actions(job, running, expanded, view.clone())),
+            );
+
+        // Row 2: progress bar (+ graph when expanded) for running jobs,
+        // result line for finished ones.
+        if running {
+            card = card.child(Self::status_progress(job, expanded, view.clone()));
+        } else {
+            let note = match &job.status {
+                OperationStatus::Completed => "Completed".to_string(),
+                OperationStatus::Failed(r) => r.clone(),
+                OperationStatus::Cancelled => "Cancelled".to_string(),
+                _ => String::new(),
+            };
+            if !note.is_empty() {
+                card = card.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(note),
+                );
+            }
+        }
+        card
+    }
+
+    /// Right-side card buttons: chevron + cancel (running), dismiss (done).
+    fn status_actions(
+        job: &crate::core::progress::FileOperationJob,
+        running: bool,
+        expanded: bool,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let id = job.id;
+        let mut row = div().flex().items_center().gap(px(4.0)).flex_shrink_0();
+        if running {
+            let v_exp = view.clone();
+            row = row.child(
+                div()
+                    .w(px(32.0))
+                    .h(px(32.0))
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_exp.update(cx, |this, cx| {
+                            if let Some(
+                                crate::ui::components::dialogs::DialogType::StatusCenter {
+                                    expanded,
+                                    ..
+                                },
+                            ) = this.state.active_dialog.as_mut()
+                            {
+                                if let Some(pos) = expanded.iter().position(|e| *e == id) {
+                                    expanded.remove(pos);
+                                } else {
+                                    expanded.push(id);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .child(if expanded { "\u{E70E}" } else { "\u{E70D}" }),
+                    ),
+            );
+            let v_cancel = view.clone();
+            row = row.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_size(px(12.0))
+                    .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_cancel.update(cx, |this, cx| {
+                            this.state.progress_engine.request_cancel(id);
+                            cx.notify();
+                        });
+                    })
+                    .child("Cancel"),
+            );
+        } else {
+            let v_dis = view.clone();
+            row = row.child(
+                div()
+                    .w(px(32.0))
+                    .h(px(32.0))
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_dis.update(cx, |this, cx| {
+                            this.state.status_center.jobs.retain(|j| j.id != id);
+                            this.state.status_center.expanded.retain(|e| *e != id);
+                            cx.notify();
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .child("\u{E711}"),
+                    ),
+            );
+        }
+        row
+    }
+
+    /// Progress bar + (when expanded) the 88px speed graph and details.
+    fn status_progress(
+        job: &crate::core::progress::FileOperationJob,
+        expanded: bool,
+        _view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        use crate::core::progress::OperationStatus;
+        let frac = match &job.status {
+            OperationStatus::InProgress { progress, .. } => progress.clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let mut col = div().flex_col().gap(px(6.0));
+        if !expanded {
+            col = col.child(
+                div().relative().h(px(4.0)).w_full().rounded(px(2.0)).bg(rgba(
+                    0xFFFFFF30u32,
+                )).child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .h(px(4.0))
+                        .w(px(frac * 336.0))
+                        .rounded(px(2.0))
+                        .bg(rgba(UiConstants::ACCENT_RGBA)),
+                ),
+            );
+        } else {
+            col = col.child(Self::speed_graph(job));
+            let detail = if job.current_file.is_empty() {
+                Self::status_message(job)
+            } else {
+                format!("Name: {}\n{}", job.current_file, Self::status_message(job))
+            };
+            for line in detail.lines() {
+                col = col.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(line.to_string()),
+                );
+            }
+        }
+        col
+    }
+
+    /// Subtitle line: current file • bytes • speed • ETA (or item counts).
+    fn status_message(job: &crate::core::progress::FileOperationJob) -> String {
+        use crate::core::progress::{OpKind, OperationStatus};
+        match &job.status {
+            OperationStatus::InProgress {
+                bytes_processed,
+                total_bytes,
+                speed,
+                eta,
+                ..
+            } => {
+                if job.kind == OpKind::Delete {
+                    return format!(
+                        "{} of {} items",
+                        bytes_processed.min(total_bytes),
+                        total_bytes
+                    );
+                }
+                let mut parts = Vec::new();
+                if !job.current_file.is_empty() {
+                    parts.push(job.current_file.clone());
+                }
+                parts.push(format!(
+                    "{} of {}",
+                    Self::fmt_bytes(*bytes_processed),
+                    Self::fmt_bytes(*total_bytes)
+                ));
+                if *speed > 0.5 {
+                    parts.push(format!("{}/s", Self::fmt_bytes(*speed as u64)));
+                }
+                if let Some(d) = eta {
+                    let s = d.as_secs();
+                    if s > 1 {
+                        parts.push(if s >= 60 {
+                            format!("{}m {}s left", s / 60, s % 60)
+                        } else {
+                            format!("{}s left", s)
+                        });
+                    }
+                }
+                parts.join(" • ")
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// 88px speed graph: trailing mini-bars + current speed readout.
+    fn speed_graph(job: &crate::core::progress::FileOperationJob) -> impl IntoElement {
+        use crate::core::progress::OperationStatus;
+        let speed = match &job.status {
+            OperationStatus::InProgress { speed, .. } => *speed,
+            _ => 0.0,
+        };
+        let samples: Vec<f32> = job.speed_history.iter().rev().take(24).rev().cloned().collect();
+        let max = samples.iter().cloned().fold(1.0f32, f32::max);
+        let mut bars = div().flex().flex_row().items_end().gap(px(2.0));
+        for s in samples {
+            let h = 6.0 + 70.0 * (s / max).clamp(0.0, 1.0);
+            bars = bars.child(div().w(px(8.0)).h(px(h)).rounded(px(1.0)).bg(rgba(
+                UiConstants::ACCENT_RGBA,
+            )));
+        }
+        div()
+            .flex()
+            .gap(px(8.0))
+            .h(px(88.0))
+            .p(px(8.0))
+            .rounded(px(4.0))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .child(div().flex_grow().flex().flex_row().items_end().child(bars))
+            .child(
+                div().flex_col().items_end().justify_center().gap(px(2.0)).child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                        .child("Speed:"),
+                ).child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                        .font_weight(FontWeight(600.0))
+                        .child(if speed > 0.5 {
+                            format!("{}/s", Self::fmt_bytes(speed as u64))
+                        } else {
+                            "—".to_string()
+                        }),
+                ),
+            )
+    }
+
+    fn fmt_bytes(n: u64) -> String {
+        const U: [(&str, f64); 5] = [
+            ("B", 1.0),
+            ("KB", 1024.0),
+            ("MB", 1024.0 * 1024.0),
+            ("GB", 1024.0 * 1024.0 * 1024.0),
+            ("TB", 1024.0 * 1024.0 * 1024.0 * 1024.0),
+        ];
+        let mut v = n as f64;
+        let mut u = "B";
+        for (name, size) in U.iter() {
+            if v >= *size {
+                u = name;
+            }
+        }
+        let div = U.iter().find(|(name, _)| *name == u).map(|(_, s)| *s).unwrap_or(1.0);
+        v /= div;
+        if u == "B" {
+            format!("{} {}", n, u)
+        } else {
+            format!("{:.1} {}", v, u)
+        }
     }
 
     fn build_dynamic_dialog(

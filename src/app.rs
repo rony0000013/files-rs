@@ -273,6 +273,14 @@ impl AppWindow {
                 self.state.status_center.add_job(job);
             }
         }
+        // Keep an open StatusCenter dialog in sync (render reads the snapshot,
+        // never the live view, to avoid BorrowMutError during render).
+        if let Some(DialogType::StatusCenter {
+            active_operations, ..
+        }) = self.state.active_dialog.as_mut()
+        {
+            *active_operations = self.state.status_center.jobs.clone();
+        }
         cx.notify();
     }
 

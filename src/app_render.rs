@@ -184,6 +184,7 @@ impl Render for AppWindow {
                                                 state.main_view.side_pane.clone(),
                                                 cx.entity(),
                                                 &state.action_registry,
+                                                &state.status_center,
                                             ),
                                         ),
                                     )

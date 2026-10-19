@@ -77,6 +77,8 @@ pub struct StatusCenterState {
     pub is_open: bool,
     /// Timestamp of the oldest active job
     pub oldest_active_time: Option<Instant>,
+    /// Per-card expansion (job ids with the speed graph open).
+    pub expanded: Vec<uuid::Uuid>,
 }
 
 impl Default for StatusCenterState {
@@ -92,7 +94,43 @@ impl StatusCenterState {
             conflicts: Vec::new(),
             is_open: false,
             oldest_active_time: None,
+            expanded: Vec::new(),
         }
+    }
+
+    /// Toggle the expanded (speed graph) state of one card.
+    pub fn toggle_expanded(&mut self, id: uuid::Uuid) {
+        if let Some(pos) = self.expanded.iter().position(|e| *e == id) {
+            self.expanded.remove(pos);
+        } else {
+            self.expanded.push(id);
+        }
+    }
+
+    pub fn is_expanded(&self, id: &uuid::Uuid) -> bool {
+        self.expanded.iter().any(|e| e == id)
+    }
+
+    /// Drop every finished job (completed / failed / cancelled).
+    pub fn clear_finished(&mut self) {
+        self.jobs.retain(|j| {
+            matches!(
+                j.status,
+                OperationStatus::Pending | OperationStatus::InProgress { .. }
+            )
+        });
+        self.expanded
+            .retain(|id| self.jobs.iter().any(|j| &j.id == id));
+    }
+
+    /// True when any job failed or was cancelled.
+    pub fn has_error(&self) -> bool {
+        self.jobs.iter().any(|j| {
+            matches!(
+                j.status,
+                OperationStatus::Failed(_) | OperationStatus::Cancelled
+            )
+        })
     }
 
     /// Get count of active (in-progress) jobs.

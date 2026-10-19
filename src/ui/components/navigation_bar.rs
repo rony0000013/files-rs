@@ -466,6 +466,84 @@ impl NavigationBarView {
             .bg(rgba(UiConstants::DIVIDER_RGBA))
     }
 
+    /// Notification-center bell with an in-progress badge. Opens the
+    /// StatusCenter flyout anchored top-right under the bar.
+    fn status_bell(
+        status: &crate::ui::components::status_center::StatusCenterState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        use crate::core::progress::OperationStatus;
+        let active = status.active_job_count();
+        let failed = status.has_error();
+        let mut btn = div()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(36.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+            .child(
+                div()
+                    .text_size(px(16.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .child("\u{E7E8}"),
+            );
+        if active > 0 || failed {
+            let label = if active > 0 {
+                active.min(99).to_string()
+            } else {
+                "!".to_string()
+            };
+            btn = btn.child(
+                div()
+                    .absolute()
+                    .top(px(2.0))
+                    .right(px(2.0))
+                    .h(px(16.0))
+                    .px(px(4.0))
+                    .rounded(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(if failed {
+                        rgba(0xE81123FFu32)
+                    } else {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    })
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(rgb(0xFFFFFF))
+                            .child(label),
+                    ),
+            );
+        }
+        let v = view.clone();
+        btn.on_mouse_down(
+            MouseButton::Left,
+            move |_, window: &mut Window, cx: &mut App| {
+                let vp = window.viewport_size();
+                let pos = gpui::Point {
+                    x: px(f32::from(vp.width) - 424.0),
+                    y: px(56.0),
+                };
+                v.update(cx, |this, cx| {
+                    this.state.active_dialog =
+                        Some(crate::ui::components::dialogs::DialogType::StatusCenter {
+                            active_operations: this.state.status_center.jobs.clone(),
+                            expanded: Vec::new(),
+                            position: Some(pos),
+                        });
+                    cx.notify();
+                });
+            },
+        )
+    }
+
     pub fn build(
         state: &NavigationBarState,
         can_go_back: bool,
@@ -473,11 +551,13 @@ impl NavigationBarView {
         _side_pane: crate::ui::views::types::SidePaneMode,
         view: Entity<crate::app::AppWindow>,
         registry: &ActionRegistry,
+        status: &crate::ui::components::status_center::StatusCenterState,
     ) -> impl IntoElement {
         let v_back = view.clone();
         let v_forward = view.clone();
         let v_up = view.clone();
         let v_refresh = view.clone();
+        let v_bell = view.clone();
 
         let address_bar_pill = {
             let state_mode = state.omnibar_mode;
@@ -1007,6 +1087,7 @@ impl NavigationBarView {
                     })),
             )
             .child(address_bar_pill)
+            .child(Self::status_bell(status, v_bell))
     }
 }
 
