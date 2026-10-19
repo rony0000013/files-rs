@@ -467,6 +467,83 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Create a "New folder" in the current directory and move the current
+    /// selection into it (Files "Create folder with selection").
+    pub fn create_folder_with_selection(&mut self, cx: &mut Context<Self>) {
+        let dir = self
+            .state
+            .main_view
+            .primary_path
+            .as_path()
+            .to_path_buf();
+        let mut name = "New folder".to_string();
+        let mut i = 2;
+        while dir.join(&name).exists() {
+            name = format!("New folder ({})", i);
+            i += 1;
+        }
+        let new_dir = dir.join(&name);
+        if std::fs::create_dir(&new_dir).is_err() {
+            return;
+        }
+        let selected: Vec<std::path::PathBuf> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .map(|item| item.path.as_path().to_path_buf())
+            .collect();
+        for src in selected {
+            if let Some(file_name) = src.file_name() {
+                let _ = std::fs::rename(&src, new_dir.join(file_name));
+            }
+        }
+        self.close_dialog(cx);
+        self.refresh(cx);
+    }
+
+    /// Create a .lnk shortcut in the current directory for every clipboard
+    /// item (Files "Paste shortcut").
+    pub fn paste_as_shortcut(&mut self, cx: &mut Context<Self>) {
+        use crate::core::shortcut_service::{ShortcutOptions, ShortcutService};
+        let dir = self
+            .state
+            .main_view
+            .primary_path
+            .as_path()
+            .to_path_buf();
+        let targets: Vec<std::path::PathBuf> = match &self.state.clipboard {
+            crate::ui::components::clipboard_manager::ClipboardState::Cut(items)
+            | crate::ui::components::clipboard_manager::ClipboardState::Copy(items) => {
+                items.iter().map(|item| item.path.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        if targets.is_empty() {
+            self.close_dialog(cx);
+            return;
+        }
+        for target in targets {
+            let stem = target
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Shortcut".to_string());
+            let mut link_name = format!("{} - Shortcut.lnk", stem);
+            let mut i = 2;
+            while dir.join(&link_name).exists() {
+                link_name = format!("{} - Shortcut ({}).lnk", stem, i);
+                i += 1;
+            }
+            let target_fp = crate::core::path_util::FilesPath::from(target);
+            let link_fp =
+                crate::core::path_util::FilesPath::from(dir.join(&link_name));
+            ShortcutService::create_shortcut(ShortcutOptions::new(target_fp, link_fp));
+        }
+        self.close_dialog(cx);
+        self.refresh(cx);
+    }
+
     pub fn paste(&mut self, cx: &mut Context<Self>) {
         let target_dir = self.state.main_view.primary_path.clone();
         let target_path = target_dir.as_path().to_path_buf();
@@ -1657,6 +1734,27 @@ impl AppWindow {
             })
             .unwrap_or(false);
 
+        // A menu opening on top kills any visible hover tooltip (Files never
+        // shows the preview popup above an open context menu).
+        self.hover_tooltip = None;
+        self.hover_item_index = None;
+        self.hover_timer_task = None;
+
+        let selected_paths: Vec<std::path::PathBuf> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .map(|item| item.path.as_path().to_path_buf())
+            .collect();
+        let current_dir: std::path::PathBuf = self
+            .state
+            .main_view
+            .primary_path
+            .as_path()
+            .to_path_buf();
+
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
             position,
@@ -1664,8 +1762,189 @@ impl AppWindow {
             selected_path,
             selected_count,
             is_dir,
+            open_submenu: None,
+            selected_paths,
+            current_dir,
         });
         cx.notify();
+    }
+
+    /// Switch the open flyout submenu inside the context menu (hover-driven,
+    /// Files-community parity). No-op unless a context menu is showing.
+    pub fn set_open_submenu(
+        &mut self,
+        kind: Option<crate::ui::components::dialogs::SubmenuKind>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+            open_submenu,
+            ..
+        }) = self.state.active_dialog.as_mut()
+        {
+            if *open_submenu != kind {
+                *open_submenu = kind;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Create "New Folder" in the current directory (used by the New › flyout).
+    pub fn create_new_folder(&mut self, cx: &mut Context<Self>) {
+        let current_dir = self
+            .state
+            .main_view
+            .primary_path
+            .as_path()
+            .to_path_buf();
+        let mut folder_name = "New Folder".to_string();
+        let mut counter = 1;
+        while current_dir.join(&folder_name).exists() {
+            folder_name = format!("New Folder ({})", counter);
+            counter += 1;
+        }
+        let new_folder_path = current_dir.join(&folder_name);
+        match std::fs::create_dir(&new_folder_path) {
+            Ok(_) => {
+                tracing::info!("Created folder: {:?}", new_folder_path);
+                self.refresh(cx);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create folder {:?}: {}", new_folder_path, e);
+            }
+        }
+        self.close_dialog(cx);
+    }
+
+    /// Create "New Text Document.txt" in the current directory (New › flyout).
+    pub fn create_new_text_document(&mut self, cx: &mut Context<Self>) {
+        let current_dir = self
+            .state
+            .main_view
+            .primary_path
+            .as_path()
+            .to_path_buf();
+        let mut file_name = "New Text Document.txt".to_string();
+        let mut counter = 1;
+        while current_dir.join(&file_name).exists() {
+            file_name = format!("New Text Document ({}).txt", counter);
+            counter += 1;
+        }
+        let new_file_path = current_dir.join(&file_name);
+        match std::fs::File::create(&new_file_path) {
+            Ok(_) => {
+                tracing::info!("Created file: {:?}", new_file_path);
+                self.refresh(cx);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create file {:?}: {}", new_file_path, e);
+            }
+        }
+        self.close_dialog(cx);
+    }
+
+    /// Dispatch the current selection to a SendTo target (Send to › flyout).
+    /// Folders receive a copy of the files; anything else is launched with
+    /// the selected paths as arguments (Explorer semantics, simplified).
+    pub fn send_to_target(&mut self, target: std::path::PathBuf, cx: &mut Context<Self>) {
+        let selected: Vec<std::path::PathBuf> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .map(|item| item.path.as_path().to_path_buf())
+            .collect();
+        if target.is_dir() {
+            for src in &selected {
+                if let Some(name) = src.file_name() {
+                    let dest = target.join(name);
+                    if src.is_dir() {
+                        let _ = copy_dir_recursive(src, &dest);
+                    } else {
+                        let _ = std::fs::copy(src, &dest);
+                    }
+                }
+            }
+            self.close_dialog(cx);
+            self.refresh(cx);
+        } else if !selected.is_empty() {
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStrExt;
+                let verb_w: Vec<u16> = "open".encode_utf16().chain([0]).collect();
+                let file_w: Vec<u16> = target
+                    .as_os_str()
+                    .encode_wide()
+                    .chain([0])
+                    .collect();
+                let args: String = selected
+                    .iter()
+                    .map(|p| format!("\"{}\"", p.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let args_w: Vec<u16> = args.encode_utf16().chain([0]).collect();
+                let mut sei = windows::Win32::UI::Shell::SHELLEXECUTEINFOW::default();
+                sei.cbSize = std::mem::size_of::<windows::Win32::UI::Shell::SHELLEXECUTEINFOW>() as u32;
+                sei.lpVerb = windows::core::PCWSTR(verb_w.as_ptr());
+                sei.lpFile = windows::core::PCWSTR(file_w.as_ptr());
+                sei.lpParameters = windows::core::PCWSTR(args_w.as_ptr());
+                sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
+                unsafe {
+                    let _ = windows::Win32::UI::Shell::ShellExecuteExW(&mut sei);
+                }
+            }
+            self.close_dialog(cx);
+        } else {
+            self.close_dialog(cx);
+        }
+    }
+
+    /// Open the native classic shell menu ("Show more options") for the
+    /// current selection (or the folder background when `paths` is empty).
+    /// `client` is the click position in window client pixels; None falls
+    /// back to the cursor position (keyboard invocation).
+    pub fn show_classic_menu_for(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        dir: std::path::PathBuf,
+        client: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_dialog(cx);
+        #[cfg(windows)]
+        {
+            let (sx, sy) = unsafe {
+                use windows::Win32::Foundation::POINT;
+                use windows::Win32::Graphics::Gdi::ClientToScreen;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetCursorPos, GetForegroundWindow,
+                };
+                let hwnd = GetForegroundWindow();
+                match client {
+                    Some((x, y)) => {
+                        let mut pt = POINT {
+                            x: x as i32,
+                            y: y as i32,
+                        };
+                        if ClientToScreen(hwnd, &mut pt).as_bool() {
+                            (pt.x, pt.y)
+                        } else {
+                            (i32::MIN, i32::MIN)
+                        }
+                    }
+                    None => {
+                        let mut pt = POINT { x: 0, y: 0 };
+                        GetCursorPos(&mut pt).ok();
+                        (pt.x, pt.y)
+                    }
+                }
+            };
+            crate::platform::windows::shell_menu_service::show_classic_menu(paths, dir, sx, sy);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (paths, dir, client);
+        }
     }
 
     /// Show the column visibility toggle menu (right-click on column header)
@@ -1892,4 +2171,22 @@ impl AppWindow {
             })
             .detach();
     }
+}
+
+
+/// Recursively copy a directory (SendTo folder targets, folder-with-selection
+/// support). Best-effort: ignores individual failures.
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }

@@ -40,6 +40,7 @@ impl MainView {
                         let v = view.clone();
                         move |event, window, cx| {
                             v.update(cx, |this, cx| {
+                                this.clear_selection(cx);
                                 this.show_context_menu(None, event.position, window, cx);
                             });
                         }
@@ -187,7 +188,10 @@ impl MainView {
                                                 move |ev, window, cx| {
                                                     cx.stop_propagation();
                                                     v.update(cx, |this, cx| {
-                                                        this.show_context_menu(
+                                                                                                                    if !this.state.main_view.selected_indices.contains(&idx) {
+                                                                this.select_item(idx, false, false, cx);
+                                                            }
+this.show_context_menu(
                                                             Some(idx),
                                                             ev.position,
                                                             window,
@@ -272,12 +276,14 @@ impl MainView {
                                                         ))
                                                         .child(display_name),
                                                 ]),
+                                            div().w(px(8.0)),
                                             div()
                                                 .w(px(widths.date))
                                                 .text_center()
                                                 .text_size(px(text_size_sm))
                                                 .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
                                                 .child(date_str),
+                                            div().w(px(8.0)),
                                             div()
                                                 .w(px(widths.type_col))
                                                 .text_center()
@@ -291,6 +297,7 @@ impl MainView {
                                                         "File"
                                                     },
                                                 ),
+                                            div().w(px(8.0)),
                                             div()
                                                 .w(px(widths.size))
                                                 .text_center()
@@ -495,7 +502,10 @@ impl MainView {
                                         move |ev, window, cx| {
                                             cx.stop_propagation();
                                             view.update(cx, |this, cx| {
-                                                this.show_context_menu(
+                                                                                                    if !this.state.main_view.selected_indices.contains(&idx) {
+                                                        this.select_item(idx, false, false, cx);
+                                                    }
+this.show_context_menu(
                                                     Some(idx),
                                                     ev.position,
                                                     window,
@@ -660,12 +670,14 @@ impl MainView {
                                             );
                                             cells
                                         }),
+                                    div().w(px(8.0)),
                                     div()
                                         .w(px(widths.date))
                                         .text_center()
                                         .text_size(px(text_size_sm))
                                         .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
                                         .child(date_str),
+                                    div().w(px(8.0)),
                                     div()
                                         .w(px(widths.type_col))
                                         .text_center()
@@ -676,6 +688,7 @@ impl MainView {
                                         } else {
                                             "File"
                                         }),
+                                    div().w(px(8.0)),
                                     div()
                                         .w(px(widths.size))
                                         .text_center()

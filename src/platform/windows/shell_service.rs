@@ -10,7 +10,9 @@ use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXE
 pub struct ShellService;
 
 impl ShellService {
-    pub async fn open_properties(path: &FilesPath) -> Result<()> {
+    /// Synchronous core of [`Self::open_properties`] (the body is sync
+    /// ShellExecuteExW; the async wrapper exists for callers on async contexts).
+    pub fn open_properties_sync(path: &FilesPath) -> Result<()> {
         #[cfg(windows)]
         {
             let wide_path: Vec<u16> = path
@@ -38,9 +40,14 @@ impl ShellService {
         }
         #[cfg(not(windows))]
         {
+            let _ = path;
             tracing::warn!("open_properties is only implemented for Windows");
         }
         Ok(())
+    }
+
+    pub async fn open_properties(path: &FilesPath) -> Result<()> {
+        Self::open_properties_sync(path)
     }
 
     pub async fn format_drive(drive_letter: &str) -> Result<()> {

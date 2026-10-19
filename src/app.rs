@@ -523,6 +523,27 @@ impl AppWindow {
             return;
         }
 
+        // Files shows Ctrl+R for Refresh (F5 also works) and Ctrl+` for
+        // opening a terminal here; both bypass the registry's 1:1 bindings.
+        if keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && !keystroke.modifiers.shift
+            && !is_nav_bar_active
+        {
+            match keystroke.key.as_str() {
+                "r" | "R" => {
+                    self.refresh(cx);
+                    return;
+                }
+                "`" => {
+                    self.open_terminal_at_current(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(action) =
             self.state.action_registry.lookup(&key_combo)
         {
@@ -3033,7 +3054,7 @@ impl AppWindow {
     // Hover-to-preview tooltip (delayed appearance for files)
     // ─────────────────────────────────────────────────────────────────────────
 
-    const HOVER_TOOLTIP_DELAY_MS: u64 = 350;
+    const HOVER_TOOLTIP_DELAY_MS: u64 = 900;
 
     /// Start the hover timer for a file item. After HOVER_TOOLTIP_DELAY_MS,
     /// the tooltip appears. Calling again with a different index cancels the

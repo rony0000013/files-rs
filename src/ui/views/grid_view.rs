@@ -52,7 +52,10 @@ impl MainViewState {
         // large cards (5 across a ~1000px pane).
         let item_width = (140.0 + zoom * 120.0).min(260.0); // 140 → 260
         let thumb_height = item_width * 0.76; // landscape thumbnail area
-        let item_height = thumb_height + 46.0; // thumbnail + space for 2-line filename
+        let text_size = (item_width / 8.5).clamp(11.0, 13.0);
+        // Reserve vertical label padding (py) + gap (mt) + 2 text lines so the
+        // filename can never spill past the card's selection border.
+        let item_height = thumb_height + 14.0 + 3.0 + text_size * 1.3 * 2.0;
         let row_height = item_height + 8.0;
         // Thumbnail icon fits inside the thumbnail container
         let icon_size = thumb_height * 0.80;
@@ -70,7 +73,6 @@ impl MainViewState {
         } else {
             10.0
         };
-        let text_size = (item_width / 8.5).clamp(11.0, 13.0);
         let padding = if zoom < 0.33 { 10.0 } else { 14.0 };
 
         GridLayoutParams {
@@ -115,7 +117,8 @@ impl MainViewState {
         let stretched_w =
             ((avail - total_gaps) / cols as f32).floor().clamp(base.item_width, base.item_width * 1.35);
         let thumb_height = stretched_w * 0.76;
-        let item_height = thumb_height + 46.0;
+        let fit_text = (stretched_w / 8.5).clamp(11.0, 13.0);
+        let item_height = thumb_height + 14.0 + 3.0 + fit_text * 1.3 * 2.0;
         GridLayoutParams {
             items_per_row: cols,
             item_width: stretched_w,
@@ -152,6 +155,7 @@ impl MainViewState {
                 let v = view.clone();
                 move |event, window, cx| {
                     v.update(cx, |this, cx| {
+                        this.clear_selection(cx);
                         this.show_context_menu(None, event.position, window, cx);
                     });
                 }
@@ -442,6 +446,7 @@ impl MainViewState {
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
+                .overflow_hidden()
                 .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
@@ -524,6 +529,9 @@ impl MainViewState {
                     move |event, window, cx| {
                         cx.stop_propagation();
                         v.update(cx, |this, cx| {
+                            if !this.state.main_view.selected_indices.contains(&index) {
+                                this.select_item(index, false, false, cx);
+                            }
                             this.show_context_menu(Some(index), event.position, window, cx);
                         });
                     }
@@ -626,6 +634,7 @@ impl MainViewState {
                 .h(px(item_height))
                 .flex_col()
                 .items_center()
+                .overflow_hidden()
                 .py(px(7.0))
                 .rounded(px(rounded))
                 .relative()
@@ -709,6 +718,9 @@ impl MainViewState {
                     move |event, window, cx| {
                         cx.stop_propagation();
                         v.update(cx, |this, cx| {
+                            if !this.state.main_view.selected_indices.contains(&index) {
+                                this.select_item(index, false, false, cx);
+                            }
                             this.show_context_menu(Some(index), event.position, window, cx);
                         });
                     }

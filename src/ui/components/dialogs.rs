@@ -15,6 +15,20 @@ pub enum SidebarMenuTarget {
     Background,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which flyout submenu is open inside a context menu (Files-community
+/// parity: Layout / Sort by / Group by / New / Open with / Compress / Send
+/// to expand as hover flyouts instead of flat sections).
+pub enum SubmenuKind {
+    Layout,
+    SortBy,
+    GroupBy,
+    New,
+    OpenWith,
+    Compress,
+    SendTo,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DialogType {
     Rename {
@@ -41,6 +55,9 @@ pub enum DialogType {
         selected_path: Option<crate::core::path_util::FilesPath>,
         selected_count: usize,
         is_dir: bool,
+        open_submenu: Option<SubmenuKind>,
+        selected_paths: Vec<std::path::PathBuf>,
+        current_dir: std::path::PathBuf
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -242,6 +259,9 @@ impl DialogsView {
                 selected_path,
                 selected_count,
                 is_dir,
+                open_submenu,
+                selected_paths,
+                current_dir,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -249,6 +269,9 @@ impl DialogsView {
                 selected_path.clone(),
                 *selected_count,
                 *is_dir,
+                *open_submenu,
+                selected_paths.clone(),
+                current_dir.clone(),
                 view.clone(),
                 cx,
             )

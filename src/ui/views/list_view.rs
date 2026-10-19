@@ -52,6 +52,7 @@ impl MainViewState {
                 let v = view.clone();
                 move |event, window, cx| {
                     v.update(cx, |this, cx| {
+                        this.clear_selection(cx);
                         this.show_context_menu(None, event.position, window, cx);
                     });
                 }
@@ -184,6 +185,9 @@ impl MainViewState {
                                         move |ev, window, cx| {
                                             cx.stop_propagation();
                                             v.update(cx, |this, cx| {
+                                                if !this.state.main_view.selected_indices.contains(&idx) {
+                                                    this.select_item(idx, false, false, cx);
+                                                }
                                                 this.show_context_menu(Some(idx), ev.position, window, cx);
                                             });
                                         }
@@ -376,6 +380,9 @@ impl MainViewState {
                                         move |ev, window, cx| {
                                             cx.stop_propagation();
                                             v.update(cx, |this, cx| {
+                                                if !this.state.main_view.selected_indices.contains(&idx) {
+                                                    this.select_item(idx, false, false, cx);
+                                                }
                                                 this.show_context_menu(Some(idx), ev.position, window, cx);
                                             });
                                         }

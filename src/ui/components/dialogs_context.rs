@@ -1,4 +1,4 @@
-use crate::ui::components::dialogs::{DialogType, SidebarMenuTarget};
+use crate::ui::components::dialogs::{DialogType, SidebarMenuTarget, SubmenuKind};
 use crate::ui::constants::UiConstants;
 use gpui::*;
 
@@ -18,6 +18,9 @@ impl crate::ui::components::dialogs::DialogsView {
         selected_path: Option<crate::core::path_util::FilesPath>,
         selected_count: usize,
         is_dir: bool,
+        open_submenu: Option<crate::ui::components::dialogs::SubmenuKind>,
+        selected_paths: Vec<std::path::PathBuf>,
+        current_dir: std::path::PathBuf,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -26,8 +29,6 @@ impl crate::ui::components::dialogs::DialogsView {
         // Clone view for closures
         let v_close = view.clone();
         let v_open = view.clone();
-        let v_open_new_tab = view.clone();
-        let v_open_new_window = view.clone();
         let v_copy = view.clone();
         let v_cut = view.clone();
         let v_paste = view.clone();
@@ -51,10 +52,15 @@ impl crate::ui::components::dialogs::DialogsView {
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
-            // FILES COMMUNITY LAYOUT — File/Folder context menu
+            // FILES LAYOUT — file/folder/multi-select context menu
             // ═══════════════════════════════════════════════════════════
+            let v_sub = view.clone();
+            let v_open2 = v_open.clone();
+            // Pre-read selection paths + current dir for the classic menu.
+            let sel_paths: Vec<std::path::PathBuf> = selected_paths.clone();
+            let cur_dir: std::path::PathBuf = current_dir.clone();
 
-            // ── TOP ICON TOOLBAR (Files parity: no labels) ──
+            // ── TOP ICON TOOLBAR (Cut/Copy/Paste/Rename/Share/Delete/Props)
             {
                 let v = v_cut.clone();
                 let cut_btn: Box<
@@ -73,6 +79,21 @@ impl crate::ui::components::dialogs::DialogsView {
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
                     v.update(cx, |this, cx| this.paste(cx));
+                });
+                let v = v_rename.clone();
+                let idx = item_index;
+                let rename_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        if let Some(i) = idx {
+                            if this.state.main_view.selected_indices.len() > 1 {
+                                this.bulk_rename(cx);
+                            } else {
+                                this.start_rename(i, cx);
+                            }
+                        }
+                    });
                 });
                 let v = v_share.clone();
                 let path = selected_path.clone();
@@ -107,10 +128,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
                     if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        let _ = std::process::Command::new("rundll32")
-                            .args(["shell32.dll,PropertiesDialogW", &path_str])
-                            .spawn();
+                        let _ = crate::platform::windows::shell_service::ShellService::open_properties_sync(p);
                     }
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 });
@@ -118,6 +136,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     ("\u{E8C6}", cut_btn),
                     ("\u{E8C8}", copy_btn),
                     ("\u{E77F}", paste_btn),
+                    ("\u{E8AC}", rename_btn),
                     ("\u{E72D}", share_btn),
                     ("\u{E74D}", delete_btn),
                     ("\u{E946}", props_btn),
@@ -125,41 +144,90 @@ impl crate::ui::components::dialogs::DialogsView {
                 menu = menu.child(Self::context_menu_separator());
             }
 
-
-            // Open
+            // Open (single selection only)
             if !is_multi {
-            menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open", MenuTrailing::None, {
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path = p.clone();
-                        v_open.update(cx, |this, cx| {
-                            this.navigate(path, cx);
-                            this.close_dialog(cx);
-                        });
+                menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open", MenuTrailing::None, {
+                    let path = selected_path.clone();
+                    move |_, _, cx| {
+                        if let Some(ref p) = path {
+                            let path = p.clone();
+                            v_open.update(cx, |this, cx| {
+                                this.navigate(path, cx);
+                                this.close_dialog(cx);
+                            });
+                        }
                     }
-                }
-            }));
+                }));
             }
 
-            // Open With - opens the Windows "Open With" dialog
+            // Open with › (file, single): flyout + default fires Open-As.
             if !is_multi && !is_dir {
-            menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open With", MenuTrailing::Chevron, {
-                let v = v_close.clone();
+                let ow_open = open_submenu == Some(SubmenuKind::OpenWith);
+                let ow_path = selected_path.clone();
+                let ow_path2 = selected_path.clone();
+                let v_ow = v_sub.clone();
+                let mut ow_rows = vec![Self::context_menu_item(
+                    "\u{E8DA}",
+                    "Default app",
+                    {
+                        let path = ow_path.clone();
+                        move |_, _, cx| {
+                            if let Some(ref p) = path {
+                                let path = p.clone();
+                                v_open2.update(cx, |this, cx| {
+                                    this.navigate(path, cx);
+                                    this.close_dialog(cx);
+                                });
+                            }
+                        }
+                    },
+                )];
+                ow_rows.push(Self::context_menu_item(
+                    "\u{E8A5}",
+                    "Choose another app...",
+                    {
+                        let path = ow_path2.clone();
+                        move |_, _, cx| {
+                            if let Some(ref p) = path {
+                                let path_str = p.to_string_lossy().to_string();
+                                let _ = std::process::Command::new("rundll32")
+                                    .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                                    .spawn();
+                            }
+                            v_ow.update(cx, |this, cx| this.close_dialog(cx));
+                        }
+                    },
+                ));
+                let v_fire = v_sub.clone();
                 let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        let _ = std::process::Command::new("rundll32")
-                            .args(["shell32.dll,OpenAs_RunDLL", &path_str])
-                            .spawn();
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
+                menu = menu.child(Self::submenu_row(
+                    "\u{E8DA}",
+                    "Open With",
+                    SubmenuKind::OpenWith,
+                    ow_open,
+                    Self::submenu_panel(ow_rows),
+                    v_sub.clone(),
+                    move |_, _, cx| {
+                        if let Some(ref p) = path {
+                            let path_str = p.to_string_lossy().to_string();
+                            let _ = std::process::Command::new("rundll32")
+                                .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                                .spawn();
+                        }
+                        v_fire.update(cx, |this, cx| this.close_dialog(cx));
+                    },
+                ));
             }
 
-            // Copy item path (Files parity: Ctrl+Shift+C)
+            // Paste shortcut (from clipboard files)
+            menu = menu.child(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
+                let v = v_paste.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.paste_as_shortcut(cx));
+                }
+            }));
+
+            // Copy item path (Ctrl+Shift+C)
             menu = menu.child(Self::context_menu_row("\u{E8C8}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
                 let v = v_copypath.clone();
                 move |_, _, cx| {
@@ -170,106 +238,38 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // Create Shortcut
+            // Create folder with selection
+            menu = menu.child(Self::context_menu_row("\u{E8F4}", "Create folder with selection", MenuTrailing::None, {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.create_folder_with_selection(cx));
+                }
+            }));
+
+            // Create Shortcut (single selection only)
             if !is_multi {
-            menu = menu.child(Self::context_menu_row(
-                "\u{E71B}",
-                "Create Shortcut",
-                MenuTrailing::None,
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            if let Some(ref p) = path {
-                                let target_path = p.as_path().to_path_buf();
-                                let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
-                                let file_name = p.file_name()
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "Shortcut".to_string());
-                                let shortcut_name = format!("{} - Shortcut", file_name);
-                                this.state.active_dialog = Some(DialogType::CreateShortcut {
-                                    state: Box::new(
-                                        crate::ui::dialog_services::shortcut_dialog::CreateShortcutState::new(
-                                            target_path,
-                                            current_dir,
-                                            shortcut_name,
-                                        )
-                                    ),
-                                });
-                            }
-                            cx.notify();
-                        });
-                    }
-                },
-            ));
-            }
-
-            menu = menu.child(Self::context_menu_row(
-                "\u{E8B7}",
-                "Compress",
-                MenuTrailing::Chevron,
-                {
-                    let v = v_close.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            let sources: Vec<std::path::PathBuf> = this.state.main_view.selected_indices.iter()
-                                .filter_map(|&i| this.state.main_view.items.get(i))
-                                .map(|item| item.path.as_path().to_path_buf())
-                                .collect();
-                            if !sources.is_empty() {
-                                let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
-                                let first_name = sources[0]
-                                    .file_name()
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "archive".to_string());
-                                let archive_name = format!("{}.zip", first_name);
-                                let destination = current_dir.join(&archive_name);
-                                this.state.active_dialog = Some(DialogType::CreateArchive {
-                                    state: Box::new(
-                                        crate::ui::dialog_services::archive_dialog::CreateArchiveState::new(
-                                            sources,
-                                            destination,
-                                        )
-                                    ),
-                                });
-                            }
-                            cx.notify();
-                        });
-                    }
-                },
-            ));
-
-            // Extract Here (shown when archive is selected)
-            if selected_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|name| {
-                    let name = name.to_string_lossy().to_lowercase();
-                    name.ends_with(".zip")
-                        || name.ends_with(".7z")
-                        || name.ends_with(".tar")
-                        || name.ends_with(".tar.gz")
-                        || name.ends_with(".rar")
-                })
-                .unwrap_or(false)
-            {
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E8B7}",
-                    "Extract Here",
+                menu = menu.child(Self::context_menu_row(
+                    "\u{E71B}",
+                    "Create Shortcut",
+                    MenuTrailing::None,
                     {
                         let v = v_close.clone();
                         let path = selected_path.clone();
                         move |_, _, cx| {
                             v.update(cx, |this, cx| {
                                 if let Some(ref p) = path {
-                                    let archive_path = p.as_path().to_path_buf();
+                                    let target_path = p.as_path().to_path_buf();
                                     let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
-                                    this.state.active_dialog = Some(DialogType::DecompressArchive {
+                                    let file_name = p.file_name()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| "Shortcut".to_string());
+                                    let shortcut_name = format!("{} - Shortcut", file_name);
+                                    this.state.active_dialog = Some(DialogType::CreateShortcut {
                                         state: Box::new(
-                                            crate::ui::dialog_services::decompress_dialog::DecompressState::new(
-                                                archive_path,
+                                            crate::ui::dialog_services::shortcut_dialog::CreateShortcutState::new(
+                                                target_path,
                                                 current_dir,
+                                                shortcut_name,
                                             )
                                         ),
                                     });
@@ -281,52 +281,59 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
 
-            // Open in New Tab
-            if !is_multi {
-            menu = menu.child(Self::context_menu_row(
-                "\u{E8A7}",
-                "Open in New Tab",
-                MenuTrailing::None,
-                {
-                    let path = selected_path.clone();
+            // Compress › (ZIP creation + conditional Extract Here)
+            {
+                let c_open = open_submenu == Some(SubmenuKind::Compress);
+                let is_archive = selected_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|name| {
+                        let name = name.to_string_lossy().to_lowercase();
+                        name.ends_with(".zip")
+                            || name.ends_with(".7z")
+                            || name.ends_with(".tar")
+                            || name.ends_with(".tar.gz")
+                            || name.ends_with(".rar")
+                    })
+                    .unwrap_or(false);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
+                    "\u{E8B7}",
+                    "Compress",
+                    SubmenuKind::Compress,
+                    c_open,
+                    Self::compress_submenu(view.clone(), is_archive, selected_path.clone()),
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path = p.clone();
-                            v_open_new_tab.update(cx, |this, cx| {
-                                this.open_in_new_tab(path, cx);
-                                this.close_dialog(cx);
-                            });
-                        }
-                    }
-                },
-            ));
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::Compress), cx);
+                        });
+                    },
+                ));
             }
 
-            // Open in New Window
-            if !is_multi {
-            menu = menu.child(Self::context_menu_row(
-                "\u{E8A7}",
-                "Open in New Window",
-                MenuTrailing::None,
-                {
-                    let path = selected_path.clone();
+            // Send to › (Windows SendTo folder)
+            {
+                let s_open = open_submenu == Some(SubmenuKind::SendTo);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
+                    "\u{E8B7}",
+                    "Send to",
+                    SubmenuKind::SendTo,
+                    s_open,
+                    Self::sendto_submenu(view.clone()),
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path = p.clone();
-                            v_open_new_window.update(cx, |this, cx| {
-                                this.open_in_new_window(path, cx);
-                                this.close_dialog(cx);
-                            });
-                        }
-                    }
-                },
-            ));
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::SendTo), cx);
+                        });
+                    },
+                ));
             }
 
             menu = menu.child(Self::context_menu_separator());
 
-            // ── PIN SECTION (32px) ──
-            // Pin to Quick Access
+            // ── PIN SECTION ──
             menu = menu.child(Self::context_menu_item(
                 "\u{E718}",
                 "Pin to Quick Access",
@@ -342,7 +349,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
-            // Pin to Start
             menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -355,34 +361,9 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── ACTIONS SECTION (32px) ──
-            // Rename: single item renames in place, multi-select opens bulk rename.
-            if is_multi {
-                menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
-                    let v = v_rename.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| this.bulk_rename(cx));
-                    }
-                }));
-            } else {
-                menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
-                    let v = v_rename.clone();
-                    let idx = item_index;
-                    move |_, _, cx| {
-                        if let Some(i) = idx {
-                            v.update(cx, |this, cx| this.start_rename(i, cx));
-                        }
-                    }
-                }));
-            }
-
             menu = menu.child(Self::context_menu_separator());
 
             // ── EXTRAS (app-specific actions) ──
-            // Open in VS Code (bonus)
             menu = menu.child(Self::context_menu_item("\u{E8A7}", "Open in VS Code", {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -393,8 +374,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
-
-            // Git Status (bonus)
             menu = menu.child(Self::context_menu_item("\u{E896}", "Git Status", {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -418,236 +397,100 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 }
             }));
-
-            // Delete Permanently
             menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| this.delete_permanently(cx));
                 }
             }));
+
+            // Show more options (native classic shell menu; Windows only)
+            #[cfg(target_os = "windows")]
+            {
+                let paths = sel_paths.clone();
+                let dir = cur_dir.clone();
+                let v = v_sub.clone();
+                menu = menu.child(Self::context_menu_row(
+                    "\u{E10C}",
+                    "Show more options",
+                    MenuTrailing::Chevron,
+                    move |event, _, cx| {
+                        let ex: f32 = event.position.x.into();
+                        let ey: f32 = event.position.y.into();
+                        let paths = paths.clone();
+                        let dir = dir.clone();
+                        v.update(cx, |this, cx| {
+                            this.show_classic_menu_for(paths, dir, Some((ex, ey)), cx)
+                        });
+                    },
+                ));
+            }
         } else {
             // ═══════════════════════════════════════════════════════════
-            // FILES COMMUNITY LAYOUT — Empty space/background context menu
+            // FILES LAYOUT — background (empty space) context menu
             // ═══════════════════════════════════════════════════════════
+            let v_sub = view.clone();
+            let cur_dir: std::path::PathBuf = current_dir.clone();
 
-            // ── VIEW SECTION ──
-            menu = menu.child(Self::context_menu_separator());
-            menu = menu.child(Self::context_menu_section_header("View"));
-
+            // Layout ›
             {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
+                let l_open = open_submenu == Some(SubmenuKind::Layout);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
                     "\u{E8A1}",
-                    "Details",
+                    "Layout",
+                    SubmenuKind::Layout,
+                    l_open,
+                    Self::layout_submenu(view.clone()),
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Details, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "List",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::List, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "Grid",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Grid, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "Columns",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Columns, cx);
-                            this.close_dialog(cx);
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::Layout), cx);
                         });
                     },
                 ));
             }
 
-            // ── SORT BY SECTION ──
-            menu = menu.child(Self::context_menu_section_header("Sort By"));
-
-            // Use a closure to capture sort state and view for each sort option
+            // Sort by ›
             {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
+                let s_open = open_submenu == Some(SubmenuKind::SortBy);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
                     "\u{E2C7}",
-                    "Name",
+                    "Sort by",
+                    SubmenuKind::SortBy,
+                    s_open,
+                    Self::sort_submenu(view.clone()),
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.sort_by(crate::config::config::SortBy::Name, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Date modified",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.sort_by(crate::config::config::SortBy::DateModified, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Date created",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.sort_by(crate::config::config::SortBy::DateCreated, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Size",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.sort_by(crate::config::config::SortBy::Size, cx);
-                            this.close_dialog(cx);
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Type",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.sort_by(crate::config::config::SortBy::Type, cx);
-                            this.close_dialog(cx);
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::SortBy), cx);
                         });
                     },
                 ));
             }
 
-            // ── GROUP BY SECTION ──
-            menu = menu.child(Self::context_menu_separator());
-            menu = menu.child(Self::context_menu_section_header("Group by"));
+            // Group by ›
             {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
+                let g_open = open_submenu == Some(SubmenuKind::GroupBy);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
                     "\u{E2C7}",
-                    "None",
+                    "Group by",
+                    SubmenuKind::GroupBy,
+                    g_open,
+                    Self::group_submenu(view.clone()),
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::None;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::GroupBy), cx);
                         });
                     },
                 ));
             }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Name",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::Name;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Date modified",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::DateModified;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Date created",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::DateCreated;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Size",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::Size;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            {
-                let v = v_close.clone();
-                menu = menu.child(Self::context_menu_item(
-                    "\u{E2C7}",
-                    "Type",
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            this.state.main_view.group_by = crate::config::config::GroupColumn::FileType;
-                            this.state.main_view.collapsed_groups.clear();
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            menu = menu.child(Self::context_menu_separator());
-            // Refresh - refreshes the current view
-            menu = menu.child(Self::context_menu_item("\u{E72C}", "Refresh", {
+
+            // Refresh (Ctrl+R)
+            menu = menu.child(Self::context_menu_row("\u{E72C}", "Refresh", MenuTrailing::Hint("Ctrl+R"), {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -657,158 +500,71 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
-            // ── NEW SECTION (48px primary) ──
-            // New Folder
-            menu = menu.child(Self::context_menu_row("\u{E8F4}", "New Folder", MenuTrailing::None, {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
-                        let mut folder_name = "New Folder".to_string();
-                        let mut counter = 1;
-                        while current_dir.join(&folder_name).exists() {
-                            folder_name = format!("New Folder ({})", counter);
-                            counter += 1;
-                        }
-                        let new_folder_path = current_dir.join(&folder_name);
-                        match std::fs::create_dir(&new_folder_path) {
-                            Ok(_) => {
-                                tracing::info!("Created folder: {:?}", new_folder_path);
-                                this.refresh(cx);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to create folder {:?}: {}",
-                                    new_folder_path,
-                                    e
-                                );
-                            }
-                        }
-                        cx.notify();
-                    });
-                }
-            }));
 
-            // New File - creates a new empty text file at the current path
-            menu = menu.child(Self::context_menu_row(
-                "\u{E7C3}",
-                "New Text Document",
-                MenuTrailing::None,
+            // New ›
+            {
+                let n_open = open_submenu == Some(SubmenuKind::New);
+                let v_fire = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
+                    "\u{E8F4}",
+                    "New",
+                    SubmenuKind::New,
+                    n_open,
+                    Self::new_submenu(view.clone()),
+                    v_sub.clone(),
+                    move |_, _, cx| {
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::New), cx);
+                        });
+                    },
+                ));
+            }
+
+            // Pin to Sidebar (current folder)
+            menu = menu.child(Self::context_menu_item(
+                "\u{E718}",
+                "Pin to Sidebar",
                 {
                     let v = v_close.clone();
+                    let dir = cur_dir.clone();
                     move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            let current_dir =
-                                this.state.main_view.primary_path.as_path().to_path_buf();
-                            let mut file_name = "New Text Document.txt".to_string();
-                            let mut counter = 1;
-                            while current_dir.join(&file_name).exists() {
-                                file_name = format!("New Text Document ({}).txt", counter);
-                                counter += 1;
-                            }
-                            let new_file_path = current_dir.join(&file_name);
-                            match std::fs::File::create(&new_file_path) {
-                                Ok(_) => {
-                                    tracing::info!("Created file: {:?}", new_file_path);
-                                    this.refresh(cx);
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to create file {:?}: {}",
-                                        new_file_path,
-                                        e
-                                    );
-                                }
-                            }
-                            cx.notify();
-                        });
+                        tracing::info!("Pin to Sidebar: {:?}", dir);
+                        v.update(cx, |this, cx| this.close_dialog(cx));
                     }
                 },
             ));
-            menu = menu.child(Self::context_menu_separator());
 
-            // Properties (for current folder)
-            menu = menu.child(Self::context_menu_item("\u{E946}", "Properties", {
+            // Open in Terminal (Ctrl+`)
+            menu = menu.child(Self::context_menu_row("\u{E756}", "Open in Terminal", MenuTrailing::Hint("Ctrl+`"), {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
-                        let path_str = this
-                            .state
-                            .main_view
-                            .primary_path
-                            .to_string_lossy()
-                            .to_string();
-                        let _ = std::process::Command::new("rundll32")
-                            .args(["shell32.dll,PropertiesDialogW", &path_str])
-                            .spawn();
+                        this.open_terminal_at_current(cx);
                         this.close_dialog(cx);
                     });
                 }
             }));
 
-            // Open in Terminal - opens Windows Terminal at the current directory
-            menu = menu.child(Self::context_menu_item("\u{E756}", "Open in Terminal", {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        let path_str = this
-                            .state
-                            .main_view
-                            .primary_path
-                            .to_string_lossy()
-                            .to_string();
-                        // Open Windows Terminal as independent process
-                        #[cfg(windows)]
-                        {
-                            use std::ffi::OsStr;
-                            use std::os::windows::ffi::OsStrExt;
-                            use windows::Win32::UI::Shell::ShellExecuteW;
-                            use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-
-                            let params = format!("-d \"{}\"", &path_str);
-                            let params_wide: Vec<u16> = OsStr::new(&params)
-                                .encode_wide()
-                                .chain(std::iter::once(0))
-                                .collect();
-                            let exe_wide: Vec<u16> = OsStr::new("wt.exe")
-                                .encode_wide()
-                                .chain(std::iter::once(0))
-                                .collect();
-
-                            unsafe {
-                                ShellExecuteW(
-                                    None,
-                                    windows::core::PCWSTR::null(),
-                                    windows::core::PCWSTR(exe_wide.as_ptr()),
-                                    windows::core::PCWSTR(params_wide.as_ptr()),
-                                    None,
-                                    SW_SHOW,
-                                );
-                            }
-                        }
-                        #[cfg(not(windows))]
-                        {
-                            let _ = std::process::Command::new("x-terminal-emulator")
-                                .arg(&path_str)
-                                .spawn();
-                        }
-                        this.close_dialog(cx);
-                    });
-                }
-            }));
-        // Fluent MenuPopupThemeTransition: quick opacity entrance on the
-        // finished menu (AnimationElement wraps the whole tree; it cannot
-        // be chained mid-build).
-            menu = menu.child(Self::context_menu_separator());
-            // ── PASTE ──
-            menu = menu.child(Self::context_menu_item("\u{E77F}", "Paste", {
-                let v = v_paste.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.paste(cx));
-                }
-            }));
+            // Show more options (native classic shell menu; Windows only)
+            #[cfg(target_os = "windows")]
+            {
+                let dir = cur_dir.clone();
+                let v = v_sub.clone();
+                menu = menu.child(Self::context_menu_row(
+                    "\u{E10C}",
+                    "Show more options",
+                    MenuTrailing::Chevron,
+                    move |event, _, cx| {
+                        let ex: f32 = event.position.x.into();
+                        let ey: f32 = event.position.y.into();
+                        let dir = dir.clone();
+                        v.update(cx, |this, cx| {
+                            this.show_classic_menu_for(Vec::new(), dir, Some((ex, ey)), cx)
+                        });
+                    },
+                ));
+            }
         }
         menu.with_animation(
             "ctx-menu-entrance",
@@ -911,9 +667,9 @@ impl crate::ui::components::dialogs::DialogsView {
 
     pub(crate) fn context_menu_item(
         glyph: &str,
-        label: &str,
+        label: impl Into<String>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
+    ) -> Div {
         div()
             .flex()
             .items_center()
@@ -934,7 +690,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 div()
                     .text_size(px(14.0))
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .child(label.to_string()),
+                    .child(label.into()),
             )
     }
 
@@ -974,7 +730,7 @@ impl crate::ui::components::dialogs::DialogsView {
         label: &str,
         trailing: MenuTrailing,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
+    ) -> Div {
         let trailing_el: Option<Div> = match trailing {
             MenuTrailing::None => None,
             MenuTrailing::Hint(hint) => Some(
@@ -1761,5 +1517,263 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }))
+    }
+}
+
+impl crate::ui::components::dialogs::DialogsView {
+    /// Chevron row that opens a hover flyout submenu (Files parity).
+    /// The submenu panel is a child of the row wrapper, so hover stays
+    /// engaged while the cursor moves into the flyout.
+    pub(crate) fn submenu_row(
+        glyph: &str,
+        label: &str,
+        kind: SubmenuKind,
+        is_open: bool,
+        submenu: Div,
+        view: Entity<crate::app::AppWindow>,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> gpui::Stateful<Div> {
+        let v_hover = view.clone();
+        let stateful = div()
+            .relative()
+            .child(Self::context_menu_row(glyph, label, MenuTrailing::Chevron, on_click))
+            .id(("ctx-submenu", kind as usize));
+        let mut wrapper = stateful.on_hover(move |hovering: &bool, _, cx| {
+            v_hover.update(cx, |this, cx| {
+                this.set_open_submenu(if *hovering { Some(kind) } else { None }, cx);
+            });
+        });
+        if is_open {
+            wrapper = wrapper.child(submenu);
+        }
+        wrapper
+    }
+
+    /// Flyout panel anchored to the right of its parent row.
+    pub(crate) fn submenu_panel(rows: Vec<Div>) -> Div {
+        let mut panel = div()
+            .absolute()
+            .top(px(-8.0))
+            .left(px(246.0))
+            .w(px(220.0))
+            .flex_col()
+            .bg(rgba(0x1A1A1AF2u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .rounded(px(8.0))
+            .shadow_lg()
+            .py(px(4.0))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+        for row in rows {
+            panel = panel.child(row);
+        }
+        panel
+    }
+
+    /// Layout › flyout (Details / List / Grid / Columns).
+    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+        let modes = [
+            ("\u{E8A1}", "Details", crate::config::config::ViewMode::Details),
+            ("\u{E8A1}", "List", crate::config::config::ViewMode::List),
+            ("\u{E8A1}", "Grid", crate::config::config::ViewMode::Grid),
+            ("\u{E8A1}", "Columns", crate::config::config::ViewMode::Columns),
+        ];
+        let mut rows = Vec::new();
+        for (glyph, label, mode) in modes {
+            let v = view.clone();
+            rows.push(Self::context_menu_item(
+                glyph,
+                label,
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.set_view_mode(mode.clone(), cx);
+                        this.close_dialog(cx);
+                    });
+                },
+            ));
+        }
+        Self::submenu_panel(rows)
+    }
+
+    /// Sort by › flyout.
+    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+        let cols = [
+            ("\u{E2C7}", "Name", crate::config::config::SortBy::Name),
+            ("\u{E2C7}", "Date modified", crate::config::config::SortBy::DateModified),
+            ("\u{E2C7}", "Date created", crate::config::config::SortBy::DateCreated),
+            ("\u{E2C7}", "Type", crate::config::config::SortBy::Type),
+            ("\u{E2C7}", "Size", crate::config::config::SortBy::Size),
+        ];
+        let mut rows = Vec::new();
+        for (glyph, label, col) in cols {
+            let v = view.clone();
+            rows.push(Self::context_menu_item(
+                glyph,
+                label,
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.sort_by(col.clone(), cx);
+                        this.close_dialog(cx);
+                    });
+                },
+            ));
+        }
+        Self::submenu_panel(rows)
+    }
+
+    /// Group by › flyout.
+    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+        let groups = [
+            ("\u{E2C7}", "None", crate::config::config::GroupColumn::None),
+            ("\u{E2C7}", "Name", crate::config::config::GroupColumn::Name),
+            ("\u{E2C7}", "Date modified", crate::config::config::GroupColumn::DateModified),
+            ("\u{E2C7}", "Date created", crate::config::config::GroupColumn::DateCreated),
+            ("\u{E2C7}", "Size", crate::config::config::GroupColumn::Size),
+            ("\u{E2C7}", "Type", crate::config::config::GroupColumn::FileType),
+        ];
+        let mut rows = Vec::new();
+        for (glyph, label, col) in groups {
+            let v = view.clone();
+            rows.push(Self::context_menu_item(
+                glyph,
+                label,
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.state.main_view.group_by = col.clone();
+                        this.state.main_view.collapsed_groups.clear();
+                        cx.notify();
+                        this.close_dialog(cx);
+                    });
+                },
+            ));
+        }
+        Self::submenu_panel(rows)
+    }
+
+    /// New › flyout.
+    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+        let v1 = view.clone();
+        let v2 = view.clone();
+        Self::submenu_panel(vec![
+            Self::context_menu_item("\u{E8F4}", "New Folder", move |_, _, cx| {
+                v1.update(cx, |this, cx| this.create_new_folder(cx));
+            }),
+            Self::context_menu_item("\u{E7C3}", "New Text Document", move |_, _, cx| {
+                v2.update(cx, |this, cx| this.create_new_text_document(cx));
+            }),
+        ])
+    }
+
+    /// Compress › flyout (ZIP creation + conditional Extract Here).
+    pub(crate) fn compress_submenu(
+        view: Entity<crate::app::AppWindow>,
+        is_archive: bool,
+        archive_path: Option<crate::core::path_util::FilesPath>,
+    ) -> Div {
+        let v = view.clone();
+        let mut rows = vec![Self::context_menu_item(
+            "\u{E8B7}",
+            "Compress to ZIP archive",
+            move |_, _, cx| {
+                v.update(cx, |this, cx| {
+                    let sources: Vec<std::path::PathBuf> = this
+                        .state
+                        .main_view
+                        .selected_indices
+                        .iter()
+                        .filter_map(|&i| this.state.main_view.items.get(i))
+                        .map(|item| item.path.as_path().to_path_buf())
+                        .collect();
+                    if !sources.is_empty() {
+                        let current_dir =
+                            this.state.main_view.primary_path.as_path().to_path_buf();
+                        let first_name = sources[0]
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "archive".to_string());
+                        let destination = current_dir.join(format!("{}.zip", first_name));
+                        this.state.active_dialog = Some(DialogType::CreateArchive {
+                            state: Box::new(
+                                crate::ui::dialog_services::archive_dialog::CreateArchiveState::new(
+                                    sources,
+                                    destination,
+                                ),
+                            ),
+                        });
+                    }
+                    cx.notify();
+                });
+            },
+        )];
+        if is_archive {
+            if let Some(path) = archive_path {
+                let v2 = view.clone();
+                rows.push(Self::context_menu_item(
+                    "\u{E8B7}",
+                    "Extract Here",
+                    move |_, _, cx| {
+                        let archive_path = path.as_path().to_path_buf();
+                        v2.update(cx, |this, cx| {
+                            let current_dir =
+                                this.state.main_view.primary_path.as_path().to_path_buf();
+                            this.state.active_dialog = Some(DialogType::DecompressArchive {
+                                state: Box::new(
+                                    crate::ui::dialog_services::decompress_dialog::DecompressState::new(
+                                        archive_path,
+                                        current_dir,
+                                    ),
+                                ),
+                            });
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
+        }
+        Self::submenu_panel(rows)
+    }
+
+    /// Send to › flyout, populated live from the Windows SendTo folder.
+    /// Non-Windows builds show a single disabled row (native provider hook).
+    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>) -> Div {
+        let mut rows = Vec::new();
+        #[cfg(windows)]
+        {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                let sendto = std::path::Path::new(&appdata).join("Microsoft/Windows/SendTo");
+                if let Ok(entries) = std::fs::read_dir(&sendto) {
+                    let mut names: Vec<(String, std::path::PathBuf)> = entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| {
+                            let p = e.path();
+                            let stem = p
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            (stem, p)
+                        })
+                        .filter(|(s, _)| !s.is_empty())
+                        .collect();
+                    names.sort();
+                    for (stem, target) in names.into_iter().take(24) {
+                        let v = view.clone();
+                        let glyph = if target.is_dir() { "\u{E8B7}" } else { "\u{E8A5}" };
+                        rows.push(Self::context_menu_item(
+                            glyph,
+                            stem,
+                            move |_, _, cx| {
+                                let target = target.clone();
+                                v.update(cx, |this, cx| this.send_to_target(target, cx));
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        if rows.is_empty() {
+            rows.push(Self::context_menu_item("\u{E8A5}", "(No targets)", |_, _, _| {}));
+        }
+        Self::submenu_panel(rows)
     }
 }

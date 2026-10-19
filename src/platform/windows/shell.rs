@@ -317,12 +317,10 @@ impl ContextMenuHost {
 
     #[cfg(windows)]
     fn do_properties(&self, path: &FilesPath) -> Result<()> {
-        // Use spawn since ShellService::open_properties is async
-        use std::process::Command;
-        let path_str = path.as_path().to_string_lossy();
-        Command::new("rundll32")
-            .args(["shell32.dll,PropertiesDialogW", &path_str])
-            .spawn()?;
+        // ShellService::open_properties uses ShellExecuteExW with the
+        // "properties" verb (rundll32 shell32.dll,PropertiesDialogW does not
+        // exist and pops an error dialog).
+        crate::platform::windows::shell_service::ShellService::open_properties_sync(path)?;
         tracing::info!("Showing properties for: {:?}", path);
         Ok(())
     }
