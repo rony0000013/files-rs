@@ -41,6 +41,7 @@ fn main() {
         let initial_view_mode = config.view.last_view_mode.clone();
         let mica_enabled = config.appearance.mica_enabled;
         let mica_alt = config.appearance.mica_alt;
+        let transparent_window = config.appearance.transparent_window;
         let settings = cx.new(|_cx| SettingsModel::new(config));
         let nav = cx.new(|_cx| {
             files_rs::core::navigation_manager::NavigationState::new(
@@ -69,7 +70,7 @@ fn main() {
         // window_vibrancy's DWMWA_SYSTEMBACKDROP_TYPE and composite opaque.
         // The actual Mica comes from apply_mica below; translucency comes
         // from the RGBA fills in the scene, not the window policy.
-        let window_background = if config.appearance.transparent_window {
+        let window_background = if transparent_window {
             WindowBackgroundAppearance::Transparent
         } else {
             WindowBackgroundAppearance::Opaque
