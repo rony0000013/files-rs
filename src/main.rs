@@ -100,6 +100,10 @@ fn main() {
                 } else {
                     tracing::info!("apply_mica applied");
                 }
+                // In-app Mica: last run's blurred wallpaper shows instantly;
+                // a background thread regenerates it if the wallpaper changed.
+                files_rs::wallpaper_mica::prime();
+                std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
             }
             let rx = progress.subscribe();
             cx.new(|cx| AppWindow::new(state, rx, window, cx))

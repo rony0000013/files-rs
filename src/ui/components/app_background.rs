@@ -26,13 +26,32 @@ impl AppBackground {
             BackgroundFit::Fit | BackgroundFit::Center => ObjectFit::Contain,
         };
 
-        let mut root = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .h_full()
-            .relative()
-            .bg(base_bg);
+        // Stack (bottom → top): blurred wallpaper → dark tint → optional
+        // per-folder image → content. The tint over blur is the Mica recipe.
+        let mut root = div().flex().flex_col().w_full().h_full().relative();
+
+        // In-app Mica: blurred wallpaper under the translucent tint.
+        // (DWM backdrop never reaches the screen through GPUI's swapchain,
+        // so we render those exact pixels ourselves.)
+        if let Some(blur_path) = crate::wallpaper_mica::current() {
+            root = root.child(
+                img(blur_path)
+                    .absolute()
+                    .inset_0()
+                    .w_full()
+                    .h_full()
+                    .object_fit(ObjectFit::Cover),
+            );
+        }
+
+        root = root.child(
+            div()
+                .absolute()
+                .inset_0()
+                .w_full()
+                .h_full()
+                .bg(base_bg),
+        );
 
         if let Some(ref bg_path) = folder_bg.image_path {
             let opacity = folder_bg.opacity.clamp(0.0, 1.0);
