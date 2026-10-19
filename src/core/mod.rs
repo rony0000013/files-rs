@@ -27,6 +27,7 @@ pub mod startup_service;
 pub mod tag_service;
 pub mod terminal_service;
 pub mod tray_service;
+pub mod transfer;
 pub mod undo_redo;
 pub mod update_service;
 

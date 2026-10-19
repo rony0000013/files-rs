@@ -570,48 +570,40 @@ impl AppWindow {
 
         cx.foreground_executor()
             .spawn(async move {
+                use crate::core::progress::OpKind;
+                use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                let kind = if is_cut { OpKind::Move } else { OpKind::Copy };
                 let job_id = progress_engine
-                    .start_job(format!("{} ({} items)", op_type, total))
+                    .start_job(format!("{} ({} items)", op_type, total), kind)
                     .await;
-
-                for (i, item) in clipboard_items.iter().enumerate() {
-                    let file_name = item
-                        .path
-                        .file_name()
-                        .map(|n| std::path::Path::new(n).to_path_buf())
-                        .unwrap_or_else(|| "unknown".into());
-                    let dest_path = target_path.join(&file_name);
-
-                    if is_cut {
-                        match std::fs::rename(&item.path, &dest_path) {
-                            Ok(_) => tracing::info!(
-                                "Moved: {} -> {}",
-                                item.path.display(),
-                                dest_path.display()
-                            ),
-                            Err(e) => {
-                                tracing::error!("Failed to move {}: {}", item.path.display(), e)
-                            }
-                        }
-                    } else {
-                        if let Err(e) = Self::copy_recursive(&item.path, &dest_path) {
-                            tracing::error!("Failed to copy {}: {}", item.path.display(), e);
-                        } else {
-                            tracing::info!(
-                                "Copied: {} -> {}",
-                                item.path.display(),
-                                dest_path.display()
-                            );
-                        }
+                let sources: Vec<std::path::PathBuf> = clipboard_items
+                    .iter()
+                    .map(|item| item.path.as_path().to_path_buf())
+                    .collect();
+                let outcome = if is_cut {
+                    run_move_job(&progress_engine, job_id, sources, target_path).await
+                } else {
+                    run_copy_job(&progress_engine, job_id, sources, target_path).await
+                };
+                match outcome {
+                    TransferOutcome::Done => {
+                        progress_engine.complete_job(job_id).await;
                     }
-
-                    let progress = (i + 1) as f32 / total as f32;
-                    progress_engine
-                        .update_progress(job_id, progress, (i + 1) as u64, total as u64)
-                        .await;
+                    TransferOutcome::Cancelled => {
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                this.state.status_center.update_job(
+                                    job_id,
+                                    crate::core::progress::OperationStatus::Cancelled,
+                                );
+                                cx.notify();
+                            })
+                            .ok();
+                    }
+                    TransferOutcome::Failed(reason) => {
+                        progress_engine.fail_job(job_id, reason).await;
+                    }
                 }
-
-                progress_engine.complete_job(job_id).await;
 
                 this_weak
                     .update(&mut async_cx, |this, cx| {
@@ -621,25 +613,6 @@ impl AppWindow {
                     .ok();
             })
             .detach();
-    }
-
-    /// Recursive copy utility
-    fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-        if src.is_dir() {
-            std::fs::create_dir_all(dst)?;
-            for entry in std::fs::read_dir(src)? {
-                let entry = entry?;
-                let ty = entry.file_type()?;
-                if ty.is_dir() {
-                    Self::copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
-                } else {
-                    std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
-                }
-            }
-        } else {
-            std::fs::copy(src, dst)?;
-        }
-        Ok(())
     }
 
     // === Preview loading ===
@@ -1622,7 +1595,7 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 let job_id = progress_engine
-                    .start_job(format!("Bulk Rename ({} files)", total))
+                    .start_job(format!("Bulk Rename ({} files)", total), crate::core::progress::OpKind::Other)
                     .await;
 
                 for (i, (old_path, new_path)) in items_to_rename.into_iter().enumerate() {

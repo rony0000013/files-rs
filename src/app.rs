@@ -1617,14 +1617,46 @@ impl AppWindow {
             return;
         }
 
-        // For now, just log the intent - recycle bin not yet implemented
-        tracing::info!(
-            "Delete {} items (recycle bin not yet implemented)",
-            items.len()
-        );
-
-        // Clear selection after delete
-        self.clear_selection(cx);
+        let bufs: Vec<std::path::PathBuf> = items
+            .iter()
+            .map(|item| item.path.as_path().to_path_buf())
+            .collect();
+        let engine = self.state.progress_engine.clone();
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        cx.foreground_executor()
+            .spawn(async move {
+                use crate::core::progress::OpKind;
+                use crate::core::transfer::{TransferOutcome, run_delete_job};
+                let n = bufs.len();
+                let job = engine
+                    .start_job(format!("Delete ({} items)", n), OpKind::Delete)
+                    .await;
+                match run_delete_job(&engine, job, bufs, true).await {
+                    TransferOutcome::Done => {
+                        engine.complete_job(job).await;
+                    }
+                    TransferOutcome::Cancelled => {
+                        weak.update(&mut async_cx, |this, cx| {
+                            this.state.status_center.update_job(
+                                job,
+                                crate::core::progress::OperationStatus::Cancelled,
+                            );
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                    TransferOutcome::Failed(reason) => {
+                        engine.fail_job(job, reason).await;
+                    }
+                }
+                weak.update(&mut async_cx, |this, cx| {
+                    this.clear_selection(cx);
+                    this.refresh(cx);
+                })
+                .ok();
+            })
+            .detach();
     }
 
     /// Permanently delete selected items (bypasses recycle bin)
@@ -1647,40 +1679,44 @@ impl AppWindow {
         if paths.is_empty() {
             return;
         }
-
-        let mut success_count = 0;
-        let mut error_count = 0;
-
-        for path in &paths {
-            let path_buf = path.as_path().to_path_buf();
-            let result = if path_buf.is_dir() {
-                std::fs::remove_dir_all(&path_buf)
-            } else {
-                std::fs::remove_file(&path_buf)
-            };
-
-            match result {
-                Ok(_) => {
-                    success_count += 1;
-                    tracing::info!("Permanently deleted: {:?}", path_buf);
+        let bufs: Vec<std::path::PathBuf> =
+            paths.iter().map(|p| p.as_path().to_path_buf()).collect();
+        let engine = self.state.progress_engine.clone();
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        cx.foreground_executor()
+            .spawn(async move {
+                use crate::core::progress::OpKind;
+                use crate::core::transfer::{TransferOutcome, run_delete_job};
+                let n = bufs.len();
+                let job = engine
+                    .start_job(format!("Delete ({} items)", n), OpKind::Delete)
+                    .await;
+                match run_delete_job(&engine, job, bufs, false).await {
+                    TransferOutcome::Done => {
+                        engine.complete_job(job).await;
+                    }
+                    TransferOutcome::Cancelled => {
+                        weak.update(&mut async_cx, |this, cx| {
+                            this.state.status_center.update_job(
+                                job,
+                                crate::core::progress::OperationStatus::Cancelled,
+                            );
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                    TransferOutcome::Failed(reason) => {
+                        engine.fail_job(job, reason).await;
+                    }
                 }
-                Err(e) => {
-                    error_count += 1;
-                    tracing::error!("Failed to delete {:?}: {}", path_buf, e);
-                }
-            }
-        }
-
-        tracing::info!(
-            "Permanent delete complete: {} succeeded, {} failed",
-            success_count,
-            error_count
-        );
-
-        // Clear selection and refresh the view
-        self.clear_selection(cx);
-        self.refresh(cx);
-        cx.notify();
+                weak.update(&mut async_cx, |this, cx| {
+                    this.clear_selection(cx);
+                    this.refresh(cx);
+                })
+                .ok();
+            })
+            .detach();
     }
 
     pub fn start_edit_mode(&mut self, cx: &mut Context<Self>) {

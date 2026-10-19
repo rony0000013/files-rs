@@ -82,19 +82,28 @@ impl crate::ui::components::dialogs::DialogsView {
                 let cut_btn: Box<
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
-                    v.update(cx, |this, cx| this.cut_selected(cx));
+                    v.update(cx, |this, cx| {
+                        this.cut_selected(cx);
+                        this.close_dialog(cx);
+                    });
                 });
                 let v = v_copy.clone();
                 let copy_btn: Box<
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
-                    v.update(cx, |this, cx| this.copy_selected(cx));
+                    v.update(cx, |this, cx| {
+                        this.copy_selected(cx);
+                        this.close_dialog(cx);
+                    });
                 });
                 let v = v_paste.clone();
                 let paste_btn: Box<
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
-                    v.update(cx, |this, cx| this.paste(cx));
+                    v.update(cx, |this, cx| {
+                        this.paste(cx);
+                        this.close_dialog(cx);
+                    });
                 });
                 let v = v_rename.clone();
                 let idx = item_index;
@@ -108,6 +117,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             } else {
                                 this.start_rename(i, cx);
                             }
+                            this.close_dialog(cx);
                         }
                     });
                 });
@@ -129,14 +139,17 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .detach();
                             }
                         }
-                        cx.notify();
+                        this.close_dialog(cx);
                     });
                 });
                 let v = v_delete.clone();
                 let delete_btn: Box<
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
-                    v.update(cx, |this, cx| this.delete_selected(cx));
+                    v.update(cx, |this, cx| {
+                        this.delete_selected(cx);
+                        this.close_dialog(cx);
+                    });
                 });
                 let v = v_props.clone();
                 let path = selected_path.clone();

@@ -276,6 +276,9 @@ mod tests {
             name: "Pending job".to_string(),
             status: OperationStatus::Pending,
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.active_job_count(), 0);
 
@@ -291,6 +294,9 @@ mod tests {
                 eta: Some(Duration::from_secs(5)),
             },
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.active_job_count(), 1);
     }
@@ -307,6 +313,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.conflict_count(), 1);
     }
@@ -324,6 +333,9 @@ mod tests {
             name: "Completed".to_string(),
             status: OperationStatus::Completed,
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert!(state.aggregate_progress().is_none());
 
@@ -339,6 +351,9 @@ mod tests {
                 eta: Some(Duration::from_secs(5)),
             },
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.aggregate_progress(), Some(0.5));
     }
@@ -355,6 +370,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert!(state.has_pending_conflicts());
     }
@@ -369,6 +387,9 @@ mod tests {
             name: "Job".to_string(),
             status: OperationStatus::Pending,
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.total_items(), 1);
 
@@ -379,6 +400,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert_eq!(state.total_items(), 2);
     }
@@ -394,6 +418,9 @@ mod tests {
             name: "Job".to_string(),
             status: OperationStatus::Pending,
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert!(state_with_jobs.has_content());
 
@@ -405,6 +432,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
         assert!(state_with_conflicts.has_content());
     }
@@ -421,6 +451,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
 
         let found = state.find_conflict(conflict_id);
@@ -443,6 +476,9 @@ mod tests {
             conflict_type: ConflictType::FileExists,
             available_resolutions: vec![ConflictResolution::Replace],
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
 
         assert_eq!(state.conflict_count(), 1);
@@ -513,12 +549,18 @@ mod tests {
                 name: "Job 1".to_string(),
                 status: OperationStatus::Pending,
                 created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
             },
             FileOperationJob {
                 id: uuid::Uuid::new_v4(),
                 name: "Job 2".to_string(),
                 status: OperationStatus::Completed,
                 created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
             },
         ];
 
@@ -543,6 +585,9 @@ mod tests {
                 eta: Some(Duration::from_secs(5)),
             },
             created_at: Instant::now(),
+            kind: crate::core::progress::OpKind::Other,
+            current_file: String::new(),
+            speed_history: Vec::new(),
         });
 
         state.sync_jobs(state.jobs.clone());
