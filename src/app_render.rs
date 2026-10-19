@@ -799,31 +799,35 @@ impl Render for AppWindow {
             }
         }
 
-        // FPS counter overlay
-        let fps_text = format!("{:.0} FPS", self.fps_current);
-        let fps_color = if self.fps_current >= 110.0 {
-            rgba(0x00FF00CCu32)
-        } else if self.fps_current >= 60.0 {
-            rgba(0xFFFF00CCu32)
-        } else {
-            rgba(0xFF0000CCu32)
-        };
-        base = base.child(
-            div()
-                .absolute()
-                .top(px(4.0))
-                .left(px(4.0))
-                .px(px(6.0))
-                .py(px(2.0))
-                .rounded(px(4.0))
-                .bg(rgba(0x000000AAu32))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(fps_color)
-                        .child(fps_text),
-                ),
-        );
+        // FPS counter overlay (debug only: opt-in via FILES_RS_FPS=1 so the
+        // chrome matches Files-community by default).
+        let show_fps = std::env::var("FILES_RS_FPS").is_ok();
+        if show_fps {
+            let fps_text = format!("{:.0} FPS", self.fps_current);
+            let fps_color = if self.fps_current >= 110.0 {
+                rgba(0x00FF00CCu32)
+            } else if self.fps_current >= 60.0 {
+                rgba(0xFFFF00CCu32)
+            } else {
+                rgba(0xFF0000CCu32)
+            };
+            base = base.child(
+                div()
+                    .absolute()
+                    .top(px(4.0))
+                    .left(px(4.0))
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .bg(rgba(0x000000AAu32))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(fps_color)
+                            .child(fps_text),
+                    ),
+            );
+        }
 
         base
     }
