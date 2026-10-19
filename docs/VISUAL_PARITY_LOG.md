@@ -142,7 +142,22 @@
   toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
   glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
   submenu anchor follows (left 290), viewport clamp 284->300.
-### 19 Oct (night) — Show more options expands INLINE (no click, no crash)
+### 19 Oct (night) — strip/grace/icons/geometry/modes
+- Black strip: outer container squeezed the 292px menu into 280px, leaving a
+  10px gap before the flyout. Outer is now exactly 292 for context menus.
+- Flyout no longer dies mid-travel: leaving a row starts a 350ms grace-close
+  instead of an instant close; entering any row or panel cancels it. Diagonal
+  cursor paths from "Show more options ›" into the panel survive.
+- Icons: verbs without shell bitmaps now get MDL2 fallbacks (Open, Pin,
+  Search, Terminal, Rename, TeraCopy, Scan, Upload...) so nearly every extra
+  row shows an icon like the native menu does.
+- Geometry: tall classic flyouts bottom-anchor (grow UP from the row) with an
+  on-screen cap + internal scroll; nested panels the same; all panels flip
+  left when there is no room on the right. Menu row heights are accumulated
+  at build time so caps are exact. Nothing can leave the window.
+- Three styles in Settings › General › Context menu: Files (hover flyouts),
+  Expanded (every classic item inlined, no hover), Windows classic (native
+  popup, zero porting — third-party verbs appear as-is).
 - "Show more options" is now a hover submenu like the rest: the native
   `IContextMenu` is queried into an `HMENU`, enumerated to data (labels,
   states, REAL extension icons via GetDIBits→RenderImage) and rendered as
