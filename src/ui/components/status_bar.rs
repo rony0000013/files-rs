@@ -84,9 +84,14 @@ impl StatusBarView {
         let mode_icon = zoom_mode_icon(view_mode);
         let zoom_pct = (_app.main_view.zoom_level * 100.0) as u32;
         let v = view.clone();
-        // Files-style status text: 'N items | M selected | size'
-        let total_items = state.folder_count + state.file_count;
-        let mut status_text = format!("{} items", total_items);
+        // Files-style left text: folder + file counts, then selection info.
+        let mut status_text = format!(
+            "{} {}, {} {}",
+            state.folder_count,
+            if state.folder_count == 1 { "folder" } else { "folders" },
+            state.file_count,
+            if state.file_count == 1 { "file" } else { "files" },
+        );
         if state.selected_count > 0 {
             let noun = if state.selected_count == 1 {
                 "item selected"

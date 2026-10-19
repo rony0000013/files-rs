@@ -50,9 +50,9 @@ impl MainViewState {
             .size_full()
             .on_mouse_down(MouseButton::Right, {
                 let v = view.clone();
-                move |event, _, cx| {
+                move |event, window, cx| {
                     v.update(cx, |this, cx| {
-                        this.show_context_menu(None, event.position, cx);
+                        this.show_context_menu(None, event.position, window, cx);
                     });
                 }
             })
@@ -61,6 +61,8 @@ impl MainViewState {
                 let visible_for_lasso = visible_clone.clone();
                 move |event, _win, cx| {
                     v.update(cx, |this, cx| {
+                        // Empty-space click clears selection (Files/Explorer behavior).
+                        this.clear_selection(cx);
                         this.state.main_view.lasso_state = Some(LassoState {
                             start: point(event.position.x.into(), event.position.y.into()),
                             current: point(event.position.x.into(), event.position.y.into()),
@@ -179,10 +181,10 @@ impl MainViewState {
                                     })
                                     .on_mouse_down(MouseButton::Right, {
                                         let v = view_row.clone();
-                                        move |ev, _, cx| {
+                                        move |ev, window, cx| {
                                             cx.stop_propagation();
                                             v.update(cx, |this, cx| {
-                                                this.show_context_menu(Some(idx), ev.position, cx);
+                                                this.show_context_menu(Some(idx), ev.position, window, cx);
                                             });
                                         }
                                     })
@@ -280,7 +282,7 @@ impl MainViewState {
                                     .items_center()
                                     .h(px(group_height))
                                     .px(px(16.0))
-                                    .bg(rgba(0x0A000000u32))
+                                    .bg(rgba(0x0000000Au32))
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         v.update(cx, |this, cx| {
@@ -370,10 +372,10 @@ impl MainViewState {
                                     })
                                     .on_mouse_down(MouseButton::Right, {
                                         let v = v.clone();
-                                        move |ev, _, cx| {
+                                        move |ev, window, cx| {
                                             cx.stop_propagation();
                                             v.update(cx, |this, cx| {
-                                                this.show_context_menu(Some(idx), ev.position, cx);
+                                                this.show_context_menu(Some(idx), ev.position, window, cx);
                                             });
                                         }
                                     })

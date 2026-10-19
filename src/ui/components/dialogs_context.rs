@@ -16,9 +16,13 @@ impl crate::ui::components::dialogs::DialogsView {
         _position: Point<Pixels>,
         has_selection: bool,
         selected_path: Option<crate::core::path_util::FilesPath>,
+        selected_count: usize,
+        is_dir: bool,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
+        // Files shows different menus for file / folder / multi-select.
+        let is_multi = selected_count > 1;
         // Clone view for closures
         let v_close = view.clone();
         let v_open = view.clone();
@@ -38,13 +42,12 @@ impl crate::ui::components::dialogs::DialogsView {
         // - max height 480px
         let mut menu = div()
             .flex_col()
-            .bg(rgba(0xF21A1A1Au32)) // LayerFillColorDefault dark
+            .bg(rgba(0x1A1A1AF2u32)) // LayerFillColorDefault dark (#1A1A1A @ F2)
             .border(px(1.0))
             .border_color(rgba(UiConstants::STROKE_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
-            .w(px(250.0))
-            .max_h(px(480.0));
+            .w(px(250.0));
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -124,6 +127,7 @@ impl crate::ui::components::dialogs::DialogsView {
 
 
             // Open
+            if !is_multi {
             menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open", MenuTrailing::None, {
                 let path = selected_path.clone();
                 move |_, _, cx| {
@@ -136,8 +140,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 }
             }));
+            }
 
             // Open With - opens the Windows "Open With" dialog
+            if !is_multi && !is_dir {
             menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open With", MenuTrailing::Chevron, {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -151,6 +157,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 }
             }));
+            }
 
             // Copy item path (Files parity: Ctrl+Shift+C)
             menu = menu.child(Self::context_menu_row("\u{E8C8}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
@@ -164,6 +171,7 @@ impl crate::ui::components::dialogs::DialogsView {
             }));
 
             // Create Shortcut
+            if !is_multi {
             menu = menu.child(Self::context_menu_row(
                 "\u{E71B}",
                 "Create Shortcut",
@@ -195,6 +203,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
+            }
 
             menu = menu.child(Self::context_menu_row(
                 "\u{E8B7}",
@@ -273,6 +282,7 @@ impl crate::ui::components::dialogs::DialogsView {
             }
 
             // Open in New Tab
+            if !is_multi {
             menu = menu.child(Self::context_menu_row(
                 "\u{E8A7}",
                 "Open in New Tab",
@@ -290,8 +300,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
+            }
 
             // Open in New Window
+            if !is_multi {
             menu = menu.child(Self::context_menu_row(
                 "\u{E8A7}",
                 "Open in New Window",
@@ -309,6 +321,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
+            }
 
             menu = menu.child(Self::context_menu_separator());
 
@@ -346,16 +359,25 @@ impl crate::ui::components::dialogs::DialogsView {
             menu = menu.child(Self::context_menu_separator());
 
             // ── ACTIONS SECTION (32px) ──
-            // Rename
-            menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
-                let v = v_rename.clone();
-                let idx = item_index;
-                move |_, _, cx| {
-                    if let Some(i) = idx {
-                        v.update(cx, |this, cx| this.start_rename(i, cx));
+            // Rename: single item renames in place, multi-select opens bulk rename.
+            if is_multi {
+                menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
+                    let v = v_rename.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| this.bulk_rename(cx));
                     }
-                }
-            }));
+                }));
+            } else {
+                menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
+                    let v = v_rename.clone();
+                    let idx = item_index;
+                    move |_, _, cx| {
+                        if let Some(i) = idx {
+                            v.update(cx, |this, cx| this.start_rename(i, cx));
+                        }
+                    }
+                }));
+            }
 
             menu = menu.child(Self::context_menu_separator());
 
@@ -904,6 +926,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .child(
                 div()
                     .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
@@ -980,6 +1003,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .child(
                 div()
                     .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )

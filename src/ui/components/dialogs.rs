@@ -39,6 +39,8 @@ pub enum DialogType {
         /// Pre-read data to avoid view.read(cx) crash during render
         has_selection: bool,
         selected_path: Option<crate::core::path_util::FilesPath>,
+        selected_count: usize,
+        is_dir: bool,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -238,11 +240,15 @@ impl DialogsView {
                 position,
                 has_selection,
                 selected_path,
+                selected_count,
+                is_dir,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
                 *has_selection,
                 selected_path.clone(),
+                *selected_count,
+                *is_dir,
                 view.clone(),
                 cx,
             )

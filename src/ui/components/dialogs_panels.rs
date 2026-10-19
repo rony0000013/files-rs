@@ -707,7 +707,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     .bg(if checked {
                         rgba(UiConstants::ACCENT_RGBA)
                     } else {
-                        rgba(0x12FFFFFFu32)
+                        rgba(0xFFFFFF12u32)
                     })
                     .flex()
                     .items_center()
@@ -750,7 +750,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     .items_center()
                     .h(px(32.0))
                     .px(px(8.0))
-                    .bg(rgba(0x12FFFFFFu32))
+                    .bg(rgba(0xFFFFFF12u32))
                     .border(px(1.0))
                     .border_color(rgba(UiConstants::STROKE_RGBA))
                     .rounded(px(4.0))

@@ -425,7 +425,7 @@ impl MainViewState {
                                                 .px(px(8.0))
                                                 .items_center()
                                                 .gap(px(4.0))
-                                                .bg(rgba(0x0A000000u32))
+                                                .bg(rgba(0x0000000Au32))
                                                 .cursor_pointer()
                                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                                     v.update(cx, |this, cx| {

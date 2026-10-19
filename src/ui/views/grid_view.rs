@@ -150,9 +150,18 @@ impl MainViewState {
             .id("grid-container")
             .on_mouse_down(MouseButton::Right, {
                 let v = view.clone();
-                move |event, _, cx| {
+                move |event, window, cx| {
                     v.update(cx, |this, cx| {
-                        this.show_context_menu(None, event.position, cx);
+                        this.show_context_menu(None, event.position, window, cx);
+                    });
+                }
+            })
+            .on_mouse_down(MouseButton::Left, {
+                let v = view.clone();
+                move |_event, _win, cx| {
+                    // Empty-space click clears selection (Files/Explorer behavior).
+                    v.update(cx, |this, cx| {
+                        this.clear_selection(cx);
                     });
                 }
             })
@@ -283,7 +292,7 @@ impl MainViewState {
                                         .h(px(group_height))
                                         .items_center()
                                         .px(px(params.padding))
-                                        .bg(rgba(0x0A000000u32))
+                                        .bg(rgba(0x0000000Au32))
                                         .cursor_pointer()
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             v.update(cx, |this, cx| {
@@ -496,7 +505,7 @@ impl MainViewState {
 
             let path_clone = item_path.clone();
             item_div
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     cx.stop_propagation();
                     v_click.update(cx, |this, cx| {
                         if event.click_count == 2 {
@@ -512,17 +521,17 @@ impl MainViewState {
                 })
                 .on_mouse_down(MouseButton::Right, {
                     let v = view.clone();
-                    move |event, _, cx| {
+                    move |event, window, cx| {
                         cx.stop_propagation();
                         v.update(cx, |this, cx| {
-                            this.show_context_menu(Some(index), event.position, cx);
+                            this.show_context_menu(Some(index), event.position, window, cx);
                         });
                     }
                 })
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |ev, _, cx| {
+                    move |ev, window, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
@@ -580,6 +589,7 @@ impl MainViewState {
                         .mt(px(3.0))
                         .text_center()
                         .line_clamp(2)
+                        .overflow_hidden()
                         .text_size(px(text_size))
                         .font_family(UiConstants::FONT_MAIN)
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
@@ -593,7 +603,7 @@ impl MainViewState {
                                 .child(rename_text.clone())
                                 .into_any_element()
                         } else {
-                            div().child(item_name.clone()).into_any_element()
+                            div().child(shorten_filename_middle(&item_name, 48)).into_any_element()
                         }),
                 )
         } else {
@@ -680,7 +690,7 @@ impl MainViewState {
 
             let path_clone = item_path.clone();
             item_div
-                .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     cx.stop_propagation();
                     v_click.update(cx, |this, cx| {
                         if event.click_count == 2 {
@@ -696,17 +706,17 @@ impl MainViewState {
                 })
                 .on_mouse_down(MouseButton::Right, {
                     let v = view.clone();
-                    move |event, _, cx| {
+                    move |event, window, cx| {
                         cx.stop_propagation();
                         v.update(cx, |this, cx| {
-                            this.show_context_menu(Some(index), event.position, cx);
+                            this.show_context_menu(Some(index), event.position, window, cx);
                         });
                     }
                 })
                 .on_mouse_move({
                     let v_hover = v_hover.clone();
                     let v_timer = v_timer.clone();
-                    move |ev, _, cx| {
+                    move |ev, window, cx| {
                         if is_hover_select {
                             v_hover.update(cx, |this, cx| {
                                 this.handle_item_hover(index, cx);
@@ -791,6 +801,7 @@ impl MainViewState {
                         .mt(px(2.0))
                         .text_center()
                         .line_clamp(2)
+                        .overflow_hidden()
                         .text_size(px(text_size))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .child(if renaming_index == Some(index) {
@@ -803,7 +814,7 @@ impl MainViewState {
                                 .child(rename_text.clone())
                                 .into_any_element()
                         } else {
-                            div().child(item_name.clone()).into_any_element()
+                            div().child(shorten_filename_middle(&item_name, 48)).into_any_element()
                         }),
                 )
         }

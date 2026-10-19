@@ -38,9 +38,9 @@ impl MainView {
                     .relative()
                     .on_mouse_down(MouseButton::Right, {
                         let v = view.clone();
-                        move |event, _, cx| {
+                        move |event, window, cx| {
                             v.update(cx, |this, cx| {
-                                this.show_context_menu(None, event.position, cx);
+                                this.show_context_menu(None, event.position, window, cx);
                             });
                         }
                     })
@@ -48,6 +48,9 @@ impl MainView {
                         let v = view.clone();
                         move |event, _win, cx| {
                             v.update(cx, |this, cx| {
+                                // Empty-space click clears selection (Files/Explorer
+                                // behavior); a drag from here still rubber-bands.
+                                this.clear_selection(cx);
                                 this.state.main_view.lasso_state = Some(LassoState {
                                     start: point(event.position.x.into(), event.position.y.into()),
                                     current: point(
@@ -151,7 +154,7 @@ impl MainView {
                                             .cursor_pointer()
                                             .on_mouse_down(MouseButton::Left, {
                                                 let v = view_row.clone();
-                                                move |ev, _, cx| {
+                                                move |ev, window, cx| {
                                                     cx.stop_propagation();
                                                     v.update(cx, |this, cx| {
                                                         this.select_item(
@@ -181,12 +184,13 @@ impl MainView {
                                             })
                                             .on_mouse_down(MouseButton::Right, {
                                                 let v = view_row.clone();
-                                                move |ev, _, cx| {
+                                                move |ev, window, cx| {
                                                     cx.stop_propagation();
                                                     v.update(cx, |this, cx| {
                                                         this.show_context_menu(
                                                             Some(idx),
                                                             ev.position,
+                                                            window,
                                                             cx,
                                                         );
                                                     });
@@ -368,7 +372,7 @@ impl MainView {
                                     .h(px(row_height))
                                     .items_center()
                                     .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-                                    .bg(rgba(0x0A000000u32))
+                                    .bg(rgba(0x0000000Au32))
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         v_g.update(cx, |this, cx| {
@@ -452,7 +456,7 @@ impl MainView {
                                     })
                                     .on_mouse_down(MouseButton::Left, {
                                         let view = view_row.clone();
-                                        move |event, _, cx| {
+                                        move |event, window, cx| {
                                             cx.stop_propagation();
                                             let y: f32 = event.position.y / Pixels::from(1.0);
                                             view.update(cx, |this, _cx| {
@@ -462,7 +466,7 @@ impl MainView {
                                     })
                                     .on_mouse_move({
                                         let view = view_row.clone();
-                                        move |event, _, cx| {
+                                        move |event, window, cx| {
                                             let y: f32 = event.position.y / Pixels::from(1.0);
                                             view.update(cx, |this, _cx| {
                                                 this.group_drag_update(y);
@@ -487,12 +491,13 @@ impl MainView {
                                     })
                                     .on_mouse_down(MouseButton::Right, {
                                         let view = view_row.clone();
-                                        move |ev, _, cx| {
+                                        move |ev, window, cx| {
                                             cx.stop_propagation();
                                             view.update(cx, |this, cx| {
                                                 this.show_context_menu(
                                                     Some(idx),
                                                     ev.position,
+                                                    window,
                                                     cx,
                                                 );
                                             });
@@ -745,7 +750,7 @@ impl MainView {
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .on_mouse_down(MouseButton::Right, {
                 let v = v_header.clone();
-                move |ev, _, cx| {
+                move |ev, window, cx| {
                     v.update(cx, |this, cx| {
                         this.show_column_visibility_menu(ev.position, cx);
                     });

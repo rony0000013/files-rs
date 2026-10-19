@@ -298,7 +298,7 @@ impl AppWindow {
                 y: vp.height * 0.4,
             };
             let first_selected = self.state.main_view.selected_indices.iter().next().copied();
-            self.show_context_menu(first_selected, pos, cx);
+            self.show_context_menu(first_selected, pos, window, cx);
             return;
         }
 

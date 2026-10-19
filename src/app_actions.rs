@@ -1622,8 +1622,22 @@ impl AppWindow {
         &mut self,
         item_index: Option<usize>,
         position: Point<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Clamp the menu inside the viewport (flip-up when near the bottom
+        // edge) so tall menus never spill past the window like before.
+        let vp = window.viewport_size();
+        let est_h: f32 = if item_index.is_some() { 580.0 } else { 720.0 };
+        let mut x: f32 = position.x.into();
+        let mut y: f32 = position.y.into();
+        if x + 284.0 > vp.width.into() {
+            x = (f32::from(vp.width) - 284.0).max(8.0);
+        }
+        if y + est_h > vp.height.into() {
+            y = (f32::from(vp.height) - est_h).max(8.0);
+        }
+        let position = Point { x: px(x), y: px(y) };
         // Pre-read selection data to avoid view.read(cx) crash during dialog render
         let selected_indices = &self.state.main_view.selected_indices;
         let has_selection = !selected_indices.is_empty();
@@ -1632,12 +1646,24 @@ impl AppWindow {
             .next()
             .and_then(|&idx| self.state.main_view.items.get(idx))
             .map(|item| item.path.clone());
+        let selected_count = selected_indices.len();
+        let is_dir = item_index
+            .and_then(|idx| self.state.main_view.items.get(idx))
+            .map(|item| {
+                matches!(
+                    item.file_type,
+                    crate::storage::storage::FileType::Directory
+                )
+            })
+            .unwrap_or(false);
 
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
             position,
             has_selection,
             selected_path,
+            selected_count,
+            is_dir,
         });
         cx.notify();
     }
