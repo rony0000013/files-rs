@@ -125,12 +125,23 @@
   apply + close the menu (Files keeps it open with checkmarks — needs
   checkable rows); IContextMenu2 owner-draw (most extensions fine without).
 - VERIFICATION STATUS: `cargo check --lib` clean, release build finished, app
-  relaunched and running. Pixel verification BLOCKED — machine is at the lock
-  screen (captures show only Bloom wallpaper + clock, no taskbar), so no
-  input or screenshot proves the new menus yet. On unlock, test: right-click
-  file (selects + new menu) → hover Compress/Send to (flyouts) → "Show more
-  options" (classic menu with WinRAR etc.) → right-click empty (deselect +
-  bg menu with Layout/Sort/Group flyouts) → Properties (no error dialog).
+  relaunched and running. machine was at the lock screen during pixel
+  verification, so no input or screenshot proved the new menus yet.
+### 19 Oct (night) — Show more options crashed the app: root cause + fix
+- Log proved it: `Classic shell menu failed: GetUIObjectOf...` then the
+  process died. Cause: `SHBindToParent`/`ILFindLastID` returns an INTERIOR
+  pointer into the full PIDL; the old code freed the full PIDL and kept using
+  the interior pointer (use-after-free -> GetUIObjectOf read garbage and
+  failed; later CoTaskMemFree on it corrupted the heap -> delayed crash).
+  Fixed with `ILClone(ILFindLastID(full))` owned copies (`shell_menu_service.rs`).
+- Hovering "Show more options" showing no flyout is CORRECT Files behavior —
+  it is a click row that opens the classic menu, not a submenu. Clicking now
+  opens the native menu instead of crashing (fix verified by code + log so
+  far; awaiting user click-confirmation since the screen is contested).
+- Look pass from Files' measured pixels (292px wide, ~28px rows, ~34px
+  toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
+  glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
+  submenu anchor follows (left 288), viewport clamp 284->300.
 
 ### 19 Oct (later) — user screenshot teardown, menu was still broken
 - User screenshot proved 3 live defects my captures missed: (1) menu bg rendered
