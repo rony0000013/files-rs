@@ -84,3 +84,31 @@
 - FPS badge gated behind FILES_RS_FPS=1 (was a fake "tab" in the tab strip).
 - Deviations kept: no submenu flyouts yet (chevron rows fire the default action — flat sections instead), Rename kept in item menu (no Show-more dialog to host it), Paste kept on bg menu, extras section, Properties on bg menu.
 - Verified on pixels: item menu (toolbar + 12 rows + hints + chevrons), bg menu (View/Sort/Group sections), 5-col grid, "420 items | 1 item selected | 164.9 KB".
+
+### 19 Oct (later) — user screenshot teardown, menu was still broken
+- User screenshot proved 3 live defects my captures missed: (1) menu bg rendered
+  REDDISH — `rgba()` takes 0xRRGGBBAA but menu bg was written AARRGGBB
+  (`0xF21A1A1A` = red @10%); fixed to `0x1A1A1AF2`. Same latent bug fixed in
+  6 more spots: unchecked-checkbox + panel-row bg (`0x12FFFFFF` → `0xFFFFFF12`,
+  was opaque pale-cyan), zebra striping in all 4 views (`0x0A000000` →
+  `0x0000000A`, was fully transparent). Rule: all hex colors are RRGGBBAA.
+- (2) Row icon/tofu boxes — `context_menu_row` + `context_menu_item` icon divs
+  never set the icon font; added `FONT_MDL2` ("Segoe Fluent Icons") to both.
+  Same miss fixed on fallback file/folder glyphs in details (flat+grouped),
+  list (both), columns (both). Grid + home + preview already had it.
+- (3) Extras spilling past the menu box — container had `max_h(480)` while
+  content is ~540px. Removed the cap; `show_context_menu` now takes `window`
+  and flips the menu up/left (`window.viewport_size()`, est. 580 item / 720 bg)
+  so it never leaves the viewport. All 11 call sites updated.
+- Menu variants: `DialogType::ContextMenu` + builder now carry
+  `selected_count`/`is_dir`. Multi-select hides Open / Open With / New Tab /
+  New Window / Create Shortcut; Rename opens BulkRename for multi; Open With
+  hidden for folders. Extract Here was already archive-gated.
+- Empty-space left-click now clears selection in grid/details/list (details +
+  list still start rubber-band lasso on drag).
+- Status bar back to "8 folders, 413 files | 1 item selected | 164.9 KB".
+- Grid labels: `overflow_hidden` + `shorten_filename_middle(48)` so long names
+  can't bleed into neighbouring cards.
+- Keyboard audit: bindings complete (Enter/Backspace/Space/F2/Delete/
+  Shift+Delete/Ctrl+C-X-V-A/F5/Ctrl+T-W-N/Ctrl+Tab+digits/Menu/Shift+F10/
+  Alt+arrows). Verified working incl. new Ctrl+Shift+C.
