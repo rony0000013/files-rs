@@ -37,8 +37,8 @@ fn show_classic_menu_impl(paths: &[PathBuf], dir: &Path, x: i32, y: i32) -> anyh
         COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::UI::Shell::{
-        CMF_EXTENDEDVERBS, CMF_NORMAL, CMINVOKECOMMANDINFO, IContextMenu, IShellFolder,
-        SHBindToParent, SHParseDisplayName,
+        CMF_EXTENDEDVERBS, CMF_NORMAL, CMINVOKECOMMANDINFO, IContextMenu, ILClone, ILFindLastID,
+        IShellFolder, SHBindToParent, SHParseDisplayName,
     };
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -103,14 +103,19 @@ fn show_classic_menu_impl(paths: &[PathBuf], dir: &Path, x: i32, y: i32) -> anyh
                 {
                     continue;
                 }
-                let mut item_last: *mut ITEMIDLIST = std::ptr::null_mut();
-                if SHBindToParent::<IShellFolder>(full, Some(&mut item_last)).is_err() {
-                    CoTaskMemFree(Some(full as *const _ as _));
-                    continue;
-                }
+                // ILFindLastID returns an interior pointer into `full`, so it
+                // must be cloned (ILClone) before `full` is freed — using it
+                // after CoTaskMemFree(full) is use-after-free and corrupts the
+                // heap (this crashed the app).
+                let rel = ILFindLastID(full);
+                let owned = if rel.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    ILClone(rel)
+                };
                 CoTaskMemFree(Some(full as *const _ as _));
-                if !item_last.is_null() {
-                    child_pidls.push(item_last as *const ITEMIDLIST);
+                if !owned.is_null() {
+                    child_pidls.push(owned);
                 }
             }
 

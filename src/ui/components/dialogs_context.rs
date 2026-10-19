@@ -48,7 +48,8 @@ impl crate::ui::components::dialogs::DialogsView {
             .border_color(rgba(UiConstants::STROKE_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
-            .w(px(250.0));
+            .py(px(4.0))
+            .w(px(292.0));
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -675,13 +676,13 @@ impl crate::ui::components::dialogs::DialogsView {
             .items_center()
             .gap(px(12.0))
             .px(px(12.0))
-            .py(px(8.0))
+            .py(px(5.0))
             .cursor_pointer()
             .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
             .on_mouse_down(MouseButton::Left, on_click)
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(16.0))
                     .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
@@ -752,13 +753,13 @@ impl crate::ui::components::dialogs::DialogsView {
             .items_center()
             .gap(px(12.0))
             .px(px(12.0))
-            .py(px(8.0))
+            .py(px(5.0))
             .cursor_pointer()
             .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
             .on_mouse_down(MouseButton::Left, on_click)
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(16.0))
                     .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
@@ -784,17 +785,17 @@ impl crate::ui::components::dialogs::DialogsView {
         let mut row = div()
             .flex()
             .items_center()
-            .gap(px(4.0))
+            .gap(px(2.0))
             .px(px(8.0))
-            .py(px(6.0));
+            .py(px(3.0));
         for (glyph, action) in buttons {
             row = row.child(
                 div()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(36.0))
-                    .h(px(32.0))
+                    .w(px(34.0))
+                    .h(px(28.0))
                     .rounded(px(4.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
@@ -1554,7 +1555,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let mut panel = div()
             .absolute()
             .top(px(-8.0))
-            .left(px(246.0))
+            .left(px(288.0))
             .w(px(220.0))
             .flex_col()
             .bg(rgba(0x1A1A1AF2u32))
