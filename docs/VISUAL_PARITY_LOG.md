@@ -142,7 +142,18 @@
   toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
   glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
   submenu anchor follows (left 290), viewport clamp 284->300.
-### 19 Oct (night) — bg parity, instant flyout, nested auto-expand
+### 19 Oct (night) — toolbar close, StatusCenter bell + live transfers
+- Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
+  they fire. Rename was never broken — it was buried under the open menu.
+- Notification center: bell button top-right after the omnibar with an
+  in-progress count badge (red on failure). Opens a Files-style flyout:
+  header + Clear completed, per-job cards with state icon, progress bar,
+  speed/ETA/current-file message, expandable 88px speed graph, Cancel for
+  running jobs, dismiss for finished ones.
+- Transfers report byte-level progress with speed + ETA (chunked async copy,
+  throttled broadcasts): paste (copy/move incl. cross-volume), permanent
+  delete, and trash delete (was a log-only stub) all run as engine jobs.
+  Verified headless: 5MB tree copies byte-exact with live updates to 100%.
 - Bg menu now matches Files: added "Paste shortcut", "Open in Terminal" is
   "Open in Windows Terminal", separators after Refresh and after Pin to
   Sidebar (none before Show more options).
