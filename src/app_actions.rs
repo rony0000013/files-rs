@@ -1825,21 +1825,20 @@ impl AppWindow {
             flip,
             expanded,
         });
-        // Expanded style inlines every classic item, so start loading now
-        // instead of waiting for a ShowMore hover that will never come.
+        // Preload the classic items the moment the menu opens (all styles):
+        // phase 1 (labels) lands in ~50ms so the flyout renders instantly on
+        // hover; phase 2 fills in the real icons right after.
         #[cfg(windows)]
         {
-            if expanded {
-                if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
-                    selected_paths,
-                    current_dir,
-                    ..
-                }) = self.state.active_dialog.as_ref()
-                {
-                    let lp = selected_paths.clone();
-                    let ld = current_dir.clone();
-                    self.load_classic_entries(lp, ld, cx);
-                }
+            if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                selected_paths,
+                current_dir,
+                ..
+            }) = self.state.active_dialog.as_ref()
+            {
+                let lp = selected_paths.clone();
+                let ld = current_dir.clone();
+                self.load_classic_entries(lp, ld, cx);
             }
         }
         self.menu_tip = None;
@@ -1915,7 +1914,26 @@ impl AppWindow {
         let mut async_app = cx.to_async();
         let task = cx.spawn(
             move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
-                let entries =
+                // Phase 1: labels/states only (no icon extraction, ~50ms) so
+                // the flyout renders instantly; phase 2 fills in real icons.
+                let fast =
+                    crate::platform::windows::classic_menu::enumerate_classic_labels(
+                        &paths, &dir,
+                    );
+                weak.update(&mut async_app, |this, cx| {
+                    if let Some(
+                        crate::ui::components::dialogs::DialogType::ContextMenu {
+                            classic,
+                            ..
+                        },
+                    ) = this.state.active_dialog.as_mut()
+                    {
+                        *classic = Some(fast);
+                        cx.notify();
+                    }
+                })
+                .ok();
+                let full =
                     crate::platform::windows::classic_menu::enumerate_classic_menu(
                         &paths, &dir,
                     );
@@ -1928,7 +1946,7 @@ impl AppWindow {
                         },
                     ) = this.state.active_dialog.as_mut()
                     {
-                        *classic = Some(entries);
+                        *classic = Some(full);
                         *classic_loading = false;
                         cx.notify();
                     }

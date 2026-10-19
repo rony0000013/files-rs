@@ -63,6 +63,8 @@ impl crate::ui::components::dialogs::DialogsView {
         let mut showmore_off = 0.0f32;
         #[allow(unused_variables)]
         let menu_top: f32 = position.y.into();
+        #[allow(unused_variables)]
+        let menu_left: f32 = position.x.into();
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -462,6 +464,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         cur_dir.clone(),
                         flip,
                         menu_top,
+                        menu_left,
                         showmore_off,
                     ),
                     view.clone(),
@@ -491,6 +494,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 &mut next_id,
                                 flip,
                                 menu_top + showmore_off,
+                                menu_left,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -617,6 +621,15 @@ impl crate::ui::components::dialogs::DialogsView {
                 menu_h += 29.0;
             }
 
+            // Paste shortcut (clipboard files pasted as shortcuts here)
+            menu = menu.child(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
+                let v = v_sub.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.paste_as_shortcut(cx));
+                }
+            }));
+                menu_h += 29.0;
+
             // Pin to Sidebar (current folder)
             menu = menu.child(Self::context_menu_item(
                 "\u{E718}",
@@ -631,9 +644,11 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
                 menu_h += 29.0;
+            menu = menu.child(Self::context_menu_separator());
+                menu_h += 9.0;
 
-            // Open in Terminal (Ctrl+`)
-            menu = menu.child(Self::context_menu_row("\u{E756}", "Open in Terminal", MenuTrailing::Hint("Ctrl+`"), {
+            // Open in Windows Terminal (Ctrl+`)
+            menu = menu.child(Self::context_menu_row("\u{E756}", "Open in Windows Terminal", MenuTrailing::Hint("Ctrl+`"), {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -667,6 +682,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         cur_dir.clone(),
                         flip,
                         menu_top,
+                        menu_left,
                         showmore_off,
                     ),
                     view.clone(),
@@ -696,6 +712,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 &mut next_id,
                                 flip,
                                 menu_top + showmore_off,
+                                menu_left,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -1795,6 +1812,7 @@ impl crate::ui::components::dialogs::DialogsView {
         dir: std::path::PathBuf,
         flip: bool,
         menu_top: f32,
+        menu_left: f32,
         row_off: f32,
     ) -> gpui::Stateful<Div> {
         // Bottom-anchored: grows UP from the ShowMore row, so a 30-item
@@ -1814,7 +1832,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 let mut next_id: usize = 0;
                 Self::classic_rows(
                     &entries, &open, &[], view.clone(), paths, dir, &mut next_id,
-                    flip, panel_top,
+                    flip, panel_top, menu_left,
                 )
             }
             Some(_) => {
@@ -1955,6 +1973,7 @@ impl crate::ui::components::dialogs::DialogsView {
         next_id: &mut usize,
         flip: bool,
         panel_top: f32,
+        menu_left: f32,
     ) -> Vec<gpui::Stateful<Div>> {
         let mut rows = Vec::new();
         let mut acc_h = 0.0f32;
@@ -1974,8 +1993,10 @@ impl crate::ui::components::dialogs::DialogsView {
                 continue;
             }
             let has_kids = !entry.children.is_empty();
+            // A row's children show whenever the row is on the open path
+            // (hovered itself, or an ancestor of the hovered nested row).
             let show_kids = has_kids
-                && open.len() > path.len()
+                && open.len() >= path.len()
                 && open[..path.len()] == path[..];
             let v_hover = view.clone();
             let v_click = view.clone();
@@ -2091,7 +2112,13 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
                 let nested_max = (nested_row_bottom - 16.0).max(87.0);
                 let nested_top = nested_row_bottom - nested_h.min(nested_max);
-                let nested_left = if flip { -242.0 } else { 258.0 };
+                // Flipped panels open left — unless the menu itself hugs the
+                // left edge, in which case opening right avoids clipping.
+                let nested_left = if flip && menu_left > 250.0 {
+                    -242.0
+                } else {
+                    258.0
+                };
                 let mut nid = *next_id;
                 let kids = Self::classic_rows(
                     &entry.children,
@@ -2103,6 +2130,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     &mut nid,
                     flip,
                     nested_top,
+                    menu_left,
                 );
                 *next_id = nid;
                 let mut nested = div()

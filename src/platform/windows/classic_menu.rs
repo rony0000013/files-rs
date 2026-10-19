@@ -36,13 +36,24 @@ pub struct ClassicMenuEntry {
 /// thread — call from a background task, never the UI thread. Returns an
 /// empty vec on non-Windows or on any shell failure.
 pub fn enumerate_classic_menu(paths: &[PathBuf], dir: &Path) -> Vec<ClassicMenuEntry> {
+    enumerate_with_icons(paths, dir, true)
+}
+
+/// Labels/states/separators only (no GetDIBits icon extraction) — the fast
+/// first phase so the flyout can render instantly; icons fill in after.
+pub fn enumerate_classic_labels(paths: &[PathBuf], dir: &Path) -> Vec<ClassicMenuEntry> {
+    enumerate_with_icons(paths, dir, false)
+}
+
+#[allow(clippy::unused_variables)]
+fn enumerate_with_icons(paths: &[PathBuf], dir: &Path, load_icons: bool) -> Vec<ClassicMenuEntry> {
     #[cfg(windows)]
     {
-        enumerate_classic_menu_impl(paths, dir).unwrap_or_default()
+        enumerate_classic_menu_impl(paths, dir, load_icons).unwrap_or_default()
     }
     #[cfg(not(windows))]
     {
-        let _ = (paths, dir);
+        let _ = (paths, dir, load_icons);
         Vec::new()
     }
 }
@@ -188,10 +199,11 @@ fn query_shell_menu(
 fn enumerate_classic_menu_impl(
     paths: &[PathBuf],
     dir: &Path,
+    load_icons: bool,
 ) -> anyhow::Result<Vec<ClassicMenuEntry>> {
     with_sta(|| {
         let (_cm, hmenu) = query_shell_menu(paths, dir)?;
-        let entries = unsafe { read_menu_level(hmenu, 1, 0) };
+        let entries = unsafe { read_menu_level(hmenu, 1, 0, load_icons) };
         unsafe {
             windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
         }
@@ -211,7 +223,7 @@ fn invoke_classic_verb_impl(
         let (cm, hmenu) = query_shell_menu(paths, dir)?;
         let result = unsafe {
             // Label guard: never fire a stale offset at the wrong command.
-            let entries = read_menu_level(hmenu, 1, 0);
+            let entries = read_menu_level(hmenu, 1, 0, true);
             let mut found: Option<(u32, String)> = None;
             let mut stack = entries;
             while let Some(e) = stack.pop() {
@@ -254,6 +266,7 @@ unsafe fn read_menu_level(
     hmenu: windows::Win32::UI::WindowsAndMessaging::HMENU,
     id_first: u32,
     depth: u32,
+    load_icons: bool,
 ) -> Vec<ClassicMenuEntry> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetMenuItemCount, GetMenuItemInfoW, MENUITEMINFOW, MFS_DISABLED, MFS_GRAYED,
@@ -296,7 +309,7 @@ unsafe fn read_menu_level(
             continue;
         }
         let children = if !mii.hSubMenu.0.is_null() && depth < 4 {
-            read_menu_level(mii.hSubMenu, id_first, depth + 1)
+            read_menu_level(mii.hSubMenu, id_first, depth + 1, load_icons)
         } else {
             Vec::new()
         };
@@ -306,7 +319,11 @@ unsafe fn read_menu_level(
             offset: mii.wID.wrapping_sub(id_first),
             enabled: (state & MFS_DISABLED.0) == 0 && (state & MFS_GRAYED.0) == 0,
             separator: false,
-            icon: hbitmap_to_render_image(mii.hbmpItem),
+            icon: if load_icons {
+                hbitmap_to_render_image(mii.hbmpItem)
+            } else {
+                None
+            },
             children,
         });
     }
