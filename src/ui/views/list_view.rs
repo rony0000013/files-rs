@@ -208,6 +208,7 @@ impl MainViewState {
                                                     );
                                                     div()
                                                         .text_size(px(i_size * 0.5))
+                                                        .font_family(UiConstants::FONT_MDL2)
                                                         .text_color(rgba(
                                                             UiConstants::TEXT_SECONDARY_RGBA,
                                                         ))
@@ -399,6 +400,7 @@ impl MainViewState {
                                                     );
                                                     div()
                                                         .text_size(px(icon_size * 0.5))
+                                                        .font_family(UiConstants::FONT_MDL2)
                                                         .text_color(rgba(
                                                             UiConstants::TEXT_SECONDARY_RGBA,
                                                         ))

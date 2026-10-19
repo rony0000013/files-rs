@@ -232,6 +232,7 @@ impl MainViewState {
                                                         } else {
                                                             div()
                                                                 .text_size(px(i_size * 0.7))
+                                                                .font_family(UiConstants::FONT_MDL2)
                                                                 .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                                                 .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" })
                                                                 .into_any_element()
@@ -524,6 +525,7 @@ impl MainViewState {
                                                             } else {
                                                                 div()
                                                                     .text_size(px(i_size * 0.7))
+                                                                    .font_family(UiConstants::FONT_MDL2)
                                                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                                                     .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" })
                                                                     .into_any_element()

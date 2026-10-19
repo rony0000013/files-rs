@@ -246,6 +246,7 @@ impl MainView {
                                                             } else {
                                                                 div()
                                                                     .text_size(px(icon_size * 0.5))
+                                                                    .font_family(UiConstants::FONT_MDL2)
                                                                     .text_color(rgb(
                                                                         UiConstants::ACCENT_COLOR_RGB,
                                                                     ))
@@ -581,6 +582,7 @@ impl MainView {
                                                     .child(
                                                         div()
                                                             .text_size(px(icon_size * 0.5))
+                                                            .font_family(UiConstants::FONT_MDL2)
                                                             .text_color(rgb(
                                                                 UiConstants::ACCENT_COLOR_RGB,
                                                             ))
