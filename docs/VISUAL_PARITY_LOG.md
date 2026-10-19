@@ -141,7 +141,22 @@
 - Look pass from Files' measured pixels (292px wide, ~28px rows, ~34px
   toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
   glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
-  submenu anchor follows (left 288), viewport clamp 284->300.
+  submenu anchor follows (left 290), viewport clamp 284->300.
+### 19 Oct (night) — Show more options expands INLINE (no click, no crash)
+- "Show more options" is now a hover submenu like the rest: the native
+  `IContextMenu` is queried into an `HMENU`, enumerated to data (labels,
+  states, REAL extension icons via GetDIBits→RenderImage) and rendered as
+  GPUI rows — WinRAR › (+ its nested flyout), Kaspersky, Zed, ShareX, etc.
+  with their real icons, separators, disabled dimming. Clicks route back
+  through `InvokeCommand` on a fresh STA query with an (offset, label) guard
+  so a stale offset can never fire the wrong verb. No `TrackPopupMenuEx`
+  popup anymore — nothing to crash, no focus tricks.
+- Verified headless (`examples/classic_probe.rs`): 34 items for a .txt with
+  the user's actual extensions, 6+ real icons, nested Send to/Open with.
+  Mnemonic `&` markers stripped (Files hides them too).
+- Menu tooltips: hovering toolbar icons shows "Cut — Ctrl+X" etc.; classic
+  rows show their label; rendered as a floating label at the cursor while a
+  menu is open. Static rows already show shortcuts as inline hints.
 
 ### 19 Oct (later) — user screenshot teardown, menu was still broken
 - User screenshot proved 3 live defects my captures missed: (1) menu bg rendered
