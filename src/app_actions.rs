@@ -1378,6 +1378,9 @@ impl AppWindow {
                     s.config.appearance.mica_enabled = !s.config.appearance.mica_enabled
                 }
                 "mica_alt" => s.config.appearance.mica_alt = !s.config.appearance.mica_alt,
+                "transparent_window" => {
+                    s.config.appearance.transparent_window = !s.config.appearance.transparent_window
+                }
                 "folder_on_top" => s.config.view.folder_on_top = !s.config.view.folder_on_top,
                 "mru_tab_cycle" => s.config.session.mru_tab_cycle = !s.config.session.mru_tab_cycle,
                 _ => {}

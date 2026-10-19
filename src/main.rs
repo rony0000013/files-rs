@@ -69,7 +69,11 @@ fn main() {
         // window_vibrancy's DWMWA_SYSTEMBACKDROP_TYPE and composite opaque.
         // The actual Mica comes from apply_mica below; translucency comes
         // from the RGBA fills in the scene, not the window policy.
-        let window_background = WindowBackgroundAppearance::Opaque;
+        let window_background = if config.appearance.transparent_window {
+            WindowBackgroundAppearance::Transparent
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
 
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Maximized(Bounds::new(

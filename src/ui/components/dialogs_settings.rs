@@ -114,6 +114,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     .child(Self::settings_group_header("Theme"))
                     .child(Self::settings_toggle("Mica effect", config.appearance.mica_enabled, "mica_enabled", view.clone()))
                     .child(Self::settings_toggle("Mica alt backdrop (saturated)", config.appearance.mica_alt, "mica_alt", view.clone()))
+                    .child(Self::settings_toggle("Transparent window (Mica test)", config.appearance.transparent_window, "transparent_window", view.clone()))
                     .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
                     // Group: Fonts
                     .child(Self::settings_group_header("Fonts"))
@@ -420,8 +421,9 @@ impl crate::ui::components::dialogs::DialogsView {
                     .items_center()
                     .px(px(2.0))
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         v_toggle.update(cx, |this, cx| this.toggle_setting(key, cx));
+                        Self::apply_chrome_live(key, window, &v_toggle, cx);
                     })
                     .child(
                         div()
@@ -549,5 +551,47 @@ impl crate::ui::components::dialogs::DialogsView {
     ) -> impl IntoElement {
         let val_str = format!("{:.1}", value);
         Self::settings_text_input(label, val_str, key, view)
+    }
+
+    /// Live-apply window chrome (appearance + DWM backdrop) right after an
+    /// appearance toggle, so Mica experiments take effect without restart.
+    pub(crate) fn apply_chrome_live(
+        key: &str,
+        window: &mut Window,
+        view: &Entity<crate::app::AppWindow>,
+        cx: &mut App,
+    ) {
+        if !matches!(key, "mica_enabled" | "mica_alt" | "transparent_window") {
+            return;
+        }
+        let (mica, alt, transp) = {
+            let app = view.read(cx);
+            let s = app.state.settings.read(cx);
+            let a = &s.config.appearance;
+            (
+                a.mica_enabled,
+                a.mica_alt,
+                a.transparent_window,
+            )
+        };
+        #[cfg(windows)]
+        {
+            use gpui::WindowBackgroundAppearance;
+            window.set_background_appearance(if transp {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            });
+            if mica {
+                if alt {
+                    let _ = window_vibrancy::apply_tabbed(&*window, Some(true));
+                } else if let Err(e) = window_vibrancy::apply_mica(&*window, Some(true)) {
+                    tracing::warn!("apply_mica failed: {:?}", e);
+                }
+            } else {
+                let _ = window_vibrancy::clear_mica(&*window);
+            }
+        }
+        let _ = (mica, alt, transp);
     }
 }

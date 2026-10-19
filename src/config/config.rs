@@ -61,6 +61,11 @@ pub struct AppearanceConfig {
     pub font_size: f64,
     #[serde(default)]
     pub mica_alt: bool,
+    /// Transparent swapchain (vs Opaque). Live-switchable Mica test hook:
+    /// Transparent lets per-pixel alpha reach DWM; Opaque keeps the legacy
+    /// ACCENT_DISABLED policy.
+    #[serde(default)]
+    pub transparent_window: bool,
 }
 
 fn default_font_family() -> String {
@@ -83,6 +88,7 @@ impl Default for AppearanceConfig {
             font_family: default_font_family(),
             font_size: default_font_size(),
             mica_alt: false,
+            transparent_window: false,
         }
     }
 }
