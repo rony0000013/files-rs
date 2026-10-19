@@ -1,4 +1,5 @@
 use crate::ui::components::dialogs::{DialogType, SidebarMenuTarget, SubmenuKind};
+use crate::platform::windows::classic_menu::ClassicMenuEntry;
 use crate::ui::constants::UiConstants;
 use gpui::*;
 
@@ -21,6 +22,9 @@ impl crate::ui::components::dialogs::DialogsView {
         open_submenu: Option<crate::ui::components::dialogs::SubmenuKind>,
         selected_paths: Vec<std::path::PathBuf>,
         current_dir: std::path::PathBuf,
+        classic: Option<Vec<crate::platform::windows::classic_menu::ClassicMenuEntry>>,
+        classic_loading: bool,
+        classic_open: Vec<usize>,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -133,15 +137,18 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 });
-                menu = menu.child(Self::context_menu_toolbar(vec![
-                    ("\u{E8C6}", cut_btn),
-                    ("\u{E8C8}", copy_btn),
-                    ("\u{E77F}", paste_btn),
-                    ("\u{E8AC}", rename_btn),
-                    ("\u{E72D}", share_btn),
-                    ("\u{E74D}", delete_btn),
-                    ("\u{E946}", props_btn),
-                ]));
+                menu = menu.child(Self::context_menu_toolbar(
+                    vec![
+                        ("\u{E8C6}", "Cut \u{2014} Ctrl+X", cut_btn),
+                        ("\u{E8C8}", "Copy \u{2014} Ctrl+C", copy_btn),
+                        ("\u{E77F}", "Paste \u{2014} Ctrl+V", paste_btn),
+                        ("\u{E8AC}", "Rename \u{2014} F2", rename_btn),
+                        ("\u{E72D}", "Share", share_btn),
+                        ("\u{E74D}", "Delete \u{2014} Del", delete_btn),
+                        ("\u{E946}", "Properties \u{2014} Alt+Enter", props_btn),
+                    ],
+                    view.clone(),
+                ));
                 menu = menu.child(Self::context_menu_separator());
             }
 
@@ -405,23 +412,30 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // Show more options (native classic shell menu; Windows only)
+            // Show more options › — the real classic shell items (WinRAR,
+            // Kaspersky, ...) expand inline on hover (Files parity). Windows
+            // only: other platforms have no classic provider yet.
             #[cfg(target_os = "windows")]
             {
-                let paths = sel_paths.clone();
-                let dir = cur_dir.clone();
-                let v = v_sub.clone();
-                menu = menu.child(Self::context_menu_row(
+                let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
+                let v_click = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
                     "\u{E10C}",
                     "Show more options",
-                    MenuTrailing::Chevron,
-                    move |event, _, cx| {
-                        let ex: f32 = event.position.x.into();
-                        let ey: f32 = event.position.y.into();
-                        let paths = paths.clone();
-                        let dir = dir.clone();
-                        v.update(cx, |this, cx| {
-                            this.show_classic_menu_for(paths, dir, Some((ex, ey)), cx)
+                    SubmenuKind::ShowMore,
+                    sm_open,
+                    Self::classic_submenu(
+                        classic.clone(),
+                        classic_loading,
+                        classic_open.clone(),
+                        view.clone(),
+                        sel_paths.clone(),
+                        cur_dir.clone(),
+                    ),
+                    view.clone(),
+                    move |_, _, cx| {
+                        v_click.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
                         });
                     },
                 ));
@@ -547,21 +561,29 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // Show more options (native classic shell menu; Windows only)
+            // Show more options › — the real classic shell items expand
+            // inline on hover (Files parity). Windows only.
             #[cfg(target_os = "windows")]
             {
-                let dir = cur_dir.clone();
-                let v = v_sub.clone();
-                menu = menu.child(Self::context_menu_row(
+                let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
+                let v_click = v_sub.clone();
+                menu = menu.child(Self::submenu_row(
                     "\u{E10C}",
                     "Show more options",
-                    MenuTrailing::Chevron,
-                    move |event, _, cx| {
-                        let ex: f32 = event.position.x.into();
-                        let ey: f32 = event.position.y.into();
-                        let dir = dir.clone();
-                        v.update(cx, |this, cx| {
-                            this.show_classic_menu_for(Vec::new(), dir, Some((ex, ey)), cx)
+                    SubmenuKind::ShowMore,
+                    sm_open,
+                    Self::classic_submenu(
+                        classic.clone(),
+                        classic_loading,
+                        classic_open.clone(),
+                        view.clone(),
+                        Vec::new(),
+                        cur_dir.clone(),
+                    ),
+                    view.clone(),
+                    move |_, _, cx| {
+                        v_click.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
                         });
                     },
                 ));
@@ -779,8 +801,10 @@ impl crate::ui::components::dialogs::DialogsView {
     pub(crate) fn context_menu_toolbar(
         buttons: Vec<(
             &'static str,
+            &'static str,
             Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>,
         )>,
+        view: Entity<crate::app::AppWindow>,
     ) -> Div {
         let mut row = div()
             .flex()
@@ -788,7 +812,9 @@ impl crate::ui::components::dialogs::DialogsView {
             .gap(px(2.0))
             .px(px(8.0))
             .py(px(3.0));
-        for (glyph, action) in buttons {
+        for (idx, (glyph, tip, action)) in buttons.into_iter().enumerate() {
+            let v_tip = view.clone();
+            let tip_text = tip.to_string();
             row = row.child(
                 div()
                     .flex()
@@ -798,6 +824,20 @@ impl crate::ui::components::dialogs::DialogsView {
                     .h(px(28.0))
                     .rounded(px(4.0))
                     .cursor_pointer()
+                    .id(("ctxtool", idx))
+                    .on_hover(
+                        move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                            let pos = window.mouse_position();
+                            let text = if *hovering {
+                                Some(tip_text.clone())
+                            } else {
+                                None
+                            };
+                            v_tip.update(cx, |this, _| {
+                                this.menu_tip = text.map(|t| (t, pos));
+                            });
+                        },
+                    )
                     .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
                     .on_mouse_down(MouseButton::Left, action)
                     .child(
@@ -1555,7 +1595,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let mut panel = div()
             .absolute()
             .top(px(-8.0))
-            .left(px(288.0))
+            .left(px(290.0))
             .w(px(220.0))
             .flex_col()
             .bg(rgba(0x1A1A1AF2u32))
@@ -1570,6 +1610,222 @@ impl crate::ui::components::dialogs::DialogsView {
             panel = panel.child(row);
         }
         panel
+    }
+
+
+    /// "Show more options" flyout: the real classic shell items with their
+    /// real extension icons, expanded inline on hover (Files parity).
+    pub(crate) fn classic_submenu(
+        classic: Option<Vec<ClassicMenuEntry>>,
+        loading: bool,
+        open: Vec<usize>,
+        view: Entity<crate::app::AppWindow>,
+        paths: Vec<std::path::PathBuf>,
+        dir: std::path::PathBuf,
+    ) -> Div {
+        let rows: Vec<gpui::Stateful<Div>> = match classic {
+            Some(entries) if !entries.is_empty() => {
+                let mut next_id: usize = 0;
+                Self::classic_rows(&entries, &open, &[], view, paths, dir, &mut next_id)
+            }
+            Some(_) => {
+                vec![Self::classic_note_row("(No extended options)", &mut 0usize)]
+            }
+            None if loading => vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)],
+            None => vec![Self::classic_note_row("(Unavailable)", &mut 0usize)],
+        };
+        let mut panel = div()
+            .absolute()
+            .top(px(-8.0))
+            .left(px(290.0))
+            .w(px(260.0))
+            .flex_col()
+            .bg(rgba(0x1A1A1AF2u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .rounded(px(8.0))
+            .shadow_lg()
+            .py(px(4.0))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+        for row in rows {
+            panel = panel.child(row);
+        }
+        panel
+    }
+
+    /// Non-interactive note row (loading / empty states).
+    fn classic_note_row(label: &str, next_id: &mut usize) -> gpui::Stateful<Div> {
+        let id = *next_id;
+        *next_id += 1;
+        div()
+            .flex()
+            .items_center()
+            .px(px(12.0))
+            .py(px(5.0))
+            .id(("classic", id))
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(rgba(0xFFFFFF60u32))
+                    .child(label.to_string()),
+            )
+    }
+
+    /// Build classic rows recursively. `prefix` is the index path of these
+    /// rows; `open` is the currently expanded path.
+    fn classic_rows(
+        entries: &[ClassicMenuEntry],
+        open: &[usize],
+        prefix: &[usize],
+        view: Entity<crate::app::AppWindow>,
+        paths: Vec<std::path::PathBuf>,
+        dir: std::path::PathBuf,
+        next_id: &mut usize,
+    ) -> Vec<gpui::Stateful<Div>> {
+        let mut rows = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let id = *next_id;
+            *next_id += 1;
+            let mut path = prefix.to_vec();
+            path.push(i);
+            if entry.separator {
+                let sep = div()
+                    .id(("classic", id))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(Self::context_menu_separator());
+                rows.push(sep);
+                continue;
+            }
+            let has_kids = !entry.children.is_empty();
+            let show_kids = has_kids
+                && open.len() > path.len()
+                && open[..path.len()] == path[..];
+            let v_hover = view.clone();
+            let v_click = view.clone();
+            let label = entry.label.clone();
+            let tip = entry.label.clone();
+            let icon_el: Option<Div> = entry.icon.clone().map(|arc| {
+                div()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .overflow_hidden()
+                    .flex_shrink_0()
+                    .child(img(gpui::ImageSource::Render(arc)))
+            });
+            let mut inner = div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .px(px(12.0))
+                .py(px(5.0));
+            if entry.enabled {
+                inner = inner.cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF15u32)));
+            }
+            if let Some(icon) = icon_el {
+                inner = inner.child(icon);
+            } else {
+                inner = inner.child(div().w(px(16.0)).h(px(16.0)).flex_shrink_0());
+            }
+            inner = inner.child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(if entry.enabled {
+                        rgb(UiConstants::TEXT_PRIMARY_RGB)
+                    } else {
+                        rgba(0xFFFFFF60u32)
+                    })
+                    .child(label),
+            );
+            inner = inner.child(div().flex_grow());
+            if has_kids {
+                inner = inner.child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(0xFFFFFF60u32))
+                        .child("\u{E76C}"),
+                );
+            }
+            let mut wrapper = div()
+                .relative()
+                .id(("classic", id));
+            let hover_path = path.clone();
+            wrapper = wrapper
+                .on_hover(
+                    move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                        if *hovering {
+                            let pos = window.mouse_position();
+                            let tip = tip.clone();
+                            let path = hover_path.clone();
+                            v_hover.update(cx, |this, cx| {
+                                this.set_classic_open(path, cx);
+                                this.menu_tip = Some((tip, pos));
+                            });
+                        } else {
+                            let mut parent = hover_path.clone();
+                            parent.pop();
+                            v_hover.update(cx, |this, cx| {
+                                this.set_classic_open(parent, cx);
+                                this.menu_tip = None;
+                            });
+                        }
+                    },
+                )
+                .child(inner);
+            if entry.enabled && !has_kids {
+                let off = entry.offset;
+                let lbl = entry.label.clone();
+                let p = paths.clone();
+                let d = dir.clone();
+                wrapper = wrapper.on_mouse_down(
+                    MouseButton::Left,
+                    move |_, _, cx| {
+                        let p = p.clone();
+                        let d = d.clone();
+                        v_click.update(cx, |this, cx| {
+                            this.invoke_classic(off, lbl.clone(), p, d, cx)
+                        });
+                    },
+                );
+            } else {
+                wrapper = wrapper
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            }
+            if show_kids {
+                let mut nid = *next_id;
+                let kids = Self::classic_rows(
+                    &entry.children,
+                    open,
+                    &path,
+                    view.clone(),
+                    paths.clone(),
+                    dir.clone(),
+                    &mut nid,
+                );
+                *next_id = nid;
+                let mut nested = div()
+                    .absolute()
+                    .top(px(-6.0))
+                    .left(px(258.0))
+                    .w(px(240.0))
+                    .flex_col()
+                    .bg(rgba(0x1A1A1AF2u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::STROKE_RGBA))
+                    .rounded(px(8.0))
+                    .shadow_lg()
+                    .py(px(4.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+                for row in kids {
+                    nested = nested.child(row);
+                }
+                wrapper = wrapper.child(nested);
+            }
+            rows.push(wrapper);
+        }
+        rows
     }
 
     /// Layout › flyout (Details / List / Grid / Columns).

@@ -55,7 +55,9 @@ impl AppWindow {
             state,
             hover_item_index: None,
             hover_tooltip: None,
+            menu_tip: None,
             hover_timer_task: None,
+            menu_task: None,
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
@@ -2564,6 +2566,7 @@ impl AppWindow {
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = None;
+        self.menu_tip = None;
         cx.notify();
     }
 

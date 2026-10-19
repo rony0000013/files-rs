@@ -1765,7 +1765,11 @@ impl AppWindow {
             open_submenu: None,
             selected_paths,
             current_dir,
+            classic: None,
+            classic_loading: false,
+            classic_open: Vec::new(),
         });
+        self.menu_tip = None;
         cx.notify();
     }
 
@@ -1778,6 +1782,11 @@ impl AppWindow {
     ) {
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             open_submenu,
+            selected_paths,
+            current_dir,
+            classic,
+            classic_loading,
+            classic_open,
             ..
         }) = self.state.active_dialog.as_mut()
         {
@@ -1785,7 +1794,90 @@ impl AppWindow {
                 *open_submenu = kind;
                 cx.notify();
             }
+            // Leaving "Show more options" collapses nested classic paths.
+            if kind != Some(crate::ui::components::dialogs::SubmenuKind::ShowMore) {
+                classic_open.clear();
+            }
+            // "Show more options" loads the real classic items on first hover
+            // (Files expands them inline). Runs on a background task; the
+            // dialog re-renders when they arrive.
+            if kind == Some(crate::ui::components::dialogs::SubmenuKind::ShowMore)
+                && classic.is_none()
+                && !*classic_loading
+            {
+                *classic_loading = true;
+                *classic_open = Vec::new();
+                let paths = selected_paths.clone();
+                let dir = current_dir.clone();
+                let mut async_app = cx.to_async();
+                let task = cx.spawn(
+                    move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                    let entries =
+                        crate::platform::windows::classic_menu::enumerate_classic_menu(
+                            &paths, &dir,
+                        );
+                    weak.update(&mut async_app, |this, cx| {
+                        if let Some(
+                            crate::ui::components::dialogs::DialogType::ContextMenu {
+                                classic,
+                                classic_loading,
+                                ..
+                            },
+                        ) = this.state.active_dialog.as_mut()
+                        {
+                            *classic = Some(entries);
+                            *classic_loading = false;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                    }
+                );
+                self.menu_task = Some(task);
+                cx.notify();
+            }
         }
+    }
+
+    /// Set the open path inside nested classic ("Show more options") submenus.
+    pub fn set_classic_open(&mut self, path: Vec<usize>, cx: &mut Context<Self>) {
+        if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+            classic_open,
+            ..
+        }) = self.state.active_dialog.as_mut()
+        {
+            if *classic_open != path {
+                *classic_open = path;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Invoke a classic verb, then close the menu. The invoke runs on a
+    /// background task (fresh STA query + label guard, never a stale offset).
+    pub fn invoke_classic(
+        &mut self,
+        offset: u32,
+        label: String,
+        paths: Vec<std::path::PathBuf>,
+        dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_dialog(cx);
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+            if let Err(e) = crate::platform::windows::classic_menu::invoke_classic_verb(
+                &paths,
+                &dir,
+                offset,
+                &label,
+            ) {
+                tracing::warn!("Classic verb invoke failed: {:#}", e);
+            }
+            let _ = &mut async_app;
+        });
+        self.menu_task = Some(task);
     }
 
     /// Create "New Folder" in the current directory (used by the New › flyout).
@@ -1896,54 +1988,6 @@ impl AppWindow {
             self.close_dialog(cx);
         } else {
             self.close_dialog(cx);
-        }
-    }
-
-    /// Open the native classic shell menu ("Show more options") for the
-    /// current selection (or the folder background when `paths` is empty).
-    /// `client` is the click position in window client pixels; None falls
-    /// back to the cursor position (keyboard invocation).
-    pub fn show_classic_menu_for(
-        &mut self,
-        paths: Vec<std::path::PathBuf>,
-        dir: std::path::PathBuf,
-        client: Option<(f32, f32)>,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_dialog(cx);
-        #[cfg(windows)]
-        {
-            let (sx, sy) = unsafe {
-                use windows::Win32::Foundation::POINT;
-                use windows::Win32::Graphics::Gdi::ClientToScreen;
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    GetCursorPos, GetForegroundWindow,
-                };
-                let hwnd = GetForegroundWindow();
-                match client {
-                    Some((x, y)) => {
-                        let mut pt = POINT {
-                            x: x as i32,
-                            y: y as i32,
-                        };
-                        if ClientToScreen(hwnd, &mut pt).as_bool() {
-                            (pt.x, pt.y)
-                        } else {
-                            (i32::MIN, i32::MIN)
-                        }
-                    }
-                    None => {
-                        let mut pt = POINT { x: 0, y: 0 };
-                        GetCursorPos(&mut pt).ok();
-                        (pt.x, pt.y)
-                    }
-                }
-            };
-            crate::platform::windows::shell_menu_service::show_classic_menu(paths, dir, sx, sy);
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (paths, dir, client);
         }
     }
 

@@ -266,8 +266,14 @@ pub struct AppWindow {
     pub hover_item_index: Option<usize>,
     /// Hover tooltip state for file preview popup
     pub hover_tooltip: Option<HoverTooltipData>,
+    /// Lightweight hover label for context-menu toolbar buttons and classic
+    /// rows: (text, cursor position). Set on row hover, cleared on leave and
+    /// whenever the menu closes.
+    pub menu_tip: Option<(String, Point<Pixels>)>,
     /// Active hover timer task — cancelled on mouse leave or re-hover
     pub hover_timer_task: Option<Task<()>>,
+    /// In-flight context-menu background work (classic items load / invoke).
+    pub menu_task: Option<Task<()>>,
     /// Drag state for sidebar pinned item reordering
     pub sidebar_pinned_drag: Option<SidebarPinnedDragState>,
     /// Whether the zoom slider is currently being dragged.

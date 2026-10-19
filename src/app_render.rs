@@ -406,6 +406,41 @@ impl Render for AppWindow {
             base = base.child(main_content);
         }
 
+        // Lightweight hover label for context-menu toolbar buttons and
+        // classic rows (name + shortcut). Rendered last so it floats above
+        // the open menu; only while a context menu is showing.
+        let menu_open = matches!(
+            state.active_dialog,
+            Some(DialogType::ContextMenu { .. })
+                | Some(DialogType::TabContextMenu { .. })
+                | Some(DialogType::TabActionsDropdown { .. })
+                | Some(DialogType::SidebarContextMenu { .. })
+                | Some(DialogType::ColumnVisibilityMenu { .. })
+        );
+        if menu_open {
+            if let Some((text, pos)) = &self.menu_tip {
+                base = base.child(
+                    div()
+                        .absolute()
+                        .left(pos.x + px(14.0))
+                        .top(pos.y + px(18.0))
+                        .bg(rgba(0x2D2D2DFFu32))
+                        .border(px(1.0))
+                        .border_color(rgba(0x454545FFu32))
+                        .rounded(px(6.0))
+                        .shadow_lg()
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(0xF3F3F3u32))
+                                .child(text.clone()),
+                        ),
+                );
+            }
+        }
+
         // Render sidebar collapsed-mode tooltip at app level (outside overflow-hidden areas)
         if state.sidebar.collapsed {
             if let Some(sid) = state.sidebar.tooltip_section {

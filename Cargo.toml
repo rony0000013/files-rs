@@ -38,6 +38,7 @@ rayon = "1.12"
 memmap2 = "0.9"
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
+smallvec = "1.6"
 uuid = { version = "1.28.0", features = ["v4"] }
 zip = "9.0.3"
 sevenz-rust = "0.6.1"

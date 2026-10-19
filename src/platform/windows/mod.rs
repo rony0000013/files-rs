@@ -16,6 +16,7 @@ pub mod recycle_bin_service;
 pub mod run_as_service;
 pub mod share_service;
 pub mod shell;
+pub mod classic_menu;
 pub mod shell_menu_service;
 pub mod shell_new_service;
 pub mod shell_preview_service;

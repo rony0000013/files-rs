@@ -27,6 +27,7 @@ pub enum SubmenuKind {
     OpenWith,
     Compress,
     SendTo,
+    ShowMore,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,7 +58,12 @@ pub enum DialogType {
         is_dir: bool,
         open_submenu: Option<SubmenuKind>,
         selected_paths: Vec<std::path::PathBuf>,
-        current_dir: std::path::PathBuf
+        current_dir: std::path::PathBuf,
+        /// Inline classic ("Show more options") entries, loaded on first hover.
+        classic: Option<Vec<crate::platform::windows::classic_menu::ClassicMenuEntry>>,
+        classic_loading: bool,
+        /// Open path (indices) inside nested classic submenus.
+        classic_open: Vec<usize>,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -262,6 +268,9 @@ impl DialogsView {
                 open_submenu,
                 selected_paths,
                 current_dir,
+                classic,
+                classic_loading,
+                classic_open,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -272,6 +281,9 @@ impl DialogsView {
                 *open_submenu,
                 selected_paths.clone(),
                 current_dir.clone(),
+                classic.clone(),
+                *classic_loading,
+                classic_open.clone(),
                 view.clone(),
                 cx,
             )
