@@ -66,6 +66,8 @@ pub enum DialogType {
         classic_open: Vec<usize>,
         /// True when flyouts must open to the left (no room on the right).
         flip: bool,
+        /// Expanded style: classic items inlined, no ShowMore row.
+        expanded: bool,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -274,6 +276,7 @@ impl DialogsView {
                 classic_loading,
                 classic_open,
                 flip,
+                expanded,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -288,6 +291,7 @@ impl DialogsView {
                 *classic_loading,
                 classic_open.clone(),
                 *flip,
+                *expanded,
                 view.clone(),
                 cx,
             )

@@ -67,6 +67,10 @@ fn default_font_family() -> String {
     "Segoe UI Variable Text".to_string()
 }
 
+fn default_context_menu_style() -> ContextMenuStyle {
+    ContextMenuStyle::Files
+}
+
 fn default_font_size() -> f64 {
     13.0
 }
@@ -83,6 +87,38 @@ impl Default for AppearanceConfig {
     }
 }
 
+/// Right-click menu presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ContextMenuStyle {
+    /// Files-like: compact rows with hover flyouts ("Show more options" ›).
+    #[default]
+    #[serde(rename = "files")]
+    Files,
+    /// All classic shell items inlined below the app rows (no hover needed).
+    #[serde(rename = "expanded")]
+    Expanded,
+    /// The native Windows classic menu popup (full shell extensions as-is).
+    #[serde(rename = "classic")]
+    WindowsClassic,
+}
+
+impl ContextMenuStyle {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "expanded" => Self::Expanded,
+            "classic" => Self::WindowsClassic,
+            _ => Self::Files,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Expanded => "expanded",
+            Self::WindowsClassic => "classic",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPreferences {
     pub show_hidden_files: bool,
@@ -92,6 +128,9 @@ pub struct UserPreferences {
     pub confirm_delete: bool,
     pub use_trash: bool, // Send deleted files to recycle bin
     pub locale: String,
+    /// Right-click menu presentation ("files" | "expanded" | "classic").
+    #[serde(default = "default_context_menu_style")]
+    pub context_menu_style: ContextMenuStyle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -236,6 +275,7 @@ impl Default for AppConfig {
                 confirm_delete: true,
                 use_trash: true,
                 locale: "en".to_string(),
+                context_menu_style: ContextMenuStyle::Files,
             },
             sidebar: SidebarConfig::default(),
             view: ViewConfig {

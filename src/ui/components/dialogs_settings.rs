@@ -101,6 +101,12 @@ impl crate::ui::components::dialogs::DialogsView {
                         .child(div().text_size(px(13.0)).text_color(rgb(UiConstants::TEXT_PRIMARY_RGB)).child("Restore last session"))
                         .child(div().text_size(px(12.0)).text_color(rgb(UiConstants::TEXT_MUTED_RGB)).child("Coming soon"))
                     )
+                    .child(div().h(px(1.0)).w_full().bg(rgba(UiConstants::DIVIDER_RGBA)).my(px(8.0)))
+                    // Group: Context menu
+                    .child(Self::settings_group_header("Context menu"))
+                    .child(Self::settings_menu_style_row("Files style", "Compact rows with hover flyouts", crate::config::config::ContextMenuStyle::Files, config.preferences.context_menu_style, view.clone()))
+                    .child(Self::settings_menu_style_row("Expanded", "All options inline, no hover needed", crate::config::config::ContextMenuStyle::Expanded, config.preferences.context_menu_style, view.clone()))
+                    .child(Self::settings_menu_style_row("Windows classic", "Native shell menu popup", crate::config::config::ContextMenuStyle::WindowsClassic, config.preferences.context_menu_style, view.clone()))
             }
             SettingsTab::Appearance => {
                 div().flex_col().gap(px(4.0))
@@ -424,6 +430,73 @@ impl crate::ui::components::dialogs::DialogsView {
                             .bg(rgb(0xFFFFFF))
                             .rounded(px(6.0))
                             .ml(if on { px(16.0) } else { px(0.0) }),
+                    ),
+            )
+    }
+
+    /// Radio row for the 3-way context-menu style choice.
+    pub(crate) fn settings_menu_style_row(
+        label: &str,
+        desc: &str,
+        style: crate::config::config::ContextMenuStyle,
+        current: crate::config::config::ContextMenuStyle,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v_set = view.clone();
+        let selected = style == current;
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .py(px(6.0))
+            .px(px(8.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                v_set.update(cx, |this, cx| {
+                    this.set_context_menu_style(style, cx)
+                });
+            })
+            .child(
+                div()
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .rounded(px(7.0))
+                    .flex_shrink_0()
+                    .border(px(1.0))
+                    .border_color(if selected {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    } else {
+                        rgba(UiConstants::TEXT_MUTED_RGBA)
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if selected {
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .rounded(px(4.0))
+                            .bg(rgba(UiConstants::ACCENT_RGBA))
+                    } else {
+                        div()
+                    }),
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                            .child(desc.to_string()),
                     ),
             )
     }

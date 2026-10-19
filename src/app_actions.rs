@@ -1360,6 +1360,19 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Switch the right-click menu presentation (Settings › General).
+    pub fn set_context_menu_style(
+        &mut self,
+        style: crate::config::config::ContextMenuStyle,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, |s, _cx| {
+            s.config.preferences.context_menu_style = style;
+            let _ = s.config.save();
+        });
+    }
+
     pub fn toggle_setting(&mut self, key: &str, cx: &mut Context<Self>) {
         // Handle toolbar button visibility toggles (stored in main_view, not config)
         if key.starts_with("toolbar_") {
@@ -1758,6 +1771,44 @@ impl AppWindow {
             .as_path()
             .to_path_buf();
 
+        let menu_style = self
+            .state
+            .settings
+            .read(cx)
+            .config
+            .preferences
+            .context_menu_style;
+        // "Windows classic" style: skip the GPUI menu entirely and show the
+        // native shell popup (real verbs, real owners, zero porting).
+        #[cfg(windows)]
+        {
+            if menu_style == crate::config::config::ContextMenuStyle::WindowsClassic {
+                let (sx, sy) = {
+                    use windows::Win32::Foundation::POINT;
+                    use windows::Win32::Graphics::Gdi::ClientToScreen;
+                    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                    let hwnd = unsafe { GetForegroundWindow() };
+                    let mut pt = POINT {
+                        x: f32::from(position.x) as i32,
+                        y: f32::from(position.y) as i32,
+                    };
+                    if unsafe { ClientToScreen(hwnd, &mut pt) }.as_bool() {
+                        (pt.x, pt.y)
+                    } else {
+                        (i32::MIN, i32::MIN)
+                    }
+                };
+                crate::platform::windows::shell_menu_service::show_classic_menu(
+                    selected_paths,
+                    current_dir,
+                    sx,
+                    sy,
+                );
+                return;
+            }
+        }
+        let expanded = menu_style == crate::config::config::ContextMenuStyle::Expanded;
+
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
             position,
@@ -1772,7 +1823,25 @@ impl AppWindow {
             classic_loading: false,
             classic_open: Vec::new(),
             flip,
+            expanded,
         });
+        // Expanded style inlines every classic item, so start loading now
+        // instead of waiting for a ShowMore hover that will never come.
+        #[cfg(windows)]
+        {
+            if expanded {
+                if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                    selected_paths,
+                    current_dir,
+                    ..
+                }) = self.state.active_dialog.as_ref()
+                {
+                    let lp = selected_paths.clone();
+                    let ld = current_dir.clone();
+                    self.load_classic_entries(lp, ld, cx);
+                }
+            }
+        }
         self.menu_tip = None;
         cx.notify();
     }
@@ -1786,12 +1855,11 @@ impl AppWindow {
     ) {
         // Any submenu hover (re)entry invalidates a pending grace-close.
         self.submenu_grace_cancel();
+        let mut start_load: Option<(Vec<std::path::PathBuf>, std::path::PathBuf)> = None;
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             open_submenu,
             selected_paths,
             current_dir,
-            classic,
-            classic_loading,
             classic_open,
             ..
         }) = self.state.active_dialog.as_mut()
@@ -1807,42 +1875,69 @@ impl AppWindow {
             // "Show more options" loads the real classic items on first hover
             // (Files expands them inline). Runs on a background task; the
             // dialog re-renders when they arrive.
-            if kind == Some(crate::ui::components::dialogs::SubmenuKind::ShowMore)
-                && classic.is_none()
-                && !*classic_loading
-            {
-                *classic_loading = true;
-                *classic_open = Vec::new();
-                let paths = selected_paths.clone();
-                let dir = current_dir.clone();
-                let mut async_app = cx.to_async();
-                let task = cx.spawn(
-                    move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
-                    let entries =
-                        crate::platform::windows::classic_menu::enumerate_classic_menu(
-                            &paths, &dir,
-                        );
-                    weak.update(&mut async_app, |this, cx| {
-                        if let Some(
-                            crate::ui::components::dialogs::DialogType::ContextMenu {
-                                classic,
-                                classic_loading,
-                                ..
-                            },
-                        ) = this.state.active_dialog.as_mut()
-                        {
-                            *classic = Some(entries);
-                            *classic_loading = false;
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                    }
-                );
-                self.menu_task = Some(task);
-                cx.notify();
+            if kind == Some(crate::ui::components::dialogs::SubmenuKind::ShowMore) {
+                start_load = Some((selected_paths.clone(), current_dir.clone()));
             }
         }
+        if let Some((lp, ld)) = start_load {
+            self.load_classic_entries(lp, ld, cx);
+        }
+    }
+
+    /// Load the real classic shell items on a background task. Used by the
+    /// ShowMore first-hover and by Expanded-style menus at open time.
+    pub fn load_classic_entries(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let should_load = matches!(
+            self.state.active_dialog.as_ref(),
+            Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                classic: None,
+                classic_loading: false,
+                ..
+            })
+        );
+        if !should_load {
+            return;
+        }
+        if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+            classic_loading,
+            classic_open,
+            ..
+        }) = self.state.active_dialog.as_mut()
+        {
+            *classic_loading = true;
+            *classic_open = Vec::new();
+        }
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                let entries =
+                    crate::platform::windows::classic_menu::enumerate_classic_menu(
+                        &paths, &dir,
+                    );
+                weak.update(&mut async_app, |this, cx| {
+                    if let Some(
+                        crate::ui::components::dialogs::DialogType::ContextMenu {
+                            classic,
+                            classic_loading,
+                            ..
+                        },
+                    ) = this.state.active_dialog.as_mut()
+                    {
+                        *classic = Some(entries);
+                        *classic_loading = false;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            },
+        );
+        self.menu_task = Some(task);
+        cx.notify();
     }
 
     /// Set the open path inside nested classic ("Show more options") submenus.

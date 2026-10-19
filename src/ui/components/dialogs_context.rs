@@ -26,6 +26,7 @@ impl crate::ui::components::dialogs::DialogsView {
         classic_loading: bool,
         classic_open: Vec<usize>,
         flip: bool,
+        expanded: bool,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -58,7 +59,9 @@ impl crate::ui::components::dialogs::DialogsView {
         // Running content height + the ShowMore row offset (for flyout
         // geometry: bottom-anchored tall panels + on-screen caps).
         let mut menu_h = 0.0f32;
+        #[allow(unused_mut)]
         let mut showmore_off = 0.0f32;
+        #[allow(unused_variables)]
         let menu_top: f32 = position.y.into();
 
         if has_selection {
@@ -441,6 +444,8 @@ impl crate::ui::components::dialogs::DialogsView {
             #[cfg(target_os = "windows")]
             {
                 showmore_off = menu_h;
+                if !expanded {
+                                    showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -467,6 +472,48 @@ impl crate::ui::components::dialogs::DialogsView {
                     },
                 ));
                 menu_h += 29.0;
+                    menu_h += 29.0;
+                } else {
+                    // Expanded style: every classic item is inlined below the
+                    // app rows - no hover needed. Nested verbs keep flyouts.
+                    menu = menu.child(Self::context_menu_separator());
+                    menu_h += 9.0;
+                    match classic.as_ref() {
+                        Some(entries) if !entries.is_empty() => {
+                            let mut next_id: usize = 0;
+                            let inline = Self::classic_rows(
+                                entries,
+                                &classic_open,
+                                &[],
+                                view.clone(),
+                                sel_paths.clone(),
+                                cur_dir.clone(),
+                                &mut next_id,
+                                flip,
+                                menu_top + showmore_off,
+                            );
+                            for row in inline {
+                                menu = menu.child(row);
+                            }
+                        }
+                        Some(_) => {
+                            let mut nid = 0usize;
+                            menu = menu.child(Self::classic_note_row(
+                                "(No extended options)",
+                                &mut nid,
+                            ));
+                        }
+                        None => {
+                            let mut nid = 0usize;
+                            let txt = if classic_loading {
+                                "Loading…"
+                            } else {
+                                "(Unavailable)"
+                            };
+                            menu = menu.child(Self::classic_note_row(txt, &mut nid));
+                        }
+                    }
+                }
             }
         } else {
             // ═══════════════════════════════════════════════════════════
@@ -602,6 +649,8 @@ impl crate::ui::components::dialogs::DialogsView {
             #[cfg(target_os = "windows")]
             {
                 showmore_off = menu_h;
+                if !expanded {
+                                    showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -628,6 +677,48 @@ impl crate::ui::components::dialogs::DialogsView {
                     },
                 ));
                 menu_h += 29.0;
+                    menu_h += 29.0;
+                } else {
+                    // Expanded style: every classic item is inlined below the
+                    // app rows - no hover needed. Nested verbs keep flyouts.
+                    menu = menu.child(Self::context_menu_separator());
+                    menu_h += 9.0;
+                    match classic.as_ref() {
+                        Some(entries) if !entries.is_empty() => {
+                            let mut next_id: usize = 0;
+                            let inline = Self::classic_rows(
+                                entries,
+                                &classic_open,
+                                &[],
+                                view.clone(),
+                                Vec::new(),
+                                cur_dir.clone(),
+                                &mut next_id,
+                                flip,
+                                menu_top + showmore_off,
+                            );
+                            for row in inline {
+                                menu = menu.child(row);
+                            }
+                        }
+                        Some(_) => {
+                            let mut nid = 0usize;
+                            menu = menu.child(Self::classic_note_row(
+                                "(No extended options)",
+                                &mut nid,
+                            ));
+                        }
+                        None => {
+                            let mut nid = 0usize;
+                            let txt = if classic_loading {
+                                "Loading…"
+                            } else {
+                                "(Unavailable)"
+                            };
+                            menu = menu.child(Self::classic_note_row(txt, &mut nid));
+                        }
+                    }
+                }
             }
         }
         menu.with_animation(
