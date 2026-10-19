@@ -73,3 +73,14 @@
 ### 08:05 — §8 Functional gap: keyboard context menu
 - Synthetic right-click/Apps-key never reached either app (message-level limitation), which exposed a REAL gap: our app had no keyboard path to context menus at all.
 - Added Menu-key (VK_APPS→"menu" in GPUI) + Shift+F10 → `show_context_menu(first_selected, viewport-center)`; threaded `&mut Window` through `handle_key_event` (single caller).
+
+### 19 Oct — Main-view + context-menu parity vs installed Files (CUA captures)
+- Method: PrintWindow black for WinUI → staged windows side-by-side, real `mouse_event` clicks, atomic hide-Hermes + CopyFromScreen captures, `vision_analyze` for enumeration + PIL for ≤4px.
+- Item menu rebuilt to Files order: icon toolbar (Cut/Copy/Paste/Share/Delete/Properties) + Open / Open with › / Copy item path (Ctrl+Shift+C) / Create shortcut / Compress › / Extract Here? / Open in New Tab / New Window / sep / Pins / sep / Rename (F2) / sep / Extras (VS Code, Git Status, Delete Permanently). Removed flat Cut/Copy/Paste/Share/Delete/Properties rows (toolbar covers) and 48px primaries (now 32px rows with hints/chevrons E76C).
+- New `CopyItemPath` action (Ctrl+Shift+C) wired to Ctrl+Shift+C binding + `copy_item_path` handler.
+- Bg menu reordered to Files: View / Sort By / NEW Group by (None/Name/Date modified/Date created/Size/Type→FileType) / Refresh / New Folder / New Text Document / Properties / Terminal / Paste(end).
+- Grid zoom curve 80+140z → 140+120z (cap 260): default 23% now renders 5× ~187px cards like Files large icons (was 8-9 narrow cols with mid-word breaks).
+- Status bar left → Files text: "N items | M selected | size" (singular "1 item selected").
+- FPS badge gated behind FILES_RS_FPS=1 (was a fake "tab" in the tab strip).
+- Deviations kept: no submenu flyouts yet (chevron rows fire the default action — flat sections instead), Rename kept in item menu (no Show-more dialog to host it), Paste kept on bg menu, extras section, Properties on bg menu.
+- Verified on pixels: item menu (toolbar + 12 rows + hints + chevrons), bg menu (View/Sort/Group sections), 5-col grid, "420 items | 1 item selected | 164.9 KB".
