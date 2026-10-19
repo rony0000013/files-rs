@@ -64,6 +64,8 @@ pub enum DialogType {
         classic_loading: bool,
         /// Open path (indices) inside nested classic submenus.
         classic_open: Vec<usize>,
+        /// True when flyouts must open to the left (no room on the right).
+        flip: bool,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -271,6 +273,7 @@ impl DialogsView {
                 classic,
                 classic_loading,
                 classic_open,
+                flip,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -284,6 +287,7 @@ impl DialogsView {
                 classic.clone(),
                 *classic_loading,
                 classic_open.clone(),
+                *flip,
                 view.clone(),
                 cx,
             )

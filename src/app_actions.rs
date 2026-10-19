@@ -1715,6 +1715,9 @@ impl AppWindow {
             y = (f32::from(vp.height) - est_h).max(8.0);
         }
         let position = Point { x: px(x), y: px(y) };
+        // Flyouts open left when there is no room on the right.
+        let vpw: f32 = vp.width.into();
+        let flip = x + 292.0 + 268.0 > vpw;
         // Pre-read selection data to avoid view.read(cx) crash during dialog render
         let selected_indices = &self.state.main_view.selected_indices;
         let has_selection = !selected_indices.is_empty();
@@ -1768,6 +1771,7 @@ impl AppWindow {
             classic: None,
             classic_loading: false,
             classic_open: Vec::new(),
+            flip,
         });
         self.menu_tip = None;
         cx.notify();

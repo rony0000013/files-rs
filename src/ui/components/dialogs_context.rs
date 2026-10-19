@@ -14,7 +14,7 @@ pub(crate) enum MenuTrailing {
 impl crate::ui::components::dialogs::DialogsView {
     pub(crate) fn build_context_menu_dialog(
         item_index: Option<usize>,
-        _position: Point<Pixels>,
+        position: Point<Pixels>,
         has_selection: bool,
         selected_path: Option<crate::core::path_util::FilesPath>,
         selected_count: usize,
@@ -25,6 +25,7 @@ impl crate::ui::components::dialogs::DialogsView {
         classic: Option<Vec<crate::platform::windows::classic_menu::ClassicMenuEntry>>,
         classic_loading: bool,
         classic_open: Vec<usize>,
+        flip: bool,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -54,6 +55,11 @@ impl crate::ui::components::dialogs::DialogsView {
             .shadow_lg()
             .py(px(4.0))
             .w(px(292.0));
+        // Running content height + the ShowMore row offset (for flyout
+        // geometry: bottom-anchored tall panels + on-screen caps).
+        let mut menu_h = 0.0f32;
+        let mut showmore_off = 0.0f32;
+        let menu_top: f32 = position.y.into();
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -149,7 +155,9 @@ impl crate::ui::components::dialogs::DialogsView {
                     ],
                     view.clone(),
                 ));
+                menu_h += 34.0;
                 menu = menu.child(Self::context_menu_separator());
+                menu_h += 9.0;
             }
 
             // Open (single selection only)
@@ -166,6 +174,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         }
                     }
                 }));
+                menu_h += 29.0;
             }
 
             // Open with › (file, single): flyout + default fires Open-As.
@@ -213,7 +222,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Open With",
                     SubmenuKind::OpenWith,
                     ow_open,
-                    Self::submenu_panel(ow_rows, SubmenuKind::OpenWith, v_sub.clone()),
+                    Self::submenu_panel(ow_rows, SubmenuKind::OpenWith, v_sub.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         if let Some(ref p) = path {
@@ -225,6 +234,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         v_fire.update(cx, |this, cx| this.close_dialog(cx));
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Paste shortcut (from clipboard files)
@@ -234,6 +244,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.paste_as_shortcut(cx));
                 }
             }));
+                menu_h += 29.0;
 
             // Copy item path (Ctrl+Shift+C)
             menu = menu.child(Self::context_menu_row("\u{E8C8}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
@@ -245,6 +256,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
+                menu_h += 29.0;
 
             // Create folder with selection
             menu = menu.child(Self::context_menu_row("\u{E8F4}", "Create folder with selection", MenuTrailing::None, {
@@ -253,6 +265,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.create_folder_with_selection(cx));
                 }
             }));
+                menu_h += 29.0;
 
             // Create Shortcut (single selection only)
             if !is_multi {
@@ -287,6 +300,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         }
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Compress › (ZIP creation + conditional Extract Here)
@@ -310,7 +324,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Compress",
                     SubmenuKind::Compress,
                     c_open,
-                    Self::compress_submenu(view.clone(), is_archive, selected_path.clone()),
+                    Self::compress_submenu(view.clone(), flip, is_archive, selected_path.clone()),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -318,6 +332,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Send to › (Windows SendTo folder)
@@ -329,7 +344,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Send to",
                     SubmenuKind::SendTo,
                     s_open,
-                    Self::sendto_submenu(view.clone()),
+                    Self::sendto_submenu(view.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -337,9 +352,11 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             menu = menu.child(Self::context_menu_separator());
+                menu_h += 9.0;
 
             // ── PIN SECTION ──
             menu = menu.child(Self::context_menu_item(
@@ -357,6 +374,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
+                menu_h += 29.0;
             menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -368,8 +386,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 }
             }));
+                menu_h += 29.0;
 
             menu = menu.child(Self::context_menu_separator());
+                menu_h += 9.0;
 
             // ── EXTRAS (app-specific actions) ──
             menu = menu.child(Self::context_menu_item("\u{E8A7}", "Open in VS Code", {
@@ -382,6 +402,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
+                menu_h += 29.0;
             menu = menu.child(Self::context_menu_item("\u{E896}", "Git Status", {
                 let v = v_close.clone();
                 let path = selected_path.clone();
@@ -405,18 +426,21 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 }
             }));
+                menu_h += 29.0;
             menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| this.delete_permanently(cx));
                 }
             }));
+                menu_h += 29.0;
 
             // Show more options › — the real classic shell items (WinRAR,
             // Kaspersky, ...) expand inline on hover (Files parity). Windows
             // only: other platforms have no classic provider yet.
             #[cfg(target_os = "windows")]
             {
+                showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -431,6 +455,9 @@ impl crate::ui::components::dialogs::DialogsView {
                         view.clone(),
                         sel_paths.clone(),
                         cur_dir.clone(),
+                        flip,
+                        menu_top,
+                        showmore_off,
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -439,6 +466,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
         } else {
             // ═══════════════════════════════════════════════════════════
@@ -456,7 +484,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Layout",
                     SubmenuKind::Layout,
                     l_open,
-                    Self::layout_submenu(view.clone()),
+                    Self::layout_submenu(view.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -464,6 +492,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Sort by ›
@@ -475,7 +504,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Sort by",
                     SubmenuKind::SortBy,
                     s_open,
-                    Self::sort_submenu(view.clone()),
+                    Self::sort_submenu(view.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -483,6 +512,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Group by ›
@@ -494,7 +524,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Group by",
                     SubmenuKind::GroupBy,
                     g_open,
-                    Self::group_submenu(view.clone()),
+                    Self::group_submenu(view.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -502,6 +532,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Refresh (Ctrl+R)
@@ -514,8 +545,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
+                menu_h += 29.0;
 
             menu = menu.child(Self::context_menu_separator());
+                menu_h += 9.0;
 
             // New ›
             {
@@ -526,7 +559,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     "New",
                     SubmenuKind::New,
                     n_open,
-                    Self::new_submenu(view.clone()),
+                    Self::new_submenu(view.clone(), flip),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -534,6 +567,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
 
             // Pin to Sidebar (current folder)
@@ -549,6 +583,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
+                menu_h += 29.0;
 
             // Open in Terminal (Ctrl+`)
             menu = menu.child(Self::context_menu_row("\u{E756}", "Open in Terminal", MenuTrailing::Hint("Ctrl+`"), {
@@ -560,11 +595,13 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
+                menu_h += 29.0;
 
             // Show more options › — the real classic shell items expand
             // inline on hover (Files parity). Windows only.
             #[cfg(target_os = "windows")]
             {
+                showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -579,6 +616,9 @@ impl crate::ui::components::dialogs::DialogsView {
                         view.clone(),
                         Vec::new(),
                         cur_dir.clone(),
+                        flip,
+                        menu_top,
+                        showmore_off,
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -587,6 +627,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         });
                     },
                 ));
+                menu_h += 29.0;
             }
         }
         menu.with_animation(
@@ -1609,12 +1650,14 @@ impl crate::ui::components::dialogs::DialogsView {
         rows: Vec<Div>,
         kind: SubmenuKind,
         view: Entity<crate::app::AppWindow>,
+        flip: bool,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
+        let left = if flip { -222.0 } else { 290.0 };
         let mut panel = div()
             .absolute()
             .top(px(-8.0))
-            .left(px(290.0))
+            .left(px(left))
             .w(px(220.0))
             .flex_col()
             .bg(rgba(0x1A1A1AF2u32))
@@ -1659,11 +1702,29 @@ impl crate::ui::components::dialogs::DialogsView {
         view: Entity<crate::app::AppWindow>,
         paths: Vec<std::path::PathBuf>,
         dir: std::path::PathBuf,
+        flip: bool,
+        menu_top: f32,
+        row_off: f32,
     ) -> gpui::Stateful<Div> {
+        // Bottom-anchored: grows UP from the ShowMore row, so a 30-item
+        // flyout can never spill past the window bottom. Capped so it never
+        // passes the window top either; overflow scrolls inside.
+        let row_bottom = menu_top + row_off + 29.0;
+        let mut fly_h = 8.0f32;
+        if let Some(ref entries) = classic {
+            for e in entries.iter() {
+                fly_h += if e.separator { 9.0 } else { 29.0 };
+            }
+        }
+        let max_h = (row_bottom - 24.0).max(87.0);
+        let panel_top = row_bottom - fly_h.min(max_h);
         let rows: Vec<gpui::Stateful<Div>> = match classic {
             Some(entries) if !entries.is_empty() => {
                 let mut next_id: usize = 0;
-                Self::classic_rows(&entries, &open, &[], view.clone(), paths, dir, &mut next_id)
+                Self::classic_rows(
+                    &entries, &open, &[], view.clone(), paths, dir, &mut next_id,
+                    flip, panel_top,
+                )
             }
             Some(_) => {
                 vec![Self::classic_note_row("(No extended options)", &mut 0usize)]
@@ -1671,10 +1732,12 @@ impl crate::ui::components::dialogs::DialogsView {
             None if loading => vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)],
             None => vec![Self::classic_note_row("(Unavailable)", &mut 0usize)],
         };
+        let left = if flip { -262.0 } else { 290.0 };
+        let scroll = fly_h > max_h;
         let mut panel = div()
             .absolute()
-            .top(px(-8.0))
-            .left(px(290.0))
+            .bottom(px(4.0))
+            .left(px(left))
             .w(px(260.0))
             .flex_col()
             .bg(rgba(0x1A1A1AF2u32))
@@ -1682,8 +1745,15 @@ impl crate::ui::components::dialogs::DialogsView {
             .border_color(rgba(UiConstants::STROKE_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
-            .py(px(4.0))
-            .id(("ctx-panel", SubmenuKind::ShowMore as usize))
+            .py(px(4.0));
+        if scroll {
+            panel = panel.max_h(px(max_h));
+        }
+        let mut panel = panel.id(("ctx-panel", SubmenuKind::ShowMore as usize));
+        if scroll {
+            panel = panel.overflow_scroll();
+        }
+        panel = panel
             .on_hover({
                 let v = view.clone();
                 move |hovering: &bool, _, cx| {
@@ -1783,6 +1853,7 @@ impl crate::ui::components::dialogs::DialogsView {
 
     /// Build classic rows recursively. `prefix` is the index path of these
     /// rows; `open` is the currently expanded path.
+    #[allow(clippy::too_many_arguments)]
     fn classic_rows(
         entries: &[ClassicMenuEntry],
         open: &[usize],
@@ -1791,9 +1862,14 @@ impl crate::ui::components::dialogs::DialogsView {
         paths: Vec<std::path::PathBuf>,
         dir: std::path::PathBuf,
         next_id: &mut usize,
+        flip: bool,
+        panel_top: f32,
     ) -> Vec<gpui::Stateful<Div>> {
         let mut rows = Vec::new();
+        let mut acc_h = 0.0f32;
         for (i, entry) in entries.iter().enumerate() {
+            let row_off = acc_h;
+            acc_h += if entry.separator { 9.0 } else { 29.0 };
             let id = *next_id;
             *next_id += 1;
             let mut path = prefix.to_vec();
@@ -1915,6 +1991,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             }
             if show_kids {
+                // Nested panel: same bottom-anchor treatment, positioned
+                // from this row's absolute offset inside the parent panel.
+                let nested_row_bottom = panel_top + row_off + 29.0;
+                let mut nested_h = 8.0f32;
+                for e in entry.children.iter() {
+                    nested_h += if e.separator { 9.0 } else { 29.0 };
+                }
+                let nested_max = (nested_row_bottom - 16.0).max(87.0);
+                let nested_top = nested_row_bottom - nested_h.min(nested_max);
+                let nested_left = if flip { -242.0 } else { 258.0 };
                 let mut nid = *next_id;
                 let kids = Self::classic_rows(
                     &entry.children,
@@ -1924,12 +2010,14 @@ impl crate::ui::components::dialogs::DialogsView {
                     paths.clone(),
                     dir.clone(),
                     &mut nid,
+                    flip,
+                    nested_top,
                 );
                 *next_id = nid;
                 let mut nested = div()
                     .absolute()
-                    .top(px(-6.0))
-                    .left(px(258.0))
+                    .bottom(px(4.0))
+                    .left(px(nested_left))
                     .w(px(240.0))
                     .flex_col()
                     .bg(rgba(0x1A1A1AF2u32))
@@ -1937,8 +2025,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     .border_color(rgba(UiConstants::STROKE_RGBA))
                     .rounded(px(8.0))
                     .shadow_lg()
-                    .py(px(4.0))
-                    .id(("ctx-nested", id))
+                    .py(px(4.0));
+                let nested_scroll = nested_h > nested_max;
+                if nested_scroll {
+                    nested = nested.max_h(px(nested_max));
+                }
+                let mut nested = nested.id(("ctx-nested", id));
+                if nested_scroll {
+                    nested = nested.overflow_scroll();
+                }
+                nested = nested
                     .on_hover({
                         let v = view.clone();
                         let keep = path.clone();
@@ -1964,6 +2060,9 @@ impl crate::ui::components::dialogs::DialogsView {
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+                if nested_h > nested_max {
+                    nested = nested.max_h(px(nested_max)).overflow_scroll();
+                }
                 for row in kids {
                     nested = nested.child(row);
                 }
@@ -1975,7 +2074,8 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     /// Layout › flyout (Details / List / Grid / Columns).
-    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
+    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>,
+        flip: bool) -> gpui::Stateful<Div> {
         let modes = [
             ("\u{E8A1}", "Details", crate::config::config::ViewMode::Details),
             ("\u{E8A1}", "List", crate::config::config::ViewMode::List),
@@ -1996,11 +2096,12 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::Layout, view.clone())
+        Self::submenu_panel(rows, SubmenuKind::Layout, view.clone(), flip)
     }
 
     /// Sort by › flyout.
-    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
+    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>,
+        flip: bool) -> gpui::Stateful<Div> {
         let cols = [
             ("\u{E2C7}", "Name", crate::config::config::SortBy::Name),
             ("\u{E2C7}", "Date modified", crate::config::config::SortBy::DateModified),
@@ -2022,11 +2123,12 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::SortBy, view.clone())
+        Self::submenu_panel(rows, SubmenuKind::SortBy, view.clone(), flip)
     }
 
     /// Group by › flyout.
-    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
+    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>,
+        flip: bool) -> gpui::Stateful<Div> {
         let groups = [
             ("\u{E2C7}", "None", crate::config::config::GroupColumn::None),
             ("\u{E2C7}", "Name", crate::config::config::GroupColumn::Name),
@@ -2051,11 +2153,12 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::GroupBy, view.clone())
+        Self::submenu_panel(rows, SubmenuKind::GroupBy, view.clone(), flip)
     }
 
     /// New › flyout.
-    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
+    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>,
+        flip: bool) -> gpui::Stateful<Div> {
         let v1 = view.clone();
         let v2 = view.clone();
         Self::submenu_panel(
@@ -2069,12 +2172,14 @@ impl crate::ui::components::dialogs::DialogsView {
             ],
             SubmenuKind::New,
             view.clone(),
+            flip,
         )
     }
 
     /// Compress › flyout (ZIP creation + conditional Extract Here).
     pub(crate) fn compress_submenu(
         view: Entity<crate::app::AppWindow>,
+        flip: bool,
         is_archive: bool,
         archive_path: Option<crate::core::path_util::FilesPath>,
     ) -> gpui::Stateful<Div> {
@@ -2138,12 +2243,13 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
         }
-        Self::submenu_panel(rows, SubmenuKind::Compress, view.clone())
+        Self::submenu_panel(rows, SubmenuKind::Compress, view.clone(), flip)
     }
 
     /// Send to › flyout, populated live from the Windows SendTo folder.
     /// Non-Windows builds show a single disabled row (native provider hook).
-    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>) -> gpui::Stateful<Div> {
+    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>,
+        flip: bool) -> gpui::Stateful<Div> {
         let mut rows = Vec::new();
         #[cfg(windows)]
         {
@@ -2181,6 +2287,6 @@ impl crate::ui::components::dialogs::DialogsView {
         if rows.is_empty() {
             rows.push(Self::context_menu_item("\u{E8A5}", "(No targets)", |_, _, _| {}));
         }
-        Self::submenu_panel(rows, SubmenuKind::SendTo, view.clone())
+        Self::submenu_panel(rows, SubmenuKind::SendTo, view.clone(), flip)
     }
 }
