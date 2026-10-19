@@ -38,16 +38,19 @@ impl MainViewState {
     fn grid_layout_params(zoom: f32) -> GridLayoutParams {
         // zoom: 0.0 = compact tiles, 0.5 = medium grid, 1.0 = large cards
         let items_per_row = if zoom < 0.33 {
-            8
+            7
         } else if zoom < 0.66 {
-            6
+            5
         } else {
             4
         };
 
         // Tile size: small (compact) to large (cards)
         // Files Community style: card has landscape thumbnail area + filename below
-        let item_width = 80.0 + zoom * 140.0; // 80 → 220
+        // Files Community sizes: small ~90px, medium ~140px, large ~190px,
+        // extra-large ~230px. Curve anchored so the default zoom lands on
+        // large cards (5 across a ~1000px pane).
+        let item_width = (140.0 + zoom * 120.0).min(260.0); // 140 → 260
         let thumb_height = item_width * 0.76; // landscape thumbnail area
         let item_height = thumb_height + 46.0; // thumbnail + space for 2-line filename
         let row_height = item_height + 8.0;

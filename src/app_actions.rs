@@ -444,6 +444,29 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Copy the first selected item's full path as text (Files parity:
+    /// "Copy item path", Ctrl+Shift+C). Falls back to the current folder.
+    pub fn copy_item_path(&mut self, cx: &mut Context<Self>) {
+        let path_str = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|item| item.path.as_path().to_string_lossy().to_string())
+            .unwrap_or_else(|| {
+                self.state
+                    .main_view
+                    .primary_path
+                    .as_path()
+                    .to_string_lossy()
+                    .to_string()
+            });
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path_str));
+        cx.notify();
+    }
+
     pub fn paste(&mut self, cx: &mut Context<Self>) {
         let target_dir = self.state.main_view.primary_path.clone();
         let target_path = target_dir.as_path().to_path_buf();

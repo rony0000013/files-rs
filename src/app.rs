@@ -3142,6 +3142,9 @@ impl AppWindow {
             crate::core::action_registry::ActionKind::Copy => self.copy_selected(cx),
             crate::core::action_registry::ActionKind::Cut => self.cut_selected(cx),
             crate::core::action_registry::ActionKind::Paste => self.paste(cx),
+            crate::core::action_registry::ActionKind::CopyItemPath => {
+                self.copy_item_path(cx)
+            }
             crate::core::action_registry::ActionKind::Rename => {
                 if let Some(&idx) = self.state.main_view.selected_indices.iter().next() {
                     self.start_rename(idx, cx);

@@ -2,6 +2,14 @@ use crate::ui::components::dialogs::{DialogType, SidebarMenuTarget};
 use crate::ui::constants::UiConstants;
 use gpui::*;
 
+/// Trailing affordance on a context menu row (Files parity: shortcut
+/// hints like Ctrl+Shift+C, submenu chevrons).
+pub(crate) enum MenuTrailing {
+    None,
+    Hint(&'static str),
+    Chevron,
+}
+
 impl crate::ui::components::dialogs::DialogsView {
     pub(crate) fn build_context_menu_dialog(
         item_index: Option<usize>,
@@ -21,6 +29,9 @@ impl crate::ui::components::dialogs::DialogsView {
         let v_paste = view.clone();
         let v_rename = view.clone();
         let v_delete = view.clone();
+        let v_share = view.clone();
+        let v_props = view.clone();
+        let v_copypath = view.clone();
 
         // Context menu container with proper sizing per DESIGN_SPEC.md:
         // - max width 250px
@@ -38,13 +49,82 @@ impl crate::ui::components::dialogs::DialogsView {
         if has_selection {
             // ═══════════════════════════════════════════════════════════
             // FILES COMMUNITY LAYOUT — File/Folder context menu
-            // Primary section (48px): Open actions
-            // Secondary section (32px): Pins → Clipboard → Actions → Properties
             // ═══════════════════════════════════════════════════════════
 
-            // ── PRIMARY ITEMS (48px) ──
+            // ── TOP ICON TOOLBAR (Files parity: no labels) ──
+            {
+                let v = v_cut.clone();
+                let cut_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| this.cut_selected(cx));
+                });
+                let v = v_copy.clone();
+                let copy_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| this.copy_selected(cx));
+                });
+                let v = v_paste.clone();
+                let paste_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| this.paste(cx));
+                });
+                let v = v_share.clone();
+                let path = selected_path.clone();
+                let share_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        if let Some(ref p) = path {
+                            #[cfg(windows)]
+                            {
+                                let share_path = p.clone();
+                                cx.background_executor()
+                                    .spawn(async move {
+                                        let service = crate::platform::windows::share_service::ShareService::new();
+                                        let _ = service.share_file(0, &share_path).await;
+                                    })
+                                    .detach();
+                            }
+                        }
+                        cx.notify();
+                    });
+                });
+                let v = v_delete.clone();
+                let delete_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    v.update(cx, |this, cx| this.delete_selected(cx));
+                });
+                let v = v_props.clone();
+                let path = selected_path.clone();
+                let props_btn: Box<
+                    dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+                > = Box::new(move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        let _ = std::process::Command::new("rundll32")
+                            .args(["shell32.dll,PropertiesDialogW", &path_str])
+                            .spawn();
+                    }
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                });
+                menu = menu.child(Self::context_menu_toolbar(vec![
+                    ("\u{E8C6}", cut_btn),
+                    ("\u{E8C8}", copy_btn),
+                    ("\u{E77F}", paste_btn),
+                    ("\u{E72D}", share_btn),
+                    ("\u{E74D}", delete_btn),
+                    ("\u{E946}", props_btn),
+                ]));
+                menu = menu.child(Self::context_menu_separator());
+            }
+
+
             // Open
-            menu = menu.child(Self::context_menu_item_48px("\u{E8DA}", "Open", {
+            menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open", MenuTrailing::None, {
                 let path = selected_path.clone();
                 move |_, _, cx| {
                     if let Some(ref p) = path {
@@ -58,7 +138,7 @@ impl crate::ui::components::dialogs::DialogsView {
             }));
 
             // Open With - opens the Windows "Open With" dialog
-            menu = menu.child(Self::context_menu_item_48px("\u{E8DA}", "Open With", {
+            menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open With", MenuTrailing::Chevron, {
                 let v = v_close.clone();
                 let path = selected_path.clone();
                 move |_, _, cx| {
@@ -72,252 +152,22 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }));
 
-            // Open in New Tab
-            menu = menu.child(Self::context_menu_item_48px(
-                "\u{E8A7}",
-                "Open in New Tab",
-                {
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path = p.clone();
-                            v_open_new_tab.update(cx, |this, cx| {
-                                this.open_in_new_tab(path, cx);
-                                this.close_dialog(cx);
-                            });
-                        }
-                    }
-                },
-            ));
-
-            // Open in New Window
-            menu = menu.child(Self::context_menu_item_48px(
-                "\u{E8A7}",
-                "Open in New Window",
-                {
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path = p.clone();
-                            v_open_new_window.update(cx, |this, cx| {
-                                this.open_in_new_window(path, cx);
-                                this.close_dialog(cx);
-                            });
-                        }
-                    }
-                },
-            ));
-
-            // Open in Terminal (48px primary in Files Community)
-            menu = menu.child(Self::context_menu_item_48px(
-                "\u{E756}",
-                "Open in Terminal",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            // Open Windows Terminal as independent process
-                            #[cfg(windows)]
-                            {
-                                use std::ffi::OsStr;
-                                use std::os::windows::ffi::OsStrExt;
-                                use windows::Win32::UI::Shell::ShellExecuteW;
-                                use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-
-                                let path_str = format!("-d \"{}\"", p.to_string_lossy());
-                                let params_wide: Vec<u16> = OsStr::new(&path_str)
-                                    .encode_wide()
-                                    .chain(std::iter::once(0))
-                                    .collect();
-                                let exe_wide: Vec<u16> = OsStr::new("wt.exe")
-                                    .encode_wide()
-                                    .chain(std::iter::once(0))
-                                    .collect();
-
-                                unsafe {
-                                    ShellExecuteW(
-                                        None,
-                                        windows::core::PCWSTR::null(),
-                                        windows::core::PCWSTR(exe_wide.as_ptr()),
-                                        windows::core::PCWSTR(params_wide.as_ptr()),
-                                        None,
-                                        SW_SHOW,
-                                    );
-                                }
-                            }
-                            #[cfg(not(windows))]
-                            {
-                                let _ = std::process::Command::new("x-terminal-emulator")
-                                    .arg(&p.to_string_lossy().to_string())
-                                    .spawn();
-                            }
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
-                    }
-                },
-            ));
-
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── PIN SECTION (32px) ──
-            // Pin to Quick Access
-            menu = menu.child(Self::context_menu_item(
-                "\u{E718}",
-                "Pin to Quick Access",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            tracing::info!("Pin to Quick Access: {}", path_str);
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
-                    }
-                },
-            ));
-            // Pin to Start
-            menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
+            // Copy item path (Files parity: Ctrl+Shift+C)
+            menu = menu.child(Self::context_menu_row("\u{E8C8}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
+                let v = v_copypath.clone();
                 move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        tracing::info!("Pin to Start: {}", path_str);
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
-
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── CLIPBOARD SECTION (32px) ──
-            // Cut
-            menu = menu.child(Self::context_menu_item("\u{E8C6}", "Cut", {
-                let v = v_cut.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.cut_selected(cx));
-                }
-            }));
-
-            // Copy
-            menu = menu.child(Self::context_menu_item("\u{E8C8}", "Copy", {
-                let v = v_copy.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.copy_selected(cx));
-                }
-            }));
-
-            // Copy as Path - copies the full path to the system clipboard
-            menu = menu.child(Self::context_menu_item("\u{E8C8}", "Copy as Path", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        cx.write_to_clipboard(ClipboardItem::new_string(path_str));
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
-
-            // Paste
-            menu = menu.child(Self::context_menu_item("\u{E77F}", "Paste", {
-                let v = v_paste.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.paste(cx));
-                }
-            }));
-
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── ACTIONS SECTION (32px) ──
-            // Rename
-            menu = menu.child(Self::context_menu_item("\u{E8AC}", "Rename", {
-                let v = v_rename.clone();
-                let idx = item_index;
-                move |_, _, cx| {
-                    if let Some(i) = idx {
-                        v.update(cx, |this, cx| this.start_rename(i, cx));
-                    }
-                }
-            }));
-
-            // Share - invokes the Windows Share dialog
-            menu = menu.child(Self::context_menu_item(
-                "\u{E72D}",
-                "Share",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
-                    move |_, _, cx| {
-                        v.update(cx, |this, cx| {
-                            if let Some(ref p) = path {
-                                #[cfg(windows)]
-                                {
-                                    let share_path = p.clone();
-                                    cx.background_executor().spawn(async move {
-                                        let service = crate::platform::windows::share_service::ShareService::new();
-                                        let _ = service.share_file(0, &share_path).await;
-                                    }).detach();
-                                }
-                                #[cfg(not(windows))]
-                                {
-                                    tracing::info!("Share not implemented on this platform");
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }
-                },
-            ));
-
-            // Delete
-            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete", {
-                let v = v_delete.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.delete_selected(cx));
-                }
-            }));
-
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── PROPERTIES (32px) ──
-            menu = menu.child(Self::context_menu_item("\u{E946}", "Properties", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        let _ = std::process::Command::new("rundll32")
-                            .args(["shell32.dll,PropertiesDialogW", &path_str])
-                            .spawn();
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
-
-            // ── SEPARATOR ──
-            menu = menu.child(Self::context_menu_separator());
-
-            // ── BONUS SECTION (Files Community extras) ──
-            // Delete Permanently
-            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.delete_permanently(cx));
+                    v.update(cx, |this, cx| {
+                        this.copy_item_path(cx);
+                        this.close_dialog(cx);
+                    });
                 }
             }));
 
             // Create Shortcut
-            menu = menu.child(Self::context_menu_item(
+            menu = menu.child(Self::context_menu_row(
                 "\u{E71B}",
                 "Create Shortcut",
+                MenuTrailing::None,
                 {
                     let v = v_close.clone();
                     let path = selected_path.clone();
@@ -346,10 +196,10 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
 
-            // Compress
-            menu = menu.child(Self::context_menu_item(
+            menu = menu.child(Self::context_menu_row(
                 "\u{E8B7}",
                 "Compress",
+                MenuTrailing::Chevron,
                 {
                     let v = v_close.clone();
                     move |_, _, cx| {
@@ -422,6 +272,94 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
 
+            // Open in New Tab
+            menu = menu.child(Self::context_menu_row(
+                "\u{E8A7}",
+                "Open in New Tab",
+                MenuTrailing::None,
+                {
+                    let path = selected_path.clone();
+                    move |_, _, cx| {
+                        if let Some(ref p) = path {
+                            let path = p.clone();
+                            v_open_new_tab.update(cx, |this, cx| {
+                                this.open_in_new_tab(path, cx);
+                                this.close_dialog(cx);
+                            });
+                        }
+                    }
+                },
+            ));
+
+            // Open in New Window
+            menu = menu.child(Self::context_menu_row(
+                "\u{E8A7}",
+                "Open in New Window",
+                MenuTrailing::None,
+                {
+                    let path = selected_path.clone();
+                    move |_, _, cx| {
+                        if let Some(ref p) = path {
+                            let path = p.clone();
+                            v_open_new_window.update(cx, |this, cx| {
+                                this.open_in_new_window(path, cx);
+                                this.close_dialog(cx);
+                            });
+                        }
+                    }
+                },
+            ));
+
+            menu = menu.child(Self::context_menu_separator());
+
+            // ── PIN SECTION (32px) ──
+            // Pin to Quick Access
+            menu = menu.child(Self::context_menu_item(
+                "\u{E718}",
+                "Pin to Quick Access",
+                {
+                    let v = v_close.clone();
+                    let path = selected_path.clone();
+                    move |_, _, cx| {
+                        if let Some(ref p) = path {
+                            let path_str = p.to_string_lossy().to_string();
+                            tracing::info!("Pin to Quick Access: {}", path_str);
+                        }
+                        v.update(cx, |this, cx| this.close_dialog(cx));
+                    }
+                },
+            ));
+            // Pin to Start
+            menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
+                let v = v_close.clone();
+                let path = selected_path.clone();
+                move |_, _, cx| {
+                    if let Some(ref p) = path {
+                        let path_str = p.to_string_lossy().to_string();
+                        tracing::info!("Pin to Start: {}", path_str);
+                    }
+                    v.update(cx, |this, cx| this.close_dialog(cx));
+                }
+            }));
+
+            // ── SEPARATOR ──
+            menu = menu.child(Self::context_menu_separator());
+
+            // ── ACTIONS SECTION (32px) ──
+            // Rename
+            menu = menu.child(Self::context_menu_row("\u{E8AC}", "Rename", MenuTrailing::Hint("F2"), {
+                let v = v_rename.clone();
+                let idx = item_index;
+                move |_, _, cx| {
+                    if let Some(i) = idx {
+                        v.update(cx, |this, cx| this.start_rename(i, cx));
+                    }
+                }
+            }));
+
+            menu = menu.child(Self::context_menu_separator());
+
+            // ── EXTRAS (app-specific actions) ──
             // Open in VS Code (bonus)
             menu = menu.child(Self::context_menu_item("\u{E8A7}", "Open in VS Code", {
                 let v = v_close.clone();
@@ -458,24 +396,75 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 }
             }));
+
+            // Delete Permanently
+            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.delete_permanently(cx));
+                }
+            }));
         } else {
             // ═══════════════════════════════════════════════════════════
             // FILES COMMUNITY LAYOUT — Empty space/background context menu
             // ═══════════════════════════════════════════════════════════
 
-            // Refresh - refreshes the current view
-            menu = menu.child(Self::context_menu_item("\u{E72C}", "Refresh", {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.refresh(cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }));
-
-            // ── SEPARATOR ──
+            // ── VIEW SECTION ──
             menu = menu.child(Self::context_menu_separator());
+            menu = menu.child(Self::context_menu_section_header("View"));
+
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E8A1}",
+                    "Details",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.set_view_mode(crate::config::config::ViewMode::Details, cx);
+                            this.close_dialog(cx);
+                        });
+                    },
+                ));
+            }
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E8A1}",
+                    "List",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.set_view_mode(crate::config::config::ViewMode::List, cx);
+                            this.close_dialog(cx);
+                        });
+                    },
+                ));
+            }
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E8A1}",
+                    "Grid",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.set_view_mode(crate::config::config::ViewMode::Grid, cx);
+                            this.close_dialog(cx);
+                        });
+                    },
+                ));
+            }
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E8A1}",
+                    "Columns",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.set_view_mode(crate::config::config::ViewMode::Columns, cx);
+                            this.close_dialog(cx);
+                        });
+                    },
+                ));
+            }
 
             // ── SORT BY SECTION ──
             menu = menu.child(Self::context_menu_section_header("Sort By"));
@@ -547,19 +536,19 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
 
-            // ── VIEW SECTION ──
+            // ── GROUP BY SECTION ──
             menu = menu.child(Self::context_menu_separator());
-            menu = menu.child(Self::context_menu_section_header("View"));
-
+            menu = menu.child(Self::context_menu_section_header("Group by"));
             {
                 let v = v_close.clone();
                 menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "Details",
+                    "\u{E2C7}",
+                    "None",
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Details, cx);
-                            this.close_dialog(cx);
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::None;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
                         });
                     },
                 ));
@@ -567,12 +556,13 @@ impl crate::ui::components::dialogs::DialogsView {
             {
                 let v = v_close.clone();
                 menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "List",
+                    "\u{E2C7}",
+                    "Name",
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::List, cx);
-                            this.close_dialog(cx);
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::Name;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
                         });
                     },
                 ));
@@ -580,12 +570,13 @@ impl crate::ui::components::dialogs::DialogsView {
             {
                 let v = v_close.clone();
                 menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "Grid",
+                    "\u{E2C7}",
+                    "Date modified",
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Grid, cx);
-                            this.close_dialog(cx);
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::DateModified;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
                         });
                     },
                 ));
@@ -593,33 +584,62 @@ impl crate::ui::components::dialogs::DialogsView {
             {
                 let v = v_close.clone();
                 menu = menu.child(Self::context_menu_item(
-                    "\u{E8A1}",
-                    "Columns",
+                    "\u{E2C7}",
+                    "Date created",
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.set_view_mode(crate::config::config::ViewMode::Columns, cx);
-                            this.close_dialog(cx);
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::DateCreated;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
                         });
                     },
                 ));
             }
-            // ── SEPARATOR ──
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E2C7}",
+                    "Size",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::Size;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
+            {
+                let v = v_close.clone();
+                menu = menu.child(Self::context_menu_item(
+                    "\u{E2C7}",
+                    "Type",
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.state.main_view.group_by = crate::config::config::GroupColumn::FileType;
+                            this.state.main_view.collapsed_groups.clear();
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
             menu = menu.child(Self::context_menu_separator());
-
-            // ── PASTE ──
-            menu = menu.child(Self::context_menu_item("\u{E77F}", "Paste", {
-                let v = v_paste.clone();
+            // Refresh - refreshes the current view
+            menu = menu.child(Self::context_menu_item("\u{E72C}", "Refresh", {
+                let v = v_close.clone();
                 move |_, _, cx| {
-                    v.update(cx, |this, cx| this.paste(cx));
+                    v.update(cx, |this, cx| {
+                        this.refresh(cx);
+                        this.close_dialog(cx);
+                    });
                 }
             }));
 
             // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
-
             // ── NEW SECTION (48px primary) ──
             // New Folder
-            menu = menu.child(Self::context_menu_item_48px("\u{E8F4}", "New Folder", {
+            menu = menu.child(Self::context_menu_row("\u{E8F4}", "New Folder", MenuTrailing::None, {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -650,9 +670,10 @@ impl crate::ui::components::dialogs::DialogsView {
             }));
 
             // New File - creates a new empty text file at the current path
-            menu = menu.child(Self::context_menu_item_48px(
+            menu = menu.child(Self::context_menu_row(
                 "\u{E7C3}",
                 "New Text Document",
+                MenuTrailing::None,
                 {
                     let v = v_close.clone();
                     move |_, _, cx| {
@@ -684,8 +705,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ));
-
-            // ── SEPARATOR ──
             menu = menu.child(Self::context_menu_separator());
 
             // Properties (for current folder)
@@ -757,10 +776,18 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 }
             }));
-        }
         // Fluent MenuPopupThemeTransition: quick opacity entrance on the
         // finished menu (AnimationElement wraps the whole tree; it cannot
         // be chained mid-build).
+            menu = menu.child(Self::context_menu_separator());
+            // ── PASTE ──
+            menu = menu.child(Self::context_menu_item("\u{E77F}", "Paste", {
+                let v = v_paste.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| this.paste(cx));
+                }
+            }));
+        }
         menu.with_animation(
             "ctx-menu-entrance",
             Animation::new(std::time::Duration::from_millis(120)),
@@ -916,6 +943,92 @@ impl crate::ui::components::dialogs::DialogsView {
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.to_string()),
             )
+    }
+
+    /// Standard 32px context menu row with optional trailing hint/chevron.
+    pub(crate) fn context_menu_row(
+        glyph: &str,
+        label: &str,
+        trailing: MenuTrailing,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let trailing_el: Option<Div> = match trailing {
+            MenuTrailing::None => None,
+            MenuTrailing::Hint(hint) => Some(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgba(0xFFFFFF60u32))
+                    .child(hint.to_string()),
+            ),
+            MenuTrailing::Chevron => Some(
+                div()
+                    .text_size(px(12.0))
+                    .font_family(UiConstants::FONT_MDL2)
+                    .text_color(rgba(0xFFFFFF60u32))
+                    .child("\u{E76C}"),
+            ),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
+            .on_mouse_down(MouseButton::Left, on_click)
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(glyph.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .child(label.to_string()),
+            )
+            .child(div().flex_grow())
+            .children(trailing_el)
+    }
+
+    /// Icon-only toolbar row at the top of the item menu (Files parity:
+    /// Cut / Copy / Paste / Share / Delete / Properties, no labels).
+    pub(crate) fn context_menu_toolbar(
+        buttons: Vec<(
+            &'static str,
+            Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>,
+        )>,
+    ) -> Div {
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(8.0))
+            .py(px(6.0));
+        for (glyph, action) in buttons {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(36.0))
+                    .h(px(32.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
+                    .on_mouse_down(MouseButton::Left, action)
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .font_family(UiConstants::FONT_MDL2)
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child(glyph.to_string()),
+                    ),
+            );
+        }
+        row
     }
 
     /// Separator line for context menu sections

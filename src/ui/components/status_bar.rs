@@ -84,6 +84,20 @@ impl StatusBarView {
         let mode_icon = zoom_mode_icon(view_mode);
         let zoom_pct = (_app.main_view.zoom_level * 100.0) as u32;
         let v = view.clone();
+        // Files-style status text: 'N items | M selected | size'
+        let total_items = state.folder_count + state.file_count;
+        let mut status_text = format!("{} items", total_items);
+        if state.selected_count > 0 {
+            let noun = if state.selected_count == 1 {
+                "item selected"
+            } else {
+                "items selected"
+            };
+            status_text.push_str(&format!(" | {} {}", state.selected_count, noun));
+            if state.selected_size_bytes > 0 {
+                status_text.push_str(&format!(" | {}", format_size(state.selected_size_bytes)));
+            }
+        }
 
         div()
             .id("status-bar")
@@ -97,82 +111,16 @@ impl StatusBarView {
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .child(
-                // LEFT: folder count + file count + selection info
+                // LEFT: Files-style status text ("N items | M selected | size")
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(16.0))
-                    // Folder count
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E8B7}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(state.folder_count.to_string()),
-                            ),
-                    )
-                    // File count
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E8A5}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(state.file_count.to_string()),
-                            ),
-                    )
-                    .children(if state.selected_count > 0 {
-                        let sel_label = if state.selected_size_bytes > 0 {
-                            format!(
-                                "{} selected ({})",
-                                state.selected_count,
-                                format_size(state.selected_size_bytes)
-                            )
-                        } else {
-                            format!("{} selected", state.selected_count)
-                        };
-                        Some(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .w(px(1.0))
-                                        .h(px(14.0))
-                                        .bg(rgba(UiConstants::DIVIDER_RGBA)),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                        .child(sel_label),
-                                ),
-                        )
-                    } else {
-                        None
-                    }),
+                            .text_size(px(12.0))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child(status_text),
+                    ),
             )
             .child(
                 // RIGHT: git branch badge + view lock + zoom mode button + zoom percentage

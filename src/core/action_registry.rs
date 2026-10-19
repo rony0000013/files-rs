@@ -98,6 +98,8 @@ pub enum ActionKind {
     Copy,
     Cut,
     Paste,
+    /// Copy the selected item's full path as text (Files parity: Ctrl+Shift+C)
+    CopyItemPath,
     Rename,
     Delete,
     PermanentDelete,
@@ -148,6 +150,7 @@ impl ActionKind {
             Self::Copy => "Copy",
             Self::Cut => "Cut",
             Self::Paste => "Paste",
+            Self::CopyItemPath => "Copy Item Path",
             Self::Rename => "Rename",
             Self::Delete => "Move to Trash",
             Self::PermanentDelete => "Permanent Delete",
@@ -194,6 +197,7 @@ impl ActionKind {
             Copy,
             Cut,
             Paste,
+            CopyItemPath,
             Rename,
             Delete,
             PermanentDelete,
@@ -372,6 +376,10 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
     m.insert(ActionKind::Copy, KeyCombination::new("c").with_ctrl());
     m.insert(ActionKind::Cut, KeyCombination::new("x").with_ctrl());
     m.insert(ActionKind::Paste, KeyCombination::new("v").with_ctrl());
+    m.insert(
+        ActionKind::CopyItemPath,
+        KeyCombination::new("c").with_ctrl_shift(),
+    );
     m.insert(ActionKind::Rename, KeyCombination::new("F2"));
     m.insert(ActionKind::Delete, KeyCombination::new("Delete"));
     m.insert(
