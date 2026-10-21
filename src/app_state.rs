@@ -319,6 +319,10 @@ pub struct AppWindow {
     /// can keep showing a mid-drag frame (narrow content, missing caption
     /// buttons) until an unrelated event repaints.
     pub bounds_subscription: Option<Subscription>,
+    /// Settle-guard task: re-armed on every bounds change, fires ~500ms
+    /// after the LAST one (dropping it cancels the timer) to re-render +
+    /// force a real OS repaint with the final geometry.
+    pub settle_task: Option<Task<()>>,
 }
 #[cfg(test)]
 mod tests {

@@ -77,6 +77,7 @@ impl AppWindow {
             file_event_rx_secondary: None,
             focus_out_subscription: None,
             bounds_subscription: None,
+            settle_task: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
@@ -217,14 +218,17 @@ impl AppWindow {
         // requires an active render and panics outside one.)
         // Settle guard: bounds changes that land mid-draw can be swallowed
         // (GPUI drops the invalidation while drawing), losing the final
-        // frame. Re-assert 350ms after the last change so it still lands.
+        // frame. Re-arm a single 500ms timer on every change — only the
+        // timer for the LAST change fires, re-rendering + forcing a real OS
+        // repaint so the final geometry always lands.
         {
-            let sub = cx.observe_window_bounds(_window, move |_this, _win, cx| {
+            let sub = cx.observe_window_bounds(_window, move |this, _win, cx| {
                 cx.notify();
                 cx.spawn(async move |_, _| {}).detach();
-                cx.spawn(async move |this, cx| {
+                this.settle_task.take();
+                let task = cx.spawn(async move |this, cx| {
                     cx.background_executor()
-                        .timer(std::time::Duration::from_millis(350))
+                        .timer(std::time::Duration::from_millis(500))
                         .await;
                     let updated = this
                         .update(cx, |_, cx| {
@@ -239,8 +243,8 @@ impl AppWindow {
                     // Belt and braces: a real OS repaint heals a stuck
                     // mid-drag frame even if GPUI's pump already drained.
                     crate::wallpaper_mica::force_repaint();
-                })
-                .detach();
+                });
+                this.settle_task = Some(task);
             });
             window_view.bounds_subscription = Some(sub);
         }

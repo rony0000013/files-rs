@@ -40,6 +40,11 @@ impl Logger {
         // 6. Combine layers and set as global default
         registry.with(console_layer).with(file_layer).init();
 
+        // 7. Bridge the `log` facade (used all over GPUI, incl. the
+        // DirectX present path) into tracing, otherwise those errors
+        // vanish silently and present failures are undebuggable.
+        let _ = tracing_log::LogTracer::init();
+
         info!("Logging initialized. Logs are being written to the 'logs' directory.");
 
         Self { _guard: guard }
