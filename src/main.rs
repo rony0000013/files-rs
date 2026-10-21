@@ -104,6 +104,17 @@ fn main() {
                 // a background thread regenerates it if the wallpaper changed.
                 files_rs::wallpaper_mica::prime();
                 std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
+                // Live crop tracker: the backdrop follows the window across
+                // the wallpaper (move/resize/wallpaper change → fresh crop).
+                {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(h) = window.window_handle() {
+                        if let RawWindowHandle::Win32(w) = h.as_raw() {
+                            let hwnd = w.hwnd.get() as isize;
+                            std::thread::spawn(move || files_rs::wallpaper_mica::track_window(hwnd));
+                        }
+                    }
+                }
             }
             let rx = progress.subscribe();
             cx.new(|cx| AppWindow::new(state, rx, window, cx))
