@@ -226,10 +226,16 @@ impl AppWindow {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(350))
                         .await;
-                    this.update(cx, |_, cx| {
-                        cx.notify();
-                    })
-                    .ok();
+                    let updated = this
+                        .update(cx, |_, cx| {
+                            cx.notify();
+                        })
+                        .is_ok();
+                    tracing::warn!(
+                        "settle-guard fired updated={} hwnd_set={}",
+                        updated,
+                        crate::wallpaper_mica::main_hwnd_set()
+                    );
                     // Belt and braces: a real OS repaint heals a stuck
                     // mid-drag frame even if GPUI's pump already drained.
                     crate::wallpaper_mica::force_repaint();

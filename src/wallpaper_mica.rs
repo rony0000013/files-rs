@@ -56,6 +56,11 @@ pub fn set_main_hwnd(h: isize) {
     let _ = MAIN_HWND.set(h);
 }
 
+/// Whether the main HWND was captured (guard against unset-handle no-ops).
+pub fn main_hwnd_set() -> bool {
+    MAIN_HWND.get().is_some()
+}
+
 /// Force the OS to repaint the window, bypassing GPUI's dirty tracking.
 /// Used after geometry settles: if a mid-drag frame is stuck on screen,
 /// a real WM_PAINT heals what notify/pump-wake could not.
