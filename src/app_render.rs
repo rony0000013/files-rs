@@ -388,6 +388,22 @@ impl Render for AppWindow {
                                                                 settings_data,
                                                                 content_w,
                                                             );
+                                                            // TEMP-DIAG: proves the render completed past MainView.
+                                                            {
+                                                                static LAST_D: std::sync::atomic::AtomicU32 =
+                                                                    std::sync::atomic::AtomicU32::new(0);
+                                                                let key = content_w as u32;
+                                                                if LAST_D.swap(
+                                                                    key,
+                                                                    std::sync::atomic::Ordering::Relaxed,
+                                                                ) != key
+                                                                {
+                                                                    tracing::warn!(
+                                                                        "layout-done content={:.0}",
+                                                                        content_w
+                                                                    );
+                                                                }
+                                                            }
                                                             // NOTE: bounded GPU image-cache wrap
                                                             // (gpui::image_cache) reverted 2026-10-15:
                                                             // it blanked the whole viewport (no files

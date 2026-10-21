@@ -809,6 +809,24 @@ impl MainView {
                                     pane_w,
                                     state.zoom_level,
                                 );
+                            {
+                                static LAST_C: std::sync::atomic::AtomicU32 =
+                                    std::sync::atomic::AtomicU32::new(0);
+                                let key = (pane_w as u32)
+                                    .wrapping_mul(100003)
+                                    .wrapping_add(cols as u32);
+                                if LAST_C.swap(
+                                    key,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                ) != key
+                                {
+                                    tracing::warn!(
+                                        "layout-grid pane_w={:.0} cols={}",
+                                        pane_w,
+                                        cols
+                                    );
+                                }
+                            }
                             state
                                 .render_grid_view(file_items, view.clone(), cols, pane_w)
                                 .into_any_element()
