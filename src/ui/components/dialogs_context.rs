@@ -58,8 +58,11 @@ impl crate::ui::components::dialogs::DialogsView {
             .py(px(4.0))
             .w(px(292.0));
         // Running content height + the ShowMore row offset (for flyout
-        // geometry: bottom-anchored tall panels + on-screen caps).
-        let mut menu_h = 0.0f32;
+        // geometry: bottom-anchored tall panels + on-screen caps). Starts
+        // with chrome: py(4) top + toolbar(~34 incl. separator) on item
+        // menus, py(4) top on background menus — so the viewport cap below
+        // compares against the true height, not just the rows.
+        let mut menu_h = if has_selection { 47.0 } else { 4.0 }; // +4 bottom py at cap time
         #[allow(unused_mut)]
         let mut showmore_off = 0.0f32;
         #[allow(unused_variables)]
