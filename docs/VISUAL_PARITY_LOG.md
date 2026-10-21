@@ -142,7 +142,19 @@
   toolbar): menu w 250->292 + 4px vertical padding, rows py 8->5 (~28px),
   glyphs 14->16, toolbar buttons 36x32->34x28 (7 buttons fit without spill),
   submenu anchor follows (left 290), viewport clamp 284->300.
-### 19 Oct (night) — toolbar close, StatusCenter bell + live transfers
+### 21 Oct (early) — menu travel + icons, verified on pixels
+- Hover-intent switching: brushing a sibling row while a flyout is open waits
+  ~200ms before switching (was instant takeover, which killed the panel on
+  diagonal travel). First open stays instant; entering the open panel cancels.
+  Same for nested classic paths (descend/ascend instant, sibling jumps wait).
+  Grace-close 350 → 500ms; stale timers die on menu open/close.
+- Pixel proof (PrintWindow + crop): item menu exactly 292px, flyout 260px
+  abutting with 2px overlap, 25/25 classic rows rendered with REAL shell
+  icons (Terminal, Zed, PowerRename, TeraCopy, TreeSize, VLC, WezTerm,
+  File Pilot, ShareX, Warp…), nested `>` chevrons present, no slab/strip/crop.
+- "Black section" on current build = ragged right-edge gaps on short rows
+  (e.g. "Open" in a 292px menu sized for "Create folder with selection").
+  Files' fixed-width menus have the identical gaps; not a rendering defect.
 - Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
   they fire. Rename was never broken — it was buried under the open menu.
 - Notification center: bell button top-right after the omnibar with an
