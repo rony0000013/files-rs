@@ -60,6 +60,8 @@ impl AppWindow {
             menu_task: None,
             submenu_grace: None,
             submenu_grace_gen: 0,
+            submenu_intent: None,
+            submenu_intent_gen: 0,
             sidebar_pinned_drag: None,
             zoom_drag_start: None,
             column_resize: None,
@@ -2613,6 +2615,8 @@ impl AppWindow {
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = None;
         self.menu_tip = None;
+        self.submenu_grace = None;
+        self.submenu_intent = None;
         cx.notify();
     }
 

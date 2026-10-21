@@ -278,6 +278,12 @@ pub struct AppWindow {
     /// whenever the cursor re-enters a row or panel.
     pub submenu_grace: Option<Task<()>>,
     pub submenu_grace_gen: u64,
+    /// Pending submenu *switch* timer + generation (hover intent). While a
+    /// flyout is open, moving onto a sibling row waits ~200ms before
+    /// switching, so diagonal travel to the open panel isn't killed by an
+    /// instant takeover. Cancelled on panel (re)entry like grace.
+    pub submenu_intent: Option<Task<()>>,
+    pub submenu_intent_gen: u64,
     /// Drag state for sidebar pinned item reordering
     pub sidebar_pinned_drag: Option<SidebarPinnedDragState>,
     /// Whether the zoom slider is currently being dragged.

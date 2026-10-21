@@ -1727,10 +1727,13 @@ impl AppWindow {
             .unwrap_or(false);
 
         // A menu opening on top kills any visible hover tooltip (Files never
-        // shows the preview popup above an open context menu).
+        // shows the preview popup above an open context menu). It also
+        // invalidates any in-flight flyout timers from a previous menu.
         self.hover_tooltip = None;
         self.hover_item_index = None;
         self.hover_timer_task = None;
+        self.submenu_grace = None;
+        self.submenu_intent = None;
 
         let selected_paths: Vec<std::path::PathBuf> = self
             .state
@@ -1828,8 +1831,10 @@ impl AppWindow {
         kind: Option<crate::ui::components::dialogs::SubmenuKind>,
         cx: &mut Context<Self>,
     ) {
-        // Any submenu hover (re)entry invalidates a pending grace-close.
+        // Any submenu (re)entry invalidates a pending grace-close AND any
+        // pending intent-switch.
         self.submenu_grace_cancel();
+        self.submenu_intent_cancel();
         let mut start_load: Option<(Vec<std::path::PathBuf>, std::path::PathBuf)> = None;
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             open_submenu,
@@ -1937,6 +1942,7 @@ impl AppWindow {
     /// Set the open path inside nested classic ("Show more options") submenus.
     pub fn set_classic_open(&mut self, path: Vec<usize>, cx: &mut Context<Self>) {
         self.submenu_grace_cancel();
+        self.submenu_intent_cancel();
         if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             classic_open,
             ..
@@ -1955,6 +1961,99 @@ impl AppWindow {
         self.submenu_grace = None;
     }
 
+    /// Hover-intent switch for top-level flyouts. First open (or re-entry)
+    /// is instant; switching from one open flyout to a sibling waits ~200ms
+    /// so diagonal travel toward the open panel is not killed by an instant
+    /// takeover when the cursor brushes the sibling row.
+    pub fn set_open_submenu_intent(
+        &mut self,
+        kind: crate::ui::components::dialogs::SubmenuKind,
+        cx: &mut Context<Self>,
+    ) {
+        let switching = matches!(
+            self.state.active_dialog.as_ref(),
+            Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                open_submenu: Some(_),
+                ..
+            })
+        );
+        if !switching {
+            self.set_open_submenu(Some(kind), cx);
+            return;
+        }
+        let already = matches!(
+            self.state.active_dialog.as_ref(),
+            Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                open_submenu,
+                ..
+            }) if *open_submenu == Some(kind)
+        );
+        if already {
+            self.set_open_submenu(Some(kind), cx);
+            return;
+        }
+        self.submenu_intent_gen += 1;
+        let intent_gen = self.submenu_intent_gen;
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                weak.update(&mut async_app, |this, cx| {
+                    if this.submenu_intent_gen == intent_gen {
+                        this.set_open_submenu(Some(kind), cx);
+                    }
+                })
+                .ok();
+            },
+        );
+        self.submenu_intent = Some(task);
+    }
+
+    /// Hover-intent switch for nested classic paths. Descending into (or
+    /// back out of) the open path is instant; jumping to a diverging sibling
+    /// path waits ~200ms for the same diagonal-travel reason as above.
+    pub fn set_classic_open_intent(&mut self, path: Vec<usize>, cx: &mut Context<Self>) {
+        let open: Vec<usize> = match self.state.active_dialog.as_ref() {
+            Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                classic_open,
+                ..
+            }) => classic_open.clone(),
+            _ => Vec::new(),
+        };
+        let along = path.starts_with(&open) || open.starts_with(&path);
+        if open.is_empty() || along {
+            self.set_classic_open(path, cx);
+            return;
+        }
+        self.submenu_intent_gen += 1;
+        let intent_gen = self.submenu_intent_gen;
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                weak.update(&mut async_app, |this, cx| {
+                    if this.submenu_intent_gen == intent_gen {
+                        this.set_classic_open(path, cx);
+                    }
+                })
+                .ok();
+            },
+        );
+        self.submenu_intent = Some(task);
+    }
+
+    /// Cancel a pending hover-intent switch (panel entered, menu closing).
+    pub fn submenu_intent_cancel(&mut self) {
+        self.submenu_intent_gen += 1;
+        self.submenu_intent = None;
+    }
+
     /// Close the open flyout after a short grace delay so diagonal cursor
     /// travel from a row into its (outside-bounds) flyout panel doesn't kill
     /// it mid-flight. `close` runs on expiry unless invalidated first.
@@ -1970,7 +2069,7 @@ impl AppWindow {
             move |weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
                 async_app
                     .background_executor()
-                    .timer(std::time::Duration::from_millis(350))
+                    .timer(std::time::Duration::from_millis(500))
                     .await;
                 weak
                     .update(&mut async_app, |this, cx| {

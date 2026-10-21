@@ -460,7 +460,6 @@ impl crate::ui::components::dialogs::DialogsView {
             {
                 showmore_off = menu_h;
                 if !expanded {
-                                    showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -488,7 +487,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     },
                 ));
                 menu_h += 29.0;
-                    menu_h += 29.0;
                 } else {
                     // Expanded style: every classic item is inlined below the
                     // app rows - no hover needed. Nested verbs keep flyouts.
@@ -678,7 +676,6 @@ impl crate::ui::components::dialogs::DialogsView {
             {
                 showmore_off = menu_h;
                 if !expanded {
-                                    showmore_off = menu_h;
                 let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
                 let v_click = v_sub.clone();
                 menu = menu.child(Self::submenu_row(
@@ -706,7 +703,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     },
                 ));
                 menu_h += 29.0;
-                    menu_h += 29.0;
                 } else {
                     // Expanded style: every classic item is inlined below the
                     // app rows - no hover needed. Nested verbs keep flyouts.
@@ -1748,7 +1744,7 @@ impl crate::ui::components::dialogs::DialogsView {
             // panel (or returning to the row) cancels it.
             if *hovering {
                 v_hover.update(cx, |this, cx| {
-                    this.set_open_submenu(Some(kind), cx);
+                    this.set_open_submenu_intent(kind, cx);
                 });
             } else {
                 let v = v_hover.clone();
@@ -1964,6 +1960,32 @@ impl crate::ui::components::dialogs::DialogsView {
             Some("\u{E749}")
         } else if has("send to") || has("bluetooth") || has("mail recipient") {
             Some("\u{E725}")
+        } else if has("run as administrator") || has("run as admin") || has("run with") {
+            Some("\u{E7EF}")
+        } else if has("open with") {
+            Some("\u{E8DA}")
+        } else if has("move to") || has("copy to") || has("move here") || has("copy here") {
+            Some("\u{E8C8}")
+        } else if has("include in library") || has("playlist") || has("enqueue") || has("play") {
+            Some("\u{E8B2}")
+        } else if has("add to") && !has("favorites") {
+            Some("\u{E710}")
+        } else if has("set as") || has("wallpaper") || has("background") || has("rotate") {
+            Some("\u{E8B1}")
+        } else if has("mount") || has("eject") {
+            Some("\u{E8BB}")
+        } else if has("install") || has("uninstall") {
+            Some("\u{E8B7}")
+        } else if has("troubleshoot") || has("compatibility") {
+            Some("\u{E9BD}")
+        } else if has("backup") || has("onedrive") || has("dropbox") {
+            Some("\u{E895}")
+        } else if has("copy link") || has("view online") || has("view in") {
+            Some("\u{E8A1}")
+        } else if has("compare") || has("checksum") || has("hash") || has("crc") || has("sha-") {
+            Some("\u{E9D5}")
+        } else if has("configure") || has("settings") || has("options") {
+            Some("\u{E713}")
         } else if has("upload") || has("sharex") {
             Some("\u{E725}")
         } else if has("teracopy") || has("copy handler") {
@@ -2075,7 +2097,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             let tip = tip.clone();
                             let path = hover_path.clone();
                             v_hover.update(cx, |this, cx| {
-                                this.set_classic_open(path, cx);
+                                this.set_classic_open_intent(path, cx);
                                 this.menu_tip = Some((tip, pos));
                             });
                         } else {
