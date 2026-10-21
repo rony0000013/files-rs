@@ -155,6 +155,10 @@
 - "Black section" on current build = ragged right-edge gaps on short rows
   (e.g. "Open" in a 292px menu sized for "Create folder with selection").
   Files' fixed-width menus have the identical gaps; not a rendering defect.
+- Menu viewport cap: `max_h` (viewport − 16) threaded through DialogType;
+  tall/Expanded menus scroll internally instead of spilling past the main
+  view; true-height tracking incl. toolbar chrome (also fixes nested
+  flyout anchor math, which was 43px short).
 - Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
   they fire. Rename was never broken — it was buried under the open menu.
 - Notification center: bell button top-right after the omnibar with an
