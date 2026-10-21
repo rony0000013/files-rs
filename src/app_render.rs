@@ -357,6 +357,30 @@ impl Render for AppWindow {
                                                                 } else {
                                                                     0.0
                                                                 };
+                                                            // TEMP-DIAG: trace width inputs across resizes.
+                                                            {
+                                                                static LAST_W: std::sync::atomic::AtomicU32 =
+                                                                    std::sync::atomic::AtomicU32::new(0);
+                                                                let key = (content_w as u32)
+                                                                    .wrapping_mul(100003)
+                                                                    .wrapping_add(vp_w as u32);
+                                                                if LAST_W.swap(
+                                                                    key,
+                                                                    std::sync::atomic::Ordering::Relaxed,
+                                                                ) != key
+                                                                {
+                                                                    tracing::warn!(
+                                                                        "layout-width vp={:.0} sidebar={:.0} content={:.0}",
+                                                                        vp_w,
+                                                                        if state.sidebar_visible {
+                                                                            state.sidebar.width
+                                                                        } else {
+                                                                            0.0
+                                                                        },
+                                                                        content_w
+                                                                    );
+                                                                }
+                                                            }
                                                             let tree = MainView::build(
                                                                 &state.main_view,
                                                                 state.file_items.clone(),
