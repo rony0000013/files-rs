@@ -215,10 +215,23 @@ impl AppWindow {
         // wakes the loop; it then sees the dirty flag and paints the final
         // size. (window.request_animation_frame() cannot be used here — it
         // requires an active render and panics outside one.)
+        // Settle guard: bounds changes that land mid-draw can be swallowed
+        // (GPUI drops the invalidation while drawing), losing the final
+        // frame. Re-assert 350ms after the last change so it still lands.
         {
             let sub = cx.observe_window_bounds(_window, move |_this, _win, cx| {
                 cx.notify();
                 cx.spawn(async move |_, _| {}).detach();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(350))
+                        .await;
+                    this.update(cx, |_, cx| {
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
             });
             window_view.bounds_subscription = Some(sub);
         }
