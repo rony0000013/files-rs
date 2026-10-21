@@ -165,6 +165,11 @@
   Center/Span layout math from the registry). Versioned filenames bust the
   image cache — staleness impossible. Pixel proof: wallpaper rotated to a
   dark-teal Spotlight image, tracker crop averages #256D82 vs #256D83.
+- Mica tracking is now instant: blur the full screen ONCE per wallpaper
+  change; every frame just slides that image under the live window bounds
+  (`placement` from `window.bounds()`). Move/resize costs zero regen —
+  pure layout. PrintWindow proof: sidebar/top show tinted dark-teal blur,
+  not flat grey.
 - Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
   they fire. Rename was never broken — it was buried under the open menu.
 - Notification center: bell button top-right after the omnibar with an
