@@ -207,12 +207,16 @@ impl AppWindow {
         }
 
         // Re-render on every window geometry change (resize, maximize,
-        // unmaximize, monitor move). GPUI refreshes mid-drag, but the final
-        // settled size can arrive with no repaint scheduled — the window
-        // would then sit on a stale frame until focus/input repaints it.
+        // unmaximize, monitor move). The frame loop can be asleep when the
+        // drag settles (no input for >1s), so merely marking dirty is not
+        // enough — request_animation_frame wakes the pump and the notify
+        // marks the view dirty. Without both, the window sits on a mid-drag
+        // frame (narrow content, missing caption buttons) until some
+        // unrelated event (e.g. focus change) repaints it.
         {
-            let sub = cx.observe_window_bounds(_window, move |_this, _win, cx| {
+            let sub = cx.observe_window_bounds(_window, move |_this, window, cx| {
                 cx.notify();
+                window.request_animation_frame();
             });
             window_view.bounds_subscription = Some(sub);
         }
