@@ -48,6 +48,37 @@ fn set(p: Option<PathBuf>) {
     }
 }
 
+/// Main window handle for out-of-band OS repaint requests.
+static MAIN_HWND: OnceLock<isize> = OnceLock::new();
+
+/// Remember the main window handle (called once at window creation).
+pub fn set_main_hwnd(h: isize) {
+    let _ = MAIN_HWND.set(h);
+}
+
+/// Force the OS to repaint the window, bypassing GPUI's dirty tracking.
+/// Used after geometry settles: if a mid-drag frame is stuck on screen,
+/// a real WM_PAINT heals what notify/pump-wake could not.
+pub fn force_repaint() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::{
+            RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE,
+        };
+        if let Some(&h) = MAIN_HWND.get() {
+            unsafe {
+                let _ = RedrawWindow(
+                    Some(HWND(h as *mut core::ffi::c_void)),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+                );
+            }
+        }
+    }
+}
+
 /// Placement of the full-screen blur for one frame (all logical px).
 #[derive(Clone, Debug)]
 pub struct MicaGeo {

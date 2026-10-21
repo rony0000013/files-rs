@@ -230,6 +230,9 @@ impl AppWindow {
                         cx.notify();
                     })
                     .ok();
+                    // Belt and braces: a real OS repaint heals a stuck
+                    // mid-drag frame even if GPUI's pump already drained.
+                    crate::wallpaper_mica::force_repaint();
                 })
                 .detach();
             });

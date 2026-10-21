@@ -107,6 +107,15 @@ fn main() {
                 files_rs::wallpaper_mica::prime();
                 std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
                 std::thread::spawn(files_rs::wallpaper_mica::watch_source);
+                // Remember the HWND for out-of-band OS repaint requests.
+                {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(h) = window.window_handle() {
+                        if let RawWindowHandle::Win32(w) = h.as_raw() {
+                            files_rs::wallpaper_mica::set_main_hwnd(w.hwnd.get() as isize);
+                        }
+                    }
+                }
             }
             let rx = progress.subscribe();
             cx.new(|cx| AppWindow::new(state, rx, window, cx))
