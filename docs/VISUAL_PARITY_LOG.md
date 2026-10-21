@@ -170,6 +170,12 @@
   (`placement` from `window.bounds()`). Move/resize costs zero regen —
   pure layout. PrintWindow proof: sidebar/top show tinted dark-teal blur,
   not flat grey.
+- Resize reflow: content column stuck at pre-drag width + missing caption
+  buttons after snap/drag = stale mid-drag frame with no repaint scheduled.
+  Fix: re-render + pump-wake on every window bounds change, plus a 350ms
+  settle guard. Pixel proof on live modal sizing loops (keyboard-driven
+  SC_SIZE drags, shrink+grow, width+height): content tracks every step
+  (1168/1169); ShowWindow restore/maximize also exact.
 - Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
   they fire. Rename was never broken — it was buried under the open menu.
 - Notification center: bell button top-right after the omnibar with an
