@@ -207,16 +207,18 @@ impl AppWindow {
         }
 
         // Re-render on every window geometry change (resize, maximize,
-        // unmaximize, monitor move). The frame loop can be asleep when the
-        // drag settles (no input for >1s), so merely marking dirty is not
-        // enough — request_animation_frame wakes the pump and the notify
-        // marks the view dirty. Without both, the window sits on a mid-drag
-        // frame (narrow content, missing caption buttons) until some
-        // unrelated event (e.g. focus change) repaints it.
+        // unmaximize, monitor move). cx.notify() alone only marks dirty — if
+        // the frame loop is asleep (no input since the drag settled) nothing
+        // pumps it, so the window sits on a mid-drag frame until an unrelated
+        // event repaints. Spawning a no-op foreground task posts a real
+        // Win32 message (WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD), which
+        // wakes the loop; it then sees the dirty flag and paints the final
+        // size. (window.request_animation_frame() cannot be used here — it
+        // requires an active render and panics outside one.)
         {
-            let sub = cx.observe_window_bounds(_window, move |_this, window, cx| {
+            let sub = cx.observe_window_bounds(_window, move |_this, _win, cx| {
                 cx.notify();
-                window.request_animation_frame();
+                cx.spawn(async move |_, _| {}).detach();
             });
             window_view.bounds_subscription = Some(sub);
         }
