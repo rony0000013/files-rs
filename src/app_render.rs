@@ -17,10 +17,10 @@ use crate::ui::views::main_view::{ColumnWidths, MainView, MainViewState};
 use gpui::*;
 
 impl Render for AppWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Tick all active bouncy scroll states (momentum + spring-back) at
         // display refresh rate — no background timer latency.
-        self.tick_bouncy_scrolls(_window, cx);
+        self.tick_bouncy_scrolls(window, cx);
 
         // Poll file system events — refresh if any folder changes detected
         self.poll_file_events(cx);
@@ -74,7 +74,7 @@ impl Render for AppWindow {
         };
 
         // Dismiss omnibar if window lost focus (e.g. user alt-tabbed or clicked outside)
-        if !_window.is_window_active() {
+        if !window.is_window_active() {
             self.dismiss_omnibar(cx);
             // Also close breadcrumb dropdown on window deactivation
             if self.state.nav_bar.breadcrumb_dropdown_open {
@@ -87,7 +87,7 @@ impl Render for AppWindow {
             self.state.main_focus = Some(cx.focus_handle());
             // Request focus on the main content so keyboard events work
             let focus = self.state.main_focus.clone().unwrap();
-            _window.focus(&focus);
+            window.focus(&focus);
         }
 
         let state = &self.state;
@@ -105,10 +105,25 @@ impl Render for AppWindow {
             )
         };
 
+        // In-app Mica placement: slide the full-screen blur under the live
+        // window origin every frame — instant tracking, zero regen.
+        let mica_geo = if mica_enabled {
+            let b = window.bounds();
+            let s = window.scale_factor().max(0.5);
+            crate::wallpaper_mica::placement(
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                s,
+            )
+        } else {
+            None
+        };
+
         let main_content = AppBackground::build(
             &state.main_view.folder_background,
             mica_enabled,
             mica_alt,
+            mica_geo,
             vec![
                 // Main content area
                 div()
@@ -335,7 +350,7 @@ impl Render for AppWindow {
                                                                 None
                                                             };
                                                             let vp_w: f32 =
-                                                                _window.viewport_size().width.into();
+                                                                window.viewport_size().width.into();
                                                             let content_w = vp_w
                                                                 - if state.sidebar_visible {
                                                                     state.sidebar.width
@@ -384,7 +399,7 @@ impl Render for AppWindow {
             if state.sidebar.anim_start_time.unwrap().elapsed()
                 < std::time::Duration::from_millis(200)
             {
-                _window.request_animation_frame();
+                window.request_animation_frame();
             }
         }
 
@@ -476,7 +491,7 @@ impl Render for AppWindow {
             let nav_btn_area = 4.0 * 32.0 + 3.0 * 2.0; // 134px
             let pill_left = 12.0 + nav_btn_area + 8.0; // 154px
             let dropdown_top = 40.0 + 44.0; // 84px
-            let vp = _window.viewport_size();
+            let vp = window.viewport_size();
             let dropdown_width = vp.width - px(pill_left) - px(12.0); // minus right padding
 
             let dropdown =
@@ -508,7 +523,7 @@ impl Render for AppWindow {
                     build_breadcrumb_dropdown(&state.nav_bar, cx.entity(), breadcrumb_focus.clone())
                 {
                     // Request focus so keyboard events go to the dropdown
-                    _window.focus(&breadcrumb_focus);
+                    window.focus(&breadcrumb_focus);
 
                     let view = cx.entity();
                     let view2 = cx.entity();
@@ -692,7 +707,7 @@ impl Render for AppWindow {
             let tooltip_h = 20.0 + want_thumb_h + text_h; // padding + thumb + info
 
             // ── Viewport-aware positioning ──
-            let win_bounds = _window.bounds();
+            let win_bounds = window.bounds();
             let win_w = win_bounds.size.width;
             let win_h = win_bounds.size.height;
 

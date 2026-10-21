@@ -1,17 +1,13 @@
-//! In-app Mica: a live, blurred crop of the user's wallpaper drawn as the
+//! In-app Mica: a live, blurred copy of the user's wallpaper drawn as the
 //! window backdrop under translucent UI layers.
 //!
-//! Real Mica samples the wallpaper *behind the window* every frame. This
-//! module replicates that without DWM: a background tracker follows the
-//! window rect (500ms ticks) and regenerates a blurred crop of exactly the
-//! wallpaper region behind the window, so moving/resizing the window (or
-//! changing the wallpaper/slideshow image) updates the backdrop.
-//!
-//! Pipeline per regen: wallpaper layout math (Fill/Fit/Stretch/Center/Span,
-//! from the same registry values DWM uses) → crop window region (+bleed
-//! margin) → downscale to ~512px → gaussian blur → versioned JPEG. Versioned
-//! filenames bust GPUI's image cache and make staleness impossible: a new
-//! wallpaper/position always yields a new path. Old files are pruned.
+//! Real Mica samples the wallpaper *behind the window* every frame. Regen
+//! per move would cost a JPEG decode + blur each tick, so this module
+//! splits the work: the wallpaper is blurred ONCE per source/screen change
+//! (background `watch_source`, ~2s ticks), and every frame the renderer just
+//! *slides* that full-screen blur under the window from the live window
+//! bounds (`placement`). Moving/resizing costs zero regen — pure layout —
+//! so tracking is instant, and wallpaper changes rebuild the blur.
 
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -35,65 +31,110 @@ fn set(p: Option<PathBuf>) {
     }
 }
 
+/// Placement of the full-screen blur for one frame (all logical px).
+#[derive(Clone, Debug)]
+pub struct MicaGeo {
+    pub path: PathBuf,
+    pub left: f32,
+    pub top: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 fn cache_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("files-rs"))
-}
-
-/// Newest cached crop (instant first paint, zero work).
-fn newest_cache() -> Option<PathBuf> {
-    let dir = cache_dir()?;
-    std::fs::read_dir(&dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("mica_") && n.ends_with(".jpg"))
-                .unwrap_or(false)
-        })
-        .max_by_key(|p| {
-            std::fs::metadata(p)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        })
-}
-
-/// Publish last run's crop instantly (called on window open).
-pub fn prime() {
-    // Migrate the pre-tracker single file once, then rely on versioned crops.
-    if let Some(dir) = cache_dir() {
-        let legacy = dir.join("mica_wallpaper.jpg");
-        if legacy.is_file() && newest_cache().is_none() {
-            let _ = std::fs::rename(&legacy, dir.join("mica_legacy.jpg"));
-        }
-    }
-    if let Some(c) = newest_cache() {
-        set(Some(c));
-    }
-}
-
-/// One-shot full-image blur for instant first paint (old path, versioned).
-pub fn ensure_async() {
-    let src = match current_wallpaper() {
-        Some(s) => s,
-        None => return,
-    };
-    if current().is_some() {
-        return;
-    }
-    if let Some(p) = render_full(&src) {
-        if current().is_none() {
-            set(Some(p));
-        }
-    }
 }
 
 fn hash_tag(parts: &[u64]) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     parts.hash(&mut h);
     format!("{:016x}", h.finish())
+}
+
+/// Newest scheme-2 blur: `mica2_{vw}x{vh}_{tag}.jpg` (+ its screen dims).
+fn newest_full() -> Option<(PathBuf, i32, i32)> {
+    let dir = cache_dir()?;
+    let mut best: Option<(PathBuf, i32, i32, std::time::SystemTime)> = None;
+    for e in std::fs::read_dir(&dir).ok()?.flatten() {
+        let p = e.path();
+        let name = p.file_name()?.to_str()?.to_string();
+        if !name.starts_with("mica2_") || !name.ends_with(".jpg") {
+            continue;
+        }
+        let dims = name.trim_start_matches("mica2_").trim_end_matches(".jpg");
+        let (ws, hs) = dims.split_once('x')?;
+        let (tagpos, _) = hs.split_once('_').unwrap_or((hs, ""));
+        let _ = tagpos;
+        let vw: i32 = ws.parse().ok()?;
+        // name is mica2_{vw}x{vh}_{tag}: split tail for vh.
+        let rest = dims.split_once('x')?.1;
+        let (vh_s, _) = rest.split_once('_')?;
+        let vh: i32 = vh_s.parse().ok()?;
+        let mt = std::fs::metadata(&p).ok()?.modified().ok()?;
+        if best.as_ref().map(|b| mt > b.3).unwrap_or(true) {
+            best = Some((p, vw, vh, mt));
+        }
+    }
+    best.map(|(p, vw, vh, _)| (p, vw, vh))
+}
+
+/// Publish last run's blur instantly (called on window open). Drops
+/// pre-tracker caches (wrong framing for the slide scheme).
+pub fn prime() {
+    if let Some(dir) = cache_dir() {
+        let entries = std::fs::read_dir(&dir).ok().map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| {
+                            n == "mica_wallpaper.jpg"
+                                || (n.starts_with("mica_") && !n.starts_with("mica2_"))
+                        })
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>()
+        });
+        for old in entries.into_iter().flatten() {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+    if let Some((p, _, _)) = newest_full() {
+        set(Some(p));
+    }
+}
+
+/// One-shot full blur for instant first paint when no cache exists yet.
+pub fn ensure_async() {
+    if current().is_some() {
+        return;
+    }
+    let src = match current_wallpaper() {
+        Some(s) => s,
+        None => return,
+    };
+    let v = virtual_screen();
+    if let Some(p) = render_full_cover(&src, &v) {
+        if current().is_none() {
+            set(Some(p));
+        }
+    }
+}
+
+/// Per-frame placement: slide the full-screen blur under the live window
+/// origin. Zero regen — pure layout, so tracking is instant.
+pub fn placement(win_x: f32, win_y: f32, scale: f32) -> Option<MicaGeo> {
+    let s = scale.max(0.5);
+    let (path, vw, vh) = newest_full()?;
+    let v = virtual_screen();
+    Some(MicaGeo {
+        path,
+        left: v.x as f32 / s - win_x,
+        top: v.y as f32 / s - win_y,
+        w: vw as f32 / s,
+        h: vh as f32 / s,
+    })
 }
 
 // ── wallpaper source + layout ─────────────────────────────────────────────
@@ -188,30 +229,22 @@ fn virtual_screen() -> ScreenRect {
     }
 }
 
-#[cfg(windows)]
-fn window_rect(hwnd: isize) -> Option<ScreenRect> {
-    use windows::Win32::Foundation::{HWND, RECT};
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-    unsafe {
-        let mut r = RECT::default();
-        GetWindowRect(HWND(hwnd as *mut core::ffi::c_void), &mut r).ok()?;
-        let w = r.right - r.left;
-        let h = r.bottom - r.top;
-        if w <= 0 || h <= 0 || r.left <= -10000 {
-            return None; // minimized / degenerate
-        }
-        Some(ScreenRect {
-            x: r.left,
-            y: r.top,
-            w,
-            h,
-        })
-    }
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScreenRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
 }
 
-/// Map a virtual-screen rect to wallpaper-image pixels, mirroring DWM's
-/// layout for the configured style. Returns None for Tile (full-image blur).
-#[cfg(windows)]
+#[cfg(not(windows))]
+fn virtual_screen() -> ScreenRect {
+    ScreenRect { x: 0, y: 0, w: 0, h: 0 }
+}
+
+/// Virtual-screen rect → wallpaper-image scale + origin, mirroring DWM's
+/// layout for the configured style. None for Tile (whole-image blur).
 fn layout_map(wp: &Wallpaper, v: &ScreenRect) -> Option<(f64, f64, f64, f64)> {
     let (iw, ih) = (wp.iw as f64, wp.ih as f64);
     let (vw, vh) = (v.w as f64, v.h as f64);
@@ -219,14 +252,7 @@ fn layout_map(wp: &Wallpaper, v: &ScreenRect) -> Option<(f64, f64, f64, f64)> {
         return None;
     }
     match wp.style {
-        WallpaperStyle::Fill => {
-            let s = (vw / iw).max(vh / ih);
-            let dw = iw * s;
-            let dh = ih * s;
-            Some((s, s, v.x as f64 + (vw - dw) / 2.0, v.y as f64 + (vh - dh) / 2.0))
-        }
-        WallpaperStyle::Span => {
-            // Span == cover over the whole virtual screen.
+        WallpaperStyle::Fill | WallpaperStyle::Span => {
             let s = (vw / iw).max(vh / ih);
             let dw = iw * s;
             let dh = ih * s;
@@ -251,79 +277,50 @@ fn layout_map(wp: &Wallpaper, v: &ScreenRect) -> Option<(f64, f64, f64, f64)> {
 
 // ── rendering ─────────────────────────────────────────────────────────────
 
-/// Blur the whole wallpaper (first paint / Tile fallback).
-fn render_full(src: &Wallpaper) -> Option<PathBuf> {
-    let img = image::open(&src.path).ok()?;
-    let small = img.resize_to_fill(512, 288, image::imageops::FilterType::Triangle);
-    let blurred = small.blur(9.0);
-    save_versioned(&blurred, src.mtime_ns, src.len, 0, 0, 0, 0)
-}
-
-/// Blur the wallpaper region behind `win` (+bleed margin for the blur).
-#[cfg(windows)]
-fn render_crop(src: &Wallpaper, win: &ScreenRect) -> Option<PathBuf> {
-    const BLEED: i32 = 160; // screen px; blur must sample beyond the edge
-    let v = virtual_screen();
-    let (sx, sy, ox, oy) = layout_map(src, &v)?;
-    // Window region (expanded) in virtual-screen coords → image coords.
-    let x0 = (win.x - BLEED).max(v.x) as f64;
-    let y0 = (win.y - BLEED).max(v.y) as f64;
-    let x1 = (win.x + win.w + BLEED).min(v.x + v.w) as f64;
-    let y1 = (win.y + win.h + BLEED).min(v.y + v.h) as f64;
-    if x1 <= x0 || y1 <= y0 {
-        return None;
+/// Blur the whole virtual screen once (regen only on source/screen change).
+fn render_full_cover(src: &Wallpaper, v: &ScreenRect) -> Option<PathBuf> {
+    let full = image::open(&src.path).ok()?;
+    let (fw, fh) = (full.width(), full.height());
+    // Image region covering the virtual screen (clamped to the image).
+    let (mut ix0, mut iy0, mut ix1, mut iy1) = (0i64, 0i64, fw as i64, fh as i64);
+    if let Some((sx, sy, ox, oy)) = layout_map(src, v) {
+        ix0 = ((v.x as f64 - ox) / sx).round() as i64;
+        iy0 = ((v.y as f64 - oy) / sy).round() as i64;
+        ix1 = ((v.x as f64 + v.w as f64 - ox) / sx).round() as i64;
+        iy1 = ((v.y as f64 + v.h as f64 - oy) / sy).round() as i64;
     }
-    let mut ix0 = ((x0 - ox) / sx) as i64;
-    let mut iy0 = ((y0 - oy) / sy) as i64;
-    let mut ix1 = ((x1 - ox) / sx).ceil() as i64;
-    let mut iy1 = ((y1 - oy) / sy).ceil() as i64;
-    ix0 = ix0.clamp(0, src.iw as i64);
-    iy0 = iy0.clamp(0, src.ih as i64);
-    ix1 = ix1.clamp(0, src.iw as i64);
-    iy1 = iy1.clamp(0, src.ih as i64);
+    ix0 = ix0.clamp(0, fw as i64);
+    iy0 = iy0.clamp(0, fh as i64);
+    ix1 = ix1.clamp(0, fw as i64);
+    iy1 = iy1.clamp(0, fh as i64);
     if ix1 - ix0 < 8 || iy1 - iy0 < 8 {
         return None;
     }
-    let full = image::open(&src.path).ok()?;
     let crop = full.crop_imm(ix0 as u32, iy0 as u32, (ix1 - ix0) as u32, (iy1 - iy0) as u32);
-    // Downscale to ~512px wide, then blur (fast and smooth).
-    let w = crop.width().min(512);
-    let h = ((crop.height() as f64) * (w as f64 / crop.width() as f64)).round() as u32;
-    let small = image::imageops::resize(&crop, w, h.max(1), image::imageops::FilterType::Triangle);
-    let blurred = image::DynamicImage::ImageRgba8(small).blur(10.0);
-    save_versioned(
-        &blurred,
-        src.mtime_ns,
-        src.len,
-        win.x as u64,
-        win.y as u64,
-        win.w as u64,
-        win.h as u64,
-    )
-}
-
-fn save_versioned(
-    img: &image::DynamicImage,
-    mtime_ns: u64,
-    len: u64,
-    x: u64,
-    y: u64,
-    w: u64,
-    h: u64,
-) -> Option<PathBuf> {
+    // Blur at ~768px wide, stretched to the screen aspect (smooth anyway).
+    let tw = 768u32.min(crop.width().max(64));
+    let th = ((v.h as f64) * (tw as f64 / v.w.max(1) as f64)).round() as u32;
+    let small = image::imageops::resize(
+        &crop,
+        tw,
+        th.max(1),
+        image::imageops::FilterType::Triangle,
+    );
+    let blurred = image::DynamicImage::ImageRgba8(small).blur(12.0);
     let dir = cache_dir()?;
     let _ = std::fs::create_dir_all(&dir);
-    // Quantize position (32px buckets): tiny drags reuse the same crop.
-    let tag = hash_tag(&[mtime_ns, len, x / 32, y / 32, w / 32, h / 32]);
-    let path = dir.join(format!("mica_{}.jpg", tag));
+    let tag = hash_tag(&[src.mtime_ns, src.len, v.w as u64, v.h as u64]);
+    let path = dir.join(format!("mica2_{}x{}_{}.jpg", v.w, v.h, tag));
     if !path.is_file() {
-        img.save_with_format(&path, image::ImageFormat::Jpeg).ok()?;
+        blurred
+            .save_with_format(&path, image::ImageFormat::Jpeg)
+            .ok()?;
         prune(&dir);
     }
     Some(path)
 }
 
-/// Keep only the 3 newest crops; the rest is stale wallpaper/positions.
+/// Keep only the 2 newest scheme-2 blurs.
 fn prune(dir: &PathBuf) {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()
@@ -333,7 +330,7 @@ fn prune(dir: &PathBuf) {
                 .filter(|p| {
                     p.file_name()
                         .and_then(|n| n.to_str())
-                        .map(|n| n.starts_with("mica_") && n.ends_with(".jpg"))
+                        .map(|n| n.starts_with("mica"))
                         .unwrap_or(false)
                 })
                 .collect()
@@ -345,7 +342,7 @@ fn prune(dir: &PathBuf) {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
     });
-    while files.len() > 3 {
+    while files.len() > 2 {
         if let Some(old) = files.first() {
             let _ = std::fs::remove_file(old);
         }
@@ -353,35 +350,30 @@ fn prune(dir: &PathBuf) {
     }
 }
 
-// ── tracker ───────────────────────────────────────────────────────────────
+// ── watcher ───────────────────────────────────────────────────────────────
 
-/// Background loop: follows the window and the wallpaper source, publishes
-/// a fresh blurred crop whenever either changes. Never clears the current
-/// backdrop on failure (a stale blur beats a flat window).
-#[cfg(windows)]
-pub fn track_window(hwnd: isize) {
-    let mut last_rect: Option<ScreenRect> = None;
-    let mut last_src = (0u64, 0u64);
+/// Background loop: rebuilds the full-screen blur only when the wallpaper
+/// source or screen geometry changes (~2s ticks, stat-only when idle).
+/// Position tracking needs no work here — the renderer slides the blur
+/// per-frame from the live window bounds.
+pub fn watch_source() {
+    let mut last = (0u64, 0u64, 0i32, 0i32, 0i32, 0i32);
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        let v = virtual_screen();
         let src = match current_wallpaper() {
             Some(s) => s,
             None => continue,
         };
-        let src_id = (src.mtime_ns, src.len);
-        let rect = window_rect(hwnd);
-        let rect_changed = rect != last_rect;
-        // Skip work while minimized; keep serving the last good crop.
-        let r = match rect {
-            Some(r) => r,
-            None => continue,
-        };
-        if src_id != last_src || rect_changed {
-            let fresh = render_crop(&src, &r).or_else(|| render_full(&src));
-            if let Some(p) = fresh {
+        let id = (src.mtime_ns, src.len, v.x, v.y, v.w, v.h);
+        if id != last {
+            if let Some(p) = render_full_cover(&src, &v) {
                 set(Some(p));
-                last_rect = Some(r);
-                last_src = src_id;
+                last = id;
+            }
+        } else if current().is_none() {
+            if let Some((p, _, _)) = newest_full() {
+                set(Some(p));
             }
         }
     }

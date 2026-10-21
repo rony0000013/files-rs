@@ -101,20 +101,12 @@ fn main() {
                     tracing::info!("apply_mica applied");
                 }
                 // In-app Mica: last run's blurred wallpaper shows instantly;
-                // a background thread regenerates it if the wallpaper changed.
+                // a background thread keeps it fresh on wallpaper change.
+                // Position tracking is free: the renderer slides the blur
+                // per-frame from the live window bounds (zero regen).
                 files_rs::wallpaper_mica::prime();
                 std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
-                // Live crop tracker: the backdrop follows the window across
-                // the wallpaper (move/resize/wallpaper change → fresh crop).
-                {
-                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                    if let Ok(h) = window.window_handle() {
-                        if let RawWindowHandle::Win32(w) = h.as_raw() {
-                            let hwnd = w.hwnd.get() as isize;
-                            std::thread::spawn(move || files_rs::wallpaper_mica::track_window(hwnd));
-                        }
-                    }
-                }
+                std::thread::spawn(files_rs::wallpaper_mica::watch_source);
             }
             let rx = progress.subscribe();
             cx.new(|cx| AppWindow::new(state, rx, window, cx))

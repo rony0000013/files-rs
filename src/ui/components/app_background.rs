@@ -9,6 +9,7 @@ impl AppBackground {
         folder_bg: &FolderBackground,
         mica_enabled: bool,
         mica_alt: bool,
+        mica_geo: Option<crate::wallpaper_mica::MicaGeo>,
         children: Vec<AnyElement>,
     ) -> impl IntoElement {
         let base_bg = if mica_enabled {
@@ -32,15 +33,18 @@ impl AppBackground {
 
         // In-app Mica: blurred wallpaper under the translucent tint.
         // (DWM backdrop never reaches the screen through GPUI's swapchain,
-        // so we render those exact pixels ourselves.)
-        if let Some(blur_path) = crate::wallpaper_mica::current() {
+        // so we render those exact pixels ourselves.) The blur is a
+        // full-virtual-screen image positioned per-frame from the live
+        // window bounds — moving the window slides it instantly, with zero
+        // regen cost (regen happens only on wallpaper change).
+        if let Some(geo) = mica_geo {
             root = root.child(
-                img(blur_path)
+                img(geo.path)
                     .absolute()
-                    .inset_0()
-                    .w_full()
-                    .h_full()
-                    .object_fit(ObjectFit::Cover),
+                    .left(px(geo.left))
+                    .top(px(geo.top))
+                    .w(px(geo.w))
+                    .h(px(geo.h)),
             );
         }
 
