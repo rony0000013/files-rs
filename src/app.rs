@@ -76,6 +76,7 @@ impl AppWindow {
             file_watcher_secondary: None,
             file_event_rx_secondary: None,
             focus_out_subscription: None,
+            bounds_subscription: None,
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
@@ -203,6 +204,17 @@ impl AppWindow {
                 this.dismiss_omnibar(cx);
             });
             window_view.focus_out_subscription = Some(sub);
+        }
+
+        // Re-render on every window geometry change (resize, maximize,
+        // unmaximize, monitor move). GPUI refreshes mid-drag, but the final
+        // settled size can arrive with no repaint scheduled — the window
+        // would then sit on a stale frame until focus/input repaints it.
+        {
+            let sub = cx.observe_window_bounds(_window, move |_this, _win, cx| {
+                cx.notify();
+            });
+            window_view.bounds_subscription = Some(sub);
         }
 
         // Progress listener: forwards engine JobUpdates to the status center.

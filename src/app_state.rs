@@ -314,6 +314,11 @@ pub struct AppWindow {
     /// Focus-out subscription (omnibar auto-dismiss). Held, not dropped:
     /// dropping a GPUI `Subscription` unsubscribes immediately.
     pub focus_out_subscription: Option<Subscription>,
+    /// Window-bounds subscription: every resize/maximize/unmaximize must
+    /// produce a fresh frame with the final geometry. Without it the window
+    /// can keep showing a mid-drag frame (narrow content, missing caption
+    /// buttons) until an unrelated event repaints.
+    pub bounds_subscription: Option<Subscription>,
 }
 #[cfg(test)]
 mod tests {
