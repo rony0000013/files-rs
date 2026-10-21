@@ -27,6 +27,7 @@ impl crate::ui::components::dialogs::DialogsView {
         classic_open: Vec<usize>,
         flip: bool,
         expanded: bool,
+        max_h: f32,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -495,6 +496,9 @@ impl crate::ui::components::dialogs::DialogsView {
                     match classic.as_ref() {
                         Some(entries) if !entries.is_empty() => {
                             let mut next_id: usize = 0;
+                            for e in entries.iter() {
+                                menu_h += if e.separator { 9.0 } else { 29.0 };
+                            }
                             let inline = Self::classic_rows(
                                 entries,
                                 &classic_open,
@@ -517,6 +521,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 "(No extended options)",
                                 &mut nid,
                             ));
+                            menu_h += 29.0;
                         }
                         None => {
                             let mut nid = 0usize;
@@ -526,6 +531,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 "(Unavailable)"
                             };
                             menu = menu.child(Self::classic_note_row(txt, &mut nid));
+                            menu_h += 29.0;
                         }
                     }
                 }
@@ -711,6 +717,9 @@ impl crate::ui::components::dialogs::DialogsView {
                     match classic.as_ref() {
                         Some(entries) if !entries.is_empty() => {
                             let mut next_id: usize = 0;
+                            for e in entries.iter() {
+                                menu_h += if e.separator { 9.0 } else { 29.0 };
+                            }
                             let inline = Self::classic_rows(
                                 entries,
                                 &classic_open,
@@ -733,6 +742,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 "(No extended options)",
                                 &mut nid,
                             ));
+                            menu_h += 29.0;
                         }
                         None => {
                             let mut nid = 0usize;
@@ -742,11 +752,22 @@ impl crate::ui::components::dialogs::DialogsView {
                                 "(Unavailable)"
                             };
                             menu = menu.child(Self::classic_note_row(txt, &mut nid));
+                            menu_h += 29.0;
                         }
                     }
                 }
             }
         }
+        // Viewport cap (matters for Expanded style with 25+ inlined rows,
+        // or a compressed window): the menu scrolls internally instead of
+        // spilling past the main view. Stateful id first: overflow_scroll
+        // only exists on stateful elements.
+        let menu = menu.id(("ctx-menu", 0_usize));
+        let menu = if menu_h > max_h {
+            menu.max_h(px(max_h)).overflow_scroll()
+        } else {
+            menu
+        };
         menu.with_animation(
             "ctx-menu-entrance",
             Animation::new(std::time::Duration::from_millis(120)),

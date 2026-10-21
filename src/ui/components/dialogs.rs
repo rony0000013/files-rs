@@ -68,6 +68,8 @@ pub enum DialogType {
         flip: bool,
         /// Expanded style: classic items inlined, no ShowMore row.
         expanded: bool,
+        /// Viewport-derived cap: the menu scrolls internally past this.
+        max_h: f32,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -273,6 +275,7 @@ impl DialogsView {
                 classic_open,
                 flip,
                 expanded,
+                max_h,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -288,6 +291,7 @@ impl DialogsView {
                 classic_open.clone(),
                 *flip,
                 *expanded,
+                *max_h,
                 view.clone(),
                 cx,
             )

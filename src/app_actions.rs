@@ -1694,7 +1694,27 @@ impl AppWindow {
         // Clamp the menu inside the viewport (flip-up when near the bottom
         // edge) so tall menus never spill past the window like before.
         let vp = window.viewport_size();
-        let est_h: f32 = if item_index.is_some() { 620.0 } else { 380.0 };
+        // Viewport-derived menu cap: tall (Expanded) menus scroll internally
+        // instead of spilling past the main view, even on tiny windows.
+        let max_h = (f32::from(vp.height) - 16.0).max(200.0);
+        // Single settings read for the style: Expanded inlines the whole
+        // classic list, so it reserves the full viewport (the menu body
+        // scrolls internally past max_h instead of spilling).
+        let menu_style = self
+            .state
+            .settings
+            .read(cx)
+            .config
+            .preferences
+            .context_menu_style;
+        let expanded = menu_style == crate::config::config::ContextMenuStyle::Expanded;
+        let est_h: f32 = if expanded {
+            max_h
+        } else if item_index.is_some() {
+            620.0
+        } else {
+            380.0
+        };
         let mut x: f32 = position.x.into();
         let mut y: f32 = position.y.into();
         if x + 300.0 > vp.width.into() {
@@ -1750,13 +1770,6 @@ impl AppWindow {
             .as_path()
             .to_path_buf();
 
-        let menu_style = self
-            .state
-            .settings
-            .read(cx)
-            .config
-            .preferences
-            .context_menu_style;
         // "Windows classic" style: skip the GPUI menu entirely and show the
         // native shell popup (real verbs, real owners, zero porting).
         #[cfg(windows)]
@@ -1786,7 +1799,6 @@ impl AppWindow {
                 return;
             }
         }
-        let expanded = menu_style == crate::config::config::ContextMenuStyle::Expanded;
 
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
@@ -1803,6 +1815,7 @@ impl AppWindow {
             classic_open: Vec::new(),
             flip,
             expanded,
+            max_h,
         });
         // Preload the classic items the moment the menu opens (all styles):
         // phase 1 (labels) lands in ~50ms so the flyout renders instantly on
