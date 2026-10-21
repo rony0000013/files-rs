@@ -16,6 +16,23 @@ use std::sync::{OnceLock, RwLock};
 /// Current backdrop path for the renderer (cheap read, called per frame).
 static BACKDROP_PATH: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 
+/// Full-screen blur + the virtual-screen dims it was baked for. Kept in
+/// memory so `placement()` is pure math — the render path must never touch
+/// the filesystem (per-frame I/O stalls resize drags and leaves stale
+/// frames: missing caption buttons, blank regions, refused edges).
+static FULL_BLUR: OnceLock<RwLock<Option<(PathBuf, i32, i32)>>> = OnceLock::new();
+
+fn full_slot() -> &'static RwLock<Option<(PathBuf, i32, i32)>> {
+    FULL_BLUR.get_or_init(|| RwLock::new(None))
+}
+
+fn set_full(path: PathBuf, vw: i32, vh: i32) {
+    set(Some(path.clone()));
+    if let Ok(mut g) = full_slot().write() {
+        *g = Some((path, vw, vh));
+    }
+}
+
 fn slot() -> &'static RwLock<Option<PathBuf>> {
     BACKDROP_PATH.get_or_init(|| RwLock::new(None))
 }
@@ -101,8 +118,21 @@ pub fn prime() {
         }
     }
     if let Some((p, _, _)) = newest_full() {
-        set(Some(p));
+        let v = virtual_screen();
+        // Re-derive dims from the filename when possible; fall back to the
+        // live screen (same thing unless monitors changed mid-session).
+        let dims = dims_of(&p).unwrap_or((v.w, v.h));
+        set_full(p, dims.0, dims.1);
     }
+}
+
+/// Screen dims baked into a `mica2_{vw}x{vh}_{tag}.jpg` filename.
+fn dims_of(p: &PathBuf) -> Option<(i32, i32)> {
+    let name = p.file_name()?.to_str()?;
+    let dims = name.trim_start_matches("mica2_").trim_end_matches(".jpg");
+    let (ws, rest) = dims.split_once('x')?;
+    let (hs, _) = rest.split_once('_')?;
+    Some((ws.parse().ok()?, hs.parse().ok()?))
 }
 
 /// One-shot full blur for instant first paint when no cache exists yet.
@@ -117,16 +147,17 @@ pub fn ensure_async() {
     let v = virtual_screen();
     if let Some(p) = render_full_cover(&src, &v) {
         if current().is_none() {
-            set(Some(p));
+            set_full(p, v.w, v.h);
         }
     }
 }
 
 /// Per-frame placement: slide the full-screen blur under the live window
-/// origin. Zero regen — pure layout, so tracking is instant.
+/// origin. Pure math over the in-memory cache — zero I/O, so tracking is
+/// instant even mid-drag.
 pub fn placement(win_x: f32, win_y: f32, scale: f32) -> Option<MicaGeo> {
     let s = scale.max(0.5);
-    let (path, vw, vh) = newest_full()?;
+    let (path, vw, vh) = full_slot().read().ok().and_then(|g| g.clone())?;
     let v = virtual_screen();
     Some(MicaGeo {
         path,
@@ -368,12 +399,12 @@ pub fn watch_source() {
         let id = (src.mtime_ns, src.len, v.x, v.y, v.w, v.h);
         if id != last {
             if let Some(p) = render_full_cover(&src, &v) {
-                set(Some(p));
+                set_full(p, v.w, v.h);
                 last = id;
             }
         } else if current().is_none() {
-            if let Some((p, _, _)) = newest_full() {
-                set(Some(p));
+            if let Some((p, vw, vh)) = newest_full() {
+                set_full(p, vw, vh);
             }
         }
     }
