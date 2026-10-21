@@ -370,8 +370,16 @@ impl Render for AppWindow {
                                                                 ) != key
                                                                 {
                                                                     tracing::warn!(
-                                                                        "layout-width vp={:.0} sidebar={:.0} content={:.0}",
+                                                                        "layout-width vp={:.0} bounds={:.0}x{:.0} sidebar={:.0} content={:.0}",
                                                                         vp_w,
+                                                                        {
+                                                                            let b = window.bounds();
+                                                                            f32::from(b.size.width)
+                                                                        },
+                                                                        {
+                                                                            let b = window.bounds();
+                                                                            f32::from(b.size.height)
+                                                                        },
                                                                         if state.sidebar_visible {
                                                                             state.sidebar.width
                                                                         } else {
