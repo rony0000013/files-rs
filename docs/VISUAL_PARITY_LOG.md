@@ -159,6 +159,12 @@
   tall/Expanded menus scroll internally instead of spilling past the main
   view; true-height tracking incl. toolbar chrome (also fixes nested
   flyout anchor math, which was 43px short).
+- Mica goes live: `track_window` follows the window rect (500ms) and the
+  wallpaper source; every move/resize/wallpaper-change regenerates a blurred
+  crop of exactly the wallpaper region behind the window (Fill/Fit/Stretch/
+  Center/Span layout math from the registry). Versioned filenames bust the
+  image cache — staleness impossible. Pixel proof: wallpaper rotated to a
+  dark-teal Spotlight image, tracker crop averages #256D82 vs #256D83.
 - Toolbar icons (Cut/Copy/Paste/Rename/Share/Delete) now close the menu when
   they fire. Rename was never broken — it was buried under the open menu.
 - Notification center: bell button top-right after the omnibar with an
