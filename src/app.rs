@@ -358,6 +358,9 @@ impl AppWindow {
             JobUpdate::UpdateStatus(id, status) => {
                 self.state.status_center.update_job(id, status);
             }
+            JobUpdate::UpdateJob(job) => {
+                self.state.status_center.upsert_job(job);
+            }
             JobUpdate::Complete(id) => {
                 self.state.status_center.complete_job(id);
             }
@@ -368,14 +371,96 @@ impl AppWindow {
                 self.state.status_center.add_job(job);
             }
         }
-        // Keep an open StatusCenter dialog in sync (render reads the snapshot,
-        // never the live view, to avoid BorrowMutError during render).
+        self.sync_status_center_dialog();
+        self.sync_taskbar_progress();
+        cx.notify();
+    }
+
+    /// Synchronize the open `DialogType::StatusCenter` snapshot with `self.state.status_center`.
+    pub fn sync_status_center_dialog(&mut self) {
         if let Some(DialogType::StatusCenter {
-            active_operations, ..
+            active_operations,
+            expanded,
+            notifications,
+            conflicts,
+            active_filter,
+            selected_index,
+            ..
         }) = self.state.active_dialog.as_mut()
         {
             *active_operations = self.state.status_center.jobs.clone();
+            *expanded = self.state.status_center.expanded.clone();
+            *notifications = self.state.status_center.notifications.clone();
+            *conflicts = self.state.status_center.conflicts.clone();
+            *active_filter = self.state.status_center.active_filter;
+            *selected_index = self.state.status_center.selected_index;
         }
+    }
+
+    /// Synchronize Windows Taskbar button progress bar (`ITaskbarList3`) with `StatusCenterState`.
+    fn sync_taskbar_progress(&self) {
+        if self.state.window_hwnd == 0 {
+            return;
+        }
+        use crate::platform::windows::taskbar_service::{
+            TaskbarProgressService, TaskbarProgressState,
+        };
+        let service = TaskbarProgressService::new();
+        service.set_hwnd(self.state.window_hwnd);
+        if let Some(prog) = self.state.status_center.aggregate_progress() {
+            let pct = (prog * 100.0).round() as u64;
+            let any_paused = self
+                .state
+                .status_center
+                .jobs
+                .iter()
+                .any(|j| j.is_paused());
+            if any_paused {
+                let _ = service.set_paused(pct);
+            } else if self.state.status_center.has_error() {
+                let _ = service.set_error(pct.max(10));
+            } else {
+                let _ = service.set_normal(pct);
+            }
+        } else {
+            let _ = service.set_state(TaskbarProgressState::None);
+        }
+    }
+
+    /// Toggle the Status & Notification Center flyout open or closed.
+    pub fn toggle_status_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::StatusCenter { .. })
+        ) {
+            self.state.status_center.is_open = false;
+            self.close_dialog(cx);
+            return;
+        }
+        self.state.status_center.is_open = true;
+        self.state.status_center.mark_all_read();
+        let vp = window.viewport_size();
+        let pos = gpui::Point {
+            x: px((f32::from(vp.width) - 424.0).max(8.0)),
+            y: px(88.0),
+        };
+        self.state.active_dialog = Some(DialogType::StatusCenter {
+            active_operations: self.state.status_center.jobs.clone(),
+            expanded: self.state.status_center.expanded.clone(),
+            notifications: self.state.status_center.notifications.clone(),
+            conflicts: self.state.status_center.conflicts.clone(),
+            active_filter: self.state.status_center.active_filter,
+            selected_index: self.state.status_center.selected_index,
+            position: Some(pos),
+        });
+        cx.notify();
+    }
+
+    /// Toggle Pause / Resume on a running transfer job in `ProgressEngine`.
+    pub fn toggle_pause_job(&mut self, id: uuid::Uuid, cx: &mut Context<Self>) {
+        let _paused = self.state.progress_engine.toggle_pause(id);
+        self.sync_status_center_dialog();
+        self.sync_taskbar_progress();
         cx.notify();
     }
 
@@ -484,137 +569,479 @@ impl AppWindow {
             }
         }
 
-        // Intercept Navigation Bar input typing
-        let is_nav_bar_active = self.state.nav_bar.edit_mode
-            || matches!(
-                self.state.nav_bar.omnibar_mode,
-                crate::ui::components::navigation_bar::OmnibarMode::Search
-                    | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
-            );
+        // Intercept keyboard navigation when Status Center flyout is open
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::StatusCenter { .. })
+        ) {
+            let key = keystroke.key.as_str();
+            let total_cards = self.state.status_center.conflicts.len()
+                + self.state.status_center.jobs.len()
+                + self.state.status_center.notifications.len();
+            match key.to_lowercase().as_str() {
+                "escape" => {
+                    self.state.status_center.is_open = false;
+                    self.close_dialog(cx);
+                    return;
+                }
+                "up" | "arrowup" => {
+                    if total_cards > 0 {
+                        if self.state.status_center.selected_index > 0 {
+                            self.state.status_center.selected_index -= 1;
+                        } else {
+                            self.state.status_center.selected_index = total_cards - 1;
+                        }
+                        self.sync_status_center_dialog();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "down" | "arrowdown" => {
+                    if total_cards > 0 {
+                        self.state.status_center.selected_index =
+                            (self.state.status_center.selected_index + 1) % total_cards;
+                        self.sync_status_center_dialog();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "tab" | "right" | "arrowright" => {
+                    use crate::ui::components::status_center::StatusCenterFilter;
+                    self.state.status_center.active_filter =
+                        match self.state.status_center.active_filter {
+                            StatusCenterFilter::All => StatusCenterFilter::Active,
+                            StatusCenterFilter::Active => StatusCenterFilter::Completed,
+                            StatusCenterFilter::Completed => StatusCenterFilter::Alerts,
+                            StatusCenterFilter::Alerts => StatusCenterFilter::All,
+                        };
+                    self.state.status_center.selected_index = 0;
+                    self.sync_status_center_dialog();
+                    cx.notify();
+                    return;
+                }
+                "left" | "arrowleft" => {
+                    use crate::ui::components::status_center::StatusCenterFilter;
+                    self.state.status_center.active_filter =
+                        match self.state.status_center.active_filter {
+                            StatusCenterFilter::All => StatusCenterFilter::Alerts,
+                            StatusCenterFilter::Active => StatusCenterFilter::All,
+                            StatusCenterFilter::Completed => StatusCenterFilter::Active,
+                            StatusCenterFilter::Alerts => StatusCenterFilter::Completed,
+                        };
+                    self.state.status_center.selected_index = 0;
+                    self.sync_status_center_dialog();
+                    cx.notify();
+                    return;
+                }
+                "space" => {
+                    let job_idx = self.state.status_center.selected_index;
+                    if let Some(job) = self.state.status_center.jobs.iter().rev().nth(job_idx) {
+                        let id = job.id;
+                        if job.is_running_or_paused() {
+                            self.toggle_pause_job(id, cx);
+                        } else {
+                            self.state.status_center.toggle_expanded(id);
+                            self.sync_status_center_dialog();
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                "e" => {
+                    let job_idx = self.state.status_center.selected_index;
+                    if let Some(job) = self.state.status_center.jobs.iter().rev().nth(job_idx) {
+                        let id = job.id;
+                        self.state.status_center.toggle_expanded(id);
+                        self.sync_status_center_dialog();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "enter" | "return" => {
+                    let job_idx = self.state.status_center.selected_index;
+                    if let Some(job) = self.state.status_center.jobs.iter().rev().nth(job_idx) {
+                        if let Some(dest) = job.destination_path.clone() {
+                            self.state.status_center.is_open = false;
+                            self.close_dialog(cx);
+                            self.navigate(dest, cx);
+                        } else {
+                            let id = job.id;
+                            self.state.status_center.toggle_expanded(id);
+                            self.sync_status_center_dialog();
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                "delete" | "backspace" => {
+                    let job_idx = self.state.status_center.selected_index;
+                    if let Some(job) = self.state.status_center.jobs.iter().rev().nth(job_idx) {
+                        let id = job.id;
+                        if job.is_running_or_paused() {
+                            self.state.progress_engine.request_cancel(id);
+                        } else {
+                            self.state.status_center.jobs.retain(|j| j.id != id);
+                            self.state.status_center.expanded.retain(|e| *e != id);
+                            self.sync_status_center_dialog();
+                        }
+                        cx.notify();
+                    }
+                    return;
+                }
+                "c" => {
+                    self.state.status_center.clear_finished();
+                    self.sync_status_center_dialog();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Intercept Navigation Bar / Omnibar input typing & keyboard shortcuts
+        let is_nav_bar_active = self.state.nav_bar.is_focused();
 
         if is_nav_bar_active {
-            use crate::ui::components::navigation_bar::OmnibarMode;
+            use crate::ui::components::navigation_bar::{OmnibarMode, SuggestionKind};
             let key = keystroke.key.as_str();
-            match key {
-                "escape" | "Escape" => {
-                    self.dismiss_omnibar(cx);
+            let key_lower = key.to_lowercase();
+            let ctrl = keystroke.modifiers.control;
+            let shift = keystroke.modifiers.shift;
+            let alt = keystroke.modifiers.alt;
+
+            // Alt+1 / Alt+2 / Alt+3: direct Omnibar mode switching
+            if alt && !ctrl {
+                match key_lower.as_str() {
+                    "1" => {
+                        self.activate_omnibar_path_mode(cx);
+                        return;
+                    }
+                    "2" => {
+                        self.activate_omnibar_command_mode(cx);
+                        return;
+                    }
+                    "3" => {
+                        self.activate_omnibar_search_mode(cx);
+                        return;
+                    }
+                    "r" => {
+                        self.toggle_search_option("regex", cx);
+                        return;
+                    }
+                    "c" => {
+                        self.toggle_search_option("case", cx);
+                        return;
+                    }
+                    "t" => {
+                        self.toggle_search_option("content", cx);
+                        return;
+                    }
+                    "m" => {
+                        self.toggle_search_option("metadata", cx);
+                        return;
+                    }
+                    "s" => {
+                        self.toggle_search_option("recursive", cx);
+                        return;
+                    }
+                    _ => {}
                 }
-                "enter" | "return" | "Enter" | "Return" => {
-                    self.handle_suggestion_confirm(cx);
+            }
+
+            // Ctrl+L / Ctrl+F / Ctrl+Shift+P while already inside Omnibar switches modes cleanly
+            if ctrl && !alt && !keystroke.modifiers.platform {
+                match key_lower.as_str() {
+                    "l" => {
+                        self.activate_omnibar_path_mode(cx);
+                        return;
+                    }
+                    "f" | "e" => {
+                        self.activate_omnibar_search_mode(cx);
+                        return;
+                    }
+                    "p" if shift => {
+                        self.activate_omnibar_command_mode(cx);
+                        return;
+                    }
+                    "a" => {
+                        self.state.nav_bar.select_all();
+                        cx.notify();
+                        return;
+                    }
+                    "c" => {
+                        let txt = self.state.nav_bar.active_text().to_string();
+                        if !txt.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(txt));
+                        }
+                        return;
+                    }
+                    "x" => {
+                        let txt = self.state.nav_bar.active_text().to_string();
+                        if !txt.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(txt));
+                            self.state.nav_bar.set_active_text(String::new(), false);
+                            if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                                self.update_search(String::new(), cx);
+                            }
+                            self.refresh_omnibar_suggestions(cx);
+                        }
+                        return;
+                    }
+                    "v" => {
+                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                            let clean = clip.lines().next().unwrap_or("").to_string();
+                            self.state.nav_bar.insert_text(&clean);
+                            self.state.nav_bar.show_suggestions = true;
+                            if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                                let q = self.state.nav_bar.search_query.clone();
+                                self.update_search(q, cx);
+                            }
+                            self.refresh_omnibar_suggestions(cx);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            match key_lower.as_str() {
+                "escape" => {
+                    // Files-community Omnibar.Events.cs parity:
+                    // If a suggestion was selected via arrow keys, first Escape reverts to user input
+                    // and closes the popup; next Escape exits Omnibar focus completely.
+                    if self.state.nav_bar.show_suggestions
+                        && self.state.nav_bar.selected_suggestion_index.is_some()
+                        && !matches!(
+                            self.state.nav_bar.omnibar_mode,
+                            OmnibarMode::CommandPalette
+                        )
+                    {
+                        self.state.nav_bar.revert_to_user_input();
+                        self.state.nav_bar.show_suggestions = false;
+                        cx.notify();
+                    } else {
+                        self.dismiss_omnibar(cx);
+                    }
+                }
+                "enter" | "return" => {
+                    self.handle_suggestion_confirm_with_modifiers(ctrl, shift, alt, cx);
                     cx.notify();
                 }
-                "up" | "Up" | "arrowup" | "ArrowUp" => {
-                    if self.state.nav_bar.show_suggestions
-                        && !self.state.nav_bar.suggestions.is_empty()
-                    {
-                        let current = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
-                        if current > 0 {
-                            self.state.nav_bar.selected_suggestion_index = Some(current - 1);
-                        } else {
-                            self.state.nav_bar.selected_suggestion_index =
-                                Some(self.state.nav_bar.suggestions.len() - 1);
+                "up" | "arrowup" => {
+                    if !self.state.nav_bar.suggestions.is_empty() {
+                        self.state.nav_bar.show_suggestions = true;
+                        let len = self.state.nav_bar.suggestions.len();
+                        match self.state.nav_bar.selected_suggestion_index {
+                            Some(0) => {
+                                self.state.nav_bar.revert_to_user_input();
+                            }
+                            Some(cur) => {
+                                let next = cur - 1;
+                                self.state.nav_bar.selected_suggestion_index = Some(next);
+                                self.preview_selected_suggestion(next);
+                            }
+                            None => {
+                                let next = len - 1;
+                                self.state.nav_bar.selected_suggestion_index = Some(next);
+                                self.preview_selected_suggestion(next);
+                            }
                         }
                         cx.notify();
                     }
                 }
-                "down" | "Down" | "arrowdown" | "ArrowDown" => {
-                    if self.state.nav_bar.show_suggestions
-                        && !self.state.nav_bar.suggestions.is_empty()
-                    {
-                        let current = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
-                        if current + 1 < self.state.nav_bar.suggestions.len() {
-                            self.state.nav_bar.selected_suggestion_index = Some(current + 1);
-                        } else {
-                            self.state.nav_bar.selected_suggestion_index = Some(0);
+                "down" | "arrowdown" => {
+                    if !self.state.nav_bar.suggestions.is_empty() {
+                        self.state.nav_bar.show_suggestions = true;
+                        let len = self.state.nav_bar.suggestions.len();
+                        match self.state.nav_bar.selected_suggestion_index {
+                            Some(cur) if cur + 1 < len => {
+                                let next = cur + 1;
+                                self.state.nav_bar.selected_suggestion_index = Some(next);
+                                self.preview_selected_suggestion(next);
+                            }
+                            Some(_) => {
+                                self.state.nav_bar.revert_to_user_input();
+                            }
+                            None => {
+                                self.state.nav_bar.selected_suggestion_index = Some(0);
+                                self.preview_selected_suggestion(0);
+                            }
                         }
                         cx.notify();
                     }
                 }
-                "tab" | "Tab" => {
+                "pageup" => {
+                    if self.state.nav_bar.show_suggestions
+                        && !self.state.nav_bar.suggestions.is_empty()
+                    {
+                        let cur = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
+                        let next = cur.saturating_sub(5);
+                        self.state.nav_bar.selected_suggestion_index = Some(next);
+                        self.preview_selected_suggestion(next);
+                        cx.notify();
+                    }
+                }
+                "pagedown" => {
+                    if self.state.nav_bar.show_suggestions
+                        && !self.state.nav_bar.suggestions.is_empty()
+                    {
+                        let len = self.state.nav_bar.suggestions.len();
+                        let cur = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
+                        let next = (cur + 5).min(len.saturating_sub(1));
+                        self.state.nav_bar.selected_suggestion_index = Some(next);
+                        self.preview_selected_suggestion(next);
+                        cx.notify();
+                    }
+                }
+                "left" | "arrowleft" => {
+                    self.state.nav_bar.move_cursor_left(ctrl);
+                    cx.notify();
+                }
+                "right" | "arrowright" => {
+                    if self.state.nav_bar.move_cursor_right(ctrl) {
+                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                            let q = self.state.nav_bar.search_query.clone();
+                            self.update_search(q, cx);
+                        }
+                        self.refresh_omnibar_suggestions(cx);
+                    } else {
+                        cx.notify();
+                    }
+                }
+                "home" => {
+                    self.state.nav_bar.move_cursor_home();
+                    cx.notify();
+                }
+                "end" => {
+                    self.state.nav_bar.move_cursor_end();
+                    cx.notify();
+                }
+                "tab" => {
+                    // 1. If a suggestion is highlighted, autocomplete it into the input box
                     if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
                         if let Some(suggestion) = self.state.nav_bar.suggestions.get(idx).cloned() {
                             match suggestion.kind {
-                                crate::ui::components::navigation_bar::SuggestionKind::Path {
-                                    path,
-                                } => {
-                                    self.state.nav_bar.edit_text =
-                                        path.to_string_lossy().to_string();
-                                    let registry = self.state.action_registry.clone();
-                                    self.state.nav_bar.update_suggestions(&registry);
+                                SuggestionKind::Path { path } => {
+                                    let mut p_str = path.to_string_lossy().to_string();
+                                    if path.as_path().is_dir()
+                                        && !p_str.ends_with('\\')
+                                        && !p_str.ends_with('/')
+                                    {
+                                        p_str.push(std::path::MAIN_SEPARATOR);
+                                    }
+                                    self.state.nav_bar.set_active_text(p_str, false);
+                                    self.state.nav_bar.selected_suggestion_index = None;
+                                    self.refresh_omnibar_suggestions(cx);
                                 }
-                                crate::ui::components::navigation_bar::SuggestionKind::SearchHistory {
-                                    query,
-                                } => {
-                                    self.state.nav_bar.search_query = query;
-                                    let registry = self.state.action_registry.clone();
-                                    self.state.nav_bar.update_suggestions(&registry);
+                                SuggestionKind::SearchHistory { query } => {
+                                    self.state.nav_bar.set_active_text(query.clone(), false);
+                                    self.state.nav_bar.selected_suggestion_index = None;
+                                    self.update_search(query, cx);
+                                    self.refresh_omnibar_suggestions(cx);
                                 }
-                                _ => {}
+                                SuggestionKind::AqsFilter { token } => {
+                                    self.apply_aqs_filter_suggestion(&token, cx);
+                                }
+                                SuggestionKind::SearchItem { path, .. } => {
+                                    let name = path
+                                        .as_path()
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    self.state.nav_bar.set_active_text(name.clone(), false);
+                                    self.update_search(name, cx);
+                                    self.refresh_omnibar_suggestions(cx);
+                                }
+                                SuggestionKind::Command { .. } => {
+                                    self.state
+                                        .nav_bar
+                                        .set_active_text(suggestion.label, false);
+                                    self.refresh_omnibar_suggestions(cx);
+                                }
                             }
-                            cx.notify();
+                            return;
                         }
+                    }
+                    // 2. Otherwise accept FilePilot inline predictive ghost completion
+                    if self.state.nav_bar.accept_ghost_prediction() {
+                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                            let q = self.state.nav_bar.search_query.clone();
+                            self.update_search(q, cx);
+                        }
+                        self.refresh_omnibar_suggestions(cx);
+                        return;
+                    }
+                    // 3. Otherwise select the first suggestion in the dropdown
+                    if !self.state.nav_bar.suggestions.is_empty() {
+                        self.state.nav_bar.selected_suggestion_index = Some(0);
+                        self.preview_selected_suggestion(0);
+                        cx.notify();
                     }
                 }
-                "backspace" | "Backspace" => {
-                    match self.state.nav_bar.omnibar_mode {
-                        OmnibarMode::Path => {
-                            self.state.nav_bar.edit_text.pop();
-                        }
-                        OmnibarMode::Search => {
-                            self.state.nav_bar.search_query.pop();
-                            let query = self.state.nav_bar.search_query.clone();
-                            self.update_search(query, cx);
-                        }
-                        OmnibarMode::CommandPalette => {
-                            self.state.nav_bar.command_query.pop();
-                        }
+                "backspace" => {
+                    self.state.nav_bar.backspace(ctrl);
+                    self.state.nav_bar.selected_suggestion_index = None;
+                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                        let query = self.state.nav_bar.search_query.clone();
+                        self.update_search(query, cx);
                     }
-                    let registry = self.state.action_registry.clone();
-                    self.state.nav_bar.update_suggestions(&registry);
-                    cx.notify();
+                    self.refresh_omnibar_suggestions(cx);
                 }
-                "space" | "Space" => {
-                    match self.state.nav_bar.omnibar_mode {
-                        OmnibarMode::Path => {
-                            self.state.nav_bar.edit_text.push(' ');
-                        }
-                        OmnibarMode::Search => {
-                            self.state.nav_bar.search_query.push(' ');
-                            let query = self.state.nav_bar.search_query.clone();
-                            self.update_search(query, cx);
-                        }
-                        OmnibarMode::CommandPalette => {
-                            self.state.nav_bar.command_query.push(' ');
+                "delete" => {
+                    // Shift+Delete removes a highlighted SearchHistory item
+                    if shift {
+                        if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
+                            if let Some(SuggestionKind::SearchHistory { query }) =
+                                self.state.nav_bar.suggestions.get(idx).map(|s| s.kind.clone())
+                            {
+                                self.state.nav_bar.remove_search_history_item(&query);
+                                self.refresh_omnibar_suggestions(cx);
+                                return;
+                            }
                         }
                     }
-                    let registry = self.state.action_registry.clone();
-                    self.state.nav_bar.update_suggestions(&registry);
-                    cx.notify();
+                    self.state.nav_bar.delete_forward(ctrl);
+                    self.state.nav_bar.selected_suggestion_index = None;
+                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                        let query = self.state.nav_bar.search_query.clone();
+                        self.update_search(query, cx);
+                    }
+                    self.refresh_omnibar_suggestions(cx);
+                }
+                "space" => {
+                    self.state.nav_bar.insert_text(" ");
+                    self.state.nav_bar.selected_suggestion_index = None;
+                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                        let query = self.state.nav_bar.search_query.clone();
+                        self.update_search(query, cx);
+                    }
+                    self.refresh_omnibar_suggestions(cx);
                 }
                 _ => {
-                    if !keystroke.modifiers.control
-                        && !keystroke.modifiers.alt
-                        && !keystroke.modifiers.platform
-                    {
-                        if keystroke.key.chars().count() == 1 {
-                            match self.state.nav_bar.omnibar_mode {
-                                OmnibarMode::Path => {
-                                    self.state.nav_bar.edit_text.push_str(&keystroke.key);
-                                }
-                                OmnibarMode::Search => {
-                                    self.state.nav_bar.search_query.push_str(&keystroke.key);
-                                    let query = self.state.nav_bar.search_query.clone();
-                                    self.update_search(query, cx);
-                                }
-                                OmnibarMode::CommandPalette => {
-                                    self.state.nav_bar.command_query.push_str(&keystroke.key);
-                                }
+                    if !ctrl && !alt && !keystroke.modifiers.platform && key.chars().count() == 1 {
+                        // Prefix mode switching: typing `>` or `?` at start of Path Mode switches to
+                        // Command Palette or Search Mode automatically!
+                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Path)
+                            && (self.state.nav_bar.selection_all
+                                || self.state.nav_bar.edit_text.is_empty())
+                        {
+                            if key == ">" {
+                                self.activate_omnibar_command_mode(cx);
+                                return;
+                            } else if key == "?" {
+                                self.activate_omnibar_search_mode(cx);
+                                return;
                             }
-                            self.state.nav_bar.show_suggestions = true;
-                            let registry = self.state.action_registry.clone();
-                            self.state.nav_bar.update_suggestions(&registry);
-                            cx.notify();
                         }
+
+                        self.state.nav_bar.insert_text(key);
+                        self.state.nav_bar.selected_suggestion_index = None;
+                        self.state.nav_bar.show_suggestions = true;
+                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                            let query = self.state.nav_bar.search_query.clone();
+                            self.update_search(query, cx);
+                        }
+                        self.refresh_omnibar_suggestions(cx);
                     }
                 }
             }
@@ -2075,7 +2502,7 @@ impl AppWindow {
                 cx.foreground_executor()
                     .spawn(async move {
                         use crate::core::progress::OpKind;
-                        use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                        use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
                         let (op_label, kind) = if is_copy {
                             ("Copy", OpKind::Copy)
                         } else {
@@ -2085,9 +2512,9 @@ impl AppWindow {
                             .start_job(format!("{} ({} items)", op_label, total), kind)
                             .await;
                         let outcome = if is_copy {
-                            run_copy_job(&progress_engine, job_id, sources, dest_dir).await
+                            run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
                         } else {
-                            run_move_job(&progress_engine, job_id, sources, dest_dir).await
+                            run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
                         };
                         match outcome {
                             TransferOutcome::Done => progress_engine.complete_job(job_id).await,
@@ -2825,6 +3252,11 @@ impl AppWindow {
         }
 
         let tab_anim_tick = self.state.tab_drag.tick_animations(dt);
+        let nav_anim_tick = self
+            .state
+            .nav_bar
+            .tick_animations(dt, self.state.main_view.search_state.loading);
+        let status_anim_tick = self.state.status_center.tick_animations(dt);
 
         let sidebar_tick;
         let main_tick;
@@ -2856,7 +3288,7 @@ impl AppWindow {
                 false
             };
         }
-        if sidebar_tick || main_tick || secondary_tick || tab_anim_tick || os_drag_active {
+        if sidebar_tick || main_tick || secondary_tick || tab_anim_tick || nav_anim_tick || status_anim_tick || os_drag_active {
             if main_tick {
                 let offset = self.state.main_view.bouncy_scroll.offset;
                 let handle = &self.state.main_view.uniform_list_scroll_handle;
@@ -3007,12 +3439,12 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{TransferOutcome, run_delete_job};
+                use crate::core::transfer::{TransferOutcome, run_delete_job_rt};
                 let n = bufs.len();
                 let job = engine
                     .start_job(format!("Delete ({} items)", n), OpKind::Delete)
                     .await;
-                match run_delete_job(&engine, job, bufs, true).await {
+                match run_delete_job_rt(engine.clone(), job, bufs, true).await {
                     TransferOutcome::Done => {
                         engine.complete_job(job).await;
                     }
@@ -3066,12 +3498,12 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{TransferOutcome, run_delete_job};
+                use crate::core::transfer::{TransferOutcome, run_delete_job_rt};
                 let n = bufs.len();
                 let job = engine
                     .start_job(format!("Delete ({} items)", n), OpKind::Delete)
                     .await;
-                match run_delete_job(&engine, job, bufs, false).await {
+                match run_delete_job_rt(engine.clone(), job, bufs, false).await {
                     TransferOutcome::Done => {
                         engine.complete_job(job).await;
                     }
@@ -3667,7 +4099,7 @@ impl AppWindow {
                     cx.foreground_executor()
                         .spawn(async move {
                             use crate::core::progress::OpKind;
-                            use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                            use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
                             let (op_label, kind) = if is_copy {
                                 ("Copy", OpKind::Copy)
                             } else {
@@ -3677,9 +4109,9 @@ impl AppWindow {
                                 .start_job(format!("{} ({} items)", op_label, total), kind)
                                 .await;
                             let outcome = if is_copy {
-                                run_copy_job(&progress_engine, job_id, sources, dest_dir).await
+                                run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
                             } else {
-                                run_move_job(&progress_engine, job_id, sources, dest_dir).await
+                                run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
                             };
                             match outcome {
                                 TransferOutcome::Done => progress_engine.complete_job(job_id).await,
@@ -3872,223 +4304,529 @@ impl AppWindow {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SEARCH METHODS
+    // OMNIBAR, BREADCRUMB & HIGH-SPEED SEARCH METHODS
     // ═══════════════════════════════════════════════════════════════
 
-    /// Start a global search with the given query
+    /// Activate Omnibar Path Edit Mode (`Ctrl+L` / `Alt+D` / clicking address bar).
+    pub fn activate_omnibar_path_mode(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::navigation_bar::OmnibarMode;
+        self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+        self.state.nav_bar.edit_mode = true;
+        let path_str = self
+            .state
+            .nav_bar
+            .current_path
+            .to_string_lossy()
+            .to_string();
+        self.state.nav_bar.set_active_text(path_str, true);
+        self.state.nav_bar.show_suggestions = true;
+        self.state.nav_bar.selected_suggestion_index = None;
+        self.refresh_omnibar_suggestions(cx);
+    }
+
+    /// Activate Omnibar Command Palette Mode (`Ctrl+Shift+P` / `F1` / `>` prefix).
+    pub fn activate_omnibar_command_mode(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::navigation_bar::OmnibarMode;
+        self.state.nav_bar.omnibar_mode = OmnibarMode::CommandPalette;
+        self.state.nav_bar.edit_mode = false;
+        self.state.nav_bar.set_active_text(String::new(), false);
+        self.state.nav_bar.show_suggestions = true;
+        self.state.nav_bar.selected_suggestion_index = Some(0);
+        self.refresh_omnibar_suggestions(cx);
+    }
+
+    /// Activate Omnibar Search Mode (`Ctrl+F` / `?` prefix).
+    pub fn activate_omnibar_search_mode(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::navigation_bar::OmnibarMode;
+        self.state.nav_bar.omnibar_mode = OmnibarMode::Search;
+        self.state.nav_bar.edit_mode = false;
+        let existing = self.state.nav_bar.search_query.clone();
+        self.state.nav_bar.set_active_text(existing, true);
+        self.state.nav_bar.show_suggestions = true;
+        self.state.nav_bar.selected_suggestion_index = None;
+        self.state.main_view.search_state.is_searching = true;
+        self.refresh_omnibar_suggestions(cx);
+    }
+
+    /// Refresh Omnibar suggestions and FilePilot inline ghost completion using live folder items & tags.
+    pub fn refresh_omnibar_suggestions(&mut self, cx: &mut Context<Self>) {
+        let registry = self.state.action_registry.clone();
+        // Prefer pre_search_items when available so current-folder completions stay complete during deep search
+        let items_slice: Vec<FileItem> = self
+            .state
+            .main_view
+            .search_state
+            .pre_search_items
+            .clone()
+            .unwrap_or_else(|| self.state.main_view.items.clone());
+        let tags_cache = self.state.main_view.tags_cache.clone();
+        self.state
+            .nav_bar
+            .update_suggestions_with_context(&registry, &items_slice, &tags_cache);
+        cx.notify();
+    }
+
+    /// Live-preview a suggestion in the Omnibar text input when navigating suggestions with Up/Down arrows.
+    pub fn preview_selected_suggestion(&mut self, index: usize) {
+        use crate::ui::components::navigation_bar::SuggestionKind;
+        if let Some(sug) = self.state.nav_bar.suggestions.get(index).cloned() {
+            match sug.kind {
+                SuggestionKind::Path { path } => {
+                    self.state
+                        .nav_bar
+                        .preview_suggestion_text(path.to_string_lossy().to_string());
+                }
+                SuggestionKind::SearchHistory { query } => {
+                    self.state.nav_bar.preview_suggestion_text(query);
+                }
+                _ => {}
+            }
+            self.state.nav_bar.ensure_suggestion_visible(index);
+        }
+    }
+
+    /// Apply an AQS filter token (`kind:image `, `size:>10mb `, etc.) into the Search Mode query.
+    pub fn apply_aqs_filter_suggestion(&mut self, token: &str, cx: &mut Context<Self>) {
+        let cur = self.state.nav_bar.search_query.trim_end().to_string();
+        let updated = if let Some(last_space) = cur.rfind(' ') {
+            let last_tok = &cur[last_space + 1..];
+            if last_tok.contains(':') {
+                format!("{} {}", &cur[..last_space], token)
+            } else {
+                format!("{} {}", cur, token)
+            }
+        } else if cur.contains(':') || cur.is_empty() {
+            token.to_string()
+        } else {
+            format!("{} {}", cur, token)
+        };
+        self.state.nav_bar.set_active_text(updated.clone(), false);
+        self.state.nav_bar.selected_suggestion_index = None;
+        self.update_search(updated, cx);
+        self.refresh_omnibar_suggestions(cx);
+    }
+
+    /// Toggle a search option pill (`regex`, `case`, `content`, `metadata`, `recursive`) and re-run search.
+    pub fn toggle_search_option(&mut self, which: &str, cx: &mut Context<Self>) {
+        match which {
+            "regex" => {
+                self.state.nav_bar.search_options.use_regex =
+                    !self.state.nav_bar.search_options.use_regex;
+            }
+            "case" => {
+                self.state.nav_bar.search_options.case_sensitive =
+                    !self.state.nav_bar.search_options.case_sensitive;
+            }
+            "content" => {
+                self.state.nav_bar.search_options.search_content =
+                    !self.state.nav_bar.search_options.search_content;
+            }
+            "metadata" => {
+                self.state.nav_bar.search_options.search_metadata =
+                    !self.state.nav_bar.search_options.search_metadata;
+            }
+            "recursive" => {
+                self.state.nav_bar.search_options.recursive =
+                    !self.state.nav_bar.search_options.recursive;
+            }
+            _ => {}
+        }
+        // Sync options to SearchState
+        let opts = self.state.nav_bar.search_options;
+        self.state.main_view.search_state.use_regex = opts.use_regex;
+        self.state.main_view.search_state.case_sensitive = opts.case_sensitive;
+        self.state.main_view.search_state.search_content = opts.search_content;
+        self.state.main_view.search_state.search_metadata = opts.search_metadata;
+        self.state.main_view.search_state.recursive = opts.recursive;
+
+        let q = self.state.nav_bar.search_query.clone();
+        if !q.trim().is_empty() {
+            self.start_search(q, cx);
+        }
+        self.refresh_omnibar_suggestions(cx);
+    }
+
+    /// Open `path` in a new tab immediately (used by middle-click / Ctrl+Click on breadcrumbs & suggestions).
+    pub fn open_path_in_new_tab(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        let dir = if path.as_path().is_file() {
+            path.parent().unwrap_or_else(|| path.clone())
+        } else {
+            path
+        };
+        self.open_in_new_tab(dir, cx);
+    }
+
+    /// Copy a breadcrumb segment path to the system clipboard and push a non-intrusive toast confirmation.
+    pub fn copy_breadcrumb_path(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        let s = path.to_string_lossy().to_string();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone()));
+        self.state.status_center.push_notification(
+            "Path copied to clipboard",
+            s,
+            crate::ui::components::status_center::NotificationSeverity::Info,
+            Some(path),
+        );
+        cx.notify();
+    }
+
+    /// Handle dropping dragged files/folders onto a breadcrumb segment (`BreadcrumbBarItem_Drop` parity).
+    pub fn handle_file_drop_on_breadcrumb(
+        &mut self,
+        target_folder: FilesPath,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.nav_bar.file_drag_over_crumb = None;
+        let is_copy = self.state.main_view.drag_state.is_copy;
+        let indices = self.state.main_view.drag_state.indices.clone();
+        let sources: Vec<std::path::PathBuf> = indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.as_path().to_path_buf())
+            .collect();
+
+        self.state.main_view.drag_end();
+        let dest_dir = target_folder.as_path().to_path_buf();
+        if sources.is_empty() || !dest_dir.is_dir() {
+            cx.notify();
+            return;
+        }
+
+        let progress_engine = self.state.progress_engine.clone();
+        let this_weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let total = sources.len();
+        let dest_fp = target_folder.clone();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                use crate::core::progress::OpKind;
+                use crate::core::transfer::{run_copy_job_rt, run_move_job_rt, TransferOutcome};
+                let (op_label, kind) = if is_copy {
+                    ("Copy", OpKind::Copy)
+                } else {
+                    ("Move", OpKind::Move)
+                };
+                let job_id = progress_engine
+                    .start_job_with_meta(
+                        format!("{} ({} items)", op_label, total),
+                        kind,
+                        Some(dest_fp),
+                        total as u64,
+                    )
+                    .await;
+                let outcome = if is_copy {
+                    run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                } else {
+                    run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                };
+                match outcome {
+                    TransferOutcome::Done => progress_engine.complete_job(job_id).await,
+                    TransferOutcome::Cancelled => {}
+                    TransferOutcome::Failed(reason) => {
+                        progress_engine.fail_job(job_id, reason).await
+                    }
+                }
+                let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    this.refresh(cx);
+                });
+            })
+            .detach();
+        cx.notify();
+    }
+
+    /// Jump multiple steps in the Back or Forward navigation history stack (`BackHistoryFlyout` / `ForwardHistoryFlyout`).
+    pub fn jump_history_steps(
+        &mut self,
+        is_back: bool,
+        steps: usize,
+        _target: FilesPath,
+        cx: &mut Context<Self>,
+    ) {
+        let mut final_path = None;
+        self.state.navigation.update(cx, |nav, _cx| {
+            let tab = nav.tabs.active_tab_mut();
+            for _ in 0..steps {
+                let stepped = if is_back {
+                    tab.navigate_back()
+                } else {
+                    tab.navigate_forward()
+                };
+                if let Some(p) = stepped {
+                    final_path = Some(p);
+                } else {
+                    break;
+                }
+            }
+        });
+        if let Some(dest) = final_path {
+            self.save_session(cx);
+            self.navigate(dest, cx);
+        }
+    }
+
+    /// Start a global or local search with the given query, supporting:
+    /// - Regex (`options.use_regex`, `re:...`, `/.../i`)
+    /// - Windows Search Wildcard patterns (`*.rs;*.toml`, `doc_??.*`, `.pdf`)
+    /// - AQS filters (`kind:`, `ext:`, `size:`, `date:`, `modified:`, `created:`, `tag:`, `is:`)
+    /// - Full-Text Content Search (`options.search_content`, `content:...`)
+    /// - Optional Full-Text Metadata Search (`options.search_metadata`, `meta:...`)
     pub fn start_search(&mut self, query: String, cx: &mut Context<Self>) {
-        if query.is_empty() {
+        // Cancel any previous in-flight deep search immediately
+        if let Some(token) = self.state.main_view.search_state.cancel_token.take() {
+            token.store(true, Ordering::Relaxed);
+        }
+
+        if query.trim().is_empty() {
             self.clear_search(cx);
             return;
         }
 
-        self.state.main_view.search_state.is_searching = true;
-        self.state.main_view.search_state.query = query.clone();
-        self.state.main_view.search_state.loading = true;
-
-        // Perform immediate name search in current items
-        let search_service = crate::domain::search::SearchService::new();
-        let item_names: Vec<String> = self
+        // Snapshot current folder items before any deep search replaces `main_view.items`
+        if self.state.main_view.search_state.pre_search_items.is_none() {
+            self.state.main_view.search_state.pre_search_items =
+                Some(self.state.main_view.items.clone());
+        } else if let Some(orig_items) = self
             .state
             .main_view
-            .items
-            .iter()
-            .map(|i| i.name.clone())
-            .collect();
-        let matching_indices = search_service.filter_items(&query, &item_names);
-
-        self.state.main_view.search_state.results = matching_indices.into_iter().collect();
-        self.state.main_view.search_state.loading = false;
-
-        // If query contains special chars, might be a deep search
-        if query.len() > 2
-            && (query.contains('/') || query.contains("\\") || query.starts_with('*'))
+            .search_state
+            .pre_search_items
+            .clone()
         {
-            // Trigger deep recursive search with cancellation support
+            // Restore original items before filtering in-memory for the new query
+            self.state.main_view.items = orig_items.clone();
+            self.state.main_view.bump_items_revision();
+            let restored = orig_items.clone();
+            self.state.file_items.update(cx, |m, _| {
+                m.items = restored;
+                m.selected_indices.clear();
+            });
+        }
+
+        let mut opts = self.state.nav_bar.search_options;
+        opts.include_hidden = self.state.main_view.show_hidden_files;
+
+        self.state.main_view.search_state.is_searching = true;
+        self.state.main_view.search_state.query = query.clone();
+        self.state.main_view.search_state.use_regex = opts.use_regex;
+        self.state.main_view.search_state.case_sensitive = opts.case_sensitive;
+        self.state.main_view.search_state.search_content = opts.search_content;
+        self.state.main_view.search_state.search_metadata = opts.search_metadata;
+        self.state.main_view.search_state.recursive = opts.recursive;
+
+        // 1. Immediate sub-millisecond evaluation of current directory items
+        let tags_cache = &self.state.main_view.tags_cache;
+        let mut matching_indices = std::collections::HashSet::new();
+        for (idx, item) in self.state.main_view.items.iter().enumerate() {
+            if crate::domain::search::SearchService::evaluate_file_item(
+                item,
+                &query,
+                &opts,
+                tags_cache,
+            )
+            .is_some()
+            {
+                matching_indices.insert(idx);
+            }
+        }
+        self.state.main_view.search_state.results = matching_indices;
+        self.state.main_view.bump_items_revision();
+
+        // 2. If `recursive` is enabled and query is >= 2 chars (or has wildcard/AQS/regex),
+        //    spawn a parallel streaming recursive search!
+        let should_deep_search = opts.recursive
+            && (query.trim().len() >= 2 || query.contains('*') || query.contains('?'));
+
+        if should_deep_search {
+            self.state.main_view.search_state.loading = true;
             let cancel_flag = Arc::new(AtomicBool::new(false));
             self.state.main_view.search_state.cancel_token = Some(cancel_flag.clone());
             let path_clone = self.state.main_view.primary_path.clone();
             let query_clone = query.clone();
+            let tags_snapshot = self.state.main_view.tags_cache.clone();
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
-            let _task = cx.foreground_executor().spawn(async move {
-                let results = Self::do_deep_search(path_clone, query_clone, cancel_flag);
-                let _ = weak_entity.update(&mut async_cx, |this, cx| {
-                    this.state.main_view.search_state.deep_results = results.clone();
-
-                    let file_items: Vec<FileItem> = results
-                        .iter()
-                        .map(|res| {
-                            let modified = std::fs::metadata(res.path.as_path())
-                                .ok()
-                                .and_then(|m| m.modified().ok());
-                            let created = std::fs::metadata(res.path.as_path())
-                                .ok()
-                                .and_then(|m| m.created().ok());
-                            FileItem {
-                                name: res.name.clone(),
-                                path: res.path.clone(),
-                                file_type: if res.is_dir {
-                                    FileType::Directory
-                                } else {
-                                    FileType::File
-                                },
-                                size: res.size,
-                                is_hidden: false,
-                                is_system: false,
-                                modified,
-                                created,
-                            }
+            cx.foreground_executor()
+                .spawn(async move {
+                    let cancel_for_bg = cancel_flag.clone();
+                    let results = async_cx
+                        .background_executor()
+                        .spawn(async move {
+                            Self::do_deep_search_with_options(
+                                path_clone,
+                                query_clone,
+                                opts,
+                                tags_snapshot,
+                                cancel_for_bg,
+                            )
                         })
-                        .collect();
+                        .await;
 
-                    this.state.main_view.items = file_items.clone();
-                    this.state.main_view.bump_items_revision();
-                    this.state.file_items.update(cx, |m, _| {
-                        m.items = file_items;
-                        m.selected_indices.clear();
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let _ = weak_entity.update(&mut async_cx, |this, cx| {
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        this.state.main_view.search_state.deep_results = results.clone();
+
+                        let file_items: Vec<FileItem> = results
+                            .iter()
+                            .map(|res| {
+                                let md = std::fs::metadata(res.path.as_path()).ok();
+                                let modified = md.as_ref().and_then(|m| m.modified().ok());
+                                let created = md.as_ref().and_then(|m| m.created().ok());
+                                FileItem {
+                                    name: res.name.clone(),
+                                    path: res.path.clone(),
+                                    file_type: if res.is_dir {
+                                        FileType::Directory
+                                    } else {
+                                        FileType::File
+                                    },
+                                    size: res.size,
+                                    is_hidden: res.name.starts_with('.'),
+                                    is_system: false,
+                                    modified,
+                                    created,
+                                }
+                            })
+                            .collect();
+
+                        this.state.main_view.items = file_items.clone();
+                        this.state.main_view.bump_items_revision();
+                        this.state.file_items.update(cx, |m, _| {
+                            m.items = file_items;
+                            m.selected_indices.clear();
+                        });
+                        this.state.main_view.search_state.results =
+                            (0..this.state.main_view.items.len()).collect();
+                        this.state.main_view.search_state.loading = false;
+                        this.refresh_omnibar_suggestions(cx);
+                        cx.notify();
                     });
-                    this.state.main_view.search_state.results =
-                        (0..this.state.main_view.items.len()).collect();
-
-                    this.state.main_view.search_state.loading = false;
-                    cx.notify();
-                });
-            });
+                })
+                .detach();
+        } else {
+            self.state.main_view.search_state.loading = false;
         }
 
         cx.notify();
     }
 
-    /// Perform a deep recursive search in a folder (blocking, called from async context)
+    /// Legacy wrapper preserved for compatibility.
+    #[allow(dead_code)]
     fn do_deep_search(
         base_path: FilesPath,
         query: String,
         cancel_flag: Arc<AtomicBool>,
     ) -> Vec<crate::ui::views::main_view::SearchResult> {
+        Self::do_deep_search_with_options(
+            base_path,
+            query,
+            crate::domain::search::SearchOptions::default(),
+            HashMap::new(),
+            cancel_flag,
+        )
+    }
+
+    /// Parallel multi-threaded deep recursive search powered by `jwalk::WalkDir` and `SearchService::evaluate_file_item`.
+    fn do_deep_search_with_options(
+        base_path: FilesPath,
+        query: String,
+        options: crate::domain::search::SearchOptions,
+        tags_cache: HashMap<String, Vec<String>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Vec<crate::ui::views::main_view::SearchResult> {
         use crate::ui::views::main_view::SearchResult;
 
-        let mut results = Vec::new();
-        let query_lower = query.to_lowercase();
-
-        fn is_match(name: &str, query: &str) -> bool {
-            let q = query.trim_start_matches('*');
-            if query.starts_with('*') && query.ends_with('*') {
-                name.to_lowercase().contains(&q.to_lowercase())
-            } else if query.starts_with('*') {
-                name.to_lowercase().ends_with(&q.to_lowercase())
-            } else if query.ends_with('*') {
-                name.to_lowercase().starts_with(&q.to_lowercase())
-            } else {
-                name.to_lowercase().contains(&query.to_lowercase())
-            }
+        let root = base_path.as_path();
+        if !root.is_dir() {
+            return Vec::new();
         }
 
-        fn scan_dir(
-            dir: &std::path::Path,
-            query: &str,
-            results: &mut Vec<SearchResult>,
-            depth: usize,
-            cancel_flag: &AtomicBool,
-        ) {
-            if depth > 10 {
-                return;
-            } // Limit recursion depth
-            if cancel_flag.load(Ordering::Relaxed) {
-                return;
-            } // Check cancellation
+        let mut results: Vec<SearchResult> = Vec::new();
+        let max_results = 600usize;
 
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
+        let walker = jwalk::WalkDir::new(root)
+            .max_depth(8)
+            .skip_hidden(!options.include_hidden)
+            .follow_links(false);
+
+        for entry_res in walker {
+            if cancel_flag.load(Ordering::Relaxed) || results.len() >= max_results {
+                break;
+            }
+            let Ok(entry) = entry_res else {
+                continue;
+            };
+            if entry.depth == 0 {
+                continue;
+            }
+            let path_buf = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().is_dir();
+            let md = entry.metadata().ok();
+            let size = if is_dir {
+                0
+            } else {
+                md.as_ref().map(|m| m.len()).unwrap_or(0)
+            };
+            let modified_time = md.as_ref().and_then(|m| m.modified().ok());
+            let created_time = md.as_ref().and_then(|m| m.created().ok());
+
+            let candidate_item = FileItem {
+                name: name.clone(),
+                path: FilesPath::from(path_buf.clone()),
+                file_type: if is_dir {
+                    FileType::Directory
+                } else {
+                    FileType::File
+                },
+                size,
+                is_hidden: name.starts_with('.'),
+                is_system: false,
+                modified: modified_time,
+                created: created_time,
             };
 
-            for entry in entries.flatten() {
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-                let name = entry.file_name().to_string_lossy().to_string();
-
-                if is_match(&name, query) {
-                    let path = entry.path();
-                    let modified = metadata.modified().ok().and_then(|t| {
-                        // Format: YYYY-MM-DD HH:MM
-                        let duration = t.duration_since(std::time::UNIX_EPOCH).ok()?;
-                        let secs = duration.as_secs();
-                        let days_since_epoch = secs / 86400;
-                        let seconds_in_day = secs % 86400;
-                        let hours = seconds_in_day / 3600;
-                        let minutes = (seconds_in_day % 3600) / 60;
-
-                        // Simple year calculation
-                        let mut year = 1970i64;
-                        let mut remaining_days = days_since_epoch as i64;
-                        while remaining_days > 365 {
-                            let days_in_year =
-                                if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-                                    366
-                                } else {
-                                    365
-                                };
-                            if remaining_days >= days_in_year {
-                                remaining_days -= days_in_year;
-                                year += 1;
-                            } else {
-                                break;
-                            }
-                        }
-
-                        // Get month/day
-                        let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-                        let days_in_months: [u64; 12] = if is_leap {
-                            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                        } else {
-                            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                        };
-                        let mut month = 1u64;
-                        for days in days_in_months.iter() {
-                            if remaining_days < *days as i64 {
-                                break;
-                            }
-                            remaining_days -= *days as i64;
-                            month += 1;
-                        }
-                        let day = remaining_days + 1;
-
-                        Some(format!(
-                            "{:04}-{:02}-{:02} {:02}:{:02}",
-                            year, month, day, hours, minutes
-                        ))
-                    });
-                    let is_dir = metadata.is_dir();
-                    let size = if is_dir { 0 } else { metadata.len() };
-
-                    results.push(SearchResult {
-                        path: FilesPath::new(path.clone()),
-                        name,
-                        parent_path: dir.to_string_lossy().to_string(),
-                        is_dir,
-                        size,
-                        modified,
-                    });
-                }
-
-                // Recurse into directories
-                if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
-                    if let Ok(child_dir) = entry.path().canonicalize() {
-                        scan_dir(&child_dir, query, results, depth + 1, cancel_flag);
-                    }
-                }
+            if let Some((score, match_indices, match_snippet)) =
+                crate::domain::search::SearchService::evaluate_file_item(
+                    &candidate_item,
+                    &query,
+                    &options,
+                    &tags_cache,
+                )
+            {
+                let parent_path = path_buf
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let modified_str = modified_time.map(|t| {
+                    crate::ui::views::helpers::format_system_time(Some(t))
+                });
+                results.push(SearchResult {
+                    path: candidate_item.path,
+                    name,
+                    parent_path,
+                    is_dir,
+                    size,
+                    modified: modified_str,
+                    match_snippet,
+                    match_indices,
+                    score,
+                });
             }
         }
 
-        scan_dir(
-            base_path.as_path(),
-            &query_lower,
-            &mut results,
-            0,
-            &cancel_flag,
-        );
+        results.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.is_dir.cmp(&a.is_dir))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         results
     }
 
@@ -4097,39 +4835,130 @@ impl AppWindow {
         self.start_search(query, cx);
     }
 
-    /// Clear search and return to normal view
+    /// Clear search and return to normal folder view in 0ms using `pre_search_items` snapshot.
     pub fn clear_search(&mut self, cx: &mut Context<Self>) {
-        // Cancel any in-flight deep search
         if let Some(token) = self.state.main_view.search_state.cancel_token.take() {
             token.store(true, Ordering::Relaxed);
         }
+        let restored_items = self.state.main_view.search_state.pre_search_items.take();
         self.state.main_view.search_state = crate::ui::views::main_view::SearchState::default();
-        self.navigate(self.state.main_view.primary_path.clone(), cx);
-        cx.notify();
+
+        if let Some(orig) = restored_items {
+            self.state.main_view.items = orig.clone();
+            self.state.main_view.bump_items_revision();
+            self.state.file_items.update(cx, |m, _| {
+                m.items = orig;
+                m.selected_indices.clear();
+            });
+            cx.notify();
+        } else {
+            self.navigate(self.state.main_view.primary_path.clone(), cx);
+            cx.notify();
+        }
     }
 
-    /// Confirm selected suggestion or raw query from the navigation bar/omnibar
+    /// Confirm selected suggestion or raw query from the Omnibar (default no-modifier entry point).
     pub fn handle_suggestion_confirm(&mut self, cx: &mut Context<Self>) {
+        self.handle_suggestion_confirm_with_modifiers(false, false, false, cx);
+    }
+
+    /// Confirm selected suggestion or raw query from the Omnibar with full modifier support:
+    /// - `ctrl == true` (`Ctrl+Enter` / Middle-Click): Open target folder in a **New Tab**
+    /// - `shift == true` (`Shift+Enter`): Open target folder in a **New Window**
+    /// - `alt == true` (`Alt+Enter`): Open **Properties** for the target item
+    pub fn handle_suggestion_confirm_with_modifiers(
+        &mut self,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        cx: &mut Context<Self>,
+    ) {
         use crate::ui::components::navigation_bar::{OmnibarMode, SuggestionKind};
+
+        let execute_path_action =
+            |this: &mut Self, path: FilesPath, ctrl: bool, shift: bool, alt: bool, cx: &mut Context<Self>| {
+                this.state.nav_bar.edit_mode = false;
+                this.state.nav_bar.show_suggestions = false;
+                this.state.nav_bar.selected_suggestion_index = None;
+                this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+
+                if alt {
+                    let md = std::fs::metadata(path.as_path()).ok();
+                    let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = if is_dir {
+                        0
+                    } else {
+                        md.as_ref().map(|m| m.len()).unwrap_or(0)
+                    };
+                    let item = FileItem {
+                        name: NavigationBarState::crumb_display_name(&path),
+                        path: path.clone(),
+                        file_type: if is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::File
+                        },
+                        size,
+                        is_hidden: false,
+                        is_system: false,
+                        modified: md.as_ref().and_then(|m| m.modified().ok()),
+                        created: md.as_ref().and_then(|m| m.created().ok()),
+                    };
+                    this.state.active_dialog =
+                        Some(crate::ui::components::dialogs::DialogType::Properties { item });
+                    cx.notify();
+                } else if shift {
+                    let dir = if path.as_path().is_file() {
+                        path.parent().unwrap_or_else(|| path.clone())
+                    } else {
+                        path
+                    };
+                    this.open_in_new_window(dir, cx);
+                } else if ctrl {
+                    this.open_path_in_new_tab(path, cx);
+                } else if path.as_path().is_file() {
+                    if let Some(parent) = path.parent() {
+                        this.navigate(parent, cx);
+                    } else {
+                        this.navigate(path, cx);
+                    }
+                } else {
+                    this.navigate(path, cx);
+                }
+            };
+
         if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
             if let Some(suggestion) = self.state.nav_bar.suggestions.get(idx).cloned() {
                 match suggestion.kind {
                     SuggestionKind::Path { path } => {
-                        self.state.nav_bar.edit_mode = false;
-                        self.state.nav_bar.show_suggestions = false;
-                        self.state.nav_bar.selected_suggestion_index = None;
-                        self.navigate(path, cx);
+                        execute_path_action(self, path, ctrl, shift, alt, cx);
+                    }
+                    SuggestionKind::SearchItem { path, is_dir } => {
+                        if !self.state.nav_bar.search_query.trim().is_empty() {
+                            let q = self.state.nav_bar.search_query.clone();
+                            self.state.nav_bar.record_search_history(&q);
+                        }
+                        if is_dir || ctrl || shift || alt {
+                            execute_path_action(self, path, ctrl, shift, alt, cx);
+                        } else {
+                            execute_path_action(self, path, false, false, false, cx);
+                        }
+                    }
+                    SuggestionKind::AqsFilter { token } => {
+                        self.apply_aqs_filter_suggestion(&token, cx);
                     }
                     SuggestionKind::SearchHistory { query } => {
                         self.state.nav_bar.show_suggestions = false;
                         self.state.nav_bar.selected_suggestion_index = None;
-                        self.state.nav_bar.search_query = query.clone();
+                        self.state.nav_bar.record_search_history(&query);
+                        self.state.nav_bar.set_active_text(query.clone(), false);
                         self.update_search(query, cx);
                     }
-                    SuggestionKind::Command { action, .. } => {
+                    SuggestionKind::Command { action } => {
                         self.state.nav_bar.show_suggestions = false;
                         self.state.nav_bar.selected_suggestion_index = None;
                         self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                        self.state.nav_bar.record_command_used(action);
                         self.dispatch_action(action, cx);
                     }
                 }
@@ -4137,30 +4966,69 @@ impl AppWindow {
             }
         }
 
-        // If no suggestion selected, handle based on current mode
+        // No suggestion explicitly highlighted: handle based on active Omnibar mode
         match self.state.nav_bar.omnibar_mode {
             OmnibarMode::Path => {
-                let path_str = self.state.nav_bar.edit_text.trim().to_string();
+                let raw = self.state.nav_bar.edit_text.trim().to_string();
+                if let Some(cmd_q) = raw.strip_prefix('>') {
+                    self.state.nav_bar.omnibar_mode = OmnibarMode::CommandPalette;
+                    self.state
+                        .nav_bar
+                        .set_active_text(cmd_q.trim().to_string(), false);
+                    self.refresh_omnibar_suggestions(cx);
+                    if let Some(SuggestionKind::Command { action }) =
+                        self.state.nav_bar.suggestions.first().map(|s| s.kind.clone())
+                    {
+                        self.state.nav_bar.show_suggestions = false;
+                        self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                        self.state.nav_bar.record_command_used(action);
+                        self.dispatch_action(action, cx);
+                    }
+                    return;
+                }
+                if let Some(search_q) = raw.strip_prefix('?') {
+                    let q = search_q.trim().to_string();
+                    self.state.nav_bar.omnibar_mode = OmnibarMode::Search;
+                    self.state.nav_bar.edit_mode = false;
+                    self.state.nav_bar.set_active_text(q.clone(), false);
+                    self.state.nav_bar.record_search_history(&q);
+                    self.update_search(q, cx);
+                    return;
+                }
+
+                let expanded = crate::domain::search::expand_path_input(&raw);
                 self.state.nav_bar.edit_mode = false;
                 self.state.nav_bar.show_suggestions = false;
                 self.state.nav_bar.selected_suggestion_index = None;
-                if !path_str.is_empty() {
-                    let path = FilesPath::from(std::path::PathBuf::from(path_str));
-                    self.navigate(path, cx);
+                if !expanded.is_empty() {
+                    if expanded.eq_ignore_ascii_case("settings") {
+                        self.open_settings_tab(cx);
+                    } else if expanded.eq_ignore_ascii_case("home") {
+                        if let Ok(home_path) =
+                            crate::core::navigation_service::NavigationService::get_home_path()
+                        {
+                            execute_path_action(self, home_path, ctrl, shift, alt, cx);
+                        }
+                    } else {
+                        let path = FilesPath::from(std::path::PathBuf::from(&expanded));
+                        execute_path_action(self, path, ctrl, shift, alt, cx);
+                    }
                 }
             }
             OmnibarMode::Search => {
                 self.state.nav_bar.show_suggestions = false;
                 self.state.nav_bar.selected_suggestion_index = None;
                 let query = self.state.nav_bar.search_query.clone();
+                self.state.nav_bar.record_search_history(&query);
                 self.update_search(query, cx);
             }
             OmnibarMode::CommandPalette => {
                 if let Some(suggestion) = self.state.nav_bar.suggestions.first().cloned() {
-                    if let SuggestionKind::Command { action, .. } = suggestion.kind {
+                    if let SuggestionKind::Command { action } = suggestion.kind {
                         self.state.nav_bar.show_suggestions = false;
                         self.state.nav_bar.selected_suggestion_index = None;
                         self.state.nav_bar.omnibar_mode = OmnibarMode::Path;
+                        self.state.nav_bar.record_command_used(action);
                         self.dispatch_action(action, cx);
                     }
                 }
@@ -4282,6 +5150,7 @@ impl AppWindow {
     /// Toggle the Preview pane.
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        self.state.status_center.is_open = false;
         self.state.active_dialog = None;
         self.menu_tip = None;
         self.submenu_grace = None;
@@ -4901,14 +5770,7 @@ impl AppWindow {
             crate::core::action_registry::ActionKind::Redo => self.redo(cx),
             crate::core::action_registry::ActionKind::Refresh => self.refresh(cx),
             crate::core::action_registry::ActionKind::Search => {
-                self.state.nav_bar.omnibar_mode =
-                    crate::ui::components::navigation_bar::OmnibarMode::Search;
-                self.state.nav_bar.search_query.clear();
-                self.state.nav_bar.show_suggestions = true;
-                let registry = self.state.action_registry.clone();
-                self.state.nav_bar.update_suggestions(&registry);
-                self.state.main_view.search_state.is_searching = true;
-                cx.notify();
+                self.activate_omnibar_search_mode(cx);
             }
             crate::core::action_registry::ActionKind::ClearFilter => {
                 if self.state.main_view.search_state.is_searching {
@@ -4921,19 +5783,7 @@ impl AppWindow {
                 self.toggle_setting("show_hidden_files", cx)
             }
             crate::core::action_registry::ActionKind::EditPath => {
-                self.state.nav_bar.omnibar_mode =
-                    crate::ui::components::navigation_bar::OmnibarMode::Path;
-                self.state.nav_bar.edit_mode = true;
-                self.state.nav_bar.edit_text = self
-                    .state
-                    .nav_bar
-                    .current_path
-                    .to_string_lossy()
-                    .to_string();
-                self.state.nav_bar.show_suggestions = true;
-                let registry = self.state.action_registry.clone();
-                self.state.nav_bar.update_suggestions(&registry);
-                cx.notify();
+                self.activate_omnibar_path_mode(cx);
             }
             crate::core::action_registry::ActionKind::OpenPreviewPane => {
                 self.invoke_third_party_preview(cx)
@@ -4951,13 +5801,7 @@ impl AppWindow {
                 self.set_view_mode(ViewMode::Columns, cx)
             }
             crate::core::action_registry::ActionKind::CommandPalette => {
-                self.state.nav_bar.omnibar_mode =
-                    crate::ui::components::navigation_bar::OmnibarMode::CommandPalette;
-                self.state.nav_bar.command_query.clear();
-                self.state.nav_bar.show_suggestions = true;
-                let registry = self.state.action_registry.clone();
-                self.state.nav_bar.update_suggestions(&registry);
-                cx.notify();
+                self.activate_omnibar_command_mode(cx);
             }
             crate::core::action_registry::ActionKind::OpenTerminal => {
                 self.open_terminal_at_current(cx)

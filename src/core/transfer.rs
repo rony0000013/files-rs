@@ -1,18 +1,91 @@
 //! Byte-level file transfer engine (copy / move / delete) with progress,
-//! speed, ETA and cancellation. Workers run on async tasks and report into
-//! `ProgressEngine`; the StatusCenter renders jobs live.
+//! speed, ETA, pause/resume, and cancellation. Workers run on async tasks and
+//! report into `ProgressEngine`; the StatusCenter renders jobs live.
 
-use crate::core::progress::{OpKind, ProgressEngine};
+use crate::core::progress::ProgressEngine;
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Process-wide tokio runtime for transfer I/O.
+///
+/// GPUI executors provide no tokio runtime context, and every `tokio::fs` /
+/// `tokio::time` call panics outside one ("there is no reactor running") —
+/// which used to abort the whole app on the first paste. Transfer jobs run
+/// on this runtime; UI code `await`s the JoinHandle from GPUI executors.
+static TOKIO_RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
+pub fn io_handle() -> tokio::runtime::Handle {
+    TOKIO_RT
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .thread_name("files-rs-io")
+                .build()
+                .expect("tokio runtime for file transfers")
+        })
+        .handle()
+        .clone()
+}
+
+async fn join_transfer(
+    handle: tokio::task::JoinHandle<TransferOutcome>,
+) -> TransferOutcome {
+    match handle.await {
+        Ok(outcome) => outcome,
+        Err(e) => TransferOutcome::Failed(format!("transfer task failed: {e}")),
+    }
+}
+
+/// Copy on the I/O runtime (GPUI-safe wrapper around [`run_copy_job`]).
+pub async fn run_copy_job_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> TransferOutcome {
+    let handle = io_handle();
+    join_transfer(
+        handle.spawn(async move { run_copy_job(&engine, job, sources, dest_dir).await }),
+    )
+    .await
+}
+
+/// Move on the I/O runtime (GPUI-safe wrapper around [`run_move_job`]).
+pub async fn run_move_job_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> TransferOutcome {
+    let handle = io_handle();
+    join_transfer(
+        handle.spawn(async move { run_move_job(&engine, job, sources, dest_dir).await }),
+    )
+    .await
+}
+
+/// Delete on the I/O runtime (GPUI-safe wrapper around [`run_delete_job`]).
+pub async fn run_delete_job_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    paths: Vec<PathBuf>,
+    use_trash: bool,
+) -> TransferOutcome {
+    let handle = io_handle();
+    join_transfer(
+        handle.spawn(async move { run_delete_job(&engine, job, paths, use_trash).await }),
+    )
+    .await
+}
 
 /// Chunk size for streaming copies (256 KiB keeps UI updates smooth).
 const CHUNK: usize = 256 * 1024;
 /// Minimum interval between progress broadcasts (ms) — avoids render storms.
-const REPORT_MS: u128 = 200;
+const REPORT_MS: u128 = 150;
 
 pub enum TransferOutcome {
     Done,
@@ -77,42 +150,66 @@ pub fn unique_dest(mut dst: PathBuf) -> PathBuf {
 struct Reporter<'a> {
     engine: &'a ProgressEngine,
     job: uuid::Uuid,
-    total: u64,
-    done: u64,
+    total_bytes: u64,
+    done_bytes: u64,
+    total_items: u64,
+    done_items: u64,
     last_report: Instant,
     file: String,
 }
 
 impl<'a> Reporter<'a> {
     async fn tick(&mut self, bytes: u64) {
-        self.done += bytes;
+        self.done_bytes += bytes;
         let now = Instant::now();
         if now.duration_since(self.last_report).as_millis() >= REPORT_MS {
             self.last_report = now;
             self.engine
-                .report(self.job, self.done, self.total, &self.file)
+                .report_with_items(
+                    self.job,
+                    self.done_bytes,
+                    self.total_bytes,
+                    self.done_items,
+                    self.total_items,
+                    &self.file,
+                )
                 .await;
         }
     }
 
     async fn file_done(&mut self) {
+        self.done_items = (self.done_items + 1).min(self.total_items.max(1));
         self.last_report = Instant::now();
         self.engine
-            .report(self.job, self.done, self.total, &self.file)
+            .report_with_items(
+                self.job,
+                self.done_bytes,
+                self.total_bytes,
+                self.done_items,
+                self.total_items,
+                &self.file,
+            )
             .await;
     }
 }
 
-fn cancelled(
-    engine: &ProgressEngine,
-    job: uuid::Uuid,
-) -> bool {
-    engine
-        .cancel_flag(job)
-        .load(Ordering::SeqCst)
+fn cancelled(engine: &ProgressEngine, job: uuid::Uuid) -> bool {
+    engine.cancel_flag(job).load(Ordering::SeqCst)
 }
 
-/// Stream-copy one file with progress + cancellation.
+async fn wait_if_paused(engine: &ProgressEngine, job: uuid::Uuid) -> bool {
+    let pflag = engine.pause_flag(job);
+    let cflag = engine.cancel_flag(job);
+    while pflag.load(Ordering::SeqCst) {
+        if cflag.load(Ordering::SeqCst) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    cflag.load(Ordering::SeqCst)
+}
+
+/// Stream-copy one file with progress, pause/resume, and cancellation.
 async fn copy_file(
     src: &Path,
     dst: &Path,
@@ -133,7 +230,7 @@ async fn copy_file(
         .with_context(|| format!("create {}", dst.display()))?;
     let mut buf = vec![0u8; CHUNK];
     loop {
-        if cancelled(engine, job) {
+        if wait_if_paused(engine, job).await {
             anyhow::bail!("cancelled");
         }
         let n = rd.read(&mut buf).await?;
@@ -157,7 +254,7 @@ async fn copy_tree_stack(
 ) {
     let mut stack = roots;
     while let Some((src, dst)) = stack.pop() {
-        if cancelled(engine, job) {
+        if wait_if_paused(engine, job).await {
             return;
         }
         let Ok(md) = tokio::fs::symlink_metadata(&src).await else {
@@ -191,27 +288,32 @@ async fn copy_tree_stack(
     }
 }
 
-/// Copy `sources` into `dest_dir` with a live job. Same-volume fast path is
-/// handled by the caller (move); this always streams bytes.
+/// Copy `sources` into `dest_dir` with a live job.
 pub async fn run_copy_job(
     engine: &ProgressEngine,
     job: uuid::Uuid,
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
-    let (_files, total) = scan_tree(&sources);
-    engine.report(job, 0, total.max(1), "").await;
+    let (files, total) = scan_tree(&sources);
+    let total_bytes = total.max(1);
+    let total_items = files.max(sources.len() as u64).max(1);
+    engine
+        .report_with_items(job, 0, total_bytes, 0, total_items, "")
+        .await;
     let mut rep = Reporter {
         engine,
         job,
-        total: total.max(1),
-        done: 0,
+        total_bytes,
+        done_bytes: 0,
+        total_items,
+        done_items: 0,
         last_report: Instant::now(),
         file: String::new(),
     };
     let mut errors = Vec::new();
     for src in &sources {
-        if cancelled(engine, job) {
+        if wait_if_paused(engine, job).await {
             return TransferOutcome::Cancelled;
         }
         let name = src
@@ -224,7 +326,9 @@ pub async fn run_copy_job(
             return TransferOutcome::Cancelled;
         }
     }
-    engine.report(job, rep.total, rep.total, "").await;
+    engine
+        .report_with_items(job, rep.total_bytes, rep.total_bytes, rep.total_items, rep.total_items, "")
+        .await;
     if errors.is_empty() {
         TransferOutcome::Done
     } else {
@@ -244,38 +348,40 @@ pub async fn run_move_job(
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
-    let (_files, total) = scan_tree(&sources);
-    let total = total.max(1);
-    engine.report(job, 0, total, "").await;
+    let (files, total) = scan_tree(&sources);
+    let total_bytes = total.max(1);
+    let total_items = files.max(sources.len() as u64).max(1);
+    engine
+        .report_with_items(job, 0, total_bytes, 0, total_items, "")
+        .await;
     let mut rep = Reporter {
         engine,
         job,
-        total,
-        done: 0,
+        total_bytes,
+        done_bytes: 0,
+        total_items,
+        done_items: 0,
         last_report: Instant::now(),
         file: String::new(),
     };
     let mut errors = Vec::new();
     for src in &sources {
-        if cancelled(engine, job) {
+        if wait_if_paused(engine, job).await {
             return TransferOutcome::Cancelled;
         }
         let name = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "item".to_string());
-        // Size upfront (rename consumes the source before we could measure).
-        let (fcount, fbytes) = scan_tree(std::slice::from_ref(src));
-        let _ = fcount;
+        let (_fcount, fbytes) = scan_tree(std::slice::from_ref(src));
         let dst = unique_dest(dest_dir.join(&name));
         match tokio::fs::rename(src, &dst).await {
             Ok(_) => {
                 rep.file = name.clone();
-                rep.done = rep.done.saturating_add(fbytes).min(rep.total);
+                rep.done_bytes = rep.done_bytes.saturating_add(fbytes).min(rep.total_bytes);
                 rep.file_done().await;
             }
             Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-                // Cross-volume: stream the bytes, then remove the source.
                 let dst = unique_dest(dest_dir.join(&name));
                 copy_tree_stack(vec![(src.clone(), dst)], engine, job, &mut rep, &mut errors).await;
                 if cancelled(engine, job) {
@@ -295,7 +401,9 @@ pub async fn run_move_job(
             return TransferOutcome::Cancelled;
         }
     }
-    engine.report(job, rep.total, rep.total, "").await;
+    engine
+        .report_with_items(job, rep.total_bytes, rep.total_bytes, rep.total_items, rep.total_items, "")
+        .await;
     if errors.is_empty() {
         TransferOutcome::Done
     } else {
@@ -308,7 +416,7 @@ pub async fn run_move_job(
     }
 }
 
-/// Delete paths (trash or permanent) with per-item progress.
+/// Delete paths (trash or permanent) with per-item progress and pause/cancel support.
 pub async fn run_delete_job(
     engine: &ProgressEngine,
     job: uuid::Uuid,
@@ -319,14 +427,16 @@ pub async fn run_delete_job(
     let mut done = 0u64;
     let mut errors = Vec::new();
     for p in &paths {
-        if cancelled(engine, job) {
+        if wait_if_paused(engine, job).await {
             return TransferOutcome::Cancelled;
         }
         let name = p
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        engine.report(job, done, total, &name).await;
+        engine
+            .report_with_items(job, done, total, done, total, &name)
+            .await;
         let r = if use_trash {
             trash::delete(p).map_err(|e| anyhow::anyhow!("{e}"))
         } else if p.is_dir() {
@@ -338,7 +448,9 @@ pub async fn run_delete_job(
             errors.push(format!("{}: {:#}", p.display(), e));
         }
         done += 1;
-        engine.report(job, done, total, &name).await;
+        engine
+            .report_with_items(job, done, total, done, total, &name)
+            .await;
     }
     if errors.is_empty() {
         TransferOutcome::Done

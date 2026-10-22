@@ -149,10 +149,10 @@ impl Render for AppWindow {
         // Dismiss omnibar if window lost focus (e.g. user alt-tabbed or clicked outside)
         if !window.is_window_active() {
             self.dismiss_omnibar(cx);
-            // Also close breadcrumb dropdown on window deactivation
             if self.state.nav_bar.breadcrumb_dropdown_open {
                 self.state.nav_bar.close_breadcrumb_dropdown();
             }
+            self.state.nav_bar.history_flyout = None;
         }
 
         // Initialize main focus handle before borrowing state
@@ -554,13 +554,21 @@ impl Render for AppWindow {
             window.request_animation_frame();
         }
 
-        let tab_floating_overlays = TabBarView::render_floating_overlays(
+        let mut tab_floating_overlays = TabBarView::render_floating_overlays(
             &state.navigation.read(cx),
             &state.tab_drag,
             &state.tab_thumbnail_cache,
             f32::from(live_size.width),
             f32::from(live_size.height),
         );
+        let toast_overlays =
+            crate::ui::components::status_center::StatusCenterToastView::render_toasts(
+                &state.status_center,
+                cx.entity(),
+                f32::from(live_size.width),
+                f32::from(live_size.height),
+            );
+        tab_floating_overlays.extend(toast_overlays);
 
         let mut base = {
             let _view = cx.entity();
@@ -644,29 +652,64 @@ impl Render for AppWindow {
             }
         }
 
+        // Render Back / Forward navigation history flyout when open
+        if let Some((is_back, anchor_x)) = state.nav_bar.history_flyout {
+            let entries: Vec<crate::core::path_util::FilesPath> = {
+                let nav = state.navigation.read(cx);
+                let tab = nav.tabs.active_tab();
+                if is_back {
+                    tab.history_back.iter().cloned().collect()
+                } else {
+                    tab.history_forward.iter().cloned().collect()
+                }
+            };
+            if !entries.is_empty() {
+                let flyout = NavigationBarView::build_history_flyout(
+                    is_back,
+                    anchor_x,
+                    &entries,
+                    cx.entity(),
+                );
+                let v_close = cx.entity();
+                base = base.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(0.0))
+                        .w(live_size.width)
+                        .h(live_size.height)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_close.update(cx, |this, cx| {
+                                this.state.nav_bar.history_flyout = None;
+                                cx.notify();
+                            });
+                        })
+                        .child(flyout),
+                );
+            }
+        }
+
         // Render omnibar suggestions dropdown at app root level (outside nav bar's
         // fixed-height container) so it can extend below the nav bar.
         if state.nav_bar.show_suggestions && !state.nav_bar.suggestions.is_empty() {
-            // Position dropdown below the nav bar:
-            // TabBar=40px + NavBar=44px = 84px from top
-            // NavBar padding=12px + 4 buttons(32px each) + 3 gaps(2px) + pill_gap(8px) = 154px from left
-            let nav_btn_area = 4.0 * 32.0 + 3.0 * 2.0; // 134px
-            let pill_left = 12.0 + nav_btn_area + 8.0; // 154px
-            let dropdown_top = 40.0 + 44.0; // 84px
-            let dropdown_width = live_size.width - px(pill_left) - px(12.0); // minus right padding
+            // NavBar padding=12px + 4 buttons(36px each) + 3 gaps(2px) + pill_gap(8px) = 170px from left
+            // Right side: status bell (38px) + gap (8px) + padding (12px) = 58px
+            let nav_btn_area = 4.0 * 36.0 + 3.0 * 2.0; // 150px
+            let pill_left = 12.0 + nav_btn_area + 8.0; // 170px
+            let anim_offset = (1.0 - state.nav_bar.dropdown_anim.clamp(0.0, 1.0)) * -6.0;
+            let dropdown_top = 40.0 + 46.0 + anim_offset; // 86px
+            let dropdown_width = (f32::from(live_size.width) - pill_left - 58.0).max(260.0);
 
             let dropdown =
                 build_suggestions_dropdown(&state.nav_bar, &state.action_registry, cx.entity());
-            // The wrapper dismisses the omnibar when clicked. Individual suggestion
-            // rows inside the dropdown call stop_propagation(), so their clicks are
-            // handled by the row handlers (navigation / command execution) instead.
             let view = cx.entity();
             base = base.child(
                 div()
                     .absolute()
                     .left(px(pill_left))
                     .top(px(dropdown_top))
-                    .w(dropdown_width)
+                    .w(px(dropdown_width))
+                    .opacity(state.nav_bar.dropdown_anim.clamp(0.15, 1.0))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.dismiss_omnibar(cx);
@@ -730,10 +773,15 @@ impl Render for AppWindow {
                                                         .breadcrumb_dropdown_filtered_siblings();
                                                     if let Some((_, path)) = filtered.get(idx) {
                                                         let path = (*path).clone();
+                                                        let ctrl = keystroke.modifiers.control;
                                                         this.state
                                                             .nav_bar
                                                             .close_breadcrumb_dropdown();
-                                                        this.navigate(path, cx);
+                                                        if ctrl {
+                                                            this.open_path_in_new_tab(path, cx);
+                                                        } else {
+                                                            this.navigate(path, cx);
+                                                        }
                                                     }
                                                 }
                                             }

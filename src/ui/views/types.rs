@@ -483,6 +483,28 @@ pub struct SearchState {
     /// Cancellation token for the current search (runtime-only)
     #[serde(skip)]
     pub cancel_token: Option<Arc<AtomicBool>>,
+    /// Treat search query as a regular expression
+    #[serde(default)]
+    pub use_regex: bool,
+    /// Case-sensitive search matching
+    #[serde(default)]
+    pub case_sensitive: bool,
+    /// Full-text metadata search (EXIF, ID3, PDF, dimensions, tags, dates, attributes)
+    #[serde(default)]
+    pub search_metadata: bool,
+    /// Search subfolders recursively
+    #[serde(default = "default_true_bool")]
+    pub recursive: bool,
+    /// Number of items scanned during deep search
+    #[serde(skip)]
+    pub scanned_count: usize,
+    /// Snapshot of current folder items before deep search replaced `items` (for 0ms restore)
+    #[serde(skip)]
+    pub pre_search_items: Option<Vec<FileItem>>,
+}
+
+fn default_true_bool() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -510,6 +532,12 @@ pub struct SearchResult {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<String>,
+    #[serde(default)]
+    pub match_snippet: Option<String>,
+    #[serde(default)]
+    pub match_indices: Vec<usize>,
+    #[serde(default)]
+    pub score: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -565,19 +565,24 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
                 let kind = if is_cut { OpKind::Move } else { OpKind::Copy };
                 let job_id = progress_engine
-                    .start_job(format!("{} ({} items)", op_type, total), kind)
+                    .start_job_with_meta(
+                        format!("{} ({} items)", op_type, total),
+                        kind,
+                        Some(crate::core::path_util::FilesPath::from(target_path.clone())),
+                        total as u64,
+                    )
                     .await;
                 let sources: Vec<std::path::PathBuf> = clipboard_items
                     .iter()
                     .map(|item| item.path.as_path().to_path_buf())
                     .collect();
                 let outcome = if is_cut {
-                    run_move_job(&progress_engine, job_id, sources, target_path).await
+                    run_move_job_rt(progress_engine.clone(), job_id, sources, target_path).await
                 } else {
-                    run_copy_job(&progress_engine, job_id, sources, target_path).await
+                    run_copy_job_rt(progress_engine.clone(), job_id, sources, target_path).await
                 };
                 match outcome {
                     TransferOutcome::Done => {
@@ -1592,7 +1597,7 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 let job_id = progress_engine
-                    .start_job(format!("Bulk Rename ({} files)", total), crate::core::progress::OpKind::Other)
+                    .start_job(format!("Bulk Rename ({} files)", total), crate::core::progress::OpKind::BulkRename)
                     .await;
 
                 for (i, (old_path, new_path)) in items_to_rename.into_iter().enumerate() {

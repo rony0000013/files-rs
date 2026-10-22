@@ -1,9 +1,9 @@
 use crate::core::path_util::FilesPath;
-use anyhow::Result;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperationStatus {
@@ -15,17 +15,26 @@ pub enum OperationStatus {
         speed: f64, // bytes per second
         eta: Option<Duration>,
     },
+    Paused {
+        progress: f32,
+        bytes_processed: u64,
+        total_bytes: u64,
+    },
     Completed,
     Failed(String),
     Cancelled,
 }
 
-/// Kind of file operation (drives the StatusCenter icon + label).
+/// Kind of file operation (drives the StatusCenter icon + label, matching Files-community `StatusCenterItemIconKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
     Copy,
     Move,
     Delete,
+    Extract,
+    Compress,
+    Git,
+    BulkRename,
     Other,
 }
 
@@ -40,17 +49,56 @@ pub struct FileOperationJob {
     pub current_file: String,
     /// Recent speed samples in bytes/sec (cap 40) for the sparkline graph.
     pub speed_history: Vec<f32>,
+    /// Number of items processed so far.
+    pub items_processed: u64,
+    /// Total number of items in this batch operation.
+    pub total_items: u64,
+    /// Optional destination folder path (enables "Open folder" button in Status Center).
+    pub destination_path: Option<FilesPath>,
+}
+
+impl FileOperationJob {
+    pub fn is_running_or_paused(&self) -> bool {
+        matches!(
+            self.status,
+            OperationStatus::Pending
+                | OperationStatus::InProgress { .. }
+                | OperationStatus::Paused { .. }
+        )
+    }
+
+    pub fn is_paused(&self) -> bool {
+        matches!(self.status, OperationStatus::Paused { .. })
+    }
+
+    pub fn progress_fraction(&self) -> f32 {
+        match &self.status {
+            OperationStatus::InProgress { progress, .. } => progress.clamp(0.0, 1.0),
+            OperationStatus::Paused { progress, .. } => progress.clamp(0.0, 1.0),
+            OperationStatus::Completed => 1.0,
+            _ => 0.0,
+        }
+    }
+}
+
+struct SpeedTracker {
+    last_bytes: u64,
+    last_time: Instant,
+    smoothed_speed: f64,
 }
 
 pub struct ProgressEngine {
-    jobs: Arc<std::sync::Mutex<Vec<FileOperationJob>>>,
-    subscribers: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<JobUpdate>>>>,
-    cancel_flags: Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<std::sync::atomic::AtomicBool>>>>,
+    jobs: Arc<Mutex<Vec<FileOperationJob>>>,
+    subscribers: Arc<Mutex<Vec<mpsc::UnboundedSender<JobUpdate>>>>,
+    cancel_flags: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicBool>>>>,
+    pause_flags: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicBool>>>>,
+    speed_trackers: Arc<Mutex<HashMap<uuid::Uuid, SpeedTracker>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobUpdate {
     UpdateStatus(uuid::Uuid, OperationStatus),
+    UpdateJob(FileOperationJob),
     Complete(uuid::Uuid),
     Fail(uuid::Uuid, String),
     NewJob(FileOperationJob),
@@ -59,9 +107,11 @@ pub enum JobUpdate {
 impl ProgressEngine {
     pub fn new() -> Self {
         Self {
-            jobs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
-            cancel_flags: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            jobs: Arc::new(Mutex::new(Vec::new())),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            pause_flags: Arc::new(Mutex::new(HashMap::new())),
+            speed_trackers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -78,35 +128,74 @@ impl ProgressEngine {
     }
 
     pub async fn start_job(&self, name: String, kind: OpKind) -> uuid::Uuid {
+        self.start_job_with_meta(name, kind, None, 0).await
+    }
+
+    pub async fn start_job_with_meta(
+        &self,
+        name: String,
+        kind: OpKind,
+        destination_path: Option<FilesPath>,
+        total_items: u64,
+    ) -> uuid::Uuid {
         let id = uuid::Uuid::new_v4();
+        let now = Instant::now();
         let job = FileOperationJob {
             id,
             name,
             kind,
             status: OperationStatus::Pending,
-            created_at: Instant::now(),
+            created_at: now,
             current_file: String::new(),
             speed_history: Vec::new(),
+            items_processed: 0,
+            total_items,
+            destination_path,
         };
         self.jobs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(job.clone());
-        self.cancel_flags.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            id,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        );
+        self.cancel_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, Arc::new(AtomicBool::new(false)));
+        self.pause_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, Arc::new(AtomicBool::new(false)));
+        self.speed_trackers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                id,
+                SpeedTracker {
+                    last_bytes: 0,
+                    last_time: now,
+                    smoothed_speed: 0.0,
+                },
+            );
         self.broadcast(JobUpdate::NewJob(job));
         id
     }
 
     /// Fetch the cancellation flag for a job (workers poll this per chunk).
-    pub fn cancel_flag(&self, id: uuid::Uuid) -> Arc<std::sync::atomic::AtomicBool> {
+    pub fn cancel_flag(&self, id: uuid::Uuid) -> Arc<AtomicBool> {
         self.cancel_flags
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .entry(id)
-            .or_insert_with(|| Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
+    }
+
+    /// Fetch the pause flag for a job (workers poll this per chunk).
+    pub fn pause_flag(&self, id: uuid::Uuid) -> Arc<AtomicBool> {
+        self.pause_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
     }
 
@@ -118,8 +207,72 @@ impl ProgressEngine {
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
         {
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            flag.store(true, Ordering::SeqCst);
         }
+        // Also unpause so a paused worker wakes up and exits immediately
+        if let Some(pflag) = self
+            .pause_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+        {
+            pflag.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Toggle pause/resume on a running job. Returns the new paused state (`true` = paused).
+    pub fn toggle_pause(&self, id: uuid::Uuid) -> bool {
+        let pflag = self.pause_flag(id);
+        let prev = pflag.load(Ordering::SeqCst);
+        let next = !prev;
+        pflag.store(next, Ordering::SeqCst);
+
+        let mut updated_job: Option<FileOperationJob> = None;
+        {
+            let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+                match &job.status {
+                    OperationStatus::InProgress {
+                        progress,
+                        bytes_processed,
+                        total_bytes,
+                        ..
+                    } if next => {
+                        job.status = OperationStatus::Paused {
+                            progress: *progress,
+                            bytes_processed: *bytes_processed,
+                            total_bytes: *total_bytes,
+                        };
+                        updated_job = Some(job.clone());
+                    }
+                    OperationStatus::Paused {
+                        progress,
+                        bytes_processed,
+                        total_bytes,
+                    } if !next => {
+                        // Reset speed tracker timestamp so pause duration doesn't skew speed
+                        if let Ok(mut trackers) = self.speed_trackers.lock() {
+                            if let Some(t) = trackers.get_mut(&id) {
+                                t.last_time = Instant::now();
+                            }
+                        }
+                        job.status = OperationStatus::InProgress {
+                            progress: *progress,
+                            bytes_processed: *bytes_processed,
+                            total_bytes: *total_bytes,
+                            speed: 0.0,
+                            eta: None,
+                        };
+                        updated_job = Some(job.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(j) = updated_job {
+            self.broadcast(JobUpdate::UpdateJob(j));
+        }
+        next
     }
 
     /// Byte-level progress report with current filename. Computes speed/ETA,
@@ -129,6 +282,20 @@ impl ProgressEngine {
         id: uuid::Uuid,
         bytes_done: u64,
         total_bytes: u64,
+        current_file: &str,
+    ) {
+        self.report_with_items(id, bytes_done, total_bytes, 0, 0, current_file)
+            .await;
+    }
+
+    /// Detailed progress report including item counts (`items_done` / `total_items`).
+    pub async fn report_with_items(
+        &self,
+        id: uuid::Uuid,
+        bytes_done: u64,
+        total_bytes: u64,
+        items_done: u64,
+        total_items: u64,
         current_file: &str,
     ) {
         let progress = if total_bytes > 0 {
@@ -151,23 +318,35 @@ impl ProgressEngine {
             speed,
             eta,
         };
+        let mut snapshot = None;
         {
             let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
                 job.status = status.clone();
-                job.current_file = current_file.to_string();
+                if !current_file.is_empty() {
+                    job.current_file = current_file.to_string();
+                }
+                if total_items > 0 {
+                    job.items_processed = items_done;
+                    job.total_items = total_items;
+                }
                 job.speed_history.push(speed as f32);
                 if job.speed_history.len() > 40 {
                     job.speed_history.remove(0);
                 }
+                snapshot = Some(job.clone());
             }
         }
-        self.broadcast(JobUpdate::UpdateStatus(id, status));
+        if let Some(job) = snapshot {
+            self.broadcast(JobUpdate::UpdateJob(job));
+        } else {
+            self.broadcast(JobUpdate::UpdateStatus(id, status));
+        }
     }
 
     pub async fn update_progress(&self, id: uuid::Uuid, progress: f32, bytes: u64, total: u64) {
         let speed = self.calculate_speed(id, bytes).await;
-        let eta = if speed > 0.0 {
+        let eta = if speed > 0.0 && total >= bytes {
             Some(Duration::from_secs(((total - bytes) as f64 / speed) as u64))
         } else {
             None
@@ -181,11 +360,11 @@ impl ProgressEngine {
             eta,
         };
 
-        // Update internal state
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.status = status.clone();
         }
+        drop(jobs);
 
         self.broadcast(JobUpdate::UpdateStatus(id, status));
     }
@@ -194,7 +373,11 @@ impl ProgressEngine {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.status = OperationStatus::Completed;
+            if job.total_items > 0 {
+                job.items_processed = job.total_items;
+            }
         }
+        drop(jobs);
         self.broadcast(JobUpdate::Complete(id));
     }
 
@@ -203,6 +386,7 @@ impl ProgressEngine {
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.status = OperationStatus::Failed(reason.clone());
         }
+        drop(jobs);
         self.broadcast(JobUpdate::Fail(id, reason));
     }
 
@@ -221,7 +405,27 @@ impl ProgressEngine {
     }
 
     async fn calculate_speed(&self, id: uuid::Uuid, bytes: u64) -> f64 {
-        // Simplified speed calculation
+        let now = Instant::now();
+        if let Ok(mut trackers) = self.speed_trackers.lock() {
+            if let Some(tracker) = trackers.get_mut(&id) {
+                let dt = now.duration_since(tracker.last_time).as_secs_f64();
+                if dt >= 0.05 {
+                    let delta_bytes = bytes.saturating_sub(tracker.last_bytes);
+                    let inst_speed = delta_bytes as f64 / dt;
+                    tracker.last_bytes = bytes;
+                    tracker.last_time = now;
+                    if tracker.smoothed_speed <= 0.0 {
+                        tracker.smoothed_speed = inst_speed;
+                    } else {
+                        tracker.smoothed_speed = tracker.smoothed_speed * 0.65 + inst_speed * 0.35;
+                    }
+                    return tracker.smoothed_speed;
+                } else if tracker.smoothed_speed > 0.0 {
+                    return tracker.smoothed_speed;
+                }
+            }
+        }
+
         let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = jobs.iter().find(|j| j.id == id) {
             let elapsed = job.created_at.elapsed().as_secs_f64();
@@ -243,7 +447,6 @@ mod tests {
         let _rx = engine.subscribe();
 
         let job_id = engine.start_job("Test job".to_string(), OpKind::Other).await;
-
         assert!(job_id != uuid::Uuid::nil());
 
         let job = engine.get_job(job_id).await;
@@ -305,11 +508,8 @@ mod tests {
         let _rx = engine.subscribe();
 
         let job_id = engine.start_job("Test job".to_string(), OpKind::Other).await;
-
-        // Complete job should not panic
         engine.complete_job(job_id).await;
 
-        // Verify job is still in list (complete_job sends update but doesn't remove)
         let job = engine.get_job(job_id).await;
         assert!(job.is_some());
     }
@@ -322,10 +522,8 @@ mod tests {
         let job_id = engine.start_job("Test job".to_string(), OpKind::Other).await;
         let error_msg = "Something went wrong".to_string();
 
-        // Fail job should not panic
         engine.fail_job(job_id, error_msg.clone()).await;
 
-        // Verify job is still in list (fail_job sends update but doesn't remove)
         let job = engine.get_job(job_id).await;
         assert!(job.is_some());
     }
@@ -334,19 +532,15 @@ mod tests {
     fn test_operation_status_variants() {
         use OperationStatus::*;
 
-        // Test Pending
         let pending = Pending;
         assert!(matches!(pending, Pending));
 
-        // Test Completed
         let completed = Completed;
         assert!(matches!(completed, Completed));
 
-        // Test Failed
         let failed = Failed("error".to_string());
         assert!(matches!(failed, Failed(msg) if msg == "error"));
 
-        // Test InProgress
         let in_progress = InProgress {
             progress: 0.75,
             bytes_processed: 75,

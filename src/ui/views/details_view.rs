@@ -173,7 +173,7 @@ impl MainView {
                                         let view_row = view.clone();
                                         let item_path = item.path.clone();
 
-                                        let mut row = div().w_full().w_full()
+                                        let mut row = div().w_full()
                                             .id(ElementId::from(
                                                 idx + match pane_focus {
                                                     PaneFocus::Primary => 10000,
@@ -681,7 +681,7 @@ impl MainView {
                                             let text_size_sm = 10.0 + zoom * 3.0;
                                             let view_row = view.clone();
 
-                                            let mut row = div().w_full().w_full()
+                                            let mut row = div().w_full()
                                                 .id(ElementId::from(idx + 10000))
                                                 .flex()
                                                 .flex_row()
