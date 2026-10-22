@@ -1,5 +1,7 @@
 # Files-RS — Comprehensive Feature Parity & Engineering Audit (`TODO.md`)
 
+> Consolidated 2026-10-22 from `todo (1).md` (first drop) and `todo (2).md` (second drop), then corrected against the actual tree: `todo (2).md` is fully subsumed by this file; both numbered files are superseded (kept in the repo root as drop inputs, not sources of truth).
+
 > **Legend:**
 >
 > * `[x]` **Implemented & Wired End-to-End** — Functional in both backend logic and the live GPUI `AppWindow` UI.
@@ -46,6 +48,12 @@
   * \[x\] Implemented live tab drag-and-drop reordering and vertical drag-out (`y < -12.0 || y > 52.0`) to detach a tab into a new independent window.
 
   * \[x\] Implemented tab pinning (`pin_tab` / `toggle_pin_tab`) with compact icon-only pinned tabs anchored to the left of unpinned tabs.
+  * \[x\] Added WinUI 3 `TabView` polish (`TabBarStyles.xaml`): elevated `#242424` active tab blending into the navigation bar, bottom outward flare ear arcs, top/left/right borders, a `2.5px` bottom accent indicator pill, and smart 1px separators between inactive tabs that hide next to the active/hovered tab.
+  * \[x\] Added smooth overflow scroll (display-refresh-rate exponential `scroll_target` interpolation driven by wheel, chevron buttons, and drag-near-edge auto-scroll with `ensure_active_tab_visible`), off-screen tab count badges (`hidden_left_count` / `hidden_right_count`), edge fade indicators, and mouse-wheel tab switching when not overflowing.
+  * \[x\] Added live floating tab-drag pill tracking `current_x - grab_offset_x` with neighbor slot-shift animation, Escape-to-cancel restoring the original index, and a new-tab entrance animation (`new_tab_anim`).
+  * \[x\] Implemented drag-out to a new window at the cursor's OS screen position (`open_tab_state_in_new_window`, preserving full `TabState` incl. history, dual-pane state, view mode, zoom, pin) and cross-window tab docking via the process-wide `WindowTabRegistry` (`query_os_cursor_and_lbutton` tracking, glowing `build_external_drop_slot`, `window.remove_window()` closing the emptied source window). `AppWindow::new` restores session tabs only for `window_id == 1`; `close_window_or_quit` closes one window without quitting the process.
+  * \[x\] Wired file/folder drag onto tabs (500ms hover-to-switch, drop to copy/move into that tab's folder) and onto the `+` button (dropped folders open as new tabs); added hover Preview Card (420ms delay: thumbnail/icon, title, path, view-mode/pin/split badges, history counts), full tab context menu (New Tab to the Right, Duplicate, Pin/Unpin, Move to New/Existing Window, Close Others/Left/Right, Reopen Closed), and the Open Tabs quick-switcher with per-tab close buttons.
+  * \[x\] Cut per-frame overhead: zero-clone `sync_pane_selection_model()` (syncs `selected_indices` plus length-checked `items`, no `Vec<FileItem>` clone per mouse move), single `tab_thumbnail_cache` lock per render pass, and removed per-frame resize diagnostic log spam.
 
 * \[x\] **Independent Dual-Pane / Split View (`src/app_state.rs`, `src/app_navigation.rs`, `src/ui/views/main_view.rs`, `src/app.rs`, `src/app_render.rs`)**
 
@@ -70,6 +78,12 @@
   * \[x\] Fixed `ActionRegistry::lookup` case-sensitivity bug (previously lowercased GPUI keystrokes failed to match `"F2"`, `"Delete"`, `"F5"`, `"Escape"`, `"F1"`).
 
   * \[x\] Added 2D view-aware arrow keys (`Up`/`Down`/`Left`/`Right`), `Shift+Arrow` range selection from `selection_anchor_index`, `PageUp`/`PageDown`, `Home`/`End` with automatic `scroll_item_into_view`, `Space`/`Ctrl+Space` selection toggle, type-ahead incremental file selection (`handle_type_to_select`), `Ctrl+Enter` (open folder in new tab), `Shift+Enter` (open folder in new window), `Alt+Enter` (Properties), `Ctrl+Shift+N` (New Folder), `Shift+Delete` (Permanent Delete), `Ctrl+Shift+1..4` (View modes), `Ctrl+Plus`/`Ctrl+Minus`/`Ctrl+0` (Zoom), `Ctrl+1..9` (Tab index switch), and `Ctrl+Shift+Left/Right` (Move active tab).
+* \[x\] **Views, Miller Columns & Status-Bar Follow-ups (`src/ui/views/*.rs`, `src/ui/components/status_bar.rs`, `src/storage/folder_size.rs`, `src/app.rs`)**
+  * \[x\] Virtualized Miller Columns: Column 1 (parent siblings) and Column 3 (child preview) are now `uniform_list`s with independent clamped wheel scrolling; all three columns are height-bounded so the status bar can no longer be pushed off-screen. Column 1/3 directory reads are keyed caches (`refresh_columns_caches`: one `read_dir` per navigation/selection instead of per frame).
+  * \[x\] Unified List view to column-major flow (top-to-bottom, then next column) across renderer, lasso hit-boxes, keyboard steps, and `scroll_item_into_view`; removed per-item type/size text from List cells and show single-selection details in the status bar (`name`, kind, size).
+  * \[x\] Aligned Details header and rows (full-width rows, spacer geometry matching the resize handles) so Date/Type/Size values sit under their headers at any column width.
+  * \[x\] Real folder sizes in the status bar: a single selected folder shows its recursive size via a dust-style parallel walk (rayon, reparse points skipped) with a content-signature cache (dir mtime + entry count) for instant re-selects, an animated `Calculating size...` indicator while computing, and stale-result guards.
+  * \[x\] Added read-only item Properties sheet (`DialogType::Properties`, Alt+Enter: name, type, size, hidden flag, location) and `ActionsConfig.double_click_empty_space_go_up` wired to empty-space double-click.
 
 ## 2. Half-Baked, Scaffolded, or Partially Wired Modules (`[~]`)
 
@@ -109,9 +123,9 @@ The following modules exist in `src/` and have unit tests, but are **not yet wir
 
 * \[\~\] **Folder Size Calculation (`src/storage/folder_size.rs`)**
 
-  * *Current state*: Standalone recursive size calculator; never invoked when rendering directories in `Details` view or `Properties` dialog unless `calculate_folder_sizes` is manually triggered.
+  * *Current state*: Partially wired — selecting a single folder shows its real recursive size in the status bar (parallel walk + content-signature cache + `Calculating size...` indicator), and a read-only Properties sheet (`DialogType::Properties`) exists. Folder sizes are still not shown as a `Details`-view column and Phase 2.5 integration is still missing.
 
-  * *Needed*: Wire background folder size calculation into Phase 2.5 when `config.view.calculate_folder_sizes` is enabled, and display live-updating folder sizes in `Details` view and `Properties`.
+  * *Needed*: Wire background folder size calculation into Phase 2.5 when `config.view.calculate_folder_sizes` is enabled, and display live-updating folder sizes as a `Details`-view column (reusing the content-signature cache).
 
 * \[\~\] **NTFS Alternate Data Streams (`src/storage/ads.rs`)**
 
@@ -175,9 +189,9 @@ The following modules exist in `src/` and have unit tests, but are **not yet wir
 
   * *Current state*: `enter_compact_overlay` only hides the sidebar in state without setting `HWND_TOPMOST` (`SetWindowPos`) or resizing the OS window to a Picture-in-Picture mini-window.
 
-* \[\~\] **Standalone UI Component Modules (`background_warmup.rs`, `breadcrumb_bar.rs`, `empty_states.rs`, `quick_jump_dialog.rs`, `relative_date_formatter.rs`, `tab_interactions.rs`)**
+* \[\~\] **Standalone UI Component Modules (`background_warmup.rs`, `breadcrumb_bar.rs`, `empty_states.rs`, `quick_jump_dialog.rs`, `relative_date_formatter.rs`)**
 
-  * *Current state*: Built as standalone structs with unit tests, while `navigation_bar.rs`, `tab_bar.rs`, and `main_view.rs` implement their own inline equivalents.
+  * *Current state*: Built as standalone structs with unit tests, while `navigation_bar.rs`, `tab_bar.rs`, and `main_view.rs` implement their own inline equivalents. (`tab_interactions.rs` is now wired end-to-end — `WindowTabRegistry`, per-window IDs, cross-window docking, multi-window-safe close — so it is no longer standalone.)
 
 * \[\~\] **Omnibar Search History & AQS Filtering (`src/ui/components/navigation_bar.rs`, `src/domain/search.rs`)**
 
