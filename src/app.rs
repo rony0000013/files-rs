@@ -57,6 +57,7 @@ impl AppWindow {
             hover_tooltip: None,
             menu_tip: None,
             hover_timer_task: None,
+            tab_hover_timer_task: None,
             menu_task: None,
             submenu_grace: None,
             submenu_grace_gen: 0,
@@ -92,12 +93,24 @@ impl AppWindow {
             )
         }));
 
-        // Restore tabs from saved session if available (BEFORE initial navigate,
-        // so the saved session data is still intact in memory)
+        // Capture Win32 HWND for this window
+        #[cfg(windows)]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = _window.window_handle() {
+                if let RawWindowHandle::Win32(w) = h.as_raw() {
+                    window_view.state.window_hwnd = w.hwnd.get() as isize;
+                }
+            }
+        }
+
+        // Restore tabs from saved session ONLY for the initial startup window (window_id == 1).
+        // Secondary windows spawned via "Move tab to new window" or drag-out keep their own TabState!
+        let is_primary_launch_window = window_view.state.window_id == 1;
         let restored = {
             let config = window_view.state.settings.read(cx);
             let session = &config.config.session;
-            if !session.open_tabs.is_empty() {
+            if is_primary_launch_window && !session.open_tabs.is_empty() {
                 let new_tabs: Vec<crate::core::navigation_manager::TabState> = session
                     .open_tabs
                     .iter()
@@ -191,8 +204,9 @@ impl AppWindow {
                 .set_last_path(session_path.to_string_lossy().as_ref());
             window_view.load_tab_thumbnails(cx);
         } else {
-            // No saved session — navigate to the default home path
-            window_view.navigate(initial_path, cx);
+            // Secondary window or fresh session: sync from the window's own NavigationState
+            window_view.sync_active_tab_to_views(cx);
+            window_view.load_tab_thumbnails(cx);
         }
 
         // Crash detection: silently restore without showing dialog
@@ -327,10 +341,10 @@ impl AppWindow {
         self.state.sidebar.resize_start_width = None;
         self.state.sidebar.drag_section_idx = None;
         self.state.sidebar.drag_item = None;
-        // Tab strip drag: preserve scroll position, drop the drag.
-        let saved_tab_scroll = self.state.tab_drag.scroll_offset;
-        self.state.tab_drag = crate::app_state::TabDragState::default();
-        self.state.tab_drag.scroll_offset = saved_tab_scroll;
+        // Tab strip drag: preserve scroll position, drop the drag and clear cross-window previews.
+        self.clear_external_drop_preview_on_target(cx);
+        self.state.tab_drag.clear_drag_only();
+        self.clear_tab_hover(cx);
         cx.notify();
     }
 
@@ -377,6 +391,14 @@ impl AppWindow {
             crate::core::action_registry::from_gpui_keystroke(keystroke);
 
         use crate::ui::components::dialogs::DialogType;
+
+        // Escape during an active tab drag cancels the drag and restores the tab to its initial slot
+        if self.state.tab_drag.is_dragging
+            && keystroke.key.as_str().eq_ignore_ascii_case("escape")
+        {
+            self.cancel_tab_drag(cx);
+            return;
+        }
 
         // Menu key (VK_APPS) / Shift+F10: open the context menu for the
         // current selection, like Files does (Files-community parity).
@@ -1240,9 +1262,11 @@ impl AppWindow {
         if let Some(idx) = existing_index {
             self.switch_tab(idx, cx);
         } else {
-            self.state.navigation.update(cx, |nav, _cx| {
+            let new_idx = self.state.navigation.update(cx, |nav, _cx| {
                 nav.tabs.add_settings_tab();
+                nav.tabs.active_tab_index
             });
+            self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
             self.state.main_view.target = crate::ui::views::types::ViewTarget::Settings;
             self.ensure_active_tab_visible(cx);
             self.save_session(cx);
@@ -1254,9 +1278,11 @@ impl AppWindow {
         let current_path = self.state.active_view().primary_path.clone();
         let mode = self.state.active_view().view_mode.clone();
         let zoom = self.state.active_view().zoom_level;
-        self.state.navigation.update(cx, |nav, _cx| {
+        let new_idx = self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.add_tab_with_zoom(current_path.clone(), mode, zoom);
+            nav.tabs.active_tab_index
         });
+        self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
         self.ensure_active_tab_visible(cx);
         self.save_session(cx);
         self.load_tab_thumbnails(cx);
@@ -1267,16 +1293,65 @@ impl AppWindow {
         );
     }
 
+    /// Open a new tab immediately to the right of `from_index` (Files-community "New tab to the right").
+    pub fn new_tab_to_right(&mut self, from_index: usize, cx: &mut Context<Self>) {
+        let current_path = self.state.active_view().primary_path.clone();
+        let mode = self.state.active_view().view_mode.clone();
+        let zoom = self.state.active_view().zoom_level;
+        let new_idx = self.state.navigation.update(cx, |nav, _cx| {
+            nav.tabs
+                .add_tab_after(from_index, current_path.clone(), mode, zoom)
+        });
+        self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
+        self.ensure_active_tab_visible(cx);
+        self.save_session(cx);
+        self.load_tab_thumbnails(cx);
+        self.sync_active_tab_to_views(cx);
+        cx.notify();
+    }
+
+    /// Close only this window if other `files-rs` windows are still open, or quit the app if this is the last window.
+    pub fn close_window_or_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::components::tab_interactions::WindowTabRegistry;
+        WindowTabRegistry::unregister(self.state.window_id);
+        self.stop_all_file_watchers();
+        if WindowTabRegistry::open_window_count() == 0 {
+            cx.quit();
+        } else {
+            window.remove_window();
+        }
+    }
+
+    /// Close tab at `index` with access to `Window` so closing the last tab in a secondary window
+    /// closes only that window rather than terminating the whole application.
+    pub fn close_tab_with_window(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+        if tab_count <= 1 {
+            self.close_window_or_quit(window, cx);
+            return;
+        }
+        self.close_tab(index, cx);
+    }
+
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
         if tab_count <= 1 {
-            // Closing the last tab exits the window (Files-community behavior)
-            cx.quit();
+            use crate::ui::components::tab_interactions::WindowTabRegistry;
+            WindowTabRegistry::unregister(self.state.window_id);
+            if WindowTabRegistry::open_window_count() == 0 {
+                cx.quit();
+            }
             return;
         }
         self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.close_tab(index);
         });
+        self.clear_tab_hover(cx);
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
         self.ensure_active_tab_visible(cx);
@@ -1284,13 +1359,18 @@ impl AppWindow {
     }
 
     pub fn reopen_closed_tab(&mut self, cx: &mut Context<Self>) {
-        let reopened = self
-            .state
-            .navigation
-            .update(cx, |nav, _cx| nav.tabs.reopen_closed_tab());
-        if reopened {
+        let reopened_idx = self.state.navigation.update(cx, |nav, _cx| {
+            if nav.tabs.reopen_closed_tab() {
+                Some(nav.tabs.active_tab_index)
+            } else {
+                None
+            }
+        });
+        if let Some(new_idx) = reopened_idx {
+            self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
             self.save_session(cx);
             self.ensure_active_tab_visible(cx);
+            self.load_tab_thumbnails(cx);
             self.sync_active_tab_to_views(cx);
         }
     }
@@ -1315,7 +1395,7 @@ impl AppWindow {
     }
 
     /// Synchronize the newly active tab's target, primary path, view mode, zoom, and secondary pane.
-    fn sync_active_tab_to_views(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_active_tab_to_views(&mut self, cx: &mut Context<Self>) {
         let (new_path, tab_target, view_mode, zoom, sec_path) = {
             let nav = self.state.navigation.read(cx);
             let tab = nav.tabs.active_tab();
@@ -1330,6 +1410,9 @@ impl AppWindow {
         self.state.main_view.target = tab_target.clone();
         self.state.main_view.view_mode = view_mode;
         self.state.main_view.zoom_level = zoom;
+        if sec_path.is_some() {
+            self.state.main_view.pane_type = crate::ui::views::main_view::PaneType::Dual;
+        }
         match tab_target {
             crate::ui::views::types::ViewTarget::Settings => {
                 self.state.nav_bar.update_path(FilesPath::from("Settings"));
@@ -1397,11 +1480,26 @@ impl AppWindow {
     }
 
     pub fn move_active_tab_left(&mut self, cx: &mut Context<Self>) {
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let (tab_count, pinned_count, from) = {
+            let nav = self.state.navigation.read(cx);
+            (
+                nav.tabs.tabs.len(),
+                nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
+                nav.tabs.active_tab_index,
+            )
+        };
         let moved = self
             .state
             .navigation
             .update(cx, |nav, _cx| nav.tabs.move_active_tab_left());
         if moved {
+            let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
+                win_w,
+                tab_count,
+                pinned_count,
+            );
+            self.record_slot_swap_animation(from, from.saturating_sub(1), metrics.tab_w, tab_count);
             self.ensure_active_tab_visible(cx);
             self.save_session(cx);
             cx.notify();
@@ -1409,14 +1507,55 @@ impl AppWindow {
     }
 
     pub fn move_active_tab_right(&mut self, cx: &mut Context<Self>) {
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let (tab_count, pinned_count, from) = {
+            let nav = self.state.navigation.read(cx);
+            (
+                nav.tabs.tabs.len(),
+                nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
+                nav.tabs.active_tab_index,
+            )
+        };
         let moved = self
             .state
             .navigation
             .update(cx, |nav, _cx| nav.tabs.move_active_tab_right());
         if moved {
+            let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
+                win_w,
+                tab_count,
+                pinned_count,
+            );
+            self.record_slot_swap_animation(from, (from + 1).min(tab_count - 1), metrics.tab_w, tab_count);
             self.ensure_active_tab_visible(cx);
             self.save_session(cx);
             cx.notify();
+        }
+    }
+
+    /// Record smooth horizontal slot-shift offsets when a tab moves from `from_idx` to `to_idx`.
+    fn record_slot_swap_animation(
+        &mut self,
+        from_idx: usize,
+        to_idx: usize,
+        tab_w: f32,
+        tab_count: usize,
+    ) {
+        if self.state.tab_drag.slot_shift_offsets.len() != tab_count {
+            self.state.tab_drag.slot_shift_offsets.resize(tab_count, 0.0);
+        }
+        if from_idx < to_idx {
+            for i in from_idx..to_idx {
+                if let Some(slot) = self.state.tab_drag.slot_shift_offsets.get_mut(i) {
+                    *slot += tab_w;
+                }
+            }
+        } else if from_idx > to_idx {
+            for i in (to_idx + 1)..=from_idx {
+                if let Some(slot) = self.state.tab_drag.slot_shift_offsets.get_mut(i) {
+                    *slot -= tab_w;
+                }
+            }
         }
     }
 
@@ -1505,7 +1644,6 @@ impl AppWindow {
             .secondary_pane_path
             .clone();
 
-        // Choose a meaningful default secondary path if none was set or if it was identical to primary
         let target_sec = match existing_sec {
             Some(ref p) if !p.as_path().as_os_str().is_empty() => p.clone(),
             _ => NavigationService::get_parent_path(&primary_path).unwrap_or(primary_path),
@@ -1619,7 +1757,6 @@ impl AppWindow {
             return;
         }
         if closed_pane == crate::core::navigation_manager::PaneFocus::Primary {
-            // Promote Secondary pane state into Primary pane
             let sec_path = self.state.secondary_view.primary_path.clone();
             let sec_items = self.state.secondary_view.items.clone();
             let sec_sel = self.state.secondary_view.selected_indices.clone();
@@ -1655,17 +1792,41 @@ impl AppWindow {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+        self.clear_tab_hover(cx);
+        let (tab_count, is_pinned, can_reopen_closed) = {
+            let nav = self.state.navigation.read(cx);
+            let tc = nav.tabs.tabs.len();
+            let pinned = nav
+                .tabs
+                .tabs
+                .get(tab_index)
+                .map(|t| t.pinned)
+                .unwrap_or(false);
+            let reopen = !nav.tabs.closed_tabs.is_empty();
+            (tc, pinned, reopen)
+        };
+        let other_windows: Vec<(u64, String)> =
+            crate::ui::components::tab_interactions::WindowTabRegistry::other_windows(
+                self.state.window_id,
+            )
+            .into_iter()
+            .map(|w| (w.window_id, w.active_tab_title))
+            .collect();
+
         self.state.active_dialog = Some(DialogType::TabContextMenu {
             tab_index,
             position,
             tab_count,
+            is_pinned,
+            can_reopen_closed,
+            other_windows,
         });
         cx.notify();
     }
 
-    /// Toggle the tab actions dropdown menu (split pane options).
+    /// Toggle the tab actions & all-tabs dropdown menu.
     pub fn toggle_tab_actions_menu(&mut self, cx: &mut Context<Self>) {
+        self.clear_tab_hover(cx);
         if matches!(
             self.state.active_dialog,
             Some(DialogType::TabActionsDropdown { .. })
@@ -1676,7 +1837,30 @@ impl AppWindow {
                 x: px(4.0),
                 y: px(40.0),
             };
-            self.state.active_dialog = Some(DialogType::TabActionsDropdown { position });
+            let (open_tabs, can_reopen_closed) = {
+                let nav = self.state.navigation.read(cx);
+                let active_idx = nav.tabs.active_tab_index;
+                let tabs = nav
+                    .tabs
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, t)| {
+                        let label = crate::ui::components::tab_bar::tab_display_label(t);
+                        let path_s = t.path.to_string_lossy().to_string();
+                        (idx, label, path_s, idx == active_idx, t.pinned)
+                    })
+                    .collect();
+                (tabs, !nav.tabs.closed_tabs.is_empty())
+            };
+            let is_dual_pane =
+                self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
+            self.state.active_dialog = Some(DialogType::TabActionsDropdown {
+                position,
+                open_tabs,
+                can_reopen_closed,
+                is_dual_pane,
+            });
         }
         cx.notify();
     }
@@ -1729,8 +1913,24 @@ impl AppWindow {
         y: f32,
         cx: &mut Context<Self>,
     ) {
+        self.start_tab_drag_with_offset(tab_index, x, y, 60.0, cx);
+    }
+
+    /// Start dragging a tab at explicit coordinates `(x, y)` with `grab_offset_x` relative to the tab's left edge.
+    pub fn start_tab_drag_with_offset(
+        &mut self,
+        tab_index: usize,
+        x: f32,
+        y: f32,
+        grab_offset_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_tab_hover(cx);
+        let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
         self.state.tab_drag.dragged_index = Some(tab_index);
+        self.state.tab_drag.initial_index = Some(tab_index);
         self.state.tab_drag.drop_target_index = Some(tab_index);
+        self.state.tab_drag.grab_offset_x = grab_offset_x;
         self.state.tab_drag.is_dragging = true;
         self.state.tab_drag.drag_active = false;
         self.state.tab_drag.is_dragging_out = false;
@@ -1738,8 +1938,203 @@ impl AppWindow {
         self.state.tab_drag.drag_start_y = y;
         self.state.tab_drag.current_x = x;
         self.state.tab_drag.current_y = y;
+        self.state.tab_drag.screen_x = f32::from(self.state.last_window_origin.x) + x;
+        self.state.tab_drag.screen_y = f32::from(self.state.last_window_origin.y) + y;
         self.state.tab_drag.drag_start_time = Some(std::time::Instant::now());
+        self.state.tab_drag.slot_shift_offsets = vec![0.0; tab_count];
+        self.state.tab_drag.cross_window_target = None;
         cx.notify();
+    }
+
+    /// Handle pointer movement over tab `tab_index`:
+    /// - If dragging a tab, updates tab drag position / live reorder / cross-window target.
+    /// - If dragging files/folders, highlights `tab_index` and starts a 500ms hover-to-switch timer.
+    /// - Otherwise, starts a 400ms hover timer for the rich Tab Hover Preview Card.
+    pub fn on_tab_mouse_move(
+        &mut self,
+        tab_index: usize,
+        tab_left_x: f32,
+        x: f32,
+        y: f32,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.tab_drag.is_dragging {
+            self.update_tab_drag_with_width(x, y, window_width, cx);
+            return;
+        }
+
+        // Case 2: User is dragging files/folders from the file view over a tab
+        if self.is_dragging() {
+            self.state.tab_drag.file_drag_over_new_tab_btn = false;
+            if self.state.tab_drag.file_drag_over_tab != Some(tab_index) {
+                self.state.tab_drag.file_drag_over_tab = Some(tab_index);
+                self.state.tab_drag.hovered_tab_index = Some(tab_index);
+                self.state.tab_drag.hovered_tab_since = Some(std::time::Instant::now());
+                self.tab_hover_timer_task = None;
+
+                let mut async_app = cx.to_async();
+                let task = cx.spawn(
+                    move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                        async_app
+                            .background_executor()
+                            .timer(std::time::Duration::from_millis(500))
+                            .await;
+                        let _ = this_weak.update(&mut async_app, |this, cx| {
+                            if this.is_dragging()
+                                && this.state.tab_drag.file_drag_over_tab == Some(tab_index)
+                            {
+                                // Auto-switch to the hovered tab so files can be dropped inside it
+                                this.switch_tab(tab_index, cx);
+                            }
+                        });
+                    },
+                );
+                self.tab_hover_timer_task = Some(task);
+                cx.notify();
+            }
+            return;
+        }
+
+        // Case 3: Normal pointer hover over tab -> schedule rich Tab Hover Preview Card
+        self.state.tab_drag.hovered_tab_left_x = tab_left_x;
+        if self.state.tab_drag.hovered_tab_index != Some(tab_index) {
+            self.state.tab_drag.hovered_tab_index = Some(tab_index);
+            self.state.tab_drag.hovered_tab_since = Some(std::time::Instant::now());
+            self.state.tab_drag.show_tab_hover_card = false;
+            self.tab_hover_timer_task = None;
+
+            let mut async_app = cx.to_async();
+            let task = cx.spawn(
+                move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                    async_app
+                        .background_executor()
+                        .timer(std::time::Duration::from_millis(420))
+                        .await;
+                    let _ = this_weak.update(&mut async_app, |this, cx| {
+                        if !this.state.tab_drag.is_dragging
+                            && !this.is_dragging()
+                            && this.state.active_dialog.is_none()
+                            && this.state.tab_drag.hovered_tab_index == Some(tab_index)
+                        {
+                            this.state.tab_drag.show_tab_hover_card = true;
+                            cx.notify();
+                        }
+                    });
+                },
+            );
+            self.tab_hover_timer_task = Some(task);
+            cx.notify();
+        }
+    }
+
+    /// Clear tab hover preview card and file-drag-over-tab highlights when the cursor leaves the tabs.
+    pub fn clear_tab_hover(&mut self, cx: &mut Context<Self>) {
+        let had_hover = self.state.tab_drag.hovered_tab_index.is_some()
+            || self.state.tab_drag.show_tab_hover_card
+            || self.state.tab_drag.file_drag_over_tab.is_some()
+            || self.state.tab_drag.file_drag_over_new_tab_btn;
+        self.tab_hover_timer_task = None;
+        self.state.tab_drag.hovered_tab_index = None;
+        self.state.tab_drag.hovered_tab_since = None;
+        self.state.tab_drag.show_tab_hover_card = false;
+        self.state.tab_drag.file_drag_over_tab = None;
+        self.state.tab_drag.file_drag_over_new_tab_btn = false;
+        if had_hover {
+            cx.notify();
+        }
+    }
+
+    /// Drop currently dragged files/folders onto tab `tab_index` (moves/copies them into that tab's directory).
+    pub fn drop_files_onto_tab(&mut self, tab_index: usize, cx: &mut Context<Self>) {
+        let dest_dir_opt = self
+            .state
+            .navigation
+            .read(cx)
+            .tabs
+            .tabs
+            .get(tab_index)
+            .map(|t| t.path.as_path().to_path_buf());
+        let indices = self.state.main_view.drag_state.indices.clone();
+        let is_copy = self.state.main_view.drag_state.is_copy;
+        let sources: Vec<std::path::PathBuf> = indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.as_path().to_path_buf())
+            .collect();
+
+        self.state.main_view.drag_end();
+        self.clear_tab_hover(cx);
+
+        if let Some(dest_dir) = dest_dir_opt {
+            if !sources.is_empty() && dest_dir.is_dir() {
+                let progress_engine = self.state.progress_engine.clone();
+                let this_weak = cx.weak_entity();
+                let mut async_cx = cx.to_async();
+                let total = sources.len();
+                cx.foreground_executor()
+                    .spawn(async move {
+                        use crate::core::progress::OpKind;
+                        use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                        let (op_label, kind) = if is_copy {
+                            ("Copy", OpKind::Copy)
+                        } else {
+                            ("Move", OpKind::Move)
+                        };
+                        let job_id = progress_engine
+                            .start_job(format!("{} ({} items)", op_label, total), kind)
+                            .await;
+                        let outcome = if is_copy {
+                            run_copy_job(&progress_engine, job_id, sources, dest_dir).await
+                        } else {
+                            run_move_job(&progress_engine, job_id, sources, dest_dir).await
+                        };
+                        match outcome {
+                            TransferOutcome::Done => progress_engine.complete_job(job_id).await,
+                            TransferOutcome::Cancelled => {}
+                            TransferOutcome::Failed(reason) => {
+                                progress_engine.fail_job(job_id, reason).await
+                            }
+                        }
+                        let _ = this_weak.update(&mut async_cx, |this, cx| {
+                            this.refresh(cx);
+                        });
+                    })
+                    .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Drop dragged folder(s) onto the `+` (New Tab) button to open them as new tabs (Files-community parity).
+    pub fn drop_files_onto_new_tab_button(&mut self, cx: &mut Context<Self>) {
+        let indices = self.state.main_view.drag_state.indices.clone();
+        let dirs_to_open: Vec<FilesPath> = indices
+            .iter()
+            .filter_map(|&idx| self.state.main_view.items.get(idx))
+            .filter(|it| matches!(it.file_type, FileType::Directory))
+            .map(|it| it.path.clone())
+            .collect();
+
+        self.state.main_view.drag_end();
+        self.clear_tab_hover(cx);
+
+        for dir_path in dirs_to_open {
+            self.open_in_new_tab(dir_path, cx);
+        }
+        cx.notify();
+    }
+
+    /// Clear `external_drop_preview` on any target window we were previously hovering over.
+    fn clear_external_drop_preview_on_target(&mut self, cx: &mut Context<Self>) {
+        if let Some(prev_target) = self.state.tab_drag.cross_window_target.take() {
+            let _ = prev_target.target_weak.update(cx, |target_win, tcx| {
+                if target_win.state.tab_drag.external_drop_preview.is_some() {
+                    target_win.state.tab_drag.external_drop_preview = None;
+                    tcx.notify();
+                }
+            });
+        }
     }
 
     /// Update tab drag position using the current window width for responsive tab metrics.
@@ -1748,8 +2143,8 @@ impl AppWindow {
         self.update_tab_drag_with_width(x, y, win_w, cx);
     }
 
-    /// Update tab drag position with explicit `window_width`. Performs live tab reordering
-    /// inside the strip and detects vertical drag-out for detaching into a new window.
+    /// Update tab drag position with explicit `window_width`. Performs live animated tab reordering
+    /// inside the strip, edge auto-scroll, and cross-window tab bar hit-testing when dragged out.
     pub fn update_tab_drag_with_width(
         &mut self,
         x: f32,
@@ -1762,6 +2157,8 @@ impl AppWindow {
         }
         self.state.tab_drag.current_x = x;
         self.state.tab_drag.current_y = y;
+        self.state.tab_drag.screen_x = f32::from(self.state.last_window_origin.x) + x;
+        self.state.tab_drag.screen_y = f32::from(self.state.last_window_origin.y) + y;
 
         if !self.state.tab_drag.drag_active {
             let dx = x - self.state.tab_drag.drag_start_x;
@@ -1772,76 +2169,135 @@ impl AppWindow {
         }
 
         if self.state.tab_drag.drag_active {
-            self.state.tab_drag.is_dragging_out = y < -12.0 || y > 52.0;
+            let win_h = f32::from(self.state.last_window_size.height).max(400.0);
+            let outside_strip = y < -14.0
+                || y > 54.0
+                || x < -24.0
+                || x > window_width + 24.0
+                || y > win_h;
+            self.state.tab_drag.is_dragging_out = outside_strip;
 
-            let (tab_count, pinned_count) = {
+            let (tab_count, pinned_count, dragged_label) = {
                 let nav = self.state.navigation.read(cx);
                 let tc = nav.tabs.tabs.len();
                 let pc = nav.tabs.tabs.iter().filter(|t| t.pinned).count();
-                (tc, pc)
+                let lbl = self
+                    .state
+                    .tab_drag
+                    .dragged_index
+                    .and_then(|di| nav.tabs.tabs.get(di))
+                    .map(crate::ui::components::tab_bar::tab_display_label)
+                    .unwrap_or_else(|| "Tab".to_string());
+                (tc, pc, lbl)
             };
-            let m = crate::ui::components::tab_bar::compute_strip_metrics(
+
+            let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
                 window_width,
                 tab_count,
                 pinned_count,
             );
-            let (strip_avail_w, tab_w, tabs_overflow, max_scroll) =
-                (m.strip_viewport_w, m.tab_w, m.tabs_overflow, m.max_scroll);
 
             // Auto-scroll strip when dragging near left/right edges in overflow mode
-            if tabs_overflow {
-                let strip_left = 40.0 + 24.0;
-                let strip_right = strip_left + strip_avail_w;
-                if x < strip_left + 28.0 {
-                    self.state.tab_drag.scroll_offset =
-                        (self.state.tab_drag.scroll_offset - 12.0).max(0.0);
-                } else if x > strip_right - 28.0 {
-                    self.state.tab_drag.scroll_offset =
-                        (self.state.tab_drag.scroll_offset + 12.0).min(max_scroll);
+            if metrics.tabs_overflow && !outside_strip {
+                let strip_left = metrics.strip_start_x;
+                let strip_right = strip_left + metrics.strip_viewport_w;
+                if x < strip_left + 32.0 {
+                    self.state.tab_drag.scroll_target =
+                        (self.state.tab_drag.scroll_target - 14.0).max(0.0);
+                } else if x > strip_right - 32.0 {
+                    self.state.tab_drag.scroll_target =
+                        (self.state.tab_drag.scroll_target + 14.0).min(metrics.max_scroll);
                 }
             }
 
-            if !self.state.tab_drag.is_dragging_out && tab_count > 0 {
-                let strip_start_x = if tabs_overflow { 40.0 + 24.0 } else { 40.0 };
-                let rel_x =
-                    (x - strip_start_x + self.state.tab_drag.scroll_offset).max(0.0);
-
-                // Compute which tab slot `rel_x` falls into (accounting for 44px pinned tabs)
-                let pinned_total_w = pinned_count as f32 * 44.0;
-                let target_idx = if rel_x < pinned_total_w && pinned_count > 0 {
-                    ((rel_x / 44.0).floor() as usize).min(pinned_count - 1)
+            if outside_strip {
+                // Check if cursor is hovering over ANOTHER open files-rs window's tab bar!
+                let hit =
+                    crate::ui::components::tab_interactions::WindowTabRegistry::hit_test_other_window_tab_bar(
+                        self.state.window_id,
+                        self.state.tab_drag.screen_x,
+                        self.state.tab_drag.screen_y,
+                    );
+                if let Some(target) = hit {
+                    if self
+                        .state
+                        .tab_drag
+                        .cross_window_target
+                        .as_ref()
+                        .map(|t| t.target_window_id != target.target_window_id)
+                        .unwrap_or(false)
+                    {
+                        self.clear_external_drop_preview_on_target(cx);
+                    }
+                    let insert_idx = target.insert_index;
+                    let local_x = target.local_x;
+                    let lbl_clone = dragged_label.clone();
+                    let _ = target.target_weak.update(cx, |target_win, tcx| {
+                        target_win.state.tab_drag.external_drop_preview =
+                            Some((insert_idx, lbl_clone, local_x));
+                        tcx.notify();
+                    });
+                    self.state.tab_drag.cross_window_target = Some(target);
                 } else {
-                    let unpinned_x = (rel_x - pinned_total_w).max(0.0);
-                    let idx = pinned_count + (unpinned_x / tab_w.max(1.0)).floor() as usize;
-                    idx.min(tab_count - 1)
-                };
+                    self.clear_external_drop_preview_on_target(cx);
+                }
+            } else {
+                self.clear_external_drop_preview_on_target(cx);
 
-                self.state.tab_drag.drop_target_index = Some(target_idx);
+                if tab_count > 0 {
+                    let rel_x =
+                        (x - metrics.strip_start_x + self.state.tab_drag.scroll_offset).max(0.0);
 
-                // Live reorder as the cursor crosses tab boundaries
-                if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
-                    let can_reorder = {
-                        let nav = self.state.navigation.read(cx);
-                        let src_pinned = nav
-                            .tabs
-                            .tabs
-                            .get(dragged_idx)
-                            .map(|t| t.pinned)
-                            .unwrap_or(false);
-                        let dst_pinned = nav
-                            .tabs
-                            .tabs
-                            .get(target_idx)
-                            .map(|t| t.pinned)
-                            .unwrap_or(false);
-                        src_pinned == dst_pinned && dragged_idx != target_idx
+                    let pinned_total_w =
+                        pinned_count as f32 * crate::ui::components::tab_bar::PINNED_TAB_W;
+                    let target_idx = if rel_x < pinned_total_w && pinned_count > 0 {
+                        ((rel_x / crate::ui::components::tab_bar::PINNED_TAB_W).floor() as usize)
+                            .min(pinned_count - 1)
+                    } else {
+                        let unpinned_x = (rel_x - pinned_total_w).max(0.0);
+                        let idx = pinned_count
+                            + (unpinned_x / metrics.tab_w.max(1.0)).floor() as usize;
+                        idx.min(tab_count - 1)
                     };
-                    if can_reorder {
-                        self.state.navigation.update(cx, |nav, _cx| {
-                            nav.tabs.reorder_tab(dragged_idx, target_idx);
-                        });
-                        self.state.tab_drag.dragged_index = Some(target_idx);
-                        self.save_session(cx);
+
+                    self.state.tab_drag.drop_target_index = Some(target_idx);
+
+                    // Live reorder with smooth neighbor slot-shift animation
+                    if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
+                        let can_reorder = {
+                            let nav = self.state.navigation.read(cx);
+                            let src_pinned = nav
+                                .tabs
+                                .tabs
+                                .get(dragged_idx)
+                                .map(|t| t.pinned)
+                                .unwrap_or(false);
+                            let dst_pinned = nav
+                                .tabs
+                                .tabs
+                                .get(target_idx)
+                                .map(|t| t.pinned)
+                                .unwrap_or(false);
+                            src_pinned == dst_pinned && dragged_idx != target_idx
+                        };
+                        if can_reorder {
+                            let slot_w = if dragged_idx < pinned_count {
+                                crate::ui::components::tab_bar::PINNED_TAB_W
+                            } else {
+                                metrics.tab_w
+                            };
+                            self.state.navigation.update(cx, |nav, _cx| {
+                                nav.tabs.reorder_tab(dragged_idx, target_idx);
+                            });
+                            self.record_slot_swap_animation(
+                                dragged_idx,
+                                target_idx,
+                                slot_w,
+                                tab_count,
+                            );
+                            self.state.tab_drag.dragged_index = Some(target_idx);
+                            self.save_session(cx);
+                        }
                     }
                 }
             }
@@ -1861,27 +2317,34 @@ impl AppWindow {
         Some(index.min(tab_count - 1))
     }
 
-    /// Complete tab drag (drop). Reorders or detaches into a new window if dragged out.
+    /// Complete tab drag (drop):
+    /// 1. If hovering over another open `files-rs` window's tab bar (`cross_window_target`),
+    ///    docks the tab into that window at `insert_index` (and closes this window if it was the last tab).
+    /// 2. Else if dragged outside (`is_dragging_out`) and `tab_count > 1`, detaches the tab into a new window
+    ///    at `(screen_x, screen_y)`.
+    /// 3. Else if dragged outside and `tab_count == 1`, moves this window to `(screen_x, screen_y)`.
     pub fn end_tab_drag(&mut self, _drop_index: Option<usize>, cx: &mut Context<Self>) {
         if self.state.tab_drag.drag_active {
             if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
-                if self.state.tab_drag.is_dragging_out {
-                    let (tab_count, detach_path) = {
-                        let nav = self.state.navigation.read(cx);
-                        let count = nav.tabs.tabs.len();
-                        let path = nav.tabs.tabs.get(dragged_idx).map(|t| t.path.clone());
-                        (count, path)
-                    };
+                if let Some(cross_target) = self.state.tab_drag.cross_window_target.take() {
+                    // Dock tab into the target window!
+                    self.dock_tab_into_cross_target(dragged_idx, cross_target, None, cx);
+                } else if self.state.tab_drag.is_dragging_out {
+                    let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+                    let screen_pos = (
+                        self.state.tab_drag.screen_x,
+                        self.state.tab_drag.screen_y,
+                    );
                     if tab_count > 1 {
-                        if let Some(path) = detach_path {
-                            tracing::info!(
-                                "Detaching tab {} ({:?}) into a new window",
-                                dragged_idx,
-                                path
-                            );
-                            self.open_in_new_window(path, cx);
-                            self.close_tab(dragged_idx, cx);
-                        }
+                        self.move_tab_to_new_window(dragged_idx, Some(screen_pos), cx);
+                    } else {
+                        // Single tab dragged outside: move the current window to the dropped screen position
+                        crate::ui::components::tab_interactions::move_hwnd_to_screen_pos(
+                            self.state.window_hwnd,
+                            (screen_pos.0 - 100.0).max(0.0),
+                            (screen_pos.1 - 16.0).max(0.0),
+                            self.state.last_scale_factor,
+                        );
                     }
                 } else if let Some(target_idx) = self.state.tab_drag.drop_target_index {
                     if dragged_idx != target_idx {
@@ -1893,31 +2356,161 @@ impl AppWindow {
                 }
             }
         }
-        let saved_offset = self.state.tab_drag.scroll_offset;
-        self.state.tab_drag = crate::app_state::TabDragState::default();
-        self.state.tab_drag.scroll_offset = saved_offset;
+        self.clear_external_drop_preview_on_target(cx);
+        self.state.tab_drag.clear_drag_only();
         cx.notify();
     }
 
-    /// Cancel tab drag.
+    /// Move tab at `index` into a brand-new window (preserving its full `TabState`).
+    pub fn move_tab_to_new_window(
+        &mut self,
+        index: usize,
+        screen_origin: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
+        let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+        if tab_count <= 1 {
+            return;
+        }
+        let taken = self
+            .state
+            .navigation
+            .update(cx, |nav, _cx| nav.tabs.take_tab(index));
+        if let Some(tab) = taken {
+            self.clamp_scroll_offset(cx);
+            self.ensure_active_tab_visible(cx);
+            self.save_session(cx);
+            self.sync_active_tab_to_views(cx);
+            self.open_tab_state_in_new_window(tab, screen_origin, cx);
+            cx.notify();
+        }
+    }
+
+    /// Move tab at `tab_index` into an existing open `AppWindow` (`target_window_id`).
+    pub fn move_tab_to_existing_window(
+        &mut self,
+        tab_index: usize,
+        target_window_id: u64,
+        insert_index: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_info =
+            crate::ui::components::tab_interactions::WindowTabRegistry::other_windows(
+                self.state.window_id,
+            )
+            .into_iter()
+            .find(|w| w.window_id == target_window_id);
+        if let Some(info) = target_info {
+            let cross = crate::ui::components::tab_interactions::CrossWindowTabTarget {
+                target_window_id: info.window_id,
+                target_weak: info.weak_view,
+                target_hwnd: info.hwnd,
+                insert_index: insert_index.unwrap_or(info.tab_count),
+                local_x: 0.0,
+                target_window_title: info.active_tab_title,
+            };
+            self.dock_tab_into_cross_target(tab_index, cross, Some(window), cx);
+        }
+    }
+
+    /// Internal helper to transfer `tab_index` from `self` into `cross_target`.
+    fn dock_tab_into_cross_target(
+        &mut self,
+        tab_index: usize,
+        cross_target: crate::ui::components::tab_interactions::CrossWindowTabTarget,
+        window_opt: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let taken = self
+            .state
+            .navigation
+            .update(cx, |nav, _cx| nav.tabs.take_tab(tab_index));
+        if let Some(tab) = taken {
+            let insert_idx = cross_target.insert_index;
+            let docked_ok = cross_target
+                .target_weak
+                .update(cx, |target_win, tcx| {
+                    target_win.accept_docked_tab(tab, Some(insert_idx), tcx);
+                })
+                .is_ok();
+            if docked_ok {
+                crate::ui::components::tab_interactions::activate_hwnd(cross_target.target_hwnd);
+            }
+
+            let remaining = self.state.navigation.read(cx).tabs.tabs.len();
+            if remaining == 0 {
+                crate::ui::components::tab_interactions::WindowTabRegistry::unregister(
+                    self.state.window_id,
+                );
+                self.stop_all_file_watchers();
+                if let Some(win) = window_opt {
+                    win.remove_window();
+                } else {
+                    #[cfg(windows)]
+                    if self.state.window_hwnd != 0 {
+                        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+                        use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                        unsafe {
+                            let _ = PostMessageW(
+                                Some(HWND(self.state.window_hwnd as *mut _)),
+                                WM_CLOSE,
+                                WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
+                    }
+                }
+            } else {
+                self.clamp_scroll_offset(cx);
+                self.ensure_active_tab_visible(cx);
+                self.save_session(cx);
+                self.sync_active_tab_to_views(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Receive a `TabState` docked from another `AppWindow` at `insert_index`.
+    pub fn accept_docked_tab(
+        &mut self,
+        tab: crate::core::navigation_manager::TabState,
+        insert_index: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.tab_drag.external_drop_preview = None;
+        let new_idx = self.state.navigation.update(cx, |nav, _cx| {
+            let idx = insert_index.unwrap_or(nav.tabs.tabs.len());
+            nav.tabs.insert_tab_at(idx, tab)
+        });
+        self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
+        self.ensure_active_tab_visible(cx);
+        self.load_tab_thumbnails(cx);
+        self.save_session(cx);
+        self.sync_active_tab_to_views(cx);
+        cx.notify();
+    }
+
+    /// Cancel tab drag (restores tab to `initial_index` if it was live-reordered during the drag).
     pub fn cancel_tab_drag(&mut self, cx: &mut Context<Self>) {
-        let saved_offset = self.state.tab_drag.scroll_offset;
-        self.state.tab_drag = crate::app_state::TabDragState::default();
-        self.state.tab_drag.scroll_offset = saved_offset;
+        if let (Some(cur_idx), Some(init_idx)) = (
+            self.state.tab_drag.dragged_index,
+            self.state.tab_drag.initial_index,
+        ) {
+            if cur_idx != init_idx {
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.tabs.reorder_tab(cur_idx, init_idx);
+                });
+                self.save_session(cx);
+            }
+        }
+        self.clear_external_drop_preview_on_target(cx);
+        self.state.tab_drag.clear_drag_only();
         cx.notify();
     }
 
-    /// Scroll the tab bar left.
-    pub fn scroll_tab_bar_left(&mut self, cx: &mut Context<Self>) {
-        let step = 64.0;
-        self.state.tab_drag.scroll_offset =
-            (self.state.tab_drag.scroll_offset - step).max(0.0);
-        cx.notify();
-    }
-
-    /// Scroll the tab bar right.
-    pub fn scroll_tab_bar_right(&mut self, cx: &mut Context<Self>) {
-        let step = 64.0;
+    /// Smoothly scroll the tab bar by `delta` pixels (positive = right, negative = left).
+    pub fn scroll_tab_bar_by(&mut self, delta: f32, cx: &mut Context<Self>) {
         let win_w = f32::from(self.state.last_window_size.width).max(800.0);
         let (tab_count, pinned_count) = {
             let nav = self.state.navigation.read(cx);
@@ -1926,18 +2519,32 @@ impl AppWindow {
                 nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
             )
         };
-        let max_scroll = crate::ui::components::tab_bar::compute_strip_metrics(
+        let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
             win_w,
             tab_count,
             pinned_count,
-        )
-        .max_scroll;
-        self.state.tab_drag.scroll_offset =
-            (self.state.tab_drag.scroll_offset + step).min(max_scroll);
+        );
+        if !metrics.tabs_overflow {
+            self.state.tab_drag.scroll_target = 0.0;
+            self.state.tab_drag.scroll_offset = 0.0;
+        } else {
+            self.state.tab_drag.scroll_target =
+                (self.state.tab_drag.scroll_target + delta).clamp(0.0, metrics.max_scroll);
+        }
         cx.notify();
     }
 
-    /// Ensure the active tab is scrolled into the visible tab strip viewport.
+    /// Scroll the tab bar left by ~1.5 tab widths (smoothly interpolated).
+    pub fn scroll_tab_bar_left(&mut self, cx: &mut Context<Self>) {
+        self.scroll_tab_bar_by(-180.0, cx);
+    }
+
+    /// Scroll the tab bar right by ~1.5 tab widths (smoothly interpolated).
+    pub fn scroll_tab_bar_right(&mut self, cx: &mut Context<Self>) {
+        self.scroll_tab_bar_by(180.0, cx);
+    }
+
+    /// Ensure the active tab is smoothly scrolled into the visible tab strip viewport.
     pub fn ensure_active_tab_visible(&mut self, cx: &mut Context<Self>) {
         let win_w = f32::from(self.state.last_window_size.width).max(800.0);
         let (tab_count, pinned_count, active_idx) = {
@@ -1948,38 +2555,35 @@ impl AppWindow {
                 nav.tabs.active_tab_index,
             )
         };
-        let m = crate::ui::components::tab_bar::compute_strip_metrics(
+        let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
             win_w,
             tab_count,
             pinned_count,
         );
-        let (strip_avail_w, tab_w, tabs_overflow, max_scroll) =
-            (m.strip_viewport_w, m.tab_w, m.tabs_overflow, m.max_scroll);
-        if !tabs_overflow {
+        if !metrics.tabs_overflow {
+            self.state.tab_drag.scroll_target = 0.0;
             self.state.tab_drag.scroll_offset = 0.0;
             return;
         }
-        // Compute left and right pixel edges of `active_idx`
-        let tab_left: f32 = if active_idx < pinned_count {
-            active_idx as f32 * 44.0
-        } else {
-            (pinned_count as f32 * 44.0) + ((active_idx - pinned_count) as f32 * tab_w)
-        };
-        let this_w = if active_idx < pinned_count { 44.0 } else { tab_w };
+        let (tab_left, this_w) = crate::ui::components::tab_bar::tab_slot_x_and_width(
+            active_idx,
+            pinned_count,
+            metrics.tab_w,
+        );
         let tab_right = tab_left + this_w;
 
-        let cur = self.state.tab_drag.scroll_offset;
+        let cur = self.state.tab_drag.scroll_target;
         if tab_left < cur {
-            self.state.tab_drag.scroll_offset = tab_left.max(0.0);
-        } else if tab_right > cur + strip_avail_w {
-            self.state.tab_drag.scroll_offset =
-                (tab_right - strip_avail_w).clamp(0.0, max_scroll);
+            self.state.tab_drag.scroll_target = tab_left.max(0.0);
+        } else if tab_right > cur + metrics.strip_viewport_w {
+            self.state.tab_drag.scroll_target =
+                (tab_right - metrics.strip_viewport_w).clamp(0.0, metrics.max_scroll);
         } else {
-            self.state.tab_drag.scroll_offset = cur.clamp(0.0, max_scroll);
+            self.state.tab_drag.scroll_target = cur.clamp(0.0, metrics.max_scroll);
         }
     }
 
-    /// Clamp scroll_offset: reset to 0 if tabs no longer overflow,
+    /// Clamp scroll_target and scroll_offset: reset to 0 if tabs no longer overflow,
     /// otherwise clamp so we don't scroll past the end.
     fn clamp_scroll_offset(&mut self, cx: &mut Context<Self>) {
         let win_w = f32::from(self.state.last_window_size.width).max(800.0);
@@ -1990,17 +2594,19 @@ impl AppWindow {
                 nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
             )
         };
-        let m = crate::ui::components::tab_bar::compute_strip_metrics(
+        let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
             win_w,
             tab_count,
             pinned_count,
         );
-        let (tabs_overflow, max_scroll) = (m.tabs_overflow, m.max_scroll);
-        if !tabs_overflow {
+        if !metrics.tabs_overflow {
+            self.state.tab_drag.scroll_target = 0.0;
             self.state.tab_drag.scroll_offset = 0.0;
         } else {
+            self.state.tab_drag.scroll_target =
+                self.state.tab_drag.scroll_target.clamp(0.0, metrics.max_scroll);
             self.state.tab_drag.scroll_offset =
-                self.state.tab_drag.scroll_offset.clamp(0.0, max_scroll);
+                self.state.tab_drag.scroll_offset.clamp(0.0, metrics.max_scroll);
         }
     }
 
@@ -2016,6 +2622,23 @@ impl AppWindow {
         });
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
+        self.ensure_active_tab_visible(cx);
+        self.sync_active_tab_to_views(cx);
+        cx.notify();
+    }
+
+    /// Close all unpinned tabs to the left of `from_index` (Files-community "Close tabs to the left").
+    pub fn close_tabs_to_left(&mut self, from_index: usize, cx: &mut Context<Self>) {
+        self.state.navigation.update(cx, |nav, _cx| {
+            for i in (0..from_index).rev() {
+                if !nav.tabs.tabs.get(i).map(|t| t.pinned).unwrap_or(false) {
+                    nav.tabs.close_tab(i);
+                }
+            }
+        });
+        self.save_session(cx);
+        self.clamp_scroll_offset(cx);
+        self.ensure_active_tab_visible(cx);
         self.sync_active_tab_to_views(cx);
         cx.notify();
     }
@@ -2032,18 +2655,20 @@ impl AppWindow {
         });
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
+        self.ensure_active_tab_visible(cx);
         self.sync_active_tab_to_views(cx);
         cx.notify();
     }
 
-    /// Duplicate the specified tab.
+    /// Duplicate the specified tab immediately to its right.
     pub fn duplicate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         let tab = self.state.navigation.read(cx).tabs.tabs.get(index).cloned();
-        if let Some(tab) = tab {
-            self.state.navigation.update(cx, |nav, _cx| {
-                nav.tabs
-                    .add_tab_with_zoom(tab.path.clone(), tab.view_mode.clone(), tab.zoom_level);
+        if let Some(mut dup_tab) = tab {
+            dup_tab.pinned = false;
+            let new_idx = self.state.navigation.update(cx, |nav, _cx| {
+                nav.tabs.insert_tab_at(index + 1, dup_tab)
             });
+            self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
             self.ensure_active_tab_visible(cx);
             self.save_session(cx);
             self.sync_active_tab_to_views(cx);
@@ -2172,6 +2797,35 @@ impl AppWindow {
         };
         self.last_render_time = Some(std::time::Instant::now());
 
+        // Poll OS cursor & left button when dragging a tab so cross-window docking and
+        // desktop drag-out work seamlessly even when the cursor leaves this window!
+        let mut os_drag_active = false;
+        if self.state.tab_drag.is_dragging {
+            if let Some(((local_x, local_y), (screen_x, screen_y), lbutton_down)) =
+                crate::ui::components::tab_interactions::query_os_cursor_and_lbutton(
+                    self.state.window_hwnd,
+                    self.state.last_scale_factor,
+                )
+            {
+                self.state.tab_drag.screen_x = screen_x;
+                self.state.tab_drag.screen_y = screen_y;
+                let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+                if !lbutton_down {
+                    // User released the mouse button (possibly outside the window or over another window)
+                    self.end_tab_drag(None, cx);
+                } else {
+                    if (local_x - self.state.tab_drag.current_x).abs() > 0.5
+                        || (local_y - self.state.tab_drag.current_y).abs() > 0.5
+                    {
+                        self.update_tab_drag_with_width(local_x, local_y, win_w, cx);
+                    }
+                    os_drag_active = true;
+                }
+            }
+        }
+
+        let tab_anim_tick = self.state.tab_drag.tick_animations(dt);
+
         let sidebar_tick;
         let main_tick;
         let secondary_tick;
@@ -2202,7 +2856,7 @@ impl AppWindow {
                 false
             };
         }
-        if sidebar_tick || main_tick || secondary_tick {
+        if sidebar_tick || main_tick || secondary_tick || tab_anim_tick || os_drag_active {
             if main_tick {
                 let offset = self.state.main_view.bouncy_scroll.offset;
                 let handle = &self.state.main_view.uniform_list_scroll_handle;
@@ -2772,7 +3426,7 @@ impl AppWindow {
         pane_focus: crate::core::navigation_manager::PaneFocus,
         cx: &mut Context<Self>,
     ) {
-        let (items_clone, sel_clone, sel_size) = {
+        let (items_len, sel_clone, sel_size) = {
             let view = self.state.pane_view(pane_focus);
             let sel_size: u64 = view
                 .selected_indices
@@ -2781,7 +3435,7 @@ impl AppWindow {
                 .map(|item| item.size)
                 .sum();
             (
-                view.items.clone(),
+                view.items.len(),
                 view.selected_indices.clone(),
                 sel_size,
             )
@@ -2791,8 +3445,16 @@ impl AppWindow {
             self.state.status_bar.selected_size_bytes = sel_size;
             self.refresh_folder_size_status(pane_focus, cx);
         }
+        let need_items_sync = self.state.pane_file_items(pane_focus).read(cx).items.len() != items_len;
+        let items_opt = if need_items_sync {
+            Some(self.state.pane_view(pane_focus).items.clone())
+        } else {
+            None
+        };
         self.state.pane_file_items(pane_focus).update(cx, |m, _| {
-            m.items = items_clone;
+            if let Some(items) = items_opt {
+                m.items = items;
+            }
             m.selected_indices = sel_clone;
         });
     }

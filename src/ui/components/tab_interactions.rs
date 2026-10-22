@@ -1,13 +1,254 @@
-//! Tab Advanced Interactions — Cross-window dragging, hover-to-select, and scroll-to-switch.
-//! Per DESIGN_SPEC.md section 6 / TODO.md Section 6.
+//! Tab Advanced Interactions — Cross-window dragging, multi-window tab docking registry,
+//! hover-to-select, scroll-to-switch, and smooth tab animations.
 //!
-//! This module provides advanced tab interaction features:
-//! - Cross-window tab dragging
-//! - Hover-to-select tabs
-//! - Scroll-to-switch tabs
+//! Features:
+//! - `WindowTabRegistry`: Process-wide thread-safe registry of open `AppWindow` instances,
+//!   their live screen bounds, tab counts, and `WeakEntity<AppWindow>` handles for cross-window
+//!   tab dragging and docking ("bringing a tab from one window to another tab bar").
+//! - Win32 global cursor & mouse button polling (`query_os_cursor_and_lbutton`) so dragging a tab
+//!   outside a window tracks smoothly across the desktop and across multiple windows at display refresh rate.
+//! - `TabHoverState`, `TabScrollState`, `TabDragService`, and `TabInteractionConfig`.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a unique window ID for a newly created `AppWindow`.
+pub fn next_window_id() -> u64 {
+    NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Metadata for a registered open `AppWindow` in the process-wide `WindowTabRegistry`.
+#[derive(Clone)]
+pub struct RegisteredWindowInfo {
+    pub window_id: u64,
+    pub weak_view: gpui::WeakEntity<crate::app::AppWindow>,
+    pub hwnd: isize,
+    /// Window origin X in screen coordinates (logical pixels)
+    pub screen_x: f32,
+    /// Window origin Y in screen coordinates (logical pixels)
+    pub screen_y: f32,
+    /// Window width in logical pixels
+    pub width: f32,
+    /// Window height in logical pixels
+    pub height: f32,
+    pub scale_factor: f32,
+    pub tab_count: usize,
+    pub pinned_count: usize,
+    pub scroll_offset: f32,
+    pub active_tab_title: String,
+    pub last_updated: Instant,
+}
+
+/// Result of hit-testing a dragged tab against other open windows' tab bars.
+#[derive(Clone)]
+pub struct CrossWindowTabTarget {
+    pub target_window_id: u64,
+    pub target_weak: gpui::WeakEntity<crate::app::AppWindow>,
+    pub target_hwnd: isize,
+    pub insert_index: usize,
+    pub local_x: f32,
+    pub target_window_title: String,
+}
+
+static WINDOW_REGISTRY: OnceLock<Mutex<Vec<RegisteredWindowInfo>>> = OnceLock::new();
+
+fn registry_slot() -> &'static Mutex<Vec<RegisteredWindowInfo>> {
+    WINDOW_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Process-wide registry of open `AppWindow` instances for cross-window tab dragging and docking.
+pub struct WindowTabRegistry;
+
+impl WindowTabRegistry {
+    /// Register or update a window's live screen geometry and tab strip state.
+    pub fn upsert(info: RegisteredWindowInfo) {
+        if let Ok(mut list) = registry_slot().lock() {
+            // Prune any dead WeakEntity entries
+            list.retain(|entry| entry.weak_view.upgrade().is_some() || entry.window_id == info.window_id);
+            if let Some(existing) = list.iter_mut().find(|e| e.window_id == info.window_id) {
+                *existing = info;
+            } else {
+                list.push(info);
+            }
+        }
+    }
+
+    /// Unregister a window when it closes.
+    pub fn unregister(window_id: u64) {
+        if let Ok(mut list) = registry_slot().lock() {
+            list.retain(|e| e.window_id != window_id);
+        }
+    }
+
+    /// Return the number of currently open `AppWindow` instances.
+    pub fn open_window_count() -> usize {
+        if let Ok(mut list) = registry_slot().lock() {
+            list.retain(|e| e.weak_view.upgrade().is_some());
+            list.len()
+        } else {
+            1
+        }
+    }
+
+    /// Return all other open windows (excluding `exclude_window_id`).
+    pub fn other_windows(exclude_window_id: u64) -> Vec<RegisteredWindowInfo> {
+        if let Ok(mut list) = registry_slot().lock() {
+            list.retain(|e| e.weak_view.upgrade().is_some());
+            list.iter()
+                .filter(|e| e.window_id != exclude_window_id)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Hit-test global screen coordinates `(screen_x, screen_y)` against all other open windows' tab bars.
+    /// Returns the target window and the exact tab insertion index if the cursor is over another window's tab bar.
+    pub fn hit_test_other_window_tab_bar(
+        source_window_id: u64,
+        screen_x: f32,
+        screen_y: f32,
+    ) -> Option<CrossWindowTabTarget> {
+        let list = registry_slot().lock().ok()?;
+        for win in list.iter() {
+            if win.window_id == source_window_id {
+                continue;
+            }
+            // Check if screen_x, screen_y is within the target window's tab bar drop zone
+            // (allow a generous vertical band [-12px .. +64px] from the top of the window)
+            if screen_x >= win.screen_x
+                && screen_x <= win.screen_x + win.width
+                && screen_y >= win.screen_y - 12.0
+                && screen_y <= win.screen_y + 64.0
+            {
+                let local_x = (screen_x - win.screen_x).max(0.0);
+                let metrics = crate::ui::components::tab_bar::compute_strip_metrics(
+                    win.width,
+                    win.tab_count.max(1),
+                    win.pinned_count,
+                );
+                let rel_x = (local_x - metrics.strip_start_x + win.scroll_offset).max(0.0);
+                let pinned_total_w =
+                    win.pinned_count as f32 * crate::ui::components::tab_bar::PINNED_TAB_W;
+                let insert_index = if rel_x <= pinned_total_w && win.pinned_count > 0 {
+                    ((rel_x / crate::ui::components::tab_bar::PINNED_TAB_W).round() as usize)
+                        .min(win.pinned_count)
+                } else {
+                    let unpinned_x = (rel_x - pinned_total_w).max(0.0);
+                    let idx = win.pinned_count
+                        + (unpinned_x / metrics.tab_w.max(1.0)).round() as usize;
+                    idx.min(win.tab_count)
+                };
+
+                return Some(CrossWindowTabTarget {
+                    target_window_id: win.window_id,
+                    target_weak: win.weak_view.clone(),
+                    target_hwnd: win.hwnd,
+                    insert_index,
+                    local_x,
+                    target_window_title: win.active_tab_title.clone(),
+                });
+            }
+        }
+        None
+    }
+}
+
+/// Query the OS cursor position (in both logical screen coordinates and window-local coordinates)
+/// and whether the primary mouse button (`VK_LBUTTON`) is currently pressed.
+///
+/// This enables smooth 120–240Hz tab dragging even when the cursor leaves the source window's
+/// client area and moves across the desktop or over another window's tab bar.
+#[cfg(windows)]
+pub fn query_os_cursor_and_lbutton(
+    hwnd_raw: isize,
+    scale_factor: f32,
+) -> Option<((f32, f32), (f32, f32), bool)> {
+    use windows::Win32::Foundation::{HWND, POINT};
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_SWAPBUTTON};
+
+    if hwnd_raw == 0 {
+        return None;
+    }
+    let scale = scale_factor.max(0.5);
+    unsafe {
+        let mut screen_pt = POINT::default();
+        if GetCursorPos(&mut screen_pt).is_err() {
+            return None;
+        }
+        let mut client_pt = screen_pt;
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+        let _ = ScreenToClient(hwnd, &mut client_pt);
+
+        let swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+        let vk = if swapped { 0x02i32 } else { VK_LBUTTON.0 as i32 };
+        let lbutton_down = (GetAsyncKeyState(vk) as u16 & 0x8000) != 0;
+
+        let screen_logical = (screen_pt.x as f32 / scale, screen_pt.y as f32 / scale);
+        let local_logical = (client_pt.x as f32 / scale, client_pt.y as f32 / scale);
+        Some((local_logical, screen_logical, lbutton_down))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn query_os_cursor_and_lbutton(
+    _hwnd_raw: isize,
+    _scale_factor: f32,
+) -> Option<((f32, f32), (f32, f32), bool)> {
+    None
+}
+
+/// Bring a target Win32 window to the foreground when a tab is docked into it.
+#[cfg(windows)]
+pub fn activate_hwnd(hwnd_raw: isize) {
+    if hwnd_raw == 0 {
+        return;
+    }
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+    unsafe {
+        let _ = SetForegroundWindow(HWND(hwnd_raw as *mut core::ffi::c_void));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn activate_hwnd(_hwnd_raw: isize) {}
+
+/// Move a Win32 window to the specified logical screen coordinates `(screen_x, screen_y)`.
+#[cfg(windows)]
+pub fn move_hwnd_to_screen_pos(hwnd_raw: isize, screen_x: f32, screen_y: f32, scale_factor: f32) {
+    if hwnd_raw == 0 {
+        return;
+    }
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    let scale = scale_factor.max(0.5);
+    let px_x = (screen_x * scale).round() as i32;
+    let px_y = (screen_y * scale).round() as i32;
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(hwnd_raw as *mut core::ffi::c_void),
+            None,
+            px_x,
+            px_y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn move_hwnd_to_screen_pos(_hwnd_raw: isize, _screen_x: f32, _screen_y: f32, _scale_factor: f32) {}
 
 /// Tab drag state for cross-window operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,7 +478,7 @@ impl TabDragService {
         &self.state
     }
 
-    /// Add a closed tab to history (for undo close).
+    /// Add a closed tab to history (for undo).
     pub fn add_to_history(&mut self, tab_id: u64) {
         if self.recent_closed_tabs.len() >= self.max_closed_tabs_history {
             self.recent_closed_tabs.pop_back();
@@ -274,7 +515,7 @@ impl TabScrollState {
     pub fn new() -> Self {
         Self {
             last_scroll_time: None,
-            scroll_throttle_ms: 150, // 150ms between switches
+            scroll_throttle_ms: 140, // 140ms between switches
         }
     }
 

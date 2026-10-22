@@ -551,6 +551,55 @@ impl TabManagerState {
             false
         }
     }
+
+    /// Insert a full `TabState` at `index` (used for cross-window tab docking and "New tab to the right").
+    /// Automatically respects the pinned/unpinned partition and activates the inserted tab.
+    pub fn insert_tab_at(&mut self, index: usize, tab: TabState) -> usize {
+        let pinned_count = self.tabs.iter().filter(|t| t.pinned).count();
+        let clamped = if tab.pinned {
+            index.min(pinned_count)
+        } else {
+            index.clamp(pinned_count, self.tabs.len())
+        };
+        self.tabs.insert(clamped, tab);
+        self.active_tab_index = clamped;
+        self.rebuild_mru();
+        clamped
+    }
+
+    /// Add a new tab immediately to the right of `from_index`.
+    pub fn add_tab_after(
+        &mut self,
+        from_index: usize,
+        path: FilesPath,
+        mode: ViewMode,
+        zoom_level: f32,
+    ) -> usize {
+        let tab = TabState::new_with_zoom(path, mode, zoom_level);
+        let target_idx = (from_index + 1).min(self.tabs.len());
+        self.insert_tab_at(target_idx, tab)
+    }
+
+    /// Remove and return the `TabState` at `index` without recording it in `closed_tabs`
+    /// (used when moving/detaching a tab to another window).
+    pub fn take_tab(&mut self, index: usize) -> Option<TabState> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(index);
+        if !self.tabs.is_empty() {
+            if index < self.active_tab_index {
+                self.active_tab_index = self.active_tab_index.saturating_sub(1);
+            } else if self.active_tab_index >= self.tabs.len() {
+                self.active_tab_index = self.tabs.len() - 1;
+            }
+            self.rebuild_mru();
+        } else {
+            self.active_tab_index = 0;
+            self.mru_order.clear();
+        }
+        Some(tab)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

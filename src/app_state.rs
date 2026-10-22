@@ -85,6 +85,10 @@ pub enum TagState {
 }
 
 pub struct AppState {
+    /// Unique identifier for this window in `WindowTabRegistry`
+    pub window_id: u64,
+    /// Native Win32 HWND for this window (0 on non-Windows or before init)
+    pub window_hwnd: isize,
     pub settings: Entity<SettingsModel>,
     pub localization: Entity<crate::localization::localization::LocalizationManager>,
     pub navigation: Entity<crate::core::navigation_manager::NavigationState>,
@@ -116,15 +120,13 @@ pub struct AppState {
     /// LRU-bounded at MAX_ICON_CACHE_ENTRIES so session-long browsing
     /// cannot grow icon RAM without limit.
     pub icon_cache: Arc<Mutex<lru::LruCache<FilesPath, std::path::PathBuf>>>,
-    /// Bounded GPU image cache entity for file-view thumbnails (created in
-    /// `AppWindow::new`; the file viewport is wrapped in its
-    /// `ImageCacheElement` so evicted textures actually free atlas memory).
+    /// Bounded GPU image cache entity for file-view thumbnails
     pub image_cache: Option<Entity<crate::ui::components::bounded_image_cache::BoundedImageCache>>,
     /// Cache of tab folder thumbnail paths, keyed by FilesPath
     pub tab_thumbnail_cache: Arc<Mutex<HashMap<FilesPath, std::path::PathBuf>>>,
     /// Undo/redo manager for file operations
     pub undo_redo: UndoRedoManager,
-    /// Tab drag state for reordering and cross-window operations
+    /// Tab drag, scroll animation, hover preview, and cross-window docking state
     pub tab_drag: TabDragState,
     /// Focus handle for the main content area (for keyboard events)
     pub main_focus: Option<gpui::FocusHandle>,
@@ -138,6 +140,10 @@ pub struct AppState {
     pub nav_cancel_guard_secondary: crate::core::perf::cancellable_load::CancelGuard,
     /// Last known live window size (for responsive tab bar metrics and page navigation)
     pub last_window_size: gpui::Size<gpui::Pixels>,
+    /// Last known window origin in screen coordinates
+    pub last_window_origin: gpui::Point<gpui::Pixels>,
+    /// Last known display scale factor
+    pub last_scale_factor: f32,
     /// Buffer for incremental type-to-select file jumping
     pub type_to_select_buffer: String,
     /// Timestamp of the last type-to-select keystroke
@@ -159,6 +165,8 @@ impl AppState {
         let default_view_mode = config.config().view.default_view_mode.clone();
 
         Self {
+            window_id: crate::ui::components::tab_interactions::next_window_id(),
+            window_hwnd: 0,
             settings,
             localization,
             navigation,
@@ -205,6 +213,8 @@ impl AppState {
             nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard::new(),
             nav_cancel_guard_secondary: crate::core::perf::cancellable_load::CancelGuard::new(),
             last_window_size: gpui::size(gpui::px(1280.0), gpui::px(800.0)),
+            last_window_origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            last_scale_factor: 1.0,
             type_to_select_buffer: String::new(),
             type_to_select_last_time: None,
         }
@@ -294,46 +304,162 @@ pub struct HoverTooltipData {
     pub item: crate::domain::metadata::FileItem,
 }
 
-/// Tab drag state for reordering and cross-window operations
-#[derive(Debug, Clone)]
+/// Tab drag, smooth scroll physics, hover preview, and cross-window docking state.
+#[derive(Clone)]
 pub struct TabDragState {
-    /// Index of the tab being dragged
+    /// Index of the tab currently being dragged
     pub dragged_index: Option<usize>,
-    /// Current mouse position during drag
+    /// Initial index of the dragged tab when the drag began (for Escape cancel restore)
+    pub initial_index: Option<usize>,
+    /// Horizontal offset from the tab's left edge where the user grabbed it
+    pub grab_offset_x: f32,
+    /// Current mouse position during drag (in window-local logical pixels)
     pub current_x: f32,
     pub current_y: f32,
-    /// Whether we're dragging from this window (for cross-window detection)
+    /// Current mouse position in global screen coordinates (logical pixels)
+    pub screen_x: f32,
+    pub screen_y: f32,
+    /// Whether a mouse-down initiated a potential drag on a tab
     pub is_dragging: bool,
-    /// Whether dragging has actually started (after threshold)
+    /// Whether dragging has exceeded the movement threshold (5px)
     pub drag_active: bool,
-    /// Whether we're dragging out of the window (to create new window)
+    /// Whether the tab is currently dragged outside the tab bar strip
     pub is_dragging_out: bool,
-    /// Horizontal scroll offset for the tab bar (in pixels)
+    /// Current interpolated horizontal scroll offset of the tab strip (in pixels)
     pub scroll_offset: f32,
-    /// Index where the tab will be dropped (based on mouse position)
+    /// Target horizontal scroll offset of the tab strip (in pixels) for smooth lerp animation
+    pub scroll_target: f32,
+    /// Index where the tab will be dropped within this window
     pub drop_target_index: Option<usize>,
     /// Position where mouse-down occurred (for drag threshold)
     pub drag_start_x: f32,
     pub drag_start_y: f32,
-    /// When the mouse-down occurred (for 500ms hold threshold)
+    /// Timestamp when mouse-down occurred
     pub drag_start_time: Option<std::time::Instant>,
+    /// Per-tab horizontal visual offset (in pixels) that smoothly decays to 0.0 when tabs swap slots
+    pub slot_shift_offsets: Vec<f32>,
+    /// Newly added/docked tab entrance animation: `(tab_index, progress 0.0..1.0)`
+    pub new_tab_anim: Option<(usize, f32)>,
+    /// Target window when dragging a tab from this window over another open window's tab bar
+    pub cross_window_target: Option<crate::ui::components::tab_interactions::CrossWindowTabTarget>,
+    /// Incoming tab preview when ANOTHER window is dragging a tab over THIS window's tab bar:
+    /// `(insert_index, tab_label, local_cursor_x)`
+    pub external_drop_preview: Option<(usize, String, f32)>,
+    /// Index of the tab currently hovered by the pointer (for hover preview card & file-drag auto-switch)
+    pub hovered_tab_index: Option<usize>,
+    /// Window X coordinate of the hovered tab's left edge (for anchoring the hover preview card)
+    pub hovered_tab_left_x: f32,
+    /// Timestamp when the pointer entered `hovered_tab_index`
+    pub hovered_tab_since: Option<std::time::Instant>,
+    /// Whether the rich tab hover preview card should be displayed
+    pub show_tab_hover_card: bool,
+    /// Tab index currently highlighted as a drop target for dragged files/folders
+    pub file_drag_over_tab: Option<usize>,
+    /// Whether the `+` (New Tab) button is currently highlighted as a drop target for dragged folders
+    pub file_drag_over_new_tab_btn: bool,
+    /// Throttler for mouse-wheel tab switching when tabs do not overflow
+    pub wheel_switch_throttle: crate::ui::components::tab_interactions::TabScrollState,
+}
+
+impl std::fmt::Debug for TabDragState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TabDragState")
+            .field("dragged_index", &self.dragged_index)
+            .field("is_dragging", &self.is_dragging)
+            .field("drag_active", &self.drag_active)
+            .field("is_dragging_out", &self.is_dragging_out)
+            .field("scroll_offset", &self.scroll_offset)
+            .field("scroll_target", &self.scroll_target)
+            .field("drop_target_index", &self.drop_target_index)
+            .finish()
+    }
 }
 
 impl Default for TabDragState {
     fn default() -> Self {
         Self {
             dragged_index: None,
+            initial_index: None,
+            grab_offset_x: 60.0,
             current_x: 0.0,
             current_y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
             is_dragging: false,
             drag_active: false,
             is_dragging_out: false,
             scroll_offset: 0.0,
+            scroll_target: 0.0,
             drop_target_index: None,
             drag_start_x: 0.0,
             drag_start_y: 0.0,
             drag_start_time: None,
+            slot_shift_offsets: Vec::new(),
+            new_tab_anim: None,
+            cross_window_target: None,
+            external_drop_preview: None,
+            hovered_tab_index: None,
+            hovered_tab_left_x: 40.0,
+            hovered_tab_since: None,
+            show_tab_hover_card: false,
+            file_drag_over_tab: None,
+            file_drag_over_new_tab_btn: false,
+            wheel_switch_throttle: crate::ui::components::tab_interactions::TabScrollState::new(),
         }
+    }
+}
+
+impl TabDragState {
+    /// Reset active drag fields while preserving smooth scroll state and animations.
+    pub fn clear_drag_only(&mut self) {
+        self.dragged_index = None;
+        self.initial_index = None;
+        self.is_dragging = false;
+        self.drag_active = false;
+        self.is_dragging_out = false;
+        self.drop_target_index = None;
+        self.drag_start_time = None;
+        self.cross_window_target = None;
+    }
+
+    /// Tick smooth scroll interpolation, tab slot shift animations, and new-tab entrance animation.
+    /// Returns `true` if any animation is still in flight and requires another frame.
+    pub fn tick_animations(&mut self, dt: f32) -> bool {
+        let mut active = false;
+        let lerp_fast = 1.0 - (-22.0 * dt).exp();
+        let lerp_scroll = 1.0 - (-18.0 * dt).exp();
+
+        // 1. Smooth scroll offset -> scroll_target
+        let scroll_diff = self.scroll_target - self.scroll_offset;
+        if scroll_diff.abs() > 0.25 {
+            self.scroll_offset += scroll_diff * lerp_scroll;
+            active = true;
+        } else if scroll_diff.abs() > 0.0 {
+            self.scroll_offset = self.scroll_target;
+        }
+
+        // 2. Smooth neighbor slot shift offsets -> 0.0
+        for shift in self.slot_shift_offsets.iter_mut() {
+            if shift.abs() > 0.3 {
+                *shift *= 1.0 - lerp_fast;
+                active = true;
+            } else {
+                *shift = 0.0;
+            }
+        }
+
+        // 3. New tab entrance animation -> 1.0
+        if let Some((idx, mut p)) = self.new_tab_anim {
+            p += dt * 7.5; // ~133ms entrance
+            if p >= 1.0 {
+                self.new_tab_anim = None;
+            } else {
+                self.new_tab_anim = Some((idx, p));
+                active = true;
+            }
+        }
+
+        active
     }
 }
 
@@ -349,16 +475,15 @@ pub struct AppWindow {
     pub menu_tip: Option<(String, Point<Pixels>)>,
     /// Active hover timer task — cancelled on mouse leave or re-hover
     pub hover_timer_task: Option<Task<()>>,
+    /// Active tab hover timer task (for showing tab hover preview card or auto-switching on file drag)
+    pub tab_hover_timer_task: Option<Task<()>>,
     /// In-flight context-menu background work (classic items load / invoke).
     pub menu_task: Option<Task<()>>,
     /// Pending submenu grace-close timer + its generation. Dropped/cancelled
     /// whenever the cursor re-enters a row or panel.
     pub submenu_grace: Option<Task<()>>,
     pub submenu_grace_gen: u64,
-    /// Pending submenu *switch* timer + generation (hover intent). While a
-    /// flyout is open, moving onto a sibling row waits ~200ms before
-    /// switching, so diagonal travel to the open panel isn't killed by an
-    /// instant takeover. Cancelled on panel (re)entry like grace.
+    /// Pending submenu *switch* timer + generation (hover intent).
     pub submenu_intent: Option<Task<()>>,
     pub submenu_intent_gen: u64,
     /// Drag state for sidebar pinned item reordering
@@ -388,19 +513,14 @@ pub struct AppWindow {
     /// Channel receiver for file system events (secondary pane)
     pub file_event_rx_secondary:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::storage::storage::FileEvent>>,
-    /// Focus-out subscription (omnibar auto-dismiss). Held, not dropped:
-    /// dropping a GPUI `Subscription` unsubscribes immediately.
+    /// Focus-out subscription (omnibar auto-dismiss).
     pub focus_out_subscription: Option<Subscription>,
-    /// Window-bounds subscription: every resize/maximize/unmaximize must
-    /// produce a fresh frame with the final geometry. Without it the window
-    /// can keep showing a mid-drag frame (narrow content, missing caption
-    /// buttons) until an unrelated event repaints.
+    /// Window-bounds subscription
     pub bounds_subscription: Option<Subscription>,
-    /// Settle-guard task: re-armed on every bounds change, fires ~500ms
-    /// after the LAST one (dropping it cancels the timer) to re-render +
-    /// force a real OS repaint with the final geometry.
+    /// Settle-guard task
     pub settle_task: Option<Task<()>>,
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,7 +530,6 @@ mod tests {
         let cache = Arc::new(Mutex::new(lru::LruCache::new(
             NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
         )));
-        // Simulate browsing well past capacity: 5,000 distinct files.
         {
             let mut guard = cache.lock().unwrap();
             for i in 0..5_000 {
@@ -419,14 +538,12 @@ mod tests {
                     std::path::PathBuf::from(format!("C:/tmp/{}.png", i)),
                 );
             }
-            // LRU eviction keeps RAM bounded no matter how much was seen.
             assert!(guard.len() <= MAX_ICON_CACHE_ENTRIES);
         }
     }
 
     #[test]
     fn test_icon_paths_for_dir_stays_within_active_directory() {
-        // 10 directories x 1,000 files each, cache large enough to hold all.
         let mut cache = lru::LruCache::new(NonZeroUsize::new(20_000).unwrap());
         for d in 0..10 {
             for i in 0..1_000 {
@@ -436,7 +553,6 @@ mod tests {
                 );
             }
         }
-        // Navigating across all 10 directories: each view sees at most its own 1,000.
         for d in 0..10 {
             let dir = std::path::PathBuf::from(format!("C:/dir_{}", d));
             let view = icon_paths_for_dir(&cache, &dir);

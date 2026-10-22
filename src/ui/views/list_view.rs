@@ -159,18 +159,11 @@ impl MainViewState {
 
                         range
                             .map(|row_idx| {
-                                // Column-major flow (Files List view): items fill each
-                                // column top-to-bottom, then continue in the next column.
-                                let row_items: Vec<usize> = (0..cols)
-                                    .filter_map(|c| {
-                                        let i = row_idx + c * row_count;
-                                        (i < visible_clone.len()).then_some(i)
-                                    })
-                                    .collect();
-                                let items_in_row = row_items.len();
+                                let start = row_idx * cols;
+                                let end = (start + cols).min(visible_clone.len());
+                                let items_in_row = end.saturating_sub(start);
 
-                                let mut row_cells: Vec<AnyElement> = row_items
-                                    .into_iter()
+                                let mut row_cells: Vec<AnyElement> = (start..end)
                                     .filter_map(|i| {
                                         let idx = visible_clone[i];
                                         let item = fi.items.get(idx)?;

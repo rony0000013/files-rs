@@ -101,10 +101,16 @@ pub enum DialogType {
         tab_index: usize,
         position: Point<Pixels>,
         tab_count: usize,
+        is_pinned: bool,
+        can_reopen_closed: bool,
+        other_windows: Vec<(u64, String)>,
     },
     /// Tab actions dropdown (shown on click of tab actions button)
     TabActionsDropdown {
         position: Point<Pixels>,
+        open_tabs: Vec<(usize, String, String, bool, bool)>,
+        can_reopen_closed: bool,
+        is_dual_pane: bool,
     },
     /// Column visibility toggle menu (shown on right-click of column header)
     ColumnVisibilityMenu {
@@ -322,11 +328,32 @@ impl DialogsView {
                 tab_index,
                 position,
                 tab_count,
-            } => Self::build_tab_context_menu(*tab_index, *position, *tab_count, view.clone())
-                .into_any_element(),
-            DialogType::TabActionsDropdown { position } => {
-                Self::build_tab_actions_dropdown(*position, view.clone()).into_any_element()
-            }
+                is_pinned,
+                can_reopen_closed,
+                other_windows,
+            } => Self::build_tab_context_menu(
+                *tab_index,
+                *position,
+                *tab_count,
+                *is_pinned,
+                *can_reopen_closed,
+                other_windows.clone(),
+                view.clone(),
+            )
+            .into_any_element(),
+            DialogType::TabActionsDropdown {
+                position,
+                open_tabs,
+                can_reopen_closed,
+                is_dual_pane,
+            } => Self::build_tab_actions_dropdown(
+                *position,
+                open_tabs.clone(),
+                *can_reopen_closed,
+                *is_dual_pane,
+                view.clone(),
+            )
+            .into_any_element(),
             DialogType::ColumnVisibilityMenu { position } => {
                 Self::build_column_visibility_menu(*position, view.clone()).into_any_element()
             }
@@ -455,7 +482,7 @@ impl DialogsView {
                     .w(px(292.0));
             }
             DialogType::TabContextMenu { position, .. }
-            | DialogType::TabActionsDropdown { position }
+            | DialogType::TabActionsDropdown { position, .. }
             | DialogType::ColumnVisibilityMenu { position } => {
                 container = container
                     .absolute()

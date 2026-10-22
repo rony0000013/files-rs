@@ -45,7 +45,39 @@ impl Render for AppWindow {
             crate::wallpaper_mica::sync_window_size();
         }
 
+        let win_bounds = window.bounds();
         self.state.last_window_size = live_size;
+        self.state.last_window_origin = win_bounds.origin;
+        self.state.last_scale_factor = window.scale_factor().max(0.5);
+        {
+            let nav_read = self.state.navigation.read(cx);
+            let tc = nav_read.tabs.tabs.len();
+            let pc = nav_read.tabs.tabs.iter().filter(|t| t.pinned).count();
+            let active_title = nav_read
+                .tabs
+                .tabs
+                .get(nav_read.tabs.active_tab_index)
+                .map(crate::ui::components::tab_bar::tab_display_label)
+                .unwrap_or_else(|| "Files".to_string());
+            drop(nav_read);
+            crate::ui::components::tab_interactions::WindowTabRegistry::upsert(
+                crate::ui::components::tab_interactions::RegisteredWindowInfo {
+                    window_id: self.state.window_id,
+                    weak_view: cx.weak_entity(),
+                    hwnd: self.state.window_hwnd,
+                    screen_x: f32::from(win_bounds.origin.x),
+                    screen_y: f32::from(win_bounds.origin.y),
+                    width: f32::from(live_size.width),
+                    height: f32::from(live_size.height),
+                    scale_factor: self.state.last_scale_factor,
+                    tab_count: tc,
+                    pinned_count: pc,
+                    scroll_offset: self.state.tab_drag.scroll_offset,
+                    active_tab_title: active_title,
+                    last_updated: std::time::Instant::now(),
+                },
+            );
+        }
         {
             let ch = crate::ui::components::sidebar::compute_sidebar_content_height(&self.state.sidebar);
             let vh = crate::ui::components::sidebar::compute_sidebar_viewport_height(
@@ -97,12 +129,16 @@ impl Render for AppWindow {
         // file_items is synced in the background task update callback, not during render
         // icon_paths are synced after Phase 1, Phase 2, and icon loading — no per-frame clone needed
 
+        let active_pane_focus = self.state.active_pane_focus();
         let (can_go_back, can_go_forward, pane_layout) = {
             let nav = self.state.navigation.read(cx);
-            let can_go_back = nav.tabs.active_tab().can_go_back();
-            let can_go_forward = nav.tabs.active_tab().can_go_forward();
-            let pane_layout = nav.pane_layout;
-            (can_go_back, can_go_forward, pane_layout)
+            let tab = nav.tabs.active_tab();
+            let (back, fwd) = if active_pane_focus == crate::core::navigation_manager::PaneFocus::Secondary {
+                (tab.can_go_back_secondary(), tab.can_go_forward_secondary())
+            } else {
+                (tab.can_go_back(), tab.can_go_forward())
+            };
+            (back, fwd, nav.pane_layout)
         };
 
         self.state.main_view.pane_type = match pane_layout {
@@ -232,10 +268,29 @@ impl Render for AppWindow {
                                                 f32::from(live_size.width),
                                             ))
                                     })
-                                    .child(
+                                    .child({
                                         // Navigation Bar (fixed height)
-                                        div().flex_shrink_0().w_full().child(
-                                            NavigationBarView::build(
+                                        let v_nav_move = cx.entity();
+                                        div()
+                                            .flex_shrink_0()
+                                            .w_full()
+                                            .on_mouse_move(move |ev, win, cx| {
+                                                let p = ev.position;
+                                                let win_w: f32 = win.bounds().size.width.into();
+                                                v_nav_move.update(cx, |this, cx| {
+                                                    if this.state.tab_drag.is_dragging {
+                                                        this.update_tab_drag_with_width(
+                                                            p.x.into(),
+                                                            p.y.into(),
+                                                            win_w,
+                                                            cx,
+                                                        );
+                                                    } else {
+                                                        this.clear_tab_hover(cx);
+                                                    }
+                                                });
+                                            })
+                                            .child(NavigationBarView::build(
                                                 &state.nav_bar,
                                                 can_go_back,
                                                 can_go_forward,
@@ -243,9 +298,8 @@ impl Render for AppWindow {
                                                 cx.entity(),
                                                 &state.action_registry,
                                                 &state.status_center,
-                                            ),
-                                        ),
-                                    )
+                                            ))
+                                    })
                                     .child({
                                         let view = cx.entity();
                                         let mut row = div()
@@ -260,6 +314,18 @@ impl Render for AppWindow {
                                                 let view = view.clone();
                                                 move |event, win, cx| {
                                                     view.update(cx, |this, cx| {
+                                                        if this.state.tab_drag.is_dragging {
+                                                            let p = event.position;
+                                                            let win_w: f32 = win.bounds().size.width.into();
+                                                            this.update_tab_drag_with_width(
+                                                                p.x.into(),
+                                                                p.y.into(),
+                                                                win_w,
+                                                                cx,
+                                                            );
+                                                        } else {
+                                                            this.clear_tab_hover(cx);
+                                                        }
                                                         if this
                                                             .state
                                                             .sidebar
@@ -325,6 +391,9 @@ impl Render for AppWindow {
                                                 let view = view.clone();
                                                 move |_event, _win, cx| {
                                                     view.update(cx, |this, cx| {
+                                                        if this.state.tab_drag.is_dragging {
+                                                            this.end_tab_drag(None, cx);
+                                                        }
                                                         if this
                                                             .state
                                                             .sidebar
@@ -431,35 +500,6 @@ impl Render for AppWindow {
                                                                 } else {
                                                                     0.0
                                                                 };
-                                                            // TEMP-DIAG: trace width inputs across resizes (includes both raw_vp_w and bounds_w in hash key).
-                                                            {
-                                                                static LAST_W: std::sync::atomic::AtomicU32 =
-                                                                    std::sync::atomic::AtomicU32::new(0);
-                                                                let key = (content_w as u32)
-                                                                    .wrapping_mul(100003)
-                                                                    .wrapping_add(raw_vp_w as u32)
-                                                                    .wrapping_mul(100003)
-                                                                    .wrapping_add(bounds_w as u32);
-                                                                if LAST_W.swap(
-                                                                    key,
-                                                                    std::sync::atomic::Ordering::Relaxed,
-                                                                ) != key
-                                                                {
-                                                                    tracing::warn!(
-                                                                        "layout-width vp={:.0} raw_vp={:.0} bounds={:.0}x{:.0} sidebar={:.0} content={:.0}",
-                                                                        vp_w,
-                                                                        raw_vp_w,
-                                                                        bounds_w,
-                                                                        bounds_h,
-                                                                        if state.sidebar_visible {
-                                                                            state.sidebar.width
-                                                                        } else {
-                                                                            0.0
-                                                                        },
-                                                                        content_w
-                                                                    );
-                                                                }
-                                                            }
                                                             let sidebar_offset_x = if state.sidebar_visible {
                                                                 state.sidebar.width
                                                             } else {
@@ -475,22 +515,6 @@ impl Render for AppWindow {
                                                                 content_w,
                                                                 sidebar_offset_x,
                                                             );
-                                                            // TEMP-DIAG: proves the render completed past MainView.
-                                                            {
-                                                                static LAST_D: std::sync::atomic::AtomicU32 =
-                                                                    std::sync::atomic::AtomicU32::new(0);
-                                                                let key = content_w as u32;
-                                                                if LAST_D.swap(
-                                                                    key,
-                                                                    std::sync::atomic::Ordering::Relaxed,
-                                                                ) != key
-                                                                {
-                                                                    tracing::warn!(
-                                                                        "layout-done content={:.0}",
-                                                                        content_w
-                                                                    );
-                                                                }
-                                                            }
                                                             // NOTE: bounded GPU image-cache wrap
                                                             // (gpui::image_cache) reverted 2026-10-15:
                                                             // it blanked the whole viewport (no files
@@ -522,13 +546,21 @@ impl Render for AppWindow {
             ],
         );
 
-        if state.sidebar_visible && state.sidebar.anim_start_time.is_some() {
-            if state.sidebar.anim_start_time.unwrap().elapsed()
-                < std::time::Duration::from_millis(200)
-            {
-                window.request_animation_frame();
-            }
+        if (state.sidebar_visible && state.sidebar.anim_start_time.is_some()
+            && state.sidebar.anim_start_time.unwrap().elapsed()
+                < std::time::Duration::from_millis(200))
+            || state.tab_drag.is_dragging
+        {
+            window.request_animation_frame();
         }
+
+        let tab_floating_overlays = TabBarView::render_floating_overlays(
+            &state.navigation.read(cx),
+            &state.tab_drag,
+            &state.tab_thumbnail_cache,
+            f32::from(live_size.width),
+            f32::from(live_size.height),
+        );
 
         let mut base = {
             let _view = cx.entity();
@@ -538,18 +570,18 @@ impl Render for AppWindow {
                 .h(live_size.height)
         };
         if let Some(dialog) = &state.active_dialog {
-            // Pre-read settings dialog data to avoid BorrowMutError during render tree construction
-            let settings_data = None; // Settings is now a tab, not a dialog
-            base =
-                base.child(main_content)
-                    .child(crate::ui::components::dialogs::DialogsView::build(
-                        dialog,
-                        cx.entity(),
-                        cx,
-                        settings_data,
-                    ));
+            let settings_data = None;
+            base = base
+                .child(main_content)
+                .children(tab_floating_overlays)
+                .child(crate::ui::components::dialogs::DialogsView::build(
+                    dialog,
+                    cx.entity(),
+                    cx,
+                    settings_data,
+                ));
         } else {
-            base = base.child(main_content);
+            base = base.child(main_content).children(tab_floating_overlays);
         }
 
         // Lightweight hover label for context-menu toolbar buttons and

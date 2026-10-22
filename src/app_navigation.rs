@@ -673,15 +673,32 @@ impl AppWindow {
     pub fn open_in_new_tab(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         let mode = self.state.active_view().view_mode.clone();
         let zoom = self.state.active_view().zoom_level;
-        self.state.navigation.update(cx, |nav, _cx| {
+        let new_idx = self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.add_tab_with_zoom(path, mode, zoom);
+            nav.tabs.active_tab_index
         });
+        self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
         self.ensure_active_tab_visible(cx);
         self.load_tab_thumbnails(cx);
+        self.sync_active_tab_to_views(cx);
         cx.notify();
     }
 
     pub fn open_in_new_window(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        let mode = self.state.active_view().view_mode.clone();
+        let zoom = self.state.active_view().zoom_level;
+        let tab = crate::core::navigation_manager::TabState::new_with_zoom(path, mode, zoom);
+        self.open_tab_state_in_new_window(tab, None, cx);
+    }
+
+    /// Open a new independent `AppWindow` initialized with `tab` (preserving its full history,
+    /// dual-pane secondary path, view mode, zoom level, and pin state) at optional screen coordinates.
+    pub fn open_tab_state_in_new_window(
+        &mut self,
+        tab: crate::core::navigation_manager::TabState,
+        screen_origin: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
         let progress_engine = self.state.progress_engine.clone();
         let db_path = dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -697,13 +714,30 @@ impl AppWindow {
         let file_items = cx.insert_entity(fi_res, |_| {
             crate::ui::views::main_view::FileItems::default()
         });
-        let view_mode = self.state.active_view().view_mode.clone();
-        // Each window owns its own independent NavigationState entity
-        let new_nav = cx.new(|_cx| {
-            crate::core::navigation_manager::NavigationState::new(path.clone(), view_mode)
+        let primary_path = tab.path.clone();
+        let view_mode = tab.view_mode.clone();
+        let has_secondary = tab.secondary_pane_path.is_some();
+        let primary_path_for_nav = primary_path.clone();
+
+        let new_nav = cx.new(move |_cx| {
+            let mut nav =
+                crate::core::navigation_manager::NavigationState::new(primary_path_for_nav.clone(), view_mode);
+            nav.tabs.tabs = vec![tab];
+            nav.tabs.active_tab_index = 0;
+            if has_secondary {
+                nav.pane_layout = crate::core::navigation_manager::PaneLayout::Vertical;
+            }
+            nav
         });
+
+        let (mica_enabled, mica_alt, transparent_window) = {
+            let s = self.state.settings.read(cx);
+            let app = &s.config().appearance;
+            (app.mica_enabled, app.mica_alt, app.transparent_window)
+        };
+
         let app_state = AppState::new(
-            path.clone(),
+            primary_path,
             file_items,
             self.state.settings.clone(),
             self.state.localization.clone(),
@@ -713,18 +747,39 @@ impl AppWindow {
             cx,
         );
 
+        let origin = if let Some((sx, sy)) = screen_origin {
+            gpui::point(gpui::px((sx - 100.0).max(0.0)), gpui::px((sy - 16.0).max(0.0)))
+        } else {
+            let cur = self.state.last_window_origin;
+            gpui::point(cur.x + gpui::px(36.0), cur.y + gpui::px(36.0))
+        };
+
+        let window_background = if transparent_window {
+            gpui::WindowBackgroundAppearance::Transparent
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        };
+
         let options = gpui::WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
-                origin: Default::default(),
-                size: gpui::size(gpui::Pixels::from(1280.0), gpui::Pixels::from(800.0)),
+                origin,
+                size: gpui::size(gpui::Pixels::from(1200.0), gpui::Pixels::from(760.0)),
             })),
             window_min_size: Some(gpui::size(gpui::Pixels::from(500.0), gpui::Pixels::from(340.0))),
             titlebar: None,
-            window_background: gpui::WindowBackgroundAppearance::Opaque,
+            window_background,
             ..gpui::WindowOptions::default()
         };
 
         cx.open_window(options, move |window, cx| {
+            #[cfg(windows)]
+            if mica_enabled {
+                if mica_alt {
+                    let _ = window_vibrancy::apply_tabbed(&*window, Some(true));
+                } else {
+                    let _ = window_vibrancy::apply_mica(&*window, Some(true));
+                }
+            }
             let rx = progress_engine.subscribe();
             cx.new(|cx| AppWindow::new(app_state, rx, window, cx))
         })

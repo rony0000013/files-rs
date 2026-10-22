@@ -1434,139 +1434,421 @@ impl crate::ui::components::dialogs::DialogsView {
         }
     }
 
-    /// Build a context menu for tab bar right-click with options like Close Tab, Close Other Tabs, etc.
+    /// Build a context menu for tab bar right-click with full Files-community options.
     pub(crate) fn build_tab_context_menu(
         tab_index: usize,
         _position: Point<Pixels>,
         tab_count: usize,
+        is_pinned: bool,
+        can_reopen_closed: bool,
+        other_windows: Vec<(u64, String)>,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let v_close = view.clone();
-        let v_close_others = view.clone();
-        let v_close_right = view.clone();
-        let v_duplicate = view.clone();
-        let v_pin = view.clone();
-        let v_new_tab = view.clone();
         let idx = tab_index;
+        let pin_label = if is_pinned { "Unpin Tab" } else { "Pin Tab" };
 
-        div()
+        let mut menu = div()
             .flex_col()
             .py(px(4.0))
-            // Close Tab
-            .child(Self::context_menu_item("\u{E8BB}", "Close Tab", {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.close_tab(idx, cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
-            // Close Other Tabs (only show if more than 1 tab)
-            .child(if tab_count > 1 {
-                div().child(Self::context_menu_item("\u{E8BB}", "Close Other Tabs", {
-                    let v = v_close_others.clone();
-                    let idx = idx;
+            // New Tab (Ctrl+T)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E710}",
+                "New Tab",
+                "Ctrl+T",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.new_tab(cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            // New Tab to the Right
+            .child(Self::context_menu_item(
+                "\u{E710}",
+                "New Tab to the Right",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.new_tab_to_right(idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            // Duplicate Tab (Ctrl+Shift+K)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E8C8}",
+                "Duplicate Tab",
+                "Ctrl+Shift+K",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.duplicate_tab(idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            // Pin / Unpin Tab (Ctrl+Alt+P)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E718}",
+                pin_label,
+                "Ctrl+Alt+P",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.pin_tab(idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+
+        // Move Tab to New Window (enabled when tab_count > 1)
+        if tab_count > 1 {
+            menu = menu.child(Self::context_menu_item(
+                "\u{E8A7}",
+                "Move Tab to New Window",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.move_tab_to_new_window(idx, None, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+        }
+
+        // Move Tab to Another Open Window (if any other files-rs windows exist)
+        for (target_win_id, target_title) in other_windows {
+            let v = view.clone();
+            let item_label = format!("Move Tab to Window ({})", target_title);
+            menu = menu.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .mx(px(4.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .on_mouse_down(MouseButton::Left, move |_, win, cx| {
+                        v.update(cx, |this, cx| {
+                            this.move_tab_to_existing_window(idx, target_win_id, None, win, cx);
+                            this.close_dialog(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .mr(px(10.0))
+                            .child("\u{E8A7}"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(item_label),
+                    ),
+            );
+        }
+
+        menu = menu
+            .child(
+                div()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA))
+                    .mx(px(8.0))
+                    .my(px(4.0)),
+            )
+            // Close Tab (Ctrl+W)
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E8BB}",
+                "Close Tab",
+                "Ctrl+W",
+                {
+                    let v = view.clone();
+                    move |_, win, cx| {
+                        v.update(cx, |this, cx| {
+                            this.close_tab_with_window(idx, win, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+
+        if tab_count > 1 {
+            menu = menu.child(Self::context_menu_item_with_shortcut(
+                "\u{E8BB}",
+                "Close Other Tabs",
+                "Ctrl+Alt+W",
+                {
+                    let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
                             this.close_other_tabs(idx, cx);
                             this.close_dialog(cx);
                         });
                     }
-                }))
-            } else {
-                div()
-            })
-            // Close Tabs to the Right (only show if not the last tab)
-            .child(if tab_index < tab_count - 1 {
-                div().child(Self::context_menu_item(
-                    "\u{E72B}",
-                    "Close Tabs to the Right",
+                },
+            ));
+        }
+
+        if tab_index > 0 {
+            menu = menu.child(Self::context_menu_item(
+                "\u{E72B}",
+                "Close Tabs to the Left",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.close_tabs_to_left(idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+        }
+
+        if tab_index + 1 < tab_count {
+            menu = menu.child(Self::context_menu_item(
+                "\u{E72A}",
+                "Close Tabs to the Right",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.close_tabs_to_right(idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+        }
+
+        if can_reopen_closed {
+            menu = menu
+                .child(
+                    div()
+                        .h(px(1.0))
+                        .bg(rgba(UiConstants::DIVIDER_RGBA))
+                        .mx(px(8.0))
+                        .my(px(4.0)),
+                )
+                .child(Self::context_menu_item_with_shortcut(
+                    "\u{E777}",
+                    "Reopen Closed Tab",
+                    "Ctrl+Shift+T",
                     {
-                        let v = v_close_right.clone();
-                        let idx = idx;
+                        let v = view.clone();
                         move |_, _, cx| {
                             v.update(cx, |this, cx| {
-                                this.close_tabs_to_right(idx, cx);
+                                this.reopen_closed_tab(cx);
                                 this.close_dialog(cx);
                             });
                         }
                     },
-                ))
-            } else {
-                div()
-            })
-            .child(
-                div()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA))
-                    .mx(px(8.0))
-                    .my(px(4.0)),
-            )
-            // Duplicate Tab
-            .child(Self::context_menu_item("\u{E8C8}", "Duplicate Tab", {
-                let v = v_duplicate.clone();
-                let idx = idx;
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.duplicate_tab(idx, cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
-            // Pin Tab
-            .child(Self::context_menu_item("\u{E718}", "Pin Tab", {
-                let v = v_pin.clone();
-                let idx = idx;
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.pin_tab(idx, cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
-            .child(
-                div()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA))
-                    .mx(px(8.0))
-                    .my(px(4.0)),
-            )
-            // New Tab
-            .child(Self::context_menu_item("\u{E710}", "New Tab", {
-                let v = v_new_tab.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.new_tab(cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
+                ));
+        }
+
+        menu
     }
 
-    /// Build the tab actions dropdown menu (split pane options)
+    /// Build the tab actions & all-tabs flyout menu (Open Tabs list + New Tab/Window + Split Pane options).
     pub(crate) fn build_tab_actions_dropdown(
         _position: Point<Pixels>,
+        open_tabs: Vec<(usize, String, String, bool, bool)>,
+        can_reopen_closed: bool,
+        is_dual_pane: bool,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let v_split_v = view.clone();
-        let v_split_h = view.clone();
-        let v_toggle = view.clone();
-        let v_new_tab = view.clone();
+        let mut menu = div().flex_col().py(px(6.0));
 
-        div()
+        // 1. Open Tabs Header + Quick Switcher List
+        menu = menu.child(
+            div()
+                .px(px(12.0))
+                .py(px(4.0))
+                .text_size(px(11.0))
+                .font_weight(FontWeight(600.0))
+                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                .child(format!("Open Tabs ({})", open_tabs.len())),
+        );
+
+        let mut tabs_list = div()
+            .id("tab-actions-open-tabs-list")
+            .flex()
             .flex_col()
-            .py(px(4.0))
+            .max_h(px(220.0))
+            .overflow_hidden();
+
+        for (tab_idx, label, _path_str, is_active, is_pinned) in open_tabs.iter().take(10) {
+            let t_idx = *tab_idx;
+            let active = *is_active;
+            let pinned = *is_pinned;
+            let v_switch = view.clone();
+            let v_close = view.clone();
+
+            tabs_list = tabs_list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .mx(px(4.0))
+                    .rounded(px(4.0))
+                    .bg(if active {
+                        rgba(0x0078D424u32)
+                    } else {
+                        rgba(0x00000000u32)
+                    })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_switch.update(cx, |this, cx| {
+                            this.switch_tab(t_idx, cx);
+                            this.close_dialog(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .mr(px(8.0))
+                            .rounded(px(3.0))
+                            .bg(if active {
+                                rgb(UiConstants::ACCENT_COLOR_RGB)
+                            } else {
+                                rgb(0x444444u32)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(px(12.5))
+                            .font_weight(if active {
+                                FontWeight(600.0)
+                            } else {
+                                FontWeight(400.0)
+                            })
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(label.clone()),
+                    )
+                    .children(if pinned {
+                        Some(
+                            div()
+                                .text_size(px(10.0))
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                .mr(px(6.0))
+                                .child("\u{E718}"),
+                        )
+                    } else {
+                        None
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(18.0))
+                            .h(px(18.0))
+                            .rounded(px(4.0))
+                            .hover(|s| s.bg(rgba(0xFFFFFF22u32)))
+                            .on_mouse_down(MouseButton::Left, move |_, win, cx| {
+                                cx.stop_propagation();
+                                v_close.update(cx, |this, cx| {
+                                    this.close_tab_with_window(t_idx, win, cx);
+                                    this.close_dialog(cx);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8BB}"),
+                            ),
+                    ),
+            );
+        }
+
+        menu = menu
+            .child(tabs_list)
+            .child(
+                div()
+                    .h(px(1.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA))
+                    .mx(px(8.0))
+                    .my(px(4.0)),
+            )
             // New Tab
-            .child(Self::context_menu_item("\u{E710}", "New Tab", {
-                let v = v_new_tab.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.new_tab(cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E710}",
+                "New Tab",
+                "Ctrl+T",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.new_tab(cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ))
+            // New Window
+            .child(Self::context_menu_item_with_shortcut(
+                "\u{E8A7}",
+                "New Window",
+                "Ctrl+N",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            let path = this.state.active_view().primary_path.clone();
+                            this.open_in_new_window(path, cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+
+        if can_reopen_closed {
+            menu = menu.child(Self::context_menu_item_with_shortcut(
+                "\u{E777}",
+                "Reopen Closed Tab",
+                "Ctrl+Shift+T",
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.reopen_closed_tab(cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+        }
+
+        menu = menu
             .child(
                 div()
                     .h(px(1.0))
@@ -1576,11 +1858,11 @@ impl crate::ui::components::dialogs::DialogsView {
             )
             // Split Vertically (Ctrl+Shift+V)
             .child(Self::context_menu_item_with_shortcut(
-                "\u{E8A0}", // SplitVertical icon
+                "\u{E8A0}",
                 "Split Vertical",
                 "Ctrl+Shift+V",
                 {
-                    let v = v_split_v.clone();
+                    let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
                             this.dispatch_action(
@@ -1594,11 +1876,11 @@ impl crate::ui::components::dialogs::DialogsView {
             ))
             // Split Horizontally (Ctrl+Shift+H)
             .child(Self::context_menu_item_with_shortcut(
-                "\u{E8A1}", // SplitHorizontal icon
+                "\u{E8A1}",
                 "Split Horizontal",
                 "Ctrl+Shift+H",
                 {
-                    let v = v_split_h.clone();
+                    let v = view.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
                             this.dispatch_action(
@@ -1610,23 +1892,26 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                 },
             ))
-            .child(
-                div()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA))
-                    .mx(px(8.0))
-                    .my(px(4.0)),
-            )
-            // Toggle Split Pane
-            .child(Self::context_menu_item("\u{E762}", "Toggle Split Pane", {
-                let v = v_toggle.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.toggle_dual_pane(cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }))
+            // Toggle Split Pane / Close Active Pane
+            .child(Self::context_menu_item(
+                "\u{E762}",
+                if is_dual_pane {
+                    "Close Active Split Pane"
+                } else {
+                    "Open Split Pane"
+                },
+                {
+                    let v = view.clone();
+                    move |_, _, cx| {
+                        v.update(cx, |this, cx| {
+                            this.toggle_dual_pane(cx);
+                            this.close_dialog(cx);
+                        });
+                    }
+                },
+            ));
+
+        menu
     }
 
     /// Helper to build a context menu item with shortcut label

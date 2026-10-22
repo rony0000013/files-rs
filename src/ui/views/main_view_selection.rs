@@ -266,6 +266,7 @@ impl MainViewState {
         }
     }
 
+    /// Finish a live window-space lasso drag (selection was already updated during move).
     /// Whether a rubber-band (lasso) drag is currently active in this pane.
     pub fn is_lasso_active(&self) -> bool {
         self.lasso_state.is_some()
