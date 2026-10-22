@@ -81,6 +81,9 @@ impl AppWindow {
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
+        window_view.state.secondary_file_items =
+            cx.new(|_| crate::ui::views::main_view::FileItems::default());
+
         // Bounded GPU image cache for file-view thumbnails (replaces GPUI's
         // never-evicting global cache for our tiles; see bounded_image_cache).
         window_view.state.image_cache = Some(cx.new(|_| {
@@ -100,11 +103,16 @@ impl AppWindow {
                     .iter()
                     .map(|t| {
                         let path = crate::core::path_util::FilesPath::new(&t.path);
-                        crate::core::navigation_manager::TabState::new_with_zoom(
+                        let mut ts = crate::core::navigation_manager::TabState::new_with_zoom(
                             path,
                             t.view_mode.clone(),
                             t.zoom_level,
-                        )
+                        );
+                        ts.secondary_pane_path = t
+                            .secondary_pane_path
+                            .as_ref()
+                            .map(|sp| crate::core::path_util::FilesPath::new(sp));
+                        ts
                     })
                     .collect();
 
@@ -154,7 +162,16 @@ impl AppWindow {
                 .path
                 .clone();
             window_view.state.main_view.primary_path = active_path.clone();
-            window_view.navigate(active_path, cx);
+            window_view.navigate_pane(
+                active_path,
+                crate::core::navigation_manager::PaneFocus::Primary,
+                cx,
+            );
+            if window_view.state.main_view.pane_type
+                == crate::ui::views::main_view::PaneType::Dual
+            {
+                window_view.sync_secondary_pane_on_split(cx);
+            }
 
             // After restoring, also set the zoom level from the saved tab
             let restored_zoom = window_view
@@ -222,7 +239,17 @@ impl AppWindow {
         // timer for the LAST change fires, re-rendering + forcing a real OS
         // repaint so the final geometry always lands.
         {
-            let sub = cx.observe_window_bounds(_window, move |this, _win, cx| {
+            let sub = cx.observe_window_bounds(_window, move |this, win, cx| {
+                if let Some(os_maximized) = crate::wallpaper_mica::is_main_hwnd_maximized() {
+                    this.state.is_maximized = os_maximized;
+                }
+                let b_size = win.bounds().size;
+                let vp_size = win.viewport_size();
+                if (f32::from(b_size.width) - f32::from(vp_size.width)).abs() > 1.0
+                    || (f32::from(b_size.height) - f32::from(vp_size.height)).abs() > 1.0
+                {
+                    crate::wallpaper_mica::sync_window_size();
+                }
                 cx.notify();
                 cx.spawn(async move |_, _| {}).detach();
                 this.settle_task.take();
@@ -231,7 +258,12 @@ impl AppWindow {
                         .timer(std::time::Duration::from_millis(500))
                         .await;
                     let updated = this
-                        .update(cx, |_, cx| {
+                        .update(cx, |this, cx| {
+                            if let Some(os_maximized) =
+                                crate::wallpaper_mica::is_main_hwnd_maximized()
+                            {
+                                this.state.is_maximized = os_maximized;
+                            }
                             cx.notify();
                         })
                         .is_ok();
@@ -284,10 +316,13 @@ impl AppWindow {
     /// forever because its mouse-up is delivered to another app (or never).
     pub fn cancel_pointer_tracking(&mut self, cx: &mut Context<Self>) {
         self.state.main_view.bouncy_scroll.release();
+        self.state.secondary_view.bouncy_scroll.release();
+        self.state.main_view.finish_live_lasso();
+        self.state.secondary_view.finish_live_lasso();
+        self.state.main_view.dual_pane_resize_start = None;
         self.column_resize = None;
         self.zoom_drag_start = None;
         self.sidebar_pinned_drag = None;
-        self.state.tab_drag = crate::app_state::TabDragState::default();
         self.state.sidebar.resize_start_x = None;
         self.state.sidebar.resize_start_width = None;
         self.state.sidebar.drag_section_idx = None;
@@ -345,7 +380,6 @@ impl AppWindow {
 
         // Menu key (VK_APPS) / Shift+F10: open the context menu for the
         // current selection, like Files does (Files-community parity).
-        // Anchored at viewport center; mouse users get item-anchored menus.
         let key_name = keystroke.key.as_str();
         if key_name == "menu"
             || (key_name.eq_ignore_ascii_case("f10") && keystroke.modifiers.shift)
@@ -355,34 +389,70 @@ impl AppWindow {
                 x: (vp.width - gpui::px(250.0)) / 2.0,
                 y: vp.height * 0.4,
             };
-            let first_selected = self.state.main_view.selected_indices.iter().next().copied();
+            let first_selected = self
+                .state
+                .active_view()
+                .selected_indices
+                .iter()
+                .next()
+                .copied();
             self.show_context_menu(first_selected, pos, window, cx);
             return;
         }
 
-        // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs (must be before nav bar intercept
-        // so it works even when the omnibar is focused)
+        // Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PageDown / Ctrl+PageUp: cycle tabs
         if keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
             let key = keystroke.key.as_str();
-            match key {
-                "tab" | "Tab" => {
-                    if keystroke.modifiers.shift {
-                        self.cycle_tab_prev(cx);
-                    } else {
-                        self.cycle_tab_next(cx);
-                    }
-                    return;
+            if key.eq_ignore_ascii_case("tab") {
+                if keystroke.modifiers.shift {
+                    self.cycle_tab_prev(cx);
+                } else {
+                    self.cycle_tab_next(cx);
                 }
-                _ => {}
+                return;
+            }
+            if key.eq_ignore_ascii_case("pagedown") {
+                if keystroke.modifiers.shift {
+                    self.move_active_tab_right(cx);
+                } else {
+                    self.cycle_tab_next(cx);
+                }
+                return;
+            }
+            if key.eq_ignore_ascii_case("pageup") {
+                if keystroke.modifiers.shift {
+                    self.move_active_tab_left(cx);
+                } else {
+                    self.cycle_tab_prev(cx);
+                }
+                return;
+            }
+            if keystroke.modifiers.shift && (key.eq_ignore_ascii_case("left") || key.eq_ignore_ascii_case("arrowleft")) {
+                self.move_active_tab_left(cx);
+                return;
+            }
+            if keystroke.modifiers.shift && (key.eq_ignore_ascii_case("right") || key.eq_ignore_ascii_case("arrowright")) {
+                self.move_active_tab_right(cx);
+                return;
             }
         }
 
-        // Ctrl+1-9: switch to tab by position (browser-style)
-        if keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform && !keystroke.modifiers.shift {
+        // Ctrl+1..8: switch to tab 1..8; Ctrl+9: switch to last tab (Files-community parity)
+        if keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && !keystroke.modifiers.shift
+        {
             let key = keystroke.key.as_str();
-            if let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
+            if key == "9" {
                 let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
-                if digit >= 1 {
+                if tab_count > 0 {
+                    self.switch_tab(tab_count - 1, cx);
+                    return;
+                }
+            } else if let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
+                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+                if (1..=8).contains(&digit) {
                     let idx = (digit - 1) as usize;
                     if idx < tab_count {
                         self.switch_tab(idx, cx);
@@ -390,20 +460,15 @@ impl AppWindow {
                     }
                 }
             }
-            // Ctrl+9 always switches to the last tab
-            if key == "9" {
-                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
-                if tab_count > 0 {
-                    self.switch_tab(tab_count - 1, cx);
-                    return;
-                }
-            }
         }
 
         // Intercept Navigation Bar input typing
         let is_nav_bar_active = self.state.nav_bar.edit_mode
-            || matches!(self.state.nav_bar.omnibar_mode, crate::ui::components::navigation_bar::OmnibarMode::Search)
-            || matches!(self.state.nav_bar.omnibar_mode, crate::ui::components::navigation_bar::OmnibarMode::CommandPalette);
+            || matches!(
+                self.state.nav_bar.omnibar_mode,
+                crate::ui::components::navigation_bar::OmnibarMode::Search
+                    | crate::ui::components::navigation_bar::OmnibarMode::CommandPalette
+            );
 
         if is_nav_bar_active {
             use crate::ui::components::navigation_bar::OmnibarMode;
@@ -416,19 +481,24 @@ impl AppWindow {
                     self.handle_suggestion_confirm(cx);
                     cx.notify();
                 }
-                "up" | "Up" => {
-                    if self.state.nav_bar.show_suggestions && !self.state.nav_bar.suggestions.is_empty() {
+                "up" | "Up" | "arrowup" | "ArrowUp" => {
+                    if self.state.nav_bar.show_suggestions
+                        && !self.state.nav_bar.suggestions.is_empty()
+                    {
                         let current = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
                         if current > 0 {
                             self.state.nav_bar.selected_suggestion_index = Some(current - 1);
                         } else {
-                            self.state.nav_bar.selected_suggestion_index = Some(self.state.nav_bar.suggestions.len() - 1);
+                            self.state.nav_bar.selected_suggestion_index =
+                                Some(self.state.nav_bar.suggestions.len() - 1);
                         }
                         cx.notify();
                     }
                 }
-                "down" | "Down" => {
-                    if self.state.nav_bar.show_suggestions && !self.state.nav_bar.suggestions.is_empty() {
+                "down" | "Down" | "arrowdown" | "ArrowDown" => {
+                    if self.state.nav_bar.show_suggestions
+                        && !self.state.nav_bar.suggestions.is_empty()
+                    {
                         let current = self.state.nav_bar.selected_suggestion_index.unwrap_or(0);
                         if current + 1 < self.state.nav_bar.suggestions.len() {
                             self.state.nav_bar.selected_suggestion_index = Some(current + 1);
@@ -442,12 +512,17 @@ impl AppWindow {
                     if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
                         if let Some(suggestion) = self.state.nav_bar.suggestions.get(idx).cloned() {
                             match suggestion.kind {
-                                crate::ui::components::navigation_bar::SuggestionKind::Path { path } => {
-                                    self.state.nav_bar.edit_text = path.to_string_lossy().to_string();
+                                crate::ui::components::navigation_bar::SuggestionKind::Path {
+                                    path,
+                                } => {
+                                    self.state.nav_bar.edit_text =
+                                        path.to_string_lossy().to_string();
                                     let registry = self.state.action_registry.clone();
                                     self.state.nav_bar.update_suggestions(&registry);
                                 }
-                                crate::ui::components::navigation_bar::SuggestionKind::SearchHistory { query } => {
+                                crate::ui::components::navigation_bar::SuggestionKind::SearchHistory {
+                                    query,
+                                } => {
                                     self.state.nav_bar.search_query = query;
                                     let registry = self.state.action_registry.clone();
                                     self.state.nav_bar.update_suggestions(&registry);
@@ -495,7 +570,10 @@ impl AppWindow {
                     cx.notify();
                 }
                 _ => {
-                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                    if !keystroke.modifiers.control
+                        && !keystroke.modifiers.alt
+                        && !keystroke.modifiers.platform
+                    {
                         if keystroke.key.chars().count() == 1 {
                             match self.state.nav_bar.omnibar_mode {
                                 OmnibarMode::Path => {
@@ -540,19 +618,21 @@ impl AppWindow {
                     cx.notify();
                 }
                 _ => {
-                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
-                        if keystroke.key.chars().count() == 1 {
-                            name.push_str(&keystroke.key);
-                            cx.notify();
-                        }
+                    if !keystroke.modifiers.control
+                        && !keystroke.modifiers.alt
+                        && !keystroke.modifiers.platform
+                        && keystroke.key.chars().count() == 1
+                    {
+                        name.push_str(&keystroke.key);
+                        cx.notify();
                     }
                 }
             }
             return;
         }
 
-        // Intercept inline renaming input typing
-        if self.state.main_view.renaming_index.is_some() {
+        // Intercept inline renaming input typing (in either pane)
+        if self.state.active_view().renaming_index.is_some() {
             let key = keystroke.key.as_str();
             match key {
                 "escape" | "Escape" => {
@@ -562,34 +642,56 @@ impl AppWindow {
                     self.commit_rename(cx);
                 }
                 "backspace" | "Backspace" => {
-                    self.state.main_view.rename_text.pop();
+                    self.state.active_view_mut().rename_text.pop();
                     cx.notify();
                 }
                 "space" | "Space" => {
-                    self.state.main_view.rename_text.push(' ');
+                    self.state.active_view_mut().rename_text.push(' ');
                     cx.notify();
                 }
                 _ => {
-                    if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
-                        if keystroke.key.chars().count() == 1 {
-                            self.state.main_view.rename_text.push_str(&keystroke.key);
-                            cx.notify();
-                        }
+                    if !keystroke.modifiers.control
+                        && !keystroke.modifiers.alt
+                        && !keystroke.modifiers.platform
+                        && keystroke.key.chars().count() == 1
+                    {
+                        let ch = keystroke.key.clone();
+                        self.state.active_view_mut().rename_text.push_str(&ch);
+                        cx.notify();
                     }
                 }
             }
             return;
         }
 
-        // Files shows Ctrl+R for Refresh (F5 also works) and Ctrl+` for
-        // opening a terminal here; both bypass the registry's 1:1 bindings.
+        // Files-community parity shortcuts (address bar, search, zoom, view modes, pane switch)
+        let key_str = keystroke.key.as_str();
+
+        // Alt+D or F4 -> Focus address bar / path edit
+        if (keystroke.modifiers.alt && !keystroke.modifiers.control && key_str.eq_ignore_ascii_case("d"))
+            || (!keystroke.modifiers.modified() && key_str.eq_ignore_ascii_case("f4"))
+        {
+            self.dispatch_action(crate::core::action_registry::ActionKind::EditPath, cx);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+E or F3 -> Search
+        if (keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.shift && key_str.eq_ignore_ascii_case("e"))
+            || (!keystroke.modifiers.modified() && key_str.eq_ignore_ascii_case("f3"))
+        {
+            self.dispatch_action(crate::core::action_registry::ActionKind::Search, cx);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+R -> Refresh, Ctrl+` -> Open terminal, Ctrl+Plus/Minus/0 -> Zoom
         if keystroke.modifiers.control
             && !keystroke.modifiers.alt
             && !keystroke.modifiers.platform
             && !keystroke.modifiers.shift
-            && !is_nav_bar_active
         {
-            match keystroke.key.as_str() {
+            match key_str {
                 "r" | "R" => {
                     self.refresh(cx);
                     return;
@@ -598,130 +700,350 @@ impl AppWindow {
                     self.open_terminal_at_current(cx);
                     return;
                 }
+                "=" | "+" => {
+                    let z = (self.state.active_view().zoom_level + 0.1).min(1.0);
+                    self.set_zoom_level(z, cx);
+                    return;
+                }
+                "-" | "_" => {
+                    let z = (self.state.active_view().zoom_level - 0.1).max(0.0);
+                    self.set_zoom_level(z, cx);
+                    return;
+                }
+                "0" => {
+                    self.set_zoom_level(0.5, cx);
+                    return;
+                }
+                "space" | "Space" => {
+                    // Ctrl+Space: toggle selection of the current focused item without clearing others
+                    let pane_focus = self.state.active_pane_focus();
+                    let cur = self
+                        .state
+                        .pane_view(pane_focus)
+                        .last_clicked_index
+                        .unwrap_or(0);
+                    if cur < self.state.pane_view(pane_focus).items.len() {
+                        self.select_item_in_pane(pane_focus, cur, false, true, cx);
+                    }
+                    return;
+                }
                 _ => {}
             }
         }
 
-        if let Some(action) =
-            self.state.action_registry.lookup(&key_combo)
+        // Ctrl+Shift+1..4 -> View mode switching
+        if keystroke.modifiers.control && keystroke.modifiers.shift && !keystroke.modifiers.alt {
+            match key_str {
+                "1" | "!" => {
+                    self.set_view_mode(ViewMode::Details, cx);
+                    return;
+                }
+                "2" | "@" => {
+                    self.set_view_mode(ViewMode::List, cx);
+                    return;
+                }
+                "3" | "#" => {
+                    self.set_view_mode(ViewMode::Grid, cx);
+                    return;
+                }
+                "4" | "$" => {
+                    self.set_view_mode(ViewMode::Columns, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Tab / F6: switch active pane focus when in Dual-Pane mode
+        if !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && (key_str.eq_ignore_ascii_case("tab") || key_str.eq_ignore_ascii_case("f6"))
         {
+            if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                self.switch_pane_focus(cx);
+                return;
+            }
+        }
+
+        // Enter / Return variants (Alt+Enter = Properties, Ctrl+Enter = Open folder in new tab,
+        // Shift+Enter = Open folder in new window, Enter = Open selected item)
+        if key_str.eq_ignore_ascii_case("enter") || key_str.eq_ignore_ascii_case("return") {
+            let pane_focus = self.state.active_pane_focus();
+            if keystroke.modifiers.alt {
+                self.open_properties_for_selected(cx);
+                return;
+            }
+            if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                if let Some(item) = self.state.pane_view(pane_focus).items.get(idx).cloned() {
+                    if keystroke.modifiers.control && matches!(item.file_type, FileType::Directory) {
+                        self.open_in_new_tab(item.path, cx);
+                        return;
+                    }
+                    if keystroke.modifiers.shift && matches!(item.file_type, FileType::Directory) {
+                        self.open_in_new_window(item.path, cx);
+                        return;
+                    }
+                }
+                self.open_item_in_pane(pane_focus, idx, cx);
+            }
+            return;
+        }
+
+        // Backspace: navigate up to parent folder
+        if !keystroke.modifiers.modified() && key_str.eq_ignore_ascii_case("backspace") {
+            self.navigate_up(cx);
+            return;
+        }
+
+        // 2D / View-Mode-Aware Keyboard Navigation (Arrows, Home, End, PageUp, PageDown, Space)
+        if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+            if self.handle_view_navigation_key(key_str, keystroke.modifiers.shift, cx) {
+                return;
+            }
+        }
+
+        // Action Registry lookup
+        if let Some(action) = self.state.action_registry.lookup(&key_combo) {
             self.dispatch_action(action, cx);
-        } else {
-            if !keystroke.modifiers.modified() {
-                match keystroke.key.as_str() {
-                    "escape" | "Escape" => {
-                        if self.state.splash_state.visible {
-                            self.dismiss_splash(cx);
-                        } else if self
-                            .state
-                            .main_view
-                            .search_state
-                            .is_searching
-                        {
-                            self.clear_search(cx);
-                        } else if !self
-                            .state
-                            .main_view
-                            .filter_text
-                            .is_empty()
-                        {
-                            self.set_filter_text(String::new(), cx);
-                        } else if !self
-                            .state
-                            .main_view
-                            .selected_indices
-                            .is_empty()
-                        {
-                            self.clear_selection(cx);
-                        }
-                    }
-                    "ArrowDown" => {
-                        let len = self.state.main_view.items.len();
-                        let current = self
-                            .state
-                            .main_view
-                            .last_clicked_index
-                            .unwrap_or(0)
-                            .min(len.saturating_sub(1));
-                        let next = (current + 1)
-                            .min(len.saturating_sub(1));
-                        self.select_item(
-                            next,
-                            event.keystroke.modifiers.shift,
-                            false,
-                            cx,
-                        );
-                        self.state.main_view.last_clicked_index =
-                            Some(next);
-                    }
-                    "ArrowUp" => {
-                        let current = self
-                            .state
-                            .main_view
-                            .last_clicked_index
-                            .unwrap_or(0);
-                        let prev = current.saturating_sub(1);
-                        self.select_item(
-                            prev,
-                            event.keystroke.modifiers.shift,
-                            false,
-                            cx,
-                        );
-                        self.state.main_view.last_clicked_index =
-                            Some(prev);
-                    }
-                    "Home" => {
-                        if !self.state.main_view.items.is_empty() {
-                            self.select_item(
-                                0,
-                                event.keystroke.modifiers.shift,
-                                false,
-                                cx,
-                            );
-                            self.state
-                                .main_view
-                                .last_clicked_index = Some(0);
-                        }
-                    }
-                    "End" => {
-                        let last = self
-                            .state
-                            .main_view
-                            .items
-                            .len()
-                            .saturating_sub(1);
-                        self.select_item(
-                            last,
-                            event.keystroke.modifiers.shift,
-                            false,
-                            cx,
-                        );
-                        self.state.main_view.last_clicked_index =
-                            Some(last);
-                    }
-                    _ => {}
-                }
+            return;
+        }
+
+        // Type-ahead / incremental file selection when typing printable characters in the file view
+        if !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && key_str.chars().count() == 1
+        {
+            let ch = key_str.chars().next().unwrap();
+            if !ch.is_control() {
+                self.handle_type_to_select(ch, cx);
             }
-            let key = keystroke.key.as_str();
-            if keystroke.modifiers.control
-                && (key == "a" || key == "A")
-            {
-                self.select_all(cx);
-            }
-            if key == "enter" || key == "return" {
-                if let Some(&idx) = self
+        }
+    }
+
+    /// View-mode-aware keyboard navigation for Details, Grid, List, and Columns views.
+    fn handle_view_navigation_key(
+        &mut self,
+        key: &str,
+        shift: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pane_focus = self.state.active_pane_focus();
+        let len = self.state.pane_view(pane_focus).items.len();
+        let view_mode = self.state.pane_view(pane_focus).view_mode.clone();
+        let zoom_level = self.state.pane_view(pane_focus).zoom_level;
+
+        // Space toggles selection on focused item
+        if key.eq_ignore_ascii_case("space") {
+            if len > 0 {
+                let current = self
                     .state
-                    .main_view
-                    .selected_indices
-                    .iter()
-                    .next()
+                    .pane_view(pane_focus)
+                    .last_clicked_index
+                    .unwrap_or(0)
+                    .min(len - 1);
+                self.select_item_in_pane(pane_focus, current, shift, true, cx);
+                self.scroll_item_into_view(pane_focus, current);
+            }
+            return true;
+        }
+
+        // In Columns (Miller) view, Left/Right arrows navigate up/into folders directly
+        if view_mode == ViewMode::Columns && !shift {
+            if key.eq_ignore_ascii_case("left") || key.eq_ignore_ascii_case("arrowleft") {
+                self.navigate_up(cx);
+                return true;
+            }
+            if key.eq_ignore_ascii_case("right") || key.eq_ignore_ascii_case("arrowright") {
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next()
                 {
-                    self.open_item(idx, cx);
+                    if let Some(item) = self.state.pane_view(pane_focus).items.get(idx) {
+                        if matches!(item.file_type, FileType::Directory) {
+                            self.open_item_in_pane(pane_focus, idx, cx);
+                            return true;
+                        }
+                    }
                 }
             }
-            if key == "backspace" {
-                self.navigate_up(cx);
+        }
+
+        if len == 0 {
+            return false;
+        }
+
+        // Compute pane width and viewport height for 2D Grid/List step calculation
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let win_h = f32::from(self.state.last_window_size.height).max(600.0);
+        let sidebar_w = if self.state.sidebar_visible {
+            self.state.sidebar.width
+        } else {
+            0.0
+        };
+        let mut pane_w = (win_w - sidebar_w).max(240.0);
+        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            let ratio = self.state.main_view.dual_pane_ratio.clamp(0.2, 0.8);
+            pane_w = if pane_focus == crate::core::navigation_manager::PaneFocus::Primary {
+                pane_w * ratio
+            } else {
+                pane_w * (1.0 - ratio)
+            };
+        }
+        let viewport_h = (win_h - 170.0).max(160.0);
+
+        let grid_cols = {
+            let cols = MainViewState::grid_columns_for_width(pane_w, zoom_level);
+            MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, cols)
+                .items_per_row
+                .max(1)
+        };
+        let (list_cols, _list_col_w, list_row_h, _list_gap, _list_pad) =
+            MainViewState::list_layout_metrics(
+                pane_w,
+                zoom_level,
+                self.state.pane_view(pane_focus).compact_mode,
+            );
+        let list_rows_per_col = (len + list_cols - 1) / list_cols.max(1);
+        let details_page_rows = ((viewport_h / 32.0).floor() as usize).max(1);
+        let grid_page_items = {
+            let params =
+                MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, grid_cols);
+            let rows = ((viewport_h / params.row_height).floor() as usize).max(1);
+            (rows * grid_cols).max(grid_cols)
+        };
+        let _ = list_row_h;
+
+        let had_selection = !self.state.pane_view(pane_focus).selected_indices.is_empty();
+        let current = self
+            .state
+            .pane_view(pane_focus)
+            .last_clicked_index
+            .or_else(|| self.state.pane_view(pane_focus).selected_indices.iter().next().copied())
+            .unwrap_or(0)
+            .min(len - 1);
+
+        let target_idx: Option<usize> = match key.to_ascii_lowercase().as_str() {
+            "down" | "arrowdown" => {
+                if !had_selection {
+                    Some(0)
+                } else {
+                    let step = match view_mode {
+                        ViewMode::Grid => grid_cols,
+                        _ => 1,
+                    };
+                    Some((current + step).min(len - 1))
+                }
             }
+            "up" | "arrowup" => {
+                if !had_selection {
+                    Some(0)
+                } else {
+                    let step = match view_mode {
+                        ViewMode::Grid => grid_cols,
+                        _ => 1,
+                    };
+                    Some(current.saturating_sub(step))
+                }
+            }
+            "right" | "arrowright" => {
+                if !had_selection {
+                    Some(0)
+                } else {
+                    let step = match view_mode {
+                        ViewMode::Grid => 1,
+                        ViewMode::List => list_rows_per_col,
+                        _ => 1,
+                    };
+                    Some((current + step).min(len - 1))
+                }
+            }
+            "left" | "arrowleft" => {
+                if !had_selection {
+                    Some(0)
+                } else {
+                    let step = match view_mode {
+                        ViewMode::Grid => 1,
+                        ViewMode::List => list_rows_per_col,
+                        _ => 1,
+                    };
+                    Some(current.saturating_sub(step))
+                }
+            }
+            "home" => Some(0),
+            "end" => Some(len - 1),
+            "pagedown" => {
+                let step = match view_mode {
+                    ViewMode::Grid => grid_page_items,
+                    ViewMode::List => list_rows_per_col,
+                    _ => details_page_rows,
+                };
+                Some((current + step).min(len - 1))
+            }
+            "pageup" => {
+                let step = match view_mode {
+                    ViewMode::Grid => grid_page_items,
+                    ViewMode::List => list_rows_per_col,
+                    _ => details_page_rows,
+                };
+                Some(current.saturating_sub(step))
+            }
+            _ => None,
+        };
+
+        if let Some(idx) = target_idx {
+            self.select_item_in_pane(pane_focus, idx, shift, false, cx);
+            self.scroll_item_into_view(pane_focus, idx);
+            return true;
+        }
+        false
+    }
+
+    /// Type-ahead incremental file selection in the active pane.
+    fn handle_type_to_select(&mut self, ch: char, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let reset = self
+            .state
+            .type_to_select_last_time
+            .map(|t| now.duration_since(t) > std::time::Duration::from_millis(900))
+            .unwrap_or(true);
+        if reset {
+            self.state.type_to_select_buffer.clear();
+        }
+        self.state.type_to_select_last_time = Some(now);
+        self.state.type_to_select_buffer.push(ch);
+
+        let query = self.state.type_to_select_buffer.to_lowercase();
+        let pane_focus = self.state.active_pane_focus();
+        let items = &self.state.pane_view(pane_focus).items;
+        // Prefer prefix match; fall back to substring match
+        let matched = items
+            .iter()
+            .position(|item| item.name.to_lowercase().starts_with(&query))
+            .or_else(|| {
+                items
+                    .iter()
+                    .position(|item| item.name.to_lowercase().contains(&query))
+            });
+        if let Some(idx) = matched {
+            self.select_item_in_pane(pane_focus, idx, false, false, cx);
+            self.scroll_item_into_view(pane_focus, idx);
+        }
+    }
+
+    /// Open the Properties dialog for the currently selected item (Alt+Enter).
+    pub fn open_properties_for_selected(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        let item_opt = self
+            .state
+            .pane_view(pane_focus)
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.pane_view(pane_focus).items.get(idx))
+            .cloned();
+        if let Some(item) = item_opt {
+            self.state.active_dialog = Some(DialogType::Properties { item });
+            cx.notify();
         }
     }
 
@@ -909,7 +1231,6 @@ impl AppWindow {
 
     /// Open a new tab with settings page content.
     pub fn open_settings_tab(&mut self, cx: &mut Context<Self>) {
-        // Check if a settings tab is already open
         let nav = self.state.navigation.read(cx);
         let existing_index = nav.tabs.tabs.iter().position(|t| {
             matches!(t.target, crate::ui::views::types::ViewTarget::Settings)
@@ -917,46 +1238,49 @@ impl AppWindow {
         drop(nav);
 
         if let Some(idx) = existing_index {
-            // Switch to existing settings tab
             self.switch_tab(idx, cx);
         } else {
-            // Create a new tab with Settings target
             self.state.navigation.update(cx, |nav, _cx| {
                 nav.tabs.add_settings_tab();
             });
             self.state.main_view.target = crate::ui::views::types::ViewTarget::Settings;
+            self.ensure_active_tab_visible(cx);
             self.save_session(cx);
             cx.notify();
         }
     }
 
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
-        let current_path = self.state.main_view.primary_path.clone();
-        let mode = self.state.main_view.view_mode.clone();
-        let zoom = self.state.main_view.zoom_level;
+        let current_path = self.state.active_view().primary_path.clone();
+        let mode = self.state.active_view().view_mode.clone();
+        let zoom = self.state.active_view().zoom_level;
         self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.add_tab_with_zoom(current_path, mode, zoom);
+            nav.tabs.add_tab_with_zoom(current_path.clone(), mode, zoom);
         });
+        self.ensure_active_tab_visible(cx);
         self.save_session(cx);
         self.load_tab_thumbnails(cx);
-        cx.notify();
+        self.navigate_pane(
+            current_path,
+            crate::core::navigation_manager::PaneFocus::Primary,
+            cx,
+        );
     }
 
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
+        if tab_count <= 1 {
+            // Closing the last tab exits the window (Files-community behavior)
+            cx.quit();
+            return;
+        }
         self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.close_tab(index);
         });
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
-        let new_path = self
-            .state
-            .navigation
-            .read(cx)
-            .tabs
-            .active_tab()
-            .path
-            .clone();
-        self.navigate(new_path, cx);
+        self.ensure_active_tab_visible(cx);
+        self.sync_active_tab_to_views(cx);
     }
 
     pub fn reopen_closed_tab(&mut self, cx: &mut Context<Self>) {
@@ -966,23 +1290,8 @@ impl AppWindow {
             .update(cx, |nav, _cx| nav.tabs.reopen_closed_tab());
         if reopened {
             self.save_session(cx);
-            let (new_path, tab_target) = {
-                let nav = self.state.navigation.read(cx);
-                let tab = nav.tabs.active_tab();
-                (tab.path.clone(), tab.target.clone())
-            };
-            self.state.main_view.target = tab_target.clone();
-            match tab_target {
-                crate::ui::views::types::ViewTarget::Settings => {
-                    self.state
-                        .nav_bar
-                        .update_path(FilesPath::from("Settings"));
-                    cx.notify();
-                }
-                _ => {
-                    self.navigate(new_path, cx);
-                }
-            }
+            self.ensure_active_tab_visible(cx);
+            self.sync_active_tab_to_views(cx);
         }
     }
 
@@ -1001,20 +1310,48 @@ impl AppWindow {
             nav.tabs.switch_tab(index);
         });
         self.save_session(cx);
+        self.ensure_active_tab_visible(cx);
+        self.sync_active_tab_to_views(cx);
+    }
 
-        let (new_path, tab_target) = {
+    /// Synchronize the newly active tab's target, primary path, view mode, zoom, and secondary pane.
+    fn sync_active_tab_to_views(&mut self, cx: &mut Context<Self>) {
+        let (new_path, tab_target, view_mode, zoom, sec_path) = {
             let nav = self.state.navigation.read(cx);
             let tab = nav.tabs.active_tab();
-            (tab.path.clone(), tab.target.clone())
+            (
+                tab.path.clone(),
+                tab.target.clone(),
+                tab.view_mode.clone(),
+                tab.zoom_level,
+                tab.secondary_pane_path.clone(),
+            )
         };
         self.state.main_view.target = tab_target.clone();
+        self.state.main_view.view_mode = view_mode;
+        self.state.main_view.zoom_level = zoom;
         match tab_target {
             crate::ui::views::types::ViewTarget::Settings => {
                 self.state.nav_bar.update_path(FilesPath::from("Settings"));
                 cx.notify();
             }
             _ => {
-                self.navigate(new_path, cx);
+                self.navigate_pane(
+                    new_path,
+                    crate::core::navigation_manager::PaneFocus::Primary,
+                    cx,
+                );
+                if self.state.main_view.pane_type
+                    == crate::ui::views::main_view::PaneType::Dual
+                {
+                    if let Some(sp) = sec_path {
+                        self.navigate_pane(
+                            sp,
+                            crate::core::navigation_manager::PaneFocus::Secondary,
+                            cx,
+                        );
+                    }
+                }
             }
         }
     }
@@ -1035,21 +1372,8 @@ impl AppWindow {
             }
         });
         self.save_session(cx);
-        let (new_path, tab_target) = {
-            let nav = self.state.navigation.read(cx);
-            let tab = nav.tabs.active_tab();
-            (tab.path.clone(), tab.target.clone())
-        };
-        self.state.main_view.target = tab_target.clone();
-        match tab_target {
-            crate::ui::views::types::ViewTarget::Settings => {
-                self.state.nav_bar.update_path(FilesPath::from("Settings"));
-                cx.notify();
-            }
-            _ => {
-                self.navigate(new_path, cx);
-            }
-        }
+        self.ensure_active_tab_visible(cx);
+        self.sync_active_tab_to_views(cx);
     }
 
     pub fn cycle_tab_prev(&mut self, cx: &mut Context<Self>) {
@@ -1068,28 +1392,39 @@ impl AppWindow {
             }
         });
         self.save_session(cx);
-        let (new_path, tab_target) = {
-            let nav = self.state.navigation.read(cx);
-            let tab = nav.tabs.active_tab();
-            (tab.path.clone(), tab.target.clone())
-        };
-        self.state.main_view.target = tab_target.clone();
-        match tab_target {
-            crate::ui::views::types::ViewTarget::Settings => {
-                self.state.nav_bar.update_path(FilesPath::from("Settings"));
-                cx.notify();
-            }
-            _ => {
-                self.navigate(new_path, cx);
-            }
+        self.ensure_active_tab_visible(cx);
+        self.sync_active_tab_to_views(cx);
+    }
+
+    pub fn move_active_tab_left(&mut self, cx: &mut Context<Self>) {
+        let moved = self
+            .state
+            .navigation
+            .update(cx, |nav, _cx| nav.tabs.move_active_tab_left());
+        if moved {
+            self.ensure_active_tab_visible(cx);
+            self.save_session(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn move_active_tab_right(&mut self, cx: &mut Context<Self>) {
+        let moved = self
+            .state
+            .navigation
+            .update(cx, |nav, _cx| nav.tabs.move_active_tab_right());
+        if moved {
+            self.ensure_active_tab_visible(cx);
+            self.save_session(cx);
+            cx.notify();
         }
     }
 
     /// Load folder thumbnails for all open tabs (for tab bar icons).
     #[cfg(windows)]
     pub fn load_tab_thumbnails(&mut self, cx: &mut Context<Self>) {
-        use crate::platform::windows::thumbnail_service::ThumbnailSize;
         use crate::app_state::icons_cache_dir;
+        use crate::platform::windows::thumbnail_service::ThumbnailSize;
 
         let tab_paths: Vec<FilesPath> = {
             let nav = self.state.navigation.read(cx);
@@ -1099,7 +1434,6 @@ impl AppWindow {
         let thumbnail_service = self.state.thumbnail_service.clone();
         let tab_cache = self.state.tab_thumbnail_cache.clone();
         let icon_dir = icons_cache_dir();
-        let mut async_cx = cx.to_async();
 
         cx.foreground_executor()
             .spawn(async move {
@@ -1111,14 +1445,12 @@ impl AppWindow {
                 };
 
                 for path in &tab_paths {
-                    // Check cache first
                     if let Ok(cache) = tab_cache.lock() {
                         if cache.contains_key(path) {
                             continue;
                         }
                     }
 
-                    // Check disk cache (full-path hash key: no cross-folder collisions)
                     let cached_png = icon_dir.join(format!(
                         "tab_{}.png",
                         crate::app_state::disk_cache_key(path)
@@ -1130,8 +1462,9 @@ impl AppWindow {
                         continue;
                     }
 
-                    // Extract thumbnail
-                    if let Ok(thumb) = thumbnail_service.extract_thumbnail(path, ThumbnailSize::Small) {
+                    if let Ok(thumb) =
+                        thumbnail_service.extract_thumbnail(path, ThumbnailSize::Small)
+                    {
                         use image::{ImageBuffer, Rgba};
                         let w = thumb.width;
                         let h = thumb.height;
@@ -1140,7 +1473,9 @@ impl AppWindow {
                             for ch in rgba_data.chunks_exact_mut(4) {
                                 ch.swap(0, 2);
                             }
-                            if let Some(img) = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data) {
+                            if let Some(img) =
+                                ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba_data)
+                            {
                                 let _ = img.save(&cached_png);
                                 if let Ok(mut cache) = tab_cache.lock() {
                                     cache.insert(path.clone(), cached_png);
@@ -1156,15 +1491,160 @@ impl AppWindow {
     #[cfg(not(windows))]
     pub fn load_tab_thumbnails(&mut self, _cx: &mut Context<Self>) {}
 
+    // ---- Dual-Pane (Split View) Operations ----
+
+    /// Ensure the secondary pane is initialized and loaded when entering Dual-Pane mode.
+    pub fn sync_secondary_pane_on_split(&mut self, cx: &mut Context<Self>) {
+        let primary_path = self.state.main_view.primary_path.clone();
+        let existing_sec = self
+            .state
+            .navigation
+            .read(cx)
+            .tabs
+            .active_tab()
+            .secondary_pane_path
+            .clone();
+
+        // Choose a meaningful default secondary path if none was set or if it was identical to primary
+        let target_sec = match existing_sec {
+            Some(ref p) if !p.as_path().as_os_str().is_empty() => p.clone(),
+            _ => NavigationService::get_parent_path(&primary_path).unwrap_or(primary_path),
+        };
+
+        self.navigate_pane(
+            target_sec,
+            crate::core::navigation_manager::PaneFocus::Secondary,
+            cx,
+        );
+    }
+
     pub fn toggle_dual_pane(&mut self, cx: &mut Context<Self>) {
         self.state.navigation.update(cx, |nav, _cx| {
             nav.toggle_dual_pane();
         });
-        let layout = self.state.navigation.read(cx).pane_layout;
+        let (layout, active_pane) = {
+            let nav = self.state.navigation.read(cx);
+            (nav.pane_layout, nav.active_pane)
+        };
         self.state.main_view.pane_type = match layout {
             PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
             _ => crate::ui::views::main_view::PaneType::Dual,
         };
+        self.state.main_view.active_pane = active_pane;
+        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            self.sync_secondary_pane_on_split(cx);
+            self.focus_pane(crate::core::navigation_manager::PaneFocus::Secondary, cx);
+        } else {
+            self.focus_pane(crate::core::navigation_manager::PaneFocus::Primary, cx);
+        }
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    /// Set the active pane in Dual-Pane mode and sync the navigation bar, sidebar, and status bar.
+    pub fn focus_pane(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        let effective = if self.state.main_view.pane_type
+            == crate::ui::views::main_view::PaneType::Dual
+        {
+            pane_focus
+        } else {
+            crate::core::navigation_manager::PaneFocus::Primary
+        };
+        let changed = self.state.main_view.active_pane != effective;
+        self.state.main_view.active_pane = effective;
+        self.state.secondary_view.active_pane = effective;
+        self.state.navigation.update(cx, |nav, _cx| {
+            nav.active_pane = effective;
+        });
+
+        let pane_path = self.state.pane_view(effective).primary_path.clone();
+        self.state.nav_bar.update_path(pane_path.clone());
+        self.state.sidebar.set_active(&pane_path);
+
+        let view_ref = self.state.pane_view(effective);
+        let total = view_ref.items.len();
+        let folders = view_ref
+            .items
+            .iter()
+            .filter(|i| matches!(i.file_type, FileType::Directory))
+            .count();
+        let files = total - folders;
+        let sel_count = view_ref.selected_indices.len();
+        let sel_bytes: u64 = view_ref
+            .selected_indices
+            .iter()
+            .filter_map(|&i| view_ref.items.get(i))
+            .map(|item| item.size)
+            .sum();
+        self.state.status_bar.sync(total, folders, files);
+        self.state.status_bar.selected_count = sel_count;
+        self.state.status_bar.selected_size_bytes = sel_bytes;
+        let branch = GitService::get_branch(&pane_path);
+        self.state.status_bar.show_git_actions = branch.is_some();
+        self.state.status_bar.git_branch = branch;
+
+        if changed {
+            self.save_session(cx);
+            cx.notify();
+        }
+    }
+
+    /// Switch focus between Primary and Secondary panes (Tab / F6).
+    pub fn switch_pane_focus(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.pane_type != crate::ui::views::main_view::PaneType::Dual {
+            return;
+        }
+        let next = match self.state.main_view.active_pane {
+            crate::core::navigation_manager::PaneFocus::Primary => {
+                crate::core::navigation_manager::PaneFocus::Secondary
+            }
+            crate::core::navigation_manager::PaneFocus::Secondary => {
+                crate::core::navigation_manager::PaneFocus::Primary
+            }
+        };
+        self.focus_pane(next, cx);
+    }
+
+    /// Close one of the panes in Dual-Pane mode. If Primary is closed, Secondary is promoted to Primary.
+    pub fn close_dual_pane(
+        &mut self,
+        closed_pane: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.main_view.pane_type != crate::ui::views::main_view::PaneType::Dual {
+            return;
+        }
+        if closed_pane == crate::core::navigation_manager::PaneFocus::Primary {
+            // Promote Secondary pane state into Primary pane
+            let sec_path = self.state.secondary_view.primary_path.clone();
+            let sec_items = self.state.secondary_view.items.clone();
+            let sec_sel = self.state.secondary_view.selected_indices.clone();
+            self.state.main_view.primary_path = sec_path.clone();
+            self.state.main_view.items = sec_items.clone();
+            self.state.main_view.selected_indices = sec_sel.clone();
+            self.state.main_view.bump_items_revision();
+            self.state.file_items.update(cx, |m, _| {
+                m.items = sec_items;
+                m.selected_indices = sec_sel;
+            });
+            self.state.navigation.update(cx, |nav, _cx| {
+                nav.tabs.active_tab_mut().path = sec_path;
+            });
+        }
+        self.stop_file_watcher(true);
+        self.state.navigation.update(cx, |nav, _cx| {
+            nav.pane_layout = PaneLayout::Single;
+            nav.active_pane = crate::core::navigation_manager::PaneFocus::Primary;
+            nav.tabs.active_tab_mut().secondary_pane_path = None;
+        });
+        self.state.main_view.pane_type = crate::ui::views::main_view::PaneType::Single;
+        self.state.main_view.secondary_path = None;
+        self.focus_pane(crate::core::navigation_manager::PaneFocus::Primary, cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1186,14 +1666,15 @@ impl AppWindow {
 
     /// Toggle the tab actions dropdown menu (split pane options).
     pub fn toggle_tab_actions_menu(&mut self, cx: &mut Context<Self>) {
-        // Toggle: if already open, close it; otherwise open it
-        if matches!(self.state.active_dialog, Some(DialogType::TabActionsDropdown { .. })) {
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::TabActionsDropdown { .. })
+        ) {
             self.state.active_dialog = None;
         } else {
-            // Position near the tab actions button (top-left area)
             let position = Point {
                 x: px(4.0),
-                y: px(40.0), // Below the tab bar
+                y: px(40.0),
             };
             self.state.active_dialog = Some(DialogType::TabActionsDropdown { position });
         }
@@ -1214,11 +1695,9 @@ impl AppWindow {
                 unsafe {
                     let hwnd = HWND(win32.hwnd.get() as *mut _);
                     if IsZoomed(hwnd).as_bool() {
-                        // Currently maximized → restore
                         let _ = ShowWindowAsync(hwnd, SW_RESTORE);
                         self.state.is_maximized = false;
                     } else {
-                        // Currently restored → maximize
                         let _ = ShowWindowAsync(hwnd, SW_MAXIMIZE);
                         self.state.is_maximized = true;
                     }
@@ -1235,43 +1714,139 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Start dragging a tab (records position and time for threshold).
+    /// Start dragging a tab (records initial cursor position).
     pub fn start_tab_drag(&mut self, tab_index: usize, cx: &mut Context<Self>) {
+        let x = self.state.tab_drag.current_x;
+        let y = self.state.tab_drag.current_y;
+        self.start_tab_drag_at(tab_index, x, y, cx);
+    }
+
+    /// Start dragging a tab at explicit coordinates `(x, y)`.
+    pub fn start_tab_drag_at(
+        &mut self,
+        tab_index: usize,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
         self.state.tab_drag.dragged_index = Some(tab_index);
+        self.state.tab_drag.drop_target_index = Some(tab_index);
         self.state.tab_drag.is_dragging = true;
         self.state.tab_drag.drag_active = false;
         self.state.tab_drag.is_dragging_out = false;
-        self.state.tab_drag.drag_start_x = self.state.tab_drag.current_x;
-        self.state.tab_drag.drag_start_y = self.state.tab_drag.current_y;
+        self.state.tab_drag.drag_start_x = x;
+        self.state.tab_drag.drag_start_y = y;
+        self.state.tab_drag.current_x = x;
+        self.state.tab_drag.current_y = y;
         self.state.tab_drag.drag_start_time = Some(std::time::Instant::now());
         cx.notify();
     }
 
-    /// Update tab drag position. Drag activates only after 500ms hold + 5px movement.
+    /// Update tab drag position using the current window width for responsive tab metrics.
     pub fn update_tab_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        if self.state.tab_drag.is_dragging {
-            self.state.tab_drag.current_x = x;
-            self.state.tab_drag.current_y = y;
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        self.update_tab_drag_with_width(x, y, win_w, cx);
+    }
 
-            if !self.state.tab_drag.drag_active {
-                // Files-like: drag engages on movement alone (5px). The old
-                // 500ms hold requirement made reordering feel broken.
-                let dx = x - self.state.tab_drag.drag_start_x;
-                let dy = y - self.state.tab_drag.drag_start_y;
-                let dist_sq = dx * dx + dy * dy;
-                if dist_sq > 25.0 {
-                    self.state.tab_drag.drag_active = true;
+    /// Update tab drag position with explicit `window_width`. Performs live tab reordering
+    /// inside the strip and detects vertical drag-out for detaching into a new window.
+    pub fn update_tab_drag_with_width(
+        &mut self,
+        x: f32,
+        y: f32,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.tab_drag.is_dragging {
+            return;
+        }
+        self.state.tab_drag.current_x = x;
+        self.state.tab_drag.current_y = y;
+
+        if !self.state.tab_drag.drag_active {
+            let dx = x - self.state.tab_drag.drag_start_x;
+            let dy = y - self.state.tab_drag.drag_start_y;
+            if dx * dx + dy * dy > 25.0 {
+                self.state.tab_drag.drag_active = true;
+            }
+        }
+
+        if self.state.tab_drag.drag_active {
+            self.state.tab_drag.is_dragging_out = y < -12.0 || y > 52.0;
+
+            let (tab_count, pinned_count) = {
+                let nav = self.state.navigation.read(cx);
+                let tc = nav.tabs.tabs.len();
+                let pc = nav.tabs.tabs.iter().filter(|t| t.pinned).count();
+                (tc, pc)
+            };
+            let m = crate::ui::components::tab_bar::compute_strip_metrics(
+                window_width,
+                tab_count,
+                pinned_count,
+            );
+            let (strip_avail_w, tab_w, tabs_overflow, max_scroll) =
+                (m.strip_viewport_w, m.tab_w, m.tabs_overflow, m.max_scroll);
+
+            // Auto-scroll strip when dragging near left/right edges in overflow mode
+            if tabs_overflow {
+                let strip_left = 40.0 + 24.0;
+                let strip_right = strip_left + strip_avail_w;
+                if x < strip_left + 28.0 {
+                    self.state.tab_drag.scroll_offset =
+                        (self.state.tab_drag.scroll_offset - 12.0).max(0.0);
+                } else if x > strip_right - 28.0 {
+                    self.state.tab_drag.scroll_offset =
+                        (self.state.tab_drag.scroll_offset + 12.0).min(max_scroll);
                 }
             }
 
-            if self.state.tab_drag.drag_active {
-                self.state.tab_drag.is_dragging_out = y < 0.0 || y > 48.0;
-                let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
-                self.state.tab_drag.drop_target_index =
-                    self.calculate_drop_index(x, tab_count);
+            if !self.state.tab_drag.is_dragging_out && tab_count > 0 {
+                let strip_start_x = if tabs_overflow { 40.0 + 24.0 } else { 40.0 };
+                let rel_x =
+                    (x - strip_start_x + self.state.tab_drag.scroll_offset).max(0.0);
+
+                // Compute which tab slot `rel_x` falls into (accounting for 44px pinned tabs)
+                let pinned_total_w = pinned_count as f32 * 44.0;
+                let target_idx = if rel_x < pinned_total_w && pinned_count > 0 {
+                    ((rel_x / 44.0).floor() as usize).min(pinned_count - 1)
+                } else {
+                    let unpinned_x = (rel_x - pinned_total_w).max(0.0);
+                    let idx = pinned_count + (unpinned_x / tab_w.max(1.0)).floor() as usize;
+                    idx.min(tab_count - 1)
+                };
+
+                self.state.tab_drag.drop_target_index = Some(target_idx);
+
+                // Live reorder as the cursor crosses tab boundaries
+                if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
+                    let can_reorder = {
+                        let nav = self.state.navigation.read(cx);
+                        let src_pinned = nav
+                            .tabs
+                            .tabs
+                            .get(dragged_idx)
+                            .map(|t| t.pinned)
+                            .unwrap_or(false);
+                        let dst_pinned = nav
+                            .tabs
+                            .tabs
+                            .get(target_idx)
+                            .map(|t| t.pinned)
+                            .unwrap_or(false);
+                        src_pinned == dst_pinned && dragged_idx != target_idx
+                    };
+                    if can_reorder {
+                        self.state.navigation.update(cx, |nav, _cx| {
+                            nav.tabs.reorder_tab(dragged_idx, target_idx);
+                        });
+                        self.state.tab_drag.dragged_index = Some(target_idx);
+                        self.save_session(cx);
+                    }
+                }
             }
-            cx.notify();
         }
+        cx.notify();
     }
 
     /// Calculate the drop index based on mouse x position.
@@ -1279,31 +1854,45 @@ impl AppWindow {
         if tab_count == 0 {
             return None;
         }
-        // Tabs are TAB_W wide starting after the strip chrome (~40px).
         let tab_start_x = 40.0;
         let tab_width = 150.0;
-        let relative_x = mouse_x - tab_start_x + self.state.tab_drag.scroll_offset;
+        let relative_x = (mouse_x - tab_start_x + self.state.tab_drag.scroll_offset).max(0.0);
         let index = (relative_x / tab_width) as usize;
         Some(index.min(tab_count - 1))
     }
 
-    /// Complete tab drag (drop). Only reorders if drag was actually active.
+    /// Complete tab drag (drop). Reorders or detaches into a new window if dragged out.
     pub fn end_tab_drag(&mut self, _drop_index: Option<usize>, cx: &mut Context<Self>) {
         if self.state.tab_drag.drag_active {
             if let Some(dragged_idx) = self.state.tab_drag.dragged_index {
-                if let Some(target_idx) = self.state.tab_drag.drop_target_index {
+                if self.state.tab_drag.is_dragging_out {
+                    let (tab_count, detach_path) = {
+                        let nav = self.state.navigation.read(cx);
+                        let count = nav.tabs.tabs.len();
+                        let path = nav.tabs.tabs.get(dragged_idx).map(|t| t.path.clone());
+                        (count, path)
+                    };
+                    if tab_count > 1 {
+                        if let Some(path) = detach_path {
+                            tracing::info!(
+                                "Detaching tab {} ({:?}) into a new window",
+                                dragged_idx,
+                                path
+                            );
+                            self.open_in_new_window(path, cx);
+                            self.close_tab(dragged_idx, cx);
+                        }
+                    }
+                } else if let Some(target_idx) = self.state.tab_drag.drop_target_index {
                     if dragged_idx != target_idx {
                         self.state.navigation.update(cx, |nav, _cx| {
                             nav.tabs.reorder_tab(dragged_idx, target_idx);
                         });
                         self.save_session(cx);
                     }
-                } else if self.state.tab_drag.is_dragging_out {
-                    tracing::info!("Tab dragged out of window - creating new window");
                 }
             }
         }
-        // Preserve scroll_offset — only reset drag state
         let saved_offset = self.state.tab_drag.scroll_offset;
         self.state.tab_drag = crate::app_state::TabDragState::default();
         self.state.tab_drag.scroll_offset = saved_offset;
@@ -1312,59 +1901,122 @@ impl AppWindow {
 
     /// Cancel tab drag.
     pub fn cancel_tab_drag(&mut self, cx: &mut Context<Self>) {
+        let saved_offset = self.state.tab_drag.scroll_offset;
         self.state.tab_drag = crate::app_state::TabDragState::default();
+        self.state.tab_drag.scroll_offset = saved_offset;
         cx.notify();
     }
 
-    /// Scroll the tab bar left (smooth pixel increment).
+    /// Scroll the tab bar left.
     pub fn scroll_tab_bar_left(&mut self, cx: &mut Context<Self>) {
-        let step = 30.0;
+        let step = 64.0;
         self.state.tab_drag.scroll_offset =
             (self.state.tab_drag.scroll_offset - step).max(0.0);
         cx.notify();
     }
 
-    /// Scroll the tab bar right (smooth pixel increment).
+    /// Scroll the tab bar right.
     pub fn scroll_tab_bar_right(&mut self, cx: &mut Context<Self>) {
-        let step = 30.0;
-        let max_scroll =
-            (self.state.navigation.read(cx).tabs.tabs.len() as f32 * 200.0) - 600.0;
-        let max_scroll = max_scroll.max(0.0);
+        let step = 64.0;
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let (tab_count, pinned_count) = {
+            let nav = self.state.navigation.read(cx);
+            (
+                nav.tabs.tabs.len(),
+                nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
+            )
+        };
+        let max_scroll = crate::ui::components::tab_bar::compute_strip_metrics(
+            win_w,
+            tab_count,
+            pinned_count,
+        )
+        .max_scroll;
         self.state.tab_drag.scroll_offset =
             (self.state.tab_drag.scroll_offset + step).min(max_scroll);
         cx.notify();
     }
 
-    /// Clamp scroll_offset: reset to 0 if tabs no longer overflow,
-    /// otherwise clamp so we don't scroll past the end.
-    fn clamp_scroll_offset(&mut self, cx: &mut Context<Self>) {
-        let tab_count = self.state.navigation.read(cx).tabs.tabs.len() as f32;
-        let tabs_min_total_w = tab_count * 100.0; // TAB_MIN_W
-        let estimated_strip_w = 800.0;
-        if tabs_min_total_w <= estimated_strip_w {
-            // Tabs fit — exit scroll mode completely
+    /// Ensure the active tab is scrolled into the visible tab strip viewport.
+    pub fn ensure_active_tab_visible(&mut self, cx: &mut Context<Self>) {
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let (tab_count, pinned_count, active_idx) = {
+            let nav = self.state.navigation.read(cx);
+            (
+                nav.tabs.tabs.len(),
+                nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
+                nav.tabs.active_tab_index,
+            )
+        };
+        let m = crate::ui::components::tab_bar::compute_strip_metrics(
+            win_w,
+            tab_count,
+            pinned_count,
+        );
+        let (strip_avail_w, tab_w, tabs_overflow, max_scroll) =
+            (m.strip_viewport_w, m.tab_w, m.tabs_overflow, m.max_scroll);
+        if !tabs_overflow {
             self.state.tab_drag.scroll_offset = 0.0;
+            return;
+        }
+        // Compute left and right pixel edges of `active_idx`
+        let tab_left: f32 = if active_idx < pinned_count {
+            active_idx as f32 * 44.0
         } else {
-            // Tabs still overflow — clamp so we don't scroll past the end
-            let max_scroll = (tab_count * 200.0) - 600.0;
-            let max_scroll = max_scroll.max(0.0);
+            (pinned_count as f32 * 44.0) + ((active_idx - pinned_count) as f32 * tab_w)
+        };
+        let this_w = if active_idx < pinned_count { 44.0 } else { tab_w };
+        let tab_right = tab_left + this_w;
+
+        let cur = self.state.tab_drag.scroll_offset;
+        if tab_left < cur {
+            self.state.tab_drag.scroll_offset = tab_left.max(0.0);
+        } else if tab_right > cur + strip_avail_w {
             self.state.tab_drag.scroll_offset =
-                self.state.tab_drag.scroll_offset.min(max_scroll);
+                (tab_right - strip_avail_w).clamp(0.0, max_scroll);
+        } else {
+            self.state.tab_drag.scroll_offset = cur.clamp(0.0, max_scroll);
         }
     }
 
-    /// Close all tabs except the specified one.
+    /// Clamp scroll_offset: reset to 0 if tabs no longer overflow,
+    /// otherwise clamp so we don't scroll past the end.
+    fn clamp_scroll_offset(&mut self, cx: &mut Context<Self>) {
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let (tab_count, pinned_count) = {
+            let nav = self.state.navigation.read(cx);
+            (
+                nav.tabs.tabs.len(),
+                nav.tabs.tabs.iter().filter(|t| t.pinned).count(),
+            )
+        };
+        let m = crate::ui::components::tab_bar::compute_strip_metrics(
+            win_w,
+            tab_count,
+            pinned_count,
+        );
+        let (tabs_overflow, max_scroll) = (m.tabs_overflow, m.max_scroll);
+        if !tabs_overflow {
+            self.state.tab_drag.scroll_offset = 0.0;
+        } else {
+            self.state.tab_drag.scroll_offset =
+                self.state.tab_drag.scroll_offset.clamp(0.0, max_scroll);
+        }
+    }
+
+    /// Close all tabs except the specified one (and pinned tabs).
     pub fn close_other_tabs(&mut self, keep_index: usize, cx: &mut Context<Self>) {
         let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
         self.state.navigation.update(cx, |nav, _cx| {
             for i in (0..tab_count).rev() {
-                if i != keep_index {
+                if i != keep_index && !nav.tabs.tabs.get(i).map(|t| t.pinned).unwrap_or(false) {
                     nav.tabs.close_tab(i);
                 }
             }
         });
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
+        self.sync_active_tab_to_views(cx);
         cx.notify();
     }
 
@@ -1373,11 +2025,14 @@ impl AppWindow {
         let tab_count = self.state.navigation.read(cx).tabs.tabs.len();
         self.state.navigation.update(cx, |nav, _cx| {
             for i in (from_index + 1..tab_count).rev() {
-                nav.tabs.close_tab(i);
+                if !nav.tabs.tabs.get(i).map(|t| t.pinned).unwrap_or(false) {
+                    nav.tabs.close_tab(i);
+                }
             }
         });
         self.save_session(cx);
         self.clamp_scroll_offset(cx);
+        self.sync_active_tab_to_views(cx);
         cx.notify();
     }
 
@@ -1389,14 +2044,21 @@ impl AppWindow {
                 nav.tabs
                     .add_tab_with_zoom(tab.path.clone(), tab.view_mode.clone(), tab.zoom_level);
             });
+            self.ensure_active_tab_visible(cx);
             self.save_session(cx);
+            self.sync_active_tab_to_views(cx);
             cx.notify();
         }
     }
 
-    /// Close the current tab and open a new empty tab.
-    pub fn pin_tab(&mut self, _index: usize, cx: &mut Context<Self>) {
-        // TODO: Implement tab pinning (keep tab open even after closing all folders)
+    /// Toggle pin state on the specified tab (pinned tabs stay compact on the left).
+    pub fn pin_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.state.navigation.update(cx, |nav, _cx| {
+            nav.tabs.toggle_pin_tab(index);
+        });
+        self.clamp_scroll_offset(cx);
+        self.ensure_active_tab_visible(cx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -1512,12 +2174,9 @@ impl AppWindow {
 
         let sidebar_tick;
         let main_tick;
+        let secondary_tick;
         {
             let bs = &mut self.state.sidebar.bouncy_scroll;
-            // Drain the post-settle cooldown every frame, even when idle:
-            // gating it behind `animating` deadlocks scrolling permanently
-            // after the first settle (wheel input needs cooldown == 0 to
-            // re-arm, but nothing would ever decrement it).
             bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
             sidebar_tick = if bs.animating {
                 bs.tick_spring(dt)
@@ -1527,7 +2186,6 @@ impl AppWindow {
         }
         {
             let bs = &mut self.state.main_view.bouncy_scroll;
-            // Same unconditional drain as sidebar (see above).
             bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
             main_tick = if bs.animating {
                 bs.tick_spring(dt)
@@ -1535,39 +2193,54 @@ impl AppWindow {
                 false
             };
         }
-        if sidebar_tick || main_tick {
-            // Push main_view's scroll offset to UniformList handle
-            let offset = self.state.main_view.bouncy_scroll.offset;
-            let handle = &self.state.main_view.uniform_list_scroll_handle;
-            handle.0.borrow().base_handle.set_offset(gpui::point(px(0.0), px(offset)));
-
-            // Mark the window dirty so the next frame callback re-renders.
-            // draw() clears the dirty flag at its START, then calls render(),
-            // which calls this. notify() sets dirty back to true, persisting
-            // past draw()'s completion.
+        {
+            let bs = &mut self.state.secondary_view.bouncy_scroll;
+            bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
+            secondary_tick = if bs.animating {
+                bs.tick_spring(dt)
+            } else {
+                false
+            };
+        }
+        if sidebar_tick || main_tick || secondary_tick {
+            if main_tick {
+                let offset = self.state.main_view.bouncy_scroll.offset;
+                let handle = &self.state.main_view.uniform_list_scroll_handle;
+                handle
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(gpui::point(px(0.0), px(offset)));
+            }
+            if secondary_tick {
+                let offset = self.state.secondary_view.bouncy_scroll.offset;
+                let handle = &self.state.secondary_view.uniform_list_scroll_handle;
+                handle
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(gpui::point(px(0.0), px(offset)));
+            }
             cx.notify();
         }
     }
 
     /// Refresh the secondary pane (for split view)
     pub fn refresh_secondary_pane(&mut self, cx: &mut Context<Self>) {
-        let secondary_path = self
-            .state
-            .navigation
-            .read(cx)
-            .tabs
-            .active_tab()
-            .secondary_pane_path
-            .clone();
-        if let Some(path) = secondary_path {
-            // Trigger a re-render which will pick up the new file list
-            cx.notify();
+        let secondary_path = self.state.secondary_view.primary_path.clone();
+        if !secondary_path.as_path().as_os_str().is_empty() {
+            self.navigate_pane(
+                secondary_path,
+                crate::core::navigation_manager::PaneFocus::Secondary,
+                cx,
+            );
         }
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.main_view.primary_path.clone();
-        self.navigate(path, cx);
+        let pane_focus = self.state.active_pane_focus();
+        let path = self.state.pane_view(pane_focus).primary_path.clone();
+        self.navigate_pane(path, pane_focus, cx);
     }
 
     /// Initialize a git repository in the current directory.
@@ -1654,17 +2327,16 @@ impl AppWindow {
     }
     /// Delete selected items (move to trash)
     pub fn delete_selected(&mut self, cx: &mut Context<Self>) {
-        if self.state.main_view.selected_indices.is_empty() {
+        let active_view = self.state.active_view();
+        if active_view.selected_indices.is_empty() {
             return;
         }
 
         // Get selected items
-        let items: Vec<_> = self
-            .state
-            .main_view
+        let items: Vec<_> = active_view
             .selected_indices
             .iter()
-            .filter_map(|&i| self.state.main_view.items.get(i))
+            .filter_map(|&i| active_view.items.get(i))
             .collect();
 
         if items.is_empty() {
@@ -1716,17 +2388,16 @@ impl AppWindow {
     /// Permanently delete selected items (bypasses recycle bin)
     /// Uses std::fs::remove_file for files and std::fs::remove_dir_all for directories
     pub fn delete_permanently(&mut self, cx: &mut Context<Self>) {
-        if self.state.main_view.selected_indices.is_empty() {
+        let active_view = self.state.active_view();
+        if active_view.selected_indices.is_empty() {
             return;
         }
 
         // Get selected item paths
-        let paths: Vec<_> = self
-            .state
-            .main_view
+        let paths: Vec<_> = active_view
             .selected_indices
             .iter()
-            .filter_map(|&i| self.state.main_view.items.get(i))
+            .filter_map(|&i| active_view.items.get(i))
             .map(|item| item.path.clone())
             .collect();
 
@@ -1839,49 +2510,83 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Select a single item by its index in `main_view.items`.
+    /// Select a single item by its index in the currently active pane.
     pub fn select_item(&mut self, index: usize, shift: bool, ctrl: bool, cx: &mut Context<Self>) {
-        if ctrl {
-            if self.state.main_view.selected_indices.contains(&index) {
-                self.state.main_view.selected_indices.remove(&index);
-            } else {
-                self.state.main_view.selected_indices.insert(index);
+        let pane_focus = self.state.active_pane_focus();
+        self.select_item_in_pane(pane_focus, index, shift, ctrl, cx);
+    }
+
+    /// Select an item in the specified pane (`PaneFocus::Primary` or `PaneFocus::Secondary`),
+    /// supporting `Shift` range selection from `selection_anchor_index` and `Ctrl` toggle.
+    pub fn select_item_in_pane(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        index: usize,
+        shift: bool,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_pane(pane_focus, cx);
+
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            if index >= view.items.len() {
+                return;
             }
-        } else if shift {
-            if let Some(&first) = self.state.main_view.selected_indices.iter().next() {
-                let start = first.min(index);
-                let end = first.max(index);
-                self.state.main_view.selected_indices.clear();
+            if ctrl {
+                if view.selected_indices.contains(&index) {
+                    view.selected_indices.remove(&index);
+                } else {
+                    view.selected_indices.insert(index);
+                }
+                view.selection_anchor_index = Some(index);
+            } else if shift {
+                let anchor = view
+                    .selection_anchor_index
+                    .or(view.last_clicked_index)
+                    .or_else(|| view.selected_indices.iter().next().copied())
+                    .unwrap_or(index)
+                    .min(view.items.len().saturating_sub(1));
+                view.selection_anchor_index = Some(anchor);
+                let start = anchor.min(index);
+                let end = anchor.max(index);
+                view.selected_indices.clear();
                 for i in start..=end {
-                    self.state.main_view.selected_indices.insert(i);
+                    view.selected_indices.insert(i);
                 }
             } else {
-                self.state.main_view.selected_indices.insert(index);
+                view.selected_indices.clear();
+                view.selected_indices.insert(index);
+                view.selection_anchor_index = Some(index);
             }
-        } else {
-            self.state.main_view.selected_indices.clear();
-            self.state.main_view.selected_indices.insert(index);
+            view.last_clicked_index = Some(index);
         }
 
         // Trigger preview load if single item selected
-        if self.state.main_view.selected_indices.len() == 1 {
-            let idx = *self.state.main_view.selected_indices.iter().next().unwrap();
-            if let Some(item) = self.state.main_view.items.get(idx) {
-                // Clone data we need to avoid borrow conflict
-                let item_path = item.path.clone();
-                let is_file = matches!(item.file_type, FileType::File);
-
-                if is_file {
-                    self.load_preview_content(item_path.clone(), cx);
-                } else {
-                    self.state.main_view.preview_text =
-                        Some("Loading folder contents...".to_string());
-                    self.load_folder_preview(item_path.clone(), cx);
-                }
-
-                // Update details pane cache (must do after releasing item borrow)
-                self.update_details_cache_from_path(&item_path, cx);
+        let single_item_info = {
+            let view = self.state.pane_view(pane_focus);
+            if view.selected_indices.len() == 1 {
+                let idx = *view.selected_indices.iter().next().unwrap();
+                view.items.get(idx).map(|item| {
+                    (
+                        item.path.clone(),
+                        matches!(item.file_type, FileType::File),
+                    )
+                })
+            } else {
+                None
             }
+        };
+
+        if let Some((item_path, is_file)) = single_item_info {
+            if is_file {
+                self.load_preview_content(item_path.clone(), cx);
+            } else {
+                self.state.main_view.preview_text =
+                    Some("Loading folder contents...".to_string());
+                self.load_folder_preview(item_path.clone(), cx);
+            }
+            self.update_details_cache_from_path(&item_path, cx);
         } else {
             self.state.main_view.preview_text = None;
             self.state.main_view.preview_content =
@@ -1889,85 +2594,314 @@ impl AppWindow {
             self.state.main_view.details_cache = DetailsPaneCache::default();
         }
 
-        // Update status bar with selection info
-        let selected_size: u64 = self
-            .state
-            .main_view
-            .selected_indices
-            .iter()
-            .filter_map(|&i| self.state.main_view.items.get(i))
-            .map(|item| item.size)
-            .sum();
-        self.state.status_bar.selected_count = self.state.main_view.selected_indices.len();
-        self.state.status_bar.selected_size_bytes = selected_size;
-
-        // Sync file_items model for uniform_list closures
-        self.state.file_items.update(cx, |m, _| {
-            m.items = self.state.main_view.items.clone();
-            m.selected_indices = self.state.main_view.selected_indices.clone();
-        });
-
+        self.sync_pane_selection_model(pane_focus, cx);
         cx.notify();
     }
 
-    /// Select all items in the current view.
-    pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        for i in 0..self.state.main_view.items.len() {
-            self.state.main_view.selected_indices.insert(i);
-        }
-        self.state.status_bar.selected_count = self.state.main_view.selected_indices.len();
-        let selected_size: u64 = self
-            .state
-            .main_view
-            .selected_indices
-            .iter()
-            .filter_map(|&i| self.state.main_view.items.get(i))
-            .map(|item| item.size)
-            .sum();
-        self.state.status_bar.selected_size_bytes = selected_size;
-        cx.notify();
-    }
-
-    /// Clear all selections.
-    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.state.main_view.selected_indices.clear();
-        self.state.status_bar.selected_count = 0;
-        self.state.status_bar.selected_size_bytes = 0;
-        self.state.main_view.preview_text = None;
-
-        // Sync file_items model
-        self.state.file_items.update(cx, |m, _| {
-            m.selected_indices.clear();
-        });
-
-        cx.notify();
-    }
-
-    /// Invert selection (toggle selected state for all items).
-    pub fn invert_selection(&mut self, cx: &mut Context<Self>) {
-        for i in 0..self.state.main_view.items.len() {
-            if self.state.main_view.selected_indices.contains(&i) {
-                self.state.main_view.selected_indices.remove(&i);
+    /// Scroll the active pane's `uniform_list` and `bouncy_scroll` so `item_index` is visible.
+    pub fn scroll_item_into_view(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        item_index: usize,
+    ) {
+        let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+        let win_h = f32::from(self.state.last_window_size.height).max(600.0);
+        let sidebar_w = if self.state.sidebar_visible {
+            self.state.sidebar.width
+        } else {
+            0.0
+        };
+        let mut pane_w = (win_w - sidebar_w).max(240.0);
+        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            let ratio = self.state.main_view.dual_pane_ratio.clamp(0.2, 0.8);
+            pane_w = if pane_focus == crate::core::navigation_manager::PaneFocus::Primary {
+                pane_w * ratio
             } else {
-                self.state.main_view.selected_indices.insert(i);
+                pane_w * (1.0 - ratio)
+            };
+        }
+        let viewport_h = (win_h - 170.0).max(160.0);
+
+        let view = self.state.pane_view_mut(pane_focus);
+        if item_index >= view.items.len() {
+            return;
+        }
+
+        let (row_idx, row_h) = match view.view_mode {
+            ViewMode::Grid => {
+                let cols = MainViewState::grid_columns_for_width(pane_w, view.zoom_level);
+                let params =
+                    MainViewState::grid_layout_params_for_width_pub(pane_w, view.zoom_level, cols);
+                (item_index / params.items_per_row.max(1), params.row_height)
+            }
+            ViewMode::List => {
+                let (cols, _col_w, rh, _gap, _pad) = MainViewState::list_layout_metrics(
+                    pane_w,
+                    view.zoom_level,
+                    view.compact_mode,
+                );
+                let rows_per_col = (view.items.len() + cols - 1) / cols.max(1);
+                (item_index % rows_per_col.max(1), rh)
+            }
+            ViewMode::Columns => (item_index, 30.0),
+            _ => {
+                let rh = if view.compact_mode {
+                    24.0
+                } else {
+                    28.0 + (view.zoom_level * 20.0)
+                };
+                (item_index, rh)
+            }
+        };
+
+        let item_top = row_idx as f32 * row_h;
+        let item_bottom = item_top + row_h;
+        let cur_scroll = (-view.bouncy_scroll.offset).max(0.0);
+
+        let new_scroll = if item_top < cur_scroll {
+            Some(item_top)
+        } else if item_bottom > cur_scroll + viewport_h - row_h {
+            Some((item_bottom - viewport_h + row_h).max(0.0))
+        } else {
+            None
+        };
+
+        if let Some(target_scroll) = new_scroll {
+            view.bouncy_scroll.offset = -target_scroll;
+            view.bouncy_scroll.velocity = 0.0;
+            view.bouncy_scroll.animating = false;
+            view.uniform_list_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(gpui::point(px(0.0), px(-target_scroll)));
+        }
+    }
+
+    /// Show real recursive folder sizes for a single selected folder in the
+    /// status bar. Hits the content-signature cache when possible; otherwise
+    /// computes on a background thread (dust-style parallel walk) while the
+    /// status bar shows an animated "Calculating size..." indicator.
+    fn refresh_folder_size_status(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        let single_folder: Option<crate::core::path_util::FilesPath> = {
+            let view = self.state.pane_view(pane_focus);
+            if view.selected_indices.len() == 1 {
+                view.selected_indices
+                    .iter()
+                    .next()
+                    .and_then(|&i| view.items.get(i))
+                    .filter(|it| {
+                        matches!(it.file_type, crate::storage::storage::FileType::Directory)
+                    })
+                    .map(|it| it.path.clone())
+            } else {
+                None
+            }
+        };
+        match single_folder {
+            None => {
+                self.state.status_bar.folder_size_pending = false;
+                self.state.status_bar.folder_size_for = None;
+            }
+            Some(path) => {
+                if let Some(sz) = crate::storage::folder_size::cached_size(path.as_path()) {
+                    self.state.status_bar.selected_size_bytes = sz;
+                    self.state.status_bar.folder_size_pending = false;
+                    self.state.status_bar.folder_size_for = Some(path);
+                } else {
+                    self.state.status_bar.folder_size_pending = true;
+                    self.state.status_bar.folder_size_for = Some(path.clone());
+                    self.state.status_bar.spinner_frame = 0;
+                    let mut trigger = cx.to_async();
+                    let weak = cx.weak_entity();
+                    let p = path.clone();
+                    let pc = path.clone();
+                    let bg = cx.background_executor().spawn(async move {
+                        crate::storage::folder_size::compute_and_store(pc.as_path())
+                    });
+                    cx.foreground_executor()
+                        .spawn(async move {
+                            let size = bg.await;
+                            weak.update(&mut trigger, move |this, cx| {
+                                if this.state.status_bar.folder_size_for.as_ref() == Some(&p) {
+                                    this.state.status_bar.selected_size_bytes = size;
+                                    this.state.status_bar.folder_size_pending = false;
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                        })
+                        .detach();
+                    // Spinner ticker: advance the ellipsis while the walk runs.
+                    cx.spawn(
+                        async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                            loop {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(220))
+                                    .await;
+                                let cont = weak
+                                    .update(cx, |this, cx| {
+                                        if !this.state.status_bar.folder_size_pending {
+                                            return false;
+                                        }
+                                        this.state.status_bar.spinner_frame =
+                                            (this.state.status_bar.spinner_frame + 1) % 4;
+                                        cx.notify();
+                                        true
+                                    })
+                                    .unwrap_or(false);
+                                if !cont {
+                                    break;
+                                }
+                            }
+                        },
+                    )
+                    .detach();
+                }
             }
         }
-        self.state.status_bar.selected_count = self.state.main_view.selected_indices.len();
-        let selected_size: u64 = self
-            .state
-            .main_view
-            .selected_indices
-            .iter()
-            .filter_map(|&i| self.state.main_view.items.get(i))
-            .map(|item| item.size)
-            .sum();
-        self.state.status_bar.selected_size_bytes = selected_size;
+    }
 
-        // Sync file_items model
-        self.state.file_items.update(cx, |m, _| {
-            m.selected_indices = self.state.main_view.selected_indices.clone();
+    /// Synchronize status bar selection counters and the GPUI `FileItems` entity for `pane_focus`.
+    fn sync_pane_selection_model(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        let (items_clone, sel_clone, sel_size) = {
+            let view = self.state.pane_view(pane_focus);
+            let sel_size: u64 = view
+                .selected_indices
+                .iter()
+                .filter_map(|&i| view.items.get(i))
+                .map(|item| item.size)
+                .sum();
+            (
+                view.items.clone(),
+                view.selected_indices.clone(),
+                sel_size,
+            )
+        };
+        if self.state.active_pane_focus() == pane_focus {
+            self.state.status_bar.selected_count = sel_clone.len();
+            self.state.status_bar.selected_size_bytes = sel_size;
+            self.refresh_folder_size_status(pane_focus, cx);
+        }
+        self.state.pane_file_items(pane_focus).update(cx, |m, _| {
+            m.items = items_clone;
+            m.selected_indices = sel_clone;
         });
+    }
 
+    /// Start live rubber-band (marquee) drag selection on empty background space in `pane_focus`.
+    pub fn start_lasso_in_pane(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        pos: Point<f32>,
+        list_origin: Point<f32>,
+        additive: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_pane(pane_focus, cx);
+        let double_click_back = self
+            .state
+            .pane_view_mut(pane_focus)
+            .check_empty_space_double_click();
+        if double_click_back {
+            let enable_dbl = self
+                .state
+                .settings
+                .read(cx)
+                .config()
+                .actions
+                .double_click_empty_space_go_up;
+            if enable_dbl {
+                self.navigate_up(cx);
+                return;
+            }
+        }
+        self.state
+            .pane_view_mut(pane_focus)
+            .lasso_start_at_window_pos(pos, list_origin, additive);
+        self.sync_pane_selection_model(pane_focus, cx);
+        cx.notify();
+    }
+
+    /// Update live rubber-band (marquee) selection rectangle as the mouse moves.
+    pub fn update_lasso_in_pane(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        pos: Point<f32>,
+        pane_w: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.pane_view(pane_focus).is_lasso_active() {
+            return;
+        }
+        self.state
+            .pane_view_mut(pane_focus)
+            .lasso_update_at_window_pos(pos, pane_w);
+        self.sync_pane_selection_model(pane_focus, cx);
+        cx.notify();
+    }
+
+    /// Finish live rubber-band (marquee) selection when the mouse button is released.
+    pub fn end_lasso_in_pane(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.pane_view(pane_focus).is_lasso_active() {
+            self.state.pane_view_mut(pane_focus).finish_live_lasso();
+            self.sync_pane_selection_model(pane_focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// Select all items in the active pane.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            for i in 0..view.items.len() {
+                view.selected_indices.insert(i);
+            }
+        }
+        self.sync_pane_selection_model(pane_focus, cx);
+        cx.notify();
+    }
+
+    /// Clear all selections in the active pane.
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            view.selected_indices.clear();
+            view.selection_anchor_index = None;
+        }
+        self.state.main_view.preview_text = None;
+        self.sync_pane_selection_model(pane_focus, cx);
+        cx.notify();
+    }
+
+    /// Invert selection in the active pane.
+    pub fn invert_selection(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            for i in 0..view.items.len() {
+                if view.selected_indices.contains(&i) {
+                    view.selected_indices.remove(&i);
+                } else {
+                    view.selected_indices.insert(i);
+                }
+            }
+        }
+        self.sync_pane_selection_model(pane_focus, cx);
         cx.notify();
     }
 
@@ -2056,18 +2990,47 @@ impl AppWindow {
                 let indices = self.state.main_view.drag_state.indices.clone();
                 let is_copy = self.state.main_view.drag_state.is_copy;
 
-                // Perform the move/copy operation
-                for &idx in &indices {
-                    if let Some(source_item) = self.state.main_view.items.get(idx) {
-                        let operation = if is_copy { "copy" } else { "move" };
-                        tracing::info!(
-                            "Would {} {:?} to {:?}",
-                            operation,
-                            source_item.path,
-                            target_item.path
-                        );
-                        // TODO: Actually perform the file operation using storage module
-                    }
+                let dest_dir = target_item.path.as_path().to_path_buf();
+                let sources: Vec<std::path::PathBuf> = indices
+                    .iter()
+                    .filter_map(|&idx| self.state.main_view.items.get(idx))
+                    .map(|it| it.path.as_path().to_path_buf())
+                    .filter(|src| src != &dest_dir)
+                    .collect();
+                if !sources.is_empty() && dest_dir.is_dir() {
+                    let progress_engine = self.state.progress_engine.clone();
+                    let this_weak = cx.weak_entity();
+                    let mut async_cx = cx.to_async();
+                    let total = sources.len();
+                    cx.foreground_executor()
+                        .spawn(async move {
+                            use crate::core::progress::OpKind;
+                            use crate::core::transfer::{TransferOutcome, run_copy_job, run_move_job};
+                            let (op_label, kind) = if is_copy {
+                                ("Copy", OpKind::Copy)
+                            } else {
+                                ("Move", OpKind::Move)
+                            };
+                            let job_id = progress_engine
+                                .start_job(format!("{} ({} items)", op_label, total), kind)
+                                .await;
+                            let outcome = if is_copy {
+                                run_copy_job(&progress_engine, job_id, sources, dest_dir).await
+                            } else {
+                                run_move_job(&progress_engine, job_id, sources, dest_dir).await
+                            };
+                            match outcome {
+                                TransferOutcome::Done => progress_engine.complete_job(job_id).await,
+                                TransferOutcome::Cancelled => {}
+                                TransferOutcome::Failed(reason) => {
+                                    progress_engine.fail_job(job_id, reason).await
+                                }
+                            }
+                            let _ = this_weak.update(&mut async_cx, |this, cx| {
+                                this.refresh(cx);
+                            });
+                        })
+                        .detach();
                 }
             }
         }
@@ -2705,6 +3668,7 @@ impl AppWindow {
     pub fn set_zoom_level(&mut self, level: f32, cx: &mut Context<Self>) {
         let level = level.clamp(0.0, 1.0);
         self.state.main_view.zoom_level = level;
+        self.state.secondary_view.zoom_level = level;
 
         // Keep dialog snapshots in sync so re-renders use live values
         if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider {
@@ -2785,8 +3749,12 @@ impl AppWindow {
                 .bottom_item();
 
             let icon_dir = icons_cache_dir();
-            // Arc: per-batch clones below are refcount bumps, not 50k-item copies.
-            let items = std::sync::Arc::new(self.state.main_view.items.clone());
+            // Include items from both panes when Dual-Pane is active so secondary pane thumbnails also extract.
+            let mut combined_items = self.state.main_view.items.clone();
+            if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                combined_items.extend(self.state.secondary_view.items.iter().cloned());
+            }
+            let items = std::sync::Arc::new(combined_items);
             let thumbnail_service = self.state.thumbnail_service.clone();
             let icon_cache = self.state.icon_cache.clone();
             // Abort stale extractions when the user navigates away mid-flight.
@@ -2967,28 +3935,7 @@ impl AppWindow {
                         // proportional to the visible folder.
                         if batch {
                             let _ = weak_entity.update(&mut async_cx, |this, cx| {
-                                let dir =
-                                    this.state.main_view.primary_path.as_path().to_path_buf();
-                                let cache_len = this
-                                    .state
-                                    .icon_cache
-                                    .lock()
-                                    .map(|cache| cache.len())
-                                    .unwrap_or(0);
-                                this.state.main_view.icon_paths = this
-                                    .state
-                                    .icon_cache
-                                    .lock()
-                                    .map(|cache| {
-                                        crate::app_state::icon_paths_for_dir(&cache, &dir)
-                                    })
-                                    .unwrap_or_default();
-                                tracing::debug!(
-                                    "load_icons: published {} icon_paths for {:?} (cache {})",
-                                    this.state.main_view.icon_paths.len(),
-                                    dir,
-                                    cache_len
-                                );
+                                this.sync_pane_icon_paths();
                                 cx.notify();
                             });
                         }
@@ -3260,25 +4207,31 @@ impl AppWindow {
             crate::core::action_registry::ActionKind::Copy => self.copy_selected(cx),
             crate::core::action_registry::ActionKind::Cut => self.cut_selected(cx),
             crate::core::action_registry::ActionKind::Paste => self.paste(cx),
-            crate::core::action_registry::ActionKind::CopyItemPath => {
-                self.copy_item_path(cx)
-            }
+            crate::core::action_registry::ActionKind::CopyItemPath => self.copy_item_path(cx),
+            crate::core::action_registry::ActionKind::NewFolder => self.new_folder(cx),
             crate::core::action_registry::ActionKind::Rename => {
-                if let Some(&idx) = self.state.main_view.selected_indices.iter().next() {
+                if let Some(&idx) = self.state.active_view().selected_indices.iter().next() {
                     self.start_rename(idx, cx);
                 }
             }
             crate::core::action_registry::ActionKind::Delete => self.delete_selected(cx),
             crate::core::action_registry::ActionKind::PermanentDelete => {
-                // Shift+Delete: permanent delete - fallback for now
-                self.delete_selected(cx);
+                self.delete_permanently(cx)
+            }
+            crate::core::action_registry::ActionKind::OpenProperties => {
+                self.open_properties_for_selected(cx)
             }
             crate::core::action_registry::ActionKind::ClearSelection => {
-                if self.state.main_view.search_state.is_searching {
+                if self.state.show_shortcut_overlay {
+                    self.state.show_shortcut_overlay = false;
+                    cx.notify();
+                } else if self.state.splash_state.visible {
+                    self.dismiss_splash(cx);
+                } else if self.state.main_view.search_state.is_searching {
                     self.clear_search(cx);
                 } else if !self.state.main_view.filter_text.is_empty() {
                     self.set_filter_text(String::new(), cx);
-                } else if !self.state.main_view.selected_indices.is_empty() {
+                } else if !self.state.active_view().selected_indices.is_empty() {
                     self.clear_selection(cx);
                 }
             }
@@ -3293,7 +4246,7 @@ impl AppWindow {
                 let registry = self.state.action_registry.clone();
                 self.state.nav_bar.update_suggestions(&registry);
                 self.state.main_view.search_state.is_searching = true;
-                tracing::debug!("Ctrl+F: Search activated");
+                cx.notify();
             }
             crate::core::action_registry::ActionKind::ClearFilter => {
                 if self.state.main_view.search_state.is_searching {
@@ -3318,10 +4271,22 @@ impl AppWindow {
                 self.state.nav_bar.show_suggestions = true;
                 let registry = self.state.action_registry.clone();
                 self.state.nav_bar.update_suggestions(&registry);
-                tracing::debug!("Edit path requested (Ctrl+L)");
+                cx.notify();
             }
             crate::core::action_registry::ActionKind::OpenPreviewPane => {
                 self.invoke_third_party_preview(cx)
+            }
+            crate::core::action_registry::ActionKind::ViewDetails => {
+                self.set_view_mode(ViewMode::Details, cx)
+            }
+            crate::core::action_registry::ActionKind::ViewList => {
+                self.set_view_mode(ViewMode::List, cx)
+            }
+            crate::core::action_registry::ActionKind::ViewGrid => {
+                self.set_view_mode(ViewMode::Grid, cx)
+            }
+            crate::core::action_registry::ActionKind::ViewColumns => {
+                self.set_view_mode(ViewMode::Columns, cx)
             }
             crate::core::action_registry::ActionKind::CommandPalette => {
                 self.state.nav_bar.omnibar_mode =
@@ -3330,7 +4295,10 @@ impl AppWindow {
                 self.state.nav_bar.show_suggestions = true;
                 let registry = self.state.action_registry.clone();
                 self.state.nav_bar.update_suggestions(&registry);
-                tracing::debug!("Command Palette activated (Ctrl+Shift+P)");
+                cx.notify();
+            }
+            crate::core::action_registry::ActionKind::OpenTerminal => {
+                self.open_terminal_at_current(cx)
             }
             crate::core::action_registry::ActionKind::NewTab => {
                 self.new_tab(cx);
@@ -3339,11 +4307,30 @@ impl AppWindow {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.close_tab(active, cx);
             }
+            crate::core::action_registry::ActionKind::CloseOtherTabs => {
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.close_other_tabs(active, cx);
+            }
             crate::core::action_registry::ActionKind::ReopenClosedTab => {
                 self.reopen_closed_tab(cx);
             }
+            crate::core::action_registry::ActionKind::DuplicateTab => {
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.duplicate_tab(active, cx);
+            }
+            crate::core::action_registry::ActionKind::PinTab => {
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.pin_tab(active, cx);
+            }
+            crate::core::action_registry::ActionKind::MoveTabLeft => {
+                self.move_active_tab_left(cx);
+            }
+            crate::core::action_registry::ActionKind::MoveTabRight => {
+                self.move_active_tab_right(cx);
+            }
             crate::core::action_registry::ActionKind::NewWindow => {
-                tracing::debug!("New window requested (Ctrl+N) - not yet implemented");
+                let path = self.state.active_view().primary_path.clone();
+                self.open_in_new_window(path, cx);
             }
             crate::core::action_registry::ActionKind::NextTab => {
                 self.cycle_tab_next(cx);
@@ -3357,9 +4344,17 @@ impl AppWindow {
                 });
                 let layout = self.state.navigation.read(cx).pane_layout;
                 self.state.main_view.pane_type = match layout {
-                    crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                    crate::core::navigation_manager::PaneLayout::Single => {
+                        crate::ui::views::main_view::PaneType::Single
+                    }
                     _ => crate::ui::views::main_view::PaneType::Dual,
                 };
+                if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                    self.sync_secondary_pane_on_split(cx);
+                    self.focus_pane(crate::core::navigation_manager::PaneFocus::Secondary, cx);
+                } else {
+                    self.focus_pane(crate::core::navigation_manager::PaneFocus::Primary, cx);
+                }
                 cx.notify();
             }
             crate::core::action_registry::ActionKind::SplitHorizontal => {
@@ -3368,10 +4363,21 @@ impl AppWindow {
                 });
                 let layout = self.state.navigation.read(cx).pane_layout;
                 self.state.main_view.pane_type = match layout {
-                    crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                    crate::core::navigation_manager::PaneLayout::Single => {
+                        crate::ui::views::main_view::PaneType::Single
+                    }
                     _ => crate::ui::views::main_view::PaneType::Dual,
                 };
+                if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                    self.sync_secondary_pane_on_split(cx);
+                    self.focus_pane(crate::core::navigation_manager::PaneFocus::Secondary, cx);
+                } else {
+                    self.focus_pane(crate::core::navigation_manager::PaneFocus::Primary, cx);
+                }
                 cx.notify();
+            }
+            crate::core::action_registry::ActionKind::SwitchPaneFocus => {
+                self.switch_pane_focus(cx);
             }
             crate::core::action_registry::ActionKind::OpenHelp => {
                 self.open_help(cx);

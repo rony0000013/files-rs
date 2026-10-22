@@ -44,6 +44,10 @@ pub enum DialogType {
         title: String,
         message: String,
     },
+    /// Read-only item properties sheet (Alt+Enter).
+    Properties {
+        item: crate::domain::metadata::FileItem,
+    },
     CommandPalette,
     BulkRename {
         item_indices: Vec<usize>,
@@ -253,6 +257,9 @@ impl DialogsView {
                 .into_any_element(),
             DialogType::Dynamic { title, message } => {
                 Self::build_dynamic_dialog(title, message, view.clone()).into_any_element()
+            }
+            DialogType::Properties { item } => {
+                Self::build_item_properties_dialog(item, view.clone()).into_any_element()
             }
             DialogType::CommandPalette => {
                 Self::build_command_palette_dialog(view.clone()).into_any_element()
@@ -1334,6 +1341,74 @@ impl DialogsView {
                     .child(message.to_string()),
             )
             // Buttons
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .mt(px(8.0))
+                    .child(Self::build_button("OK", true, move |_, _, cx| {
+                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
+                    })),
+            )
+    }
+
+    fn build_item_properties_dialog(
+        item: &crate::domain::metadata::FileItem,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        use crate::storage::storage::FileType;
+        use crate::ui::views::helpers::format_size;
+
+        let v_ok = view.clone();
+        let kind = if matches!(item.file_type, FileType::Directory) {
+            "Folder"
+        } else {
+            "File"
+        };
+        let rows: Vec<(String, String)> = vec![
+            ("Name".to_string(), item.name.clone()),
+            ("Type".to_string(), kind.to_string()),
+            ("Size".to_string(), format_size(item.size)),
+            (
+                "Hidden".to_string(),
+                if item.is_hidden { "Yes" } else { "No" }.to_string(),
+            ),
+            (
+                "Location".to_string(),
+                item.path.to_string_lossy().into_owned(),
+            ),
+        ];
+
+        div()
+            .flex_col()
+            .gap(px(12.0))
+            .child(
+                div()
+                    .text_size(AbsoluteLength::Pixels(px(18.0)))
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .font_weight(FontWeight(600.0))
+                    .child("Properties"),
+            )
+            .children(rows.into_iter().map(|(label, value)| {
+                div()
+                    .flex()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .w(px(90.0))
+                            .flex_shrink_0()
+                            .text_size(AbsoluteLength::Pixels(px(13.0)))
+                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(AbsoluteLength::Pixels(px(13.0)))
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .child(value),
+                    )
+            }))
             .child(
                 div()
                     .flex()

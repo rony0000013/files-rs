@@ -172,138 +172,28 @@ impl SidebarView {
                     .on_scroll_wheel({
                         let view = view.clone();
                         move |event: &ScrollWheelEvent, window: &mut Window, cx: &mut App| {
-                            let line_height = px(16.0);
+                            cx.stop_propagation();
+                            let line_height = px(20.0);
                             let delta = event.delta.pixel_delta(line_height);
                             let delta_y: f32 = delta.y.into();
 
                             view.update(cx, |this, cx| {
                                 let sidebar = &mut this.state.sidebar;
+                                let content_h = compute_sidebar_content_height(sidebar);
+                                let b_h: f32 = window.bounds().size.height.into();
+                                let vp_h: f32 = window.viewport_size().height.into();
+                                let win_h = if b_h > 1.0 { b_h } else { vp_h };
+                                let viewport_h = compute_sidebar_viewport_height(win_h, sidebar.collapsed);
 
-                                // Calculate content height from visible sections
-                                let content_h = {
-                                    let padding = UiConstants::PADDING_BASE as f32; // top padding
-                                    let bottom_padding = 60.0; // bottom padding (extra space for rubber band visibility)
-                                    let mut h = padding + bottom_padding;
-                                    for section in &sidebar.sections {
-                                        if sidebar.hidden_sections.contains(&section.id) {
-                                            continue;
-                                        }
-                                        h += SECTION_HEADER_HEIGHT;
-                                        if sidebar.collapsed {
-                                            h += COLLAPSED_SECTION_ICON_SIZE;
-                                        } else if !section.collapsed {
-                                            h += section.items.len() as f32 * SECTION_ITEM_HEIGHT;
-                                        }
-                                        h += SECTION_MARGIN_BOTTOM;
-                                    }
-                                    h
-                                };
-
-                                // Viewport ≈ window content height minus fixed elements
-                                let win_h: f32 = window.viewport_size().height.into();
-                                let viewport_h = (win_h - 100.0).max(100.0);
-
-                                // Scale scroll delta for more responsive feel
-                                let scaled_delta = delta_y * 1.5;
-
-                                // Update scroll bounds
                                 let bs = &mut sidebar.bouncy_scroll;
                                 bs.update_bounds(content_h, viewport_h);
-
-                                // Apply scroll delta — sets offset directly for 1:1 tracking,
-                                // accumulates velocity for momentum, resets grace counter.
-                                // This increments the interaction epoch.
-                                bs.apply_scroll_delta(scaled_delta);
-
-                                // Capture epoch AFTER apply so the animation loop's epoch guard
-                                // correctly detects when new input supersedes it.
-                                let epoch = bs.epoch();
-
-                                // Always start the animation loop. It handles:
-                                // - Grace period (while is_active and recent input)
-                                // - Overscroll spring (after grace period)
-                                // - Momentum (after grace period, with velocity)
-                                bs.animating = true;
-                                crate::ui::components::bouncy_scroll::start_bouncy_animation(
-                                    &view,
-                                    cx,
-                                    |app_state: &mut crate::app::AppState| {
-                                        &mut app_state.sidebar.bouncy_scroll
-                                    },
-                                    None,
-                                    epoch,
-                                );
-                                cx.notify();
-                            });
-                        }
-                    })
-                    // ─── Mouse hold-drag scroll ───────────────────────────
-                    .on_mouse_down(MouseButton::Left, {
-                        let view = view.clone();
-                        move |_event, win, cx| {
-                            view.update(cx, |this, cx| {
-                                if this.state.sidebar.reorder_mode {
-                                    return; // Don't start drag scroll in reorder mode
+                                if !bs.can_scroll() {
+                                    return;
                                 }
-                                let y: f32 = win.mouse_position().y.into();
-                                this.state.sidebar.bouncy_scroll.start_mouse_drag(y);
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .on_mouse_move({
-                        let view = view.clone();
-                        move |_event, win, cx| {
-                            view.update(cx, |this, cx| {
-                                let bs = &mut this.state.sidebar.bouncy_scroll;
-                                if bs.drag_active {
-                                    let y: f32 = win.mouse_position().y.into();
-                                    let delta = bs.apply_mouse_drag_delta(y);
-                                    // Same 1.5x scaling as scroll wheel
-                                    let scaled_delta = delta * 1.5;
-                                    // Update bounds from current widget sizes
-                                    let win_h: f32 = win.viewport_size().height.into();
-                                    let viewport_h = (win_h - 100.0).max(100.0);
-                                    bs.update_bounds(bs.content_height, viewport_h);
-                                    bs.apply_scroll_delta(scaled_delta);
-                                    let epoch = bs.epoch();
+                                bs.apply_scroll_delta(delta_y);
+                                if bs.is_active {
                                     bs.animating = true;
-                                    crate::ui::components::bouncy_scroll::start_bouncy_animation(
-                                        &view,
-                                        cx,
-                                        |app_state: &mut crate::app::AppState| {
-                                            &mut app_state.sidebar.bouncy_scroll
-                                        },
-                                        None,
-                                        epoch,
-                                        );
                                     cx.notify();
-                                }
-                            });
-                        }
-                    })
-                    .on_mouse_up(MouseButton::Left, {
-                        let view = view.clone();
-                        move |_event, _win, cx| {
-                            view.update(cx, |this, cx| {
-                                let bs = &mut this.state.sidebar.bouncy_scroll;
-                                if bs.drag_active {
-                                    // Update bounds one last time before release
-                                    bs.update_bounds(bs.content_height, bs.viewport_height);
-                                    bs.release();
-                                    if bs.animating {
-                                        let epoch = bs.epoch();
-                                        crate::ui::components::bouncy_scroll::start_bouncy_animation(
-                                            &view,
-                                            cx,
-                                            |app_state: &mut crate::app::AppState| {
-                                                &mut app_state.sidebar.bouncy_scroll
-                                            },
-                                            None,
-                                            epoch,
-                                            );
-                                        cx.notify();
-                                    }
                                 }
                             });
                         }
@@ -315,7 +205,7 @@ impl SidebarView {
                                 .flex_col()
                                 .w_full()
                                 .pt(px(UiConstants::PADDING_BASE as f32))
-                                .pb(px(60.0))
+                                .pb(px(UiConstants::PADDING_BASE as f32))
                                 // Sections
                                 .children(
                                     state
@@ -663,6 +553,9 @@ impl SidebarView {
                         cx.stop_propagation();
                         view.update(cx, |this, cx| {
                             this.state.sidebar.toggle_section(section_id);
+                            let ch = compute_sidebar_content_height(&this.state.sidebar);
+                            let vh = this.state.sidebar.bouncy_scroll.viewport_height.max(100.0);
+                            this.state.sidebar.bouncy_scroll.update_bounds(ch, vh);
                             cx.notify();
                         });
                     }
@@ -1245,4 +1138,32 @@ fn section_height(section: &SidebarSectionData) -> f32 {
         section.items.len() as f32 * SECTION_ITEM_HEIGHT
     };
     SECTION_HEADER_HEIGHT + items_height + SECTION_MARGIN_BOTTOM
+}
+
+/// Compute the exact scrollable content height of the sidebar's sections area.
+pub fn compute_sidebar_content_height(sidebar: &SidebarState) -> f32 {
+    let padding = (UiConstants::PADDING_BASE as f32) * 2.0;
+    let mut h = padding;
+    for section in &sidebar.sections {
+        if sidebar.hidden_sections.contains(&section.id) {
+            continue;
+        }
+        if sidebar.collapsed {
+            h += COLLAPSED_SECTION_ICON_SIZE;
+        } else {
+            h += section_height(section);
+        }
+    }
+    h
+}
+
+/// Compute the exact visible viewport height of the sidebar's scrollable container.
+/// Subtracts TabBar (40) + NavBar (44) + CollapseToggle (40) + Home (30/36) + Settings (40).
+pub fn compute_sidebar_viewport_height(win_h: f32, collapsed: bool) -> f32 {
+    let home_h = if collapsed {
+        COLLAPSED_SECTION_ICON_SIZE
+    } else {
+        SECTION_ITEM_HEIGHT
+    };
+    (win_h - 40.0 - 44.0 - 40.0 - home_h - 40.0).max(60.0)
 }

@@ -1583,14 +1583,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     let v = v_split_v.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.state.navigation.update(cx, |nav, _cx| {
-                                nav.split_pane_vertical();
-                            });
-                            let layout = this.state.navigation.read(cx).pane_layout;
-                            this.state.main_view.pane_type = match layout {
-                                crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
-                                _ => crate::ui::views::main_view::PaneType::Dual,
-                            };
+                            this.dispatch_action(
+                                crate::core::action_registry::ActionKind::SplitVertical,
+                                cx,
+                            );
                             this.close_dialog(cx);
                         });
                     }
@@ -1605,14 +1601,10 @@ impl crate::ui::components::dialogs::DialogsView {
                     let v = v_split_h.clone();
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
-                            this.state.navigation.update(cx, |nav, _cx| {
-                                nav.split_pane_horizontal();
-                            });
-                            let layout = this.state.navigation.read(cx).pane_layout;
-                            this.state.main_view.pane_type = match layout {
-                                crate::core::navigation_manager::PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
-                                _ => crate::ui::views::main_view::PaneType::Dual,
-                            };
+                            this.dispatch_action(
+                                crate::core::action_registry::ActionKind::SplitHorizontal,
+                                cx,
+                            );
                             this.close_dialog(cx);
                         });
                     }

@@ -18,6 +18,43 @@ use gpui::*;
 
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keep maximize/restore state synced with the actual OS window state
+        // across Aero Snap, titlebar drag-down restore, and double-click maximize.
+        if let Some(os_maximized) = crate::wallpaper_mica::is_main_hwnd_maximized() {
+            self.state.is_maximized = os_maximized;
+        }
+
+        // Compute live window size from `window.bounds().size` (which `gpui_windows`
+        // updates directly in `WindowsWindowState::logical_size` on every `WM_SIZE`
+        // before attempting to borrow `AppCell`). If `window.viewport_size()` ever
+        // lags `window.bounds().size` (e.g. if a `WM_SIZE` arrived while `AppCell`
+        // was borrowed), immediately layout using `live_size` and post an async
+        // `WM_SIZE` via `sync_window_size()` so GPUI's `window.bounds_changed(cx)`
+        // updates `window.viewport_size` for `Window::draw_roots`.
+        let bounds_size = window.bounds().size;
+        let vp_size = window.viewport_size();
+        let live_size = if f32::from(bounds_size.width) > 1.0 && f32::from(bounds_size.height) > 1.0
+        {
+            bounds_size
+        } else {
+            vp_size
+        };
+        if (f32::from(live_size.width) - f32::from(vp_size.width)).abs() > 1.0
+            || (f32::from(live_size.height) - f32::from(vp_size.height)).abs() > 1.0
+        {
+            crate::wallpaper_mica::sync_window_size();
+        }
+
+        self.state.last_window_size = live_size;
+        {
+            let ch = crate::ui::components::sidebar::compute_sidebar_content_height(&self.state.sidebar);
+            let vh = crate::ui::components::sidebar::compute_sidebar_viewport_height(
+                f32::from(live_size.height),
+                self.state.sidebar.collapsed,
+            );
+            self.state.sidebar.bouncy_scroll.update_bounds(ch, vh);
+        }
+
         // Tick all active bouncy scroll states (momentum + spring-back) at
         // display refresh rate — no background timer latency.
         self.tick_bouncy_scrolls(window, cx);
@@ -89,6 +126,11 @@ impl Render for AppWindow {
             let focus = self.state.main_focus.clone().unwrap();
             window.focus(&focus);
         }
+
+        // Miller-columns caches: keyed, so this does zero I/O unless the
+        // current directory or the selected folder changed since last frame.
+        self.state.main_view.refresh_columns_caches();
+        self.state.secondary_view.refresh_columns_caches();
 
         let state = &self.state;
         let _nav = state.navigation.read(cx);
@@ -187,6 +229,7 @@ impl Render for AppWindow {
                                                 &state.tab_thumbnail_cache,
                                                 &state.tab_drag,
                                                 state.is_maximized,
+                                                f32::from(live_size.width),
                                             ))
                                     })
                                     .child(
@@ -239,11 +282,33 @@ impl Render for AppWindow {
                                                         ) {
                                                             let x: f32 = win.mouse_position().x.into();
                                                             let delta = x - start_x;
-                                                            let win_width: f32 = win.viewport_size().width.into();
+                                                            let b_w: f32 = win.bounds().size.width.into();
+                                                            let vp_w_raw: f32 = win.viewport_size().width.into();
+                                                            let win_width: f32 = if b_w > 1.0 { b_w } else { vp_w_raw };
                                                             let min_width = 150.0;
                                                             let max_width = win_width * 0.65;
                                                             let new_width = (start_width - delta).max(min_width).min(max_width);
                                                             this.state.main_view.side_pane_width = Some(new_width);
+                                                            cx.notify();
+                                                        }
+                                                        // Handle dual-pane splitter drag
+                                                        if let Some((start_x, start_ratio)) =
+                                                            this.state.main_view.dual_pane_resize_start
+                                                        {
+                                                            let x: f32 =
+                                                                win.mouse_position().x.into();
+                                                            let sidebar_w = if this.state.sidebar_visible {
+                                                                this.state.sidebar.width
+                                                            } else {
+                                                                0.0
+                                                            };
+                                                            let b_w: f32 = win.bounds().size.width.into();
+                                                            let vp_w_raw: f32 = win.viewport_size().width.into();
+                                                            let win_width: f32 = if b_w > 1.0 { b_w } else { vp_w_raw };
+                                                            let total_pane_w = (win_width - sidebar_w).max(300.0);
+                                                            let delta_ratio = (x - start_x) / total_pane_w;
+                                                            this.state.main_view.dual_pane_ratio =
+                                                                (start_ratio + delta_ratio).clamp(0.2, 0.8);
                                                             cx.notify();
                                                         }
                                                         // Handle column resize drag
@@ -271,6 +336,10 @@ impl Render for AppWindow {
                                                         if this.state.main_view.side_pane_resize_start_x.is_some() {
                                                             this.state.main_view.side_pane_resize_start_x = None;
                                                             this.state.main_view.side_pane_resize_start_width = None;
+                                                            cx.notify();
+                                                        }
+                                                        if this.state.main_view.dual_pane_resize_start.is_some() {
+                                                            this.state.main_view.dual_pane_resize_start = None;
                                                             cx.notify();
                                                         }
                                                         if this.column_resize.is_some() {
@@ -349,37 +418,39 @@ impl Render for AppWindow {
                                                             } else {
                                                                 None
                                                             };
-                                                            let vp_w: f32 =
+                                                            let vp_w: f32 = live_size.width.into();
+                                                            let raw_vp_w: f32 =
                                                                 window.viewport_size().width.into();
+                                                            let bounds_w: f32 =
+                                                                bounds_size.width.into();
+                                                            let bounds_h: f32 =
+                                                                bounds_size.height.into();
                                                             let content_w = vp_w
                                                                 - if state.sidebar_visible {
                                                                     state.sidebar.width
                                                                 } else {
                                                                     0.0
                                                                 };
-                                                            // TEMP-DIAG: trace width inputs across resizes.
+                                                            // TEMP-DIAG: trace width inputs across resizes (includes both raw_vp_w and bounds_w in hash key).
                                                             {
                                                                 static LAST_W: std::sync::atomic::AtomicU32 =
                                                                     std::sync::atomic::AtomicU32::new(0);
                                                                 let key = (content_w as u32)
                                                                     .wrapping_mul(100003)
-                                                                    .wrapping_add(vp_w as u32);
+                                                                    .wrapping_add(raw_vp_w as u32)
+                                                                    .wrapping_mul(100003)
+                                                                    .wrapping_add(bounds_w as u32);
                                                                 if LAST_W.swap(
                                                                     key,
                                                                     std::sync::atomic::Ordering::Relaxed,
                                                                 ) != key
                                                                 {
                                                                     tracing::warn!(
-                                                                        "layout-width vp={:.0} bounds={:.0}x{:.0} sidebar={:.0} content={:.0}",
+                                                                        "layout-width vp={:.0} raw_vp={:.0} bounds={:.0}x{:.0} sidebar={:.0} content={:.0}",
                                                                         vp_w,
-                                                                        {
-                                                                            let b = window.bounds();
-                                                                            f32::from(b.size.width)
-                                                                        },
-                                                                        {
-                                                                            let b = window.bounds();
-                                                                            f32::from(b.size.height)
-                                                                        },
+                                                                        raw_vp_w,
+                                                                        bounds_w,
+                                                                        bounds_h,
                                                                         if state.sidebar_visible {
                                                                             state.sidebar.width
                                                                         } else {
@@ -389,12 +460,20 @@ impl Render for AppWindow {
                                                                     );
                                                                 }
                                                             }
-                                                            let tree = MainView::build(
+                                                            let sidebar_offset_x = if state.sidebar_visible {
+                                                                state.sidebar.width
+                                                            } else {
+                                                                0.0
+                                                            };
+                                                            let tree = MainView::build_with_secondary(
                                                                 &state.main_view,
                                                                 state.file_items.clone(),
+                                                                &state.secondary_view,
+                                                                state.secondary_file_items.clone(),
                                                                 cx.entity(),
                                                                 settings_data,
                                                                 content_w,
+                                                                sidebar_offset_x,
                                                             );
                                                             // TEMP-DIAG: proves the render completed past MainView.
                                                             {
@@ -453,7 +532,10 @@ impl Render for AppWindow {
 
         let mut base = {
             let _view = cx.entity();
-            div().relative().w_full().h_full()
+            div()
+                .relative()
+                .w(live_size.width)
+                .h(live_size.height)
         };
         if let Some(dialog) = &state.active_dialog {
             // Pre-read settings dialog data to avoid BorrowMutError during render tree construction
@@ -539,8 +621,7 @@ impl Render for AppWindow {
             let nav_btn_area = 4.0 * 32.0 + 3.0 * 2.0; // 134px
             let pill_left = 12.0 + nav_btn_area + 8.0; // 154px
             let dropdown_top = 40.0 + 44.0; // 84px
-            let vp = window.viewport_size();
-            let dropdown_width = vp.width - px(pill_left) - px(12.0); // minus right padding
+            let dropdown_width = live_size.width - px(pill_left) - px(12.0); // minus right padding
 
             let dropdown =
                 build_suggestions_dropdown(&state.nav_bar, &state.action_registry, cx.entity());

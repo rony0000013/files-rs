@@ -58,7 +58,10 @@ impl MainViewState {
             shelf_items: Vec::new(),
             folder_background: FolderBackground::default(),
             active_pane: crate::core::navigation_manager::PaneFocus::Primary,
+            dual_pane_ratio: 0.5,
+            dual_pane_resize_start: None,
             last_clicked_index: None,
+            selection_anchor_index: None,
             lasso_state: None,
             drag_state: DragState::default(),
             details_cache: DetailsPaneCache::default(),
@@ -75,6 +78,12 @@ impl MainViewState {
             scroll_handle: ScrollHandle::new(),
             uniform_list_scroll_handle: UniformListScrollHandle::new(),
             last_empty_click: None,
+            col1_scroll_handle: UniformListScrollHandle::new(),
+            col3_scroll_handle: UniformListScrollHandle::new(),
+            col1_siblings: Vec::new(),
+            col1_siblings_for: None,
+            col3_children: Vec::new(),
+            col3_children_for: None,
             icon_refresh_last_check: None,
             bouncy_scroll: BouncyScrollState::new(),
             git_status_cache: std::collections::HashMap::new(),
@@ -301,27 +310,45 @@ impl MainView {
         settings_data: Option<crate::ui::components::dialogs::SettingsPreReadData>,
         content_w: f32,
     ) -> impl IntoElement {
+        Self::build_with_secondary(
+            state,
+            file_items.clone(),
+            state,
+            file_items,
+            view,
+            settings_data,
+            content_w,
+            224.0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_secondary(
+        state: &MainViewState,
+        file_items: Entity<FileItems>,
+        secondary_state: &MainViewState,
+        secondary_file_items: Entity<FileItems>,
+        view: Entity<crate::app::AppWindow>,
+        settings_data: Option<crate::ui::components::dialogs::SettingsPreReadData>,
+        content_w: f32,
+        base_left_x: f32,
+    ) -> impl IntoElement {
         let has_side_pane = state.side_pane != SidePaneMode::None;
         let show_shelf = state.shelf_visible;
         let v2 = view.clone();
         let v3 = view.clone();
-        // Side preview pane eats horizontal space: grid columns must fit
-        // what's left, not the full content width.
         let content_w = if has_side_pane {
             content_w - state.side_pane_width.unwrap_or(300.0) - 4.0
         } else {
             content_w
         };
 
-        // Collect lasso overlay element if active
-        let lasso_overlay = Self::render_lasso_overlay(state);
-
         div()
             .flex()
             .flex_row()
             .flex_grow()
             .w_full()
-            // NO overflow_hidden() - would block child scroll events
+            .h_full()
             .bg(rgba(UiConstants::BG_MICA_CONTENT_RGBA))
             .child(
                 div()
@@ -329,8 +356,17 @@ impl MainView {
                     .flex_col()
                     .flex_grow()
                     .w_full()
-                    // NO overflow_hidden() - would block child scroll events
-                    .child(Self::render_panes(state, file_items, view.clone(), settings_data.as_ref(), content_w))
+                    .h_full()
+                    .child(Self::render_panes(
+                        state,
+                        file_items,
+                        secondary_state,
+                        secondary_file_items,
+                        view.clone(),
+                        settings_data.as_ref(),
+                        content_w,
+                        base_left_x,
+                    ))
                     .children(if show_shelf {
                         vec![Self::render_shelf_pane(state, v2).into_any_element()]
                     } else {
@@ -345,124 +381,365 @@ impl MainView {
             } else {
                 vec![]
             })
-            // Lasso overlay (rendered on top)
-            .children(if let Some(overlay) = lasso_overlay {
-                vec![overlay.into_any_element()]
-            } else {
-                vec![]
-            })
     }
 
-    /// Render the lasso selection overlay rectangle
-    fn render_lasso_overlay(state: &MainViewState) -> Option<impl IntoElement> {
-        let lasso_state = state.lasso_state.as_ref()?;
-        let (start, end) = lasso_state.rect();
-
-        // Calculate rectangle dimensions
-        let left = start.x.min(end.x);
-        let top = start.y.min(end.y);
-        let width = (end.x - start.x).abs();
-        let height = (end.y - start.y).abs();
-
-        // Don't render if very small (just a click)
-        if width < 5.0 || height < 5.0 {
-            return None;
-        }
-
-        Some(
-            div()
-                .id("lasso-overlay")
-                .absolute()
-                .left(px(left))
-                .top(px(top))
-                .w(px(width))
-                .h(px(height))
-                .bg(rgba(0x208B2DC8)) // Semi-transparent accent color
-                .border(px(1.0))
-                .border_color(rgba(UiConstants::ACCENT_RGBA)),
-        )
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn render_panes(
         state: &MainViewState,
         file_items: Entity<FileItems>,
+        secondary_state: &MainViewState,
+        secondary_file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
         content_w: f32,
+        base_left_x: f32,
     ) -> impl IntoElement {
+        use crate::core::navigation_manager::PaneFocus;
+
         match state.pane_type {
             PaneType::Single => div()
                 .flex()
                 .flex_col()
                 .flex_grow()
                 .w_full()
-                // NO overflow_hidden() - would block child scroll events
-                .child(Self::render_file_view(state, file_items, view, true, settings_data, content_w)),
+                .h_full()
+                .child(Self::render_file_view(
+                    state,
+                    file_items,
+                    view,
+                    true,
+                    settings_data,
+                    content_w,
+                    PaneFocus::Primary,
+                    gpui::point(base_left_x, 128.0),
+                    false,
+                )),
             PaneType::Dual => {
-                // Horizontal = side-by-side; Vertical = stacked
                 let is_horiz = matches!(state.dual_pane_split, DualPaneSplit::Horizontal);
-                // Each pane only gets part of the width: grid columns must
-                // fit the pane, not the whole content area.
-                let pane_w = if is_horiz {
-                    (content_w - 4.0) / 2.0
+                let ratio = state.dual_pane_ratio.clamp(0.2, 0.8);
+                let primary_w = if is_horiz {
+                    ((content_w - 6.0) * ratio).max(160.0)
                 } else {
                     content_w
                 };
-                let splitter_w = Pixels::from(UiConstants::SPLITTER_WIDTH_RAW);
-                let base = div().flex().flex_grow().w_full();
+                let secondary_w = if is_horiz {
+                    (content_w - 6.0 - primary_w).max(160.0)
+                } else {
+                    content_w
+                };
 
-                let is_primary_active = matches!(
-                    state.active_pane,
-                    crate::core::navigation_manager::PaneFocus::Primary
-                );
+                let is_primary_active = matches!(state.active_pane, PaneFocus::Primary);
                 let is_secondary_active = !is_primary_active;
+
+                let splitter = {
+                    let v_sp = view.clone();
+                    let v_dbl = view.clone();
+                    let is_resizing = state.dual_pane_resize_start.is_some();
+                    let mut sp = div()
+                        .id("dual-pane-splitter")
+                        .flex_shrink_0()
+                        .bg(if is_resizing {
+                            rgba(UiConstants::ACCENT_RGBA)
+                        } else {
+                            rgba(UiConstants::DIVIDER_RGBA)
+                        })
+                        .hover(|s| s.bg(rgba(UiConstants::ACCENT_RGBA)))
+                        .on_mouse_down(MouseButton::Left, move |ev, _win, cx| {
+                            cx.stop_propagation();
+                            let coord: f32 = if is_horiz {
+                                ev.position.x.into()
+                            } else {
+                                ev.position.y.into()
+                            };
+                            if ev.click_count == 2 {
+                                v_dbl.update(cx, |this, cx| {
+                                    this.state.main_view.dual_pane_ratio = 0.5;
+                                    this.state.main_view.dual_pane_resize_start = None;
+                                    cx.notify();
+                                });
+                            } else {
+                                v_sp.update(cx, |this, cx| {
+                                    let r = this.state.main_view.dual_pane_ratio;
+                                    this.state.main_view.dual_pane_resize_start = Some((coord, r));
+                                    cx.notify();
+                                });
+                            }
+                        });
+                    if is_horiz {
+                        sp = sp.w(px(6.0)).h_full().cursor_col_resize();
+                    } else {
+                        sp = sp.h(px(6.0)).w_full().cursor_row_resize();
+                    }
+                    sp
+                };
+
+                let base = div().flex().flex_grow().w_full().h_full();
 
                 if is_horiz {
                     base.flex_row()
-                        .child(div().flex_grow().child(Self::render_file_view(
-                            state,
-                            file_items.clone(),
-                            view.clone(),
-                            is_primary_active,
-                            settings_data,
-                            pane_w,
-                        )))
-                        .child(div().w(splitter_w).bg(rgb(UiConstants::BG_NAV_BAR_RGB)))
-                        .child(div().flex_grow().child(Self::render_file_view(
-                            state,
-                            file_items,
-                            view,
-                            is_secondary_active,
-                            settings_data,
-                            pane_w,
-                        )))
-                } else {
-                    base.flex_col()
-                        .child(div().flex_grow().w_full().child(Self::render_file_view(
-                            state,
-                            file_items.clone(),
-                            view.clone(),
-                            is_primary_active,
-                            settings_data,
-                            pane_w,
-                        )))
                         .child(
                             div()
-                                .h(splitter_w)
-                                .bg(rgb(UiConstants::BG_NAV_BAR_RGB))
-                                .w_full(),
+                                .w(px(primary_w))
+                                .flex_shrink_0()
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .child(Self::render_file_view(
+                                    state,
+                                    file_items,
+                                    view.clone(),
+                                    is_primary_active,
+                                    settings_data,
+                                    primary_w,
+                                    PaneFocus::Primary,
+                                    gpui::point(base_left_x, 156.0),
+                                    true,
+                                )),
                         )
-                        .child(div().flex_grow().w_full().child(Self::render_file_view(
-                            state,
-                            file_items,
-                            view,
-                            is_secondary_active,
-                            settings_data,
-                            pane_w,
-                        )))
+                        .child(splitter)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .child(Self::render_file_view(
+                                    secondary_state,
+                                    secondary_file_items,
+                                    view,
+                                    is_secondary_active,
+                                    settings_data,
+                                    secondary_w,
+                                    PaneFocus::Secondary,
+                                    gpui::point(base_left_x + primary_w + 6.0, 156.0),
+                                    true,
+                                )),
+                        )
+                } else {
+                    base.flex_col()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .child(Self::render_file_view(
+                                    state,
+                                    file_items,
+                                    view.clone(),
+                                    is_primary_active,
+                                    settings_data,
+                                    primary_w,
+                                    PaneFocus::Primary,
+                                    gpui::point(base_left_x, 156.0),
+                                    true,
+                                )),
+                        )
+                        .child(splitter)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .child(Self::render_file_view(
+                                    secondary_state,
+                                    secondary_file_items,
+                                    view,
+                                    is_secondary_active,
+                                    settings_data,
+                                    secondary_w,
+                                    PaneFocus::Secondary,
+                                    gpui::point(base_left_x, 420.0),
+                                    true,
+                                )),
+                        )
                 }
             }
         }
+    }
+
+    fn render_dual_pane_header(
+        pane_state: &MainViewState,
+        is_active: bool,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let folder_name = pane_state
+            .primary_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| pane_state.primary_path.to_string_lossy().into_owned());
+        let full_path = pane_state.primary_path.to_string_lossy().into_owned();
+        let item_count = pane_state.items.len();
+
+        let v_focus = view.clone();
+        let v_up = view.clone();
+        let v_orient = view.clone();
+        let v_close = view.clone();
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .h(px(28.0))
+            .w_full()
+            .px(px(10.0))
+            .bg(if is_active {
+                rgba(0xFFFFFF0Cu32)
+            } else {
+                rgba(0x00000024u32)
+            })
+            .border_b(px(1.5))
+            .border_color(if is_active {
+                rgba(UiConstants::ACCENT_RGBA)
+            } else {
+                rgba(UiConstants::DIVIDER_RGBA)
+            })
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                v_focus.update(cx, |this, cx| {
+                    this.focus_pane(pane_focus, cx);
+                });
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .w(px(7.0))
+                            .h(px(7.0))
+                            .rounded(px(3.5))
+                            .bg(if is_active {
+                                rgb(UiConstants::ACCENT_COLOR_RGB)
+                            } else {
+                                rgb(0x666666)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_family(UiConstants::FONT_MDL2)
+                            .text_color(rgb(0xF5B942))
+                            .child("\u{E8B7}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(if is_active {
+                                FontWeight(600.0)
+                            } else {
+                                FontWeight(400.0)
+                            })
+                            .text_color(if is_active {
+                                rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child(folder_name),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_size(px(10.5))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child(format!("— {} ({} items)", full_path, item_count)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .w(px(22.0))
+                            .h(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.0))
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_up.update(cx, |this, cx| {
+                                    this.focus_pane(pane_focus, cx);
+                                    this.navigate_up(cx);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E74A}"), // Up inside pane
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(22.0))
+                            .h(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.0))
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_orient.update(cx, |this, cx| {
+                                    this.toggle_split_direction(cx);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8AB}"), // Switch split orientation
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(22.0))
+                            .h(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(3.0))
+                            .hover(|s| s.bg(rgba(0xE8112388u32)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_close.update(cx, |this, cx| {
+                                    this.close_dual_pane(pane_focus, cx);
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E8BB}"), // Close pane
+                            ),
+                    ),
+            )
     }
 
     fn render_side_pane_splitter(
@@ -497,7 +774,7 @@ impl MainView {
 
     fn render_side_pane(
         state: &MainViewState,
-        view: Entity<crate::app::AppWindow>,
+        _view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let mode = &state.side_pane;
         let selected_item = state
@@ -516,7 +793,6 @@ impl MainView {
             .border_l(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .child(
-                // Pane header with Preview / Info tabs
                 div()
                     .flex()
                     .flex_row()
@@ -538,7 +814,6 @@ impl MainView {
                     ),
             )
             .child(
-                // Pane body
                 div()
                     .flex_grow()
                     .flex_col()
@@ -582,7 +857,6 @@ impl MainView {
             .bg(rgba(0xFFFFFF08u32))
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            // Header bar
             .child(
                 div()
                     .flex()
@@ -598,7 +872,7 @@ impl MainView {
                             .text_size(px(12.0))
                             .font_family(UiConstants::FONT_MDL2)
                             .text_color(rgba(UiConstants::ACCENT_RGBA))
-                            .child("\u{E8A0}"), // Shelf icon
+                            .child("\u{E8A0}"),
                     )
                     .child(
                         div()
@@ -626,10 +900,9 @@ impl MainView {
                                     cx.notify();
                                 });
                             })
-                            .child("\u{E74D}") // Clear icon
+                            .child("\u{E74D}")
                     }),
             )
-            // Drop zone / items
             .child(if state.shelf_items.is_empty() {
                 div()
                     .flex_grow()
@@ -702,13 +975,14 @@ impl MainView {
                                             cx.notify();
                                         });
                                     })
-                                    .child("\u{E711}"), // Remove icon
+                                    .child("\u{E711}"),
                             )
                     }))
                     .into_any_element()
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_file_view(
         state: &MainViewState,
         file_items: Entity<FileItems>,
@@ -716,285 +990,160 @@ impl MainView {
         is_active: bool,
         settings_data: Option<&crate::ui::components::dialogs::SettingsPreReadData>,
         pane_w: f32,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        base_origin: Point<f32>,
+        show_pane_header: bool,
     ) -> impl IntoElement {
         let visible = state.visible_items_rc();
+        let is_recycle_bin = matches!(state.target, ViewTarget::RecycleBin);
+        let is_home = matches!(state.target, ViewTarget::Home);
+        let is_settings = matches!(state.target, ViewTarget::Settings);
 
-        // Empty state
-        if visible.is_empty() && !state.loading {
-            return Self::empty_state(state).into_any_element();
-        }
+        let has_filter_header =
+            !state.filter_text.is_empty() || state.group_by != GroupColumn::None;
+        let filter_offset_y = if has_filter_header { 32.0 } else { 0.0 };
 
-        div()
+        let mut outer = div()
             .flex_col()
             .flex_grow()
-            .h_full() // CRITICAL: Provide concrete height foundation for flex_grow to work
+            .h_full()
             .w_full()
-            // NO overflow_hidden here - moves to content div
             .bg(if is_active {
                 rgba(UiConstants::BG_MAIN_RGBA)
             } else {
                 rgba(UiConstants::BG_INACTIVE_PANE_RGBA)
-            }) // Dim if inactive
-            // Double-click empty space → navigate backward
-            // Checks click position against visible item bounds to avoid
-            // triggering when clicking on file/folder items.
+            })
             .on_mouse_down(MouseButton::Left, {
                 let v = view.clone();
-                move |ev, _, cx| {
+                move |_ev, _, cx| {
                     v.update(cx, |this, cx| {
-                        let pos = ev.position;
-
-                        // Check if click hit any visible file item (drop RefCell borrow quickly)
-                        let on_item = {
-                            let scroll = &this.state.main_view.uniform_list_scroll_handle;
-                            let base = &scroll.0.borrow().base_handle;
-                            (base.top_item()..=base.bottom_item()).any(|i| {
-                                base.bounds_for_item(i)
-                                    .map(|b| b.contains(&pos))
-                                    .unwrap_or(false)
-                            })
-                        };
-
-                        if on_item {
-                            // Click was on an item — clear any pending empty-space back
-                            this.state.main_view.last_empty_click = None;
-                            return;
-                        }
-
-                        // Click was on empty space — check for double-click
-                        let now = std::time::Instant::now();
-                        let is_double_click = this
-                            .state
-                            .main_view
-                            .last_empty_click
-                            .map(|t| now - t < std::time::Duration::from_millis(500))
-                            .unwrap_or(false);
-                        if is_double_click {
-                            this.state.main_view.last_empty_click = None;
-                            this.navigate_back(cx);
-                        } else {
-                            this.state.main_view.last_empty_click = Some(now);
-                        }
+                        this.focus_pane(pane_focus, cx);
                     });
                 }
-            })
-            .child(Self::filter_header(state, view.clone()))
-            .child({
-                let is_recycle_bin = matches!(state.target, ViewTarget::RecycleBin);
-                let is_home = matches!(state.target, ViewTarget::Home);
-                let is_settings = matches!(state.target, ViewTarget::Settings);
+            });
 
-                let content: gpui::AnyElement = if is_settings {
-                    // Settings page — render as full tab content
-                    let data = settings_data.expect("Settings data required for Settings view");
-                    Self::render_settings_view(data, view.clone()).into_any_element()
-                } else if is_recycle_bin {
-                    Self::render_recycle_bin_view(state, view.clone()).into_any_element()
-                } else {
-                    match state.view_mode {
-                        ViewMode::Details => {
-                            if matches!(state.target, ViewTarget::Home) {
-                                Self::render_home_view(state, view.clone()).into_any_element()
-                            } else {
-                                Self::details_view(state, &visible, file_items, view.clone())
-                                    .into_any_element()
-                            }
-                        }
-                        ViewMode::List => {
-                            state.render_list_view(file_items, view.clone()).into_any_element()
-                        }
-                        ViewMode::Grid => {
-                            let cols =
-                                crate::ui::views::types::MainViewState::grid_columns_for_width(
-                                    pane_w,
-                                    state.zoom_level,
-                                );
-                            {
-                                static LAST_C: std::sync::atomic::AtomicU32 =
-                                    std::sync::atomic::AtomicU32::new(0);
-                                let key = (pane_w as u32)
-                                    .wrapping_mul(100003)
-                                    .wrapping_add(cols as u32);
-                                if LAST_C.swap(
-                                    key,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                ) != key
-                                {
-                                    tracing::warn!(
-                                        "layout-grid pane_w={:.0} cols={}",
-                                        pane_w,
-                                        cols
-                                    );
-                                }
-                            }
-                            state
-                                .render_grid_view(file_items, view.clone(), cols, pane_w)
-                                .into_any_element()
-                        }
-                        ViewMode::Columns => state
-                            .render_columns_view(file_items, view.clone())
-                            .into_any_element(),
-                    }
-                };
+        if show_pane_header {
+            outer = outer.child(Self::render_dual_pane_header(
+                state,
+                is_active,
+                pane_focus,
+                view.clone(),
+            ));
+        }
 
-                let mut view_container = div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .h_full()
-                    .w_full()
-                    .overflow_hidden();
+        outer = outer.child(Self::filter_header(state, view.clone()));
 
-                if !is_home {
-                    view_container = view_container
-                        .on_scroll_wheel(bouncy_scroll_handler_with_handle(
+        if visible.is_empty() && !state.loading && !is_home && !is_settings && !is_recycle_bin {
+            return outer
+                .child(Self::empty_state(state))
+                .into_any_element();
+        }
+
+        let content: gpui::AnyElement = if is_settings {
+            let data = settings_data.expect("Settings data required for Settings view");
+            Self::render_settings_view(data, view.clone()).into_any_element()
+        } else if is_recycle_bin {
+            Self::render_recycle_bin_view(state, view.clone()).into_any_element()
+        } else {
+            match state.view_mode {
+                ViewMode::Details => {
+                    if matches!(state.target, ViewTarget::Home) {
+                        Self::render_home_view(state, view.clone()).into_any_element()
+                    } else {
+                        let list_origin = point(
+                            base_origin.x,
+                            base_origin.y + filter_offset_y + 28.0,
+                        );
+                        Self::details_view_for_pane(
+                            state,
+                            &visible,
+                            file_items,
                             view.clone(),
-                            |app_state: &mut crate::app::AppState| {
-                                &mut app_state.main_view.bouncy_scroll
-                            },
-                            |app_state: &mut crate::app::AppState| {
-                                &app_state.main_view.uniform_list_scroll_handle
-                            },
-                        ))
-                        .on_mouse_down(MouseButton::Left, {
-                            let view = view.clone();
-                            move |_event, win, cx| {
-                                view.update(cx, |this, cx| {
-                                    let y: f32 = win.mouse_position().y.into();
-                                    this.state.main_view.bouncy_scroll.start_mouse_drag(y);
-                                    cx.notify();
-                                });
-                            }
-                        })
-                        .on_mouse_move({
-                            let view = view.clone();
-                            move |_event, win, cx| {
-                                view.update(cx, |this, cx| {
-                                    let bs = &mut this.state.main_view.bouncy_scroll;
-                                    if bs.drag_active {
-                                        let y: f32 = win.mouse_position().y.into();
-                                        let delta = bs.apply_mouse_drag_delta(y);
-                                        // Read scroll state and update bounds on every move
-                                        // so max_offset stays in sync with the UniformList.
-                                        // Prevents stale bounds from causing incorrect overscroll
-                                        // detection during in-bounds drag.
-                                        let (current_y, max_y, viewport_h, content_h) = uniformlist_scroll_info(
-                                            &this.state.main_view.uniform_list_scroll_handle,
-                                        );
-                                        bs.update_bounds(content_h, viewport_h);
-                                        // Keep active state fresh on each move so the release
-                                        // transition correctly detects overscroll vs in-bounds.
-                                        bs.is_active = true;
-                                        bs.graceful_counter = crate::ui::components::bouncy_scroll::MOMENTUM_GRACE_TICKS;
+                            pane_focus,
+                            list_origin,
+                            pane_w,
+                        )
+                    }
+                }
+                ViewMode::List => {
+                    let list_origin = point(base_origin.x, base_origin.y + filter_offset_y);
+                    state
+                        .render_list_view_for_pane(
+                            file_items,
+                            view.clone(),
+                            pane_focus,
+                            list_origin,
+                            pane_w,
+                        )
+                }
+                ViewMode::Grid => {
+                    let cols =
+                        crate::ui::views::types::MainViewState::grid_columns_for_width(
+                            pane_w,
+                            state.zoom_level,
+                        );
+                    let list_origin = point(base_origin.x, base_origin.y + filter_offset_y);
+                    state.render_grid_view_for_pane(
+                        file_items,
+                        view.clone(),
+                        cols,
+                        pane_w,
+                        pane_focus,
+                        list_origin,
+                    )
+                }
+                ViewMode::Columns => {
+                    let col2_origin = point(
+                        base_origin.x + 210.0,
+                        base_origin.y + filter_offset_y + 32.0,
+                    );
+                    state.render_columns_view_for_pane(
+                        file_items,
+                        view.clone(),
+                        pane_focus,
+                        col2_origin,
+                        pane_w,
+                    )
+                }
+            }
+        };
 
-                                        // ── Effective-position tracking via raw_overscroll ──
-                                        // `raw_overscroll` tracks the TRUE cumulative distance the
-                                        // user has dragged past the boundary (un-damped). During
-                                        // drag, `offset` stores the damped visual offset (from
-                                        // rubber_band_clamp), while `raw_overscroll` stores the raw
-                                        // distance. This is essential because `rubber_band_clamp` is
-                                        // NON-LINEAR — applying it per-event gives wrong accumulation.
-                                        let effective = if bs.raw_overscroll > 0.0 {
-                                            bs.raw_overscroll // top: raw distance past boundary
-                                        } else if bs.raw_overscroll < 0.0 {
-                                            bs.max_offset + bs.raw_overscroll // bottom
-                                        } else {
-                                            current_y // in-bounds
-                                        };
-                                        let new_effective = effective - delta;
+        let mut view_container = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .w_full()
+            .overflow_hidden();
 
-                                        // Accumulate velocity for momentum after release
-                                        // (-delta converts mouse-down-positive to scroll-down-negative)
-                                        bs.velocity = bs.velocity * VELOCITY_BLEND_HISTORY
-                                            + (-delta) * (1.0 - VELOCITY_BLEND_HISTORY);
-                                        bs.velocity = bs.velocity.clamp(-3000.0, 3000.0);
+        if !is_home && !is_settings {
+            view_container = view_container.on_scroll_wheel(bouncy_scroll_handler_with_handle(
+                view.clone(),
+                move |app_state: &mut crate::app::AppState| {
+                    &mut app_state.pane_view_mut(pane_focus).bouncy_scroll
+                },
+                move |app_state: &mut crate::app::AppState| {
+                    &app_state.pane_view(pane_focus).uniform_list_scroll_handle
+                },
+            ));
+        }
 
-                                        if new_effective > 0.0 {
-                                            // Top overscroll
-                                            bs.raw_overscroll = new_effective;
-                                            let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
-                                                bs.raw_overscroll,
-                                                crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
-                                                MAX_OVERSCROLL,
-                                            );
-                                            bs.offset = damped;
-                                            this.state.main_view.uniform_list_scroll_handle
-                                                .0
-                                                .borrow()
-                                                .base_handle
-                                                .set_offset(gpui::point(px(0.0), px(0.0)));
-                                        } else if new_effective < -max_y {
-                                            // Bottom overscroll
-                                            bs.raw_overscroll = new_effective + max_y;
-                                            let exceed = -max_y - new_effective;
-                                            let damped = crate::ui::components::bouncy_scroll::rubber_band_clamp(
-                                                exceed,
-                                                crate::ui::components::bouncy_scroll::RUBBER_BAND_RESISTANCE,
-                                                MAX_OVERSCROLL,
-                                            );
-                                            bs.offset = bs.max_offset - damped;
-                                            this.state.main_view.uniform_list_scroll_handle
-                                                .0
-                                                .borrow()
-                                                .base_handle
-                                                .set_offset(gpui::point(px(0.0), px(-max_y)));
-                                        } else {
-                                            // In-bounds
-                                            bs.raw_overscroll = 0.0;
-                                            bs.offset = new_effective;
-                                            this.state.main_view.uniform_list_scroll_handle
-                                                .0
-                                                .borrow()
-                                                .base_handle
-                                                .set_offset(gpui::point(px(0.0), px(new_effective)));
-                                        }
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        })
-                        .on_mouse_up(MouseButton::Left, {
-                            let view = view.clone();
-                            move |_event, _window, cx| {
-                                view.update(cx, |this, cx| {
-                                    let bs = &mut this.state.main_view.bouncy_scroll;
-                                    if bs.drag_active {
-                                        bs.release();
-                                        if bs.animating {
-                                            let epoch = bs.epoch();
-                                            crate::ui::components::bouncy_scroll::start_bouncy_animation(
-                                                &view,
-                                                cx,
-                                                |app_state: &mut crate::app::AppState| {
-                                                    &mut app_state.main_view.bouncy_scroll
-                                                },
-                                                Some(Box::new(|state: &mut crate::app::AppState, offset: f32| {
-                                                    state.main_view.uniform_list_scroll_handle.0.borrow().base_handle.set_offset(gpui::point(px(0.0), px(offset)));
-                                                })),
-                                                epoch,
-                                            );
-                                            cx.notify();
-                                        }
-                                    }
-                                });
-                            }
-                        })
-                        }
-                view_container.child({
-                    if is_recycle_bin {
+        outer
+            .child(
+                view_container
+                    .child(if is_recycle_bin {
                         bouncy_scroll_content(&state.bouncy_scroll, [content]).into_any_element()
                     } else if !is_home {
-                        bouncy_overscroll_content(&state.bouncy_scroll, [content]).into_any_element()
+                        bouncy_overscroll_content(&state.bouncy_scroll, [content])
+                            .into_any_element()
                     } else {
                         content
-                    }
-                })
-                // Minimal scrollbar for UniformList-based views
-                .child(uniform_list_scrollbar(
-                    &state.bouncy_scroll,
-                    &state.uniform_list_scroll_handle,
-                ))
-            })
+                    })
+                    .child(uniform_list_scrollbar(
+                        &state.bouncy_scroll,
+                        &state.uniform_list_scroll_handle,
+                    )),
+            )
             .into_any_element()
     }
 

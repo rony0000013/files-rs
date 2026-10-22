@@ -1,5 +1,6 @@
 use crate::app_state::{AppState, AppWindow};
 use crate::config::config::ViewMode;
+use crate::core::navigation_manager::PaneFocus;
 use crate::core::navigation_service::NavigationService;
 use crate::core::path_util::FilesPath;
 use crate::domain::git_service::GitService;
@@ -12,103 +13,156 @@ use std::sync::Arc;
 use crate::platform::windows::recycle_bin_service::RecycleBinService;
 
 impl AppWindow {
+    /// Navigate the currently active pane (Primary or Secondary in Dual-Pane mode).
     pub fn navigate(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        // Same-path refresh (file-watcher events): keep in-flight pipelines
-        // alive. Resetting the guard on every refresh aborts Phase 3 icon
-        // extraction in a hot folder faster than it can finish, so icons
-        // never resolve. Only a real directory change cancels.
-        let cancel_token = if path == self.state.main_view.primary_path {
-            tracing::debug!(
-                "navigate: same-path refresh, keeping guard (path={:?})",
-                path.as_path()
-            );
+        let pane_focus = self.state.active_pane_focus();
+        self.navigate_pane(path, pane_focus, cx);
+    }
+
+    /// Navigate a specific pane (`PaneFocus::Primary` or `PaneFocus::Secondary`) independently.
+    pub fn navigate_pane(
+        &mut self,
+        path: FilesPath,
+        pane_focus: PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        let is_secondary = pane_focus == PaneFocus::Secondary
+            && self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
+
+        let current_pane_path = if is_secondary {
+            self.state.secondary_view.primary_path.clone()
+        } else {
+            self.state.main_view.primary_path.clone()
+        };
+
+        let same_path_refresh = path == current_pane_path;
+
+        // Same-path refresh (file-watcher events): keep in-flight pipelines alive.
+        // Directory change: reset the cancellation guard for that pane and reset scroll/selection.
+        let cancel_token = if is_secondary {
+            if same_path_refresh {
+                self.state.nav_cancel_guard_secondary.token()
+            } else {
+                self.state.secondary_view.selected_indices.clear();
+                self.state.secondary_view.selection_anchor_index = None;
+                self.state.secondary_view.last_clicked_index = None;
+                self.state.secondary_view.renaming_index = None;
+                self.state.secondary_view.bouncy_scroll.offset = 0.0;
+                self.state.secondary_view.bouncy_scroll.velocity = 0.0;
+                self.state.secondary_view.bouncy_scroll.animating = false;
+                self.state
+                    .secondary_view
+                    .uniform_list_scroll_handle
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.0), px(0.0)));
+                self.state.nav_cancel_guard_secondary.reset()
+            }
+        } else if same_path_refresh {
             self.state.nav_cancel_guard.token()
         } else {
-            tracing::debug!(
-                "navigate: directory change, resetting guard ({} -> {:?})",
-                self.state.main_view.primary_path.as_path().display(),
-                path.as_path()
-            );
+            self.state.main_view.selected_indices.clear();
+            self.state.main_view.selection_anchor_index = None;
+            self.state.main_view.last_clicked_index = None;
+            self.state.main_view.renaming_index = None;
+            self.state.main_view.bouncy_scroll.offset = 0.0;
+            self.state.main_view.bouncy_scroll.velocity = 0.0;
+            self.state.main_view.bouncy_scroll.animating = false;
+            self.state
+                .main_view
+                .uniform_list_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(point(px(0.0), px(0.0)));
             self.state.nav_cancel_guard.reset()
         };
 
-        // Update navigation history
+        // Update navigation history on the active tab for the target pane
         self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.active_tab_mut().navigate(path.clone());
+            if is_secondary {
+                nav.tabs.active_tab_mut().navigate_secondary(path.clone());
+            } else {
+                nav.tabs.active_tab_mut().navigate(path.clone());
+            }
         });
 
-        self.state.main_view.primary_path = path.clone();
-        self.state.nav_bar.update_path(path.clone());
+        if is_secondary {
+            self.state.secondary_view.primary_path = path.clone();
+            self.state.main_view.secondary_path = Some(path.clone());
+        } else {
+            self.state.main_view.primary_path = path.clone();
+        }
+
+        // If the navigated pane is the currently focused pane, sync nav_bar, sidebar, and status_bar
+        let is_focused_pane = self.state.active_pane_focus() == pane_focus
+            || (!is_secondary && self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Single);
+        if is_focused_pane {
+            self.state.nav_bar.update_path(path.clone());
+            self.state.sidebar.set_active(&path);
+            if !same_path_refresh {
+                self.state.status_bar.sync(0, 0, 0);
+            }
+            let branch = GitService::get_branch(&path);
+            self.state.status_bar.show_git_actions = branch.is_some();
+            self.state.status_bar.git_branch = branch;
+        }
         cx.notify();
 
-        // Sync sidebar active item across all platforms
-        self.state.sidebar.set_active(&path);
-
-        // Status bar counts will be updated when items finish loading (Phase 1 callback).
-        self.state.status_bar.sync(0, 0, 0);
-
-        // Update git info in status bar
-        let branch = GitService::get_branch(&path);
-        self.state.status_bar.show_git_actions = branch.is_some();
-        self.state.status_bar.git_branch = branch;
-
         // Start watching this folder for changes
-        self.stop_file_watcher(false);
-        self.start_file_watcher(path.clone());
-
-        // If in split view, also watch the secondary pane
-        let pane_layout = self.state.navigation.read(cx).pane_layout;
-        if pane_layout != crate::core::navigation_manager::PaneLayout::Single {
-            if let Some(secondary_path) = self
-                .state
-                .navigation
-                .read(cx)
-                .tabs
-                .active_tab()
-                .secondary_pane_path
-                .clone()
-            {
-                self.start_file_watcher_secondary(secondary_path);
-            }
+        if is_secondary {
+            self.stop_file_watcher(true);
+            self.start_file_watcher_secondary(path.clone());
+        } else {
+            self.stop_file_watcher(false);
+            self.start_file_watcher(path.clone());
         }
 
         let active_tab = self.state.navigation.read(cx).tabs.active_tab().clone();
         let settings_model = self.state.settings.read(cx);
-
         let prefs = settings_model.config().get_folder_preferences(&path);
+        let app_prefs = settings_model.config().preferences.clone();
+        drop(settings_model);
 
-        // If view lock is enabled, restore saved per-directory view mode and zoom
-        if self.state.main_view.view_lock_enabled {
-            self.state.main_view.view_mode = prefs.view_mode.clone();
-            self.state.main_view.zoom_level = prefs.zoom_level;
-        } else {
-            self.state.main_view.view_mode = active_tab.view_mode.clone();
-            self.state.main_view.zoom_level =
-                active_tab.get_zoom_for_view(active_tab.view_mode.clone());
-        }
+        {
+            let target_view = if is_secondary {
+                &mut self.state.secondary_view
+            } else {
+                &mut self.state.main_view
+            };
 
-        // Load folder background from desktop.ini
-        if let Some(desktop_ini) = crate::storage::desktop_ini::DesktopIni::load(path.as_path()) {
-            self.state.main_view.folder_background.image_path = desktop_ini
-                .background_image
-                .map(|s| crate::core::path_util::FilesPath::new(s));
-            if let Some(opacity) = desktop_ini.background_opacity {
-                self.state.main_view.folder_background.opacity = opacity;
+            if target_view.view_lock_enabled {
+                target_view.view_mode = prefs.view_mode.clone();
+                target_view.zoom_level = prefs.zoom_level;
+            } else {
+                target_view.view_mode = active_tab.view_mode.clone();
+                target_view.zoom_level =
+                    active_tab.get_zoom_for_view(active_tab.view_mode.clone());
             }
-        } else {
-            self.state.main_view.folder_background =
-                crate::ui::views::main_view::FolderBackground::default();
-        }
 
-        // Sync preferences to main view
-        let app_prefs = &settings_model.config().preferences;
-        self.state.main_view.show_dot_files = app_prefs.show_dot_files;
-        self.state.main_view.show_hidden_files = app_prefs.show_hidden_files;
-        self.state.main_view.show_extensions = app_prefs.show_file_extensions;
-        self.state.main_view.show_system_files = app_prefs.show_system_files;
+            if let Some(desktop_ini) = crate::storage::desktop_ini::DesktopIni::load(path.as_path())
+            {
+                target_view.folder_background.image_path = desktop_ini
+                    .background_image
+                    .map(|s| crate::core::path_util::FilesPath::new(s));
+                if let Some(opacity) = desktop_ini.background_opacity {
+                    target_view.folder_background.opacity = opacity;
+                }
+            } else {
+                target_view.folder_background =
+                    crate::ui::views::main_view::FolderBackground::default();
+            }
+
+            target_view.show_dot_files = app_prefs.show_dot_files;
+            target_view.show_hidden_files = app_prefs.show_hidden_files;
+            target_view.show_extensions = app_prefs.show_file_extensions;
+            target_view.show_system_files = app_prefs.show_system_files;
+        }
 
         tracing::info!(
-            "Navigating to {:?}, using view mode: {:?}",
+            "Navigating {:?} pane to {:?}, using view mode: {:?}",
+            pane_focus,
             path,
             prefs.view_mode
         );
@@ -121,7 +175,6 @@ impl AppWindow {
                 if cancel_token.is_cancelled() {
                     return;
                 }
-                tracing::info!("Progressive loading started for: {:?}", path_clone);
                 // =================================================================
                 // PHASE 1: Fast initial listing (uses entry.file_type() — no stat)
                 // =================================================================
@@ -171,62 +224,56 @@ impl AppWindow {
                     return;
                 }
 
-                let total_count = fast_items.len();
                 let indexed_paths: Vec<(usize, FilesPath)> = fast_items
                     .iter()
                     .enumerate()
                     .map(|(idx, i)| (idx, i.path.clone()))
                     .collect();
 
-                tracing::info!(
-                    "Phase 1: {} items listed instantly from {:?}",
-                    total_count,
-                    path_clone
-                );
-
                 // Show items immediately so the user sees content without delay
                 {
                     let p1 = path_clone.clone();
                     this_weak
                         .update(&mut async_cx, |this, cx| {
-                            this.state.main_view.items = fast_items;
-                            this.state.main_view.bump_items_revision();
-                            this.state.file_items.update(cx, |m, _| {
-                                m.items = this.state.main_view.items.clone();
-                                m.selected_indices =
-                                    this.state.main_view.selected_indices.clone();
-                            });
-                            this.state.main_view.primary_path = p1.clone();
-                            this.state.nav_bar.update_path(p1.clone());
-                            this.state.sidebar.set_active(&p1);
-                            let folder_count = this
-                                .state
-                                .main_view
-                                .items
-                                .iter()
-                                .filter(|i| matches!(i.file_type, FileType::Directory))
-                                .count();
-                            let file_count = this.state.main_view.items.len() - folder_count;
-                            this.state.status_bar.sync(
-                                this.state.main_view.items.len(),
-                                folder_count,
-                                file_count,
-                            );
-                            let branch = GitService::get_branch(&p1);
-                            this.state.status_bar.show_git_actions = branch.is_some();
-                            this.state.status_bar.git_branch = branch;
+                            if is_secondary {
+                                this.state.secondary_view.items = fast_items;
+                                this.state.secondary_view.bump_items_revision();
+                                this.state.secondary_file_items.update(cx, |m, _| {
+                                    m.items = this.state.secondary_view.items.clone();
+                                    m.selected_indices =
+                                        this.state.secondary_view.selected_indices.clone();
+                                });
+                                this.state.secondary_view.primary_path = p1.clone();
+                                this.state.main_view.secondary_path = Some(p1.clone());
+                            } else {
+                                this.state.main_view.items = fast_items;
+                                this.state.main_view.bump_items_revision();
+                                this.state.file_items.update(cx, |m, _| {
+                                    m.items = this.state.main_view.items.clone();
+                                    m.selected_indices =
+                                        this.state.main_view.selected_indices.clone();
+                                });
+                                this.state.main_view.primary_path = p1.clone();
+                            }
 
-                            this.state.main_view.icon_paths = this
-                                .state
-                                .icon_cache
-                                .lock()
-                                .map(|cache| {
-                                    crate::app_state::icon_paths_for_dir(
-                                        &cache,
-                                        p1.as_path(),
-                                    )
-                                })
-                                .unwrap_or_default();
+                            if this.state.active_pane_focus() == pane_focus {
+                                this.state.nav_bar.update_path(p1.clone());
+                                this.state.sidebar.set_active(&p1);
+                                let items_ref = &this.state.pane_view(pane_focus).items;
+                                let folder_count = items_ref
+                                    .iter()
+                                    .filter(|i| matches!(i.file_type, FileType::Directory))
+                                    .count();
+                                let file_count = items_ref.len() - folder_count;
+                                this.state
+                                    .status_bar
+                                    .sync(items_ref.len(), folder_count, file_count);
+                                let branch = GitService::get_branch(&p1);
+                                this.state.status_bar.show_git_actions = branch.is_some();
+                                this.state.status_bar.git_branch = branch;
+                            }
+
+                            this.sync_pane_icon_paths();
                             cx.notify();
                         })
                         .ok();
@@ -234,8 +281,6 @@ impl AppWindow {
 
                 // =================================================================
                 // PHASE 2: Enrich items with full metadata in O(1)-indexed batches
-                // Uses 2,048-item batches and direct slice indexing (O(N) total,
-                // eliminating the previous O(N^2) linear find + 500x vector clones).
                 // =================================================================
                 if !indexed_paths.is_empty() {
                     let batch_size = 2048;
@@ -303,26 +348,49 @@ impl AppWindow {
                             let target_dir = path_clone.clone();
                             this_weak
                                 .update(&mut async_cx, |this, cx| {
-                                    if this.state.main_view.primary_path != target_dir {
-                                        return;
-                                    }
-                                    for (idx, size, modified, created, is_hidden, is_system) in
-                                        enriched
-                                    {
-                                        if let Some(item) =
-                                            this.state.main_view.items.get_mut(idx)
-                                        {
-                                            item.size = size;
-                                            item.modified = modified;
-                                            item.created = created;
-                                            item.is_hidden = is_hidden;
-                                            item.is_system = is_system;
+                                    if is_secondary {
+                                        if this.state.secondary_view.primary_path != target_dir {
+                                            return;
                                         }
+                                        for (idx, size, modified, created, is_hidden, is_system) in
+                                            enriched
+                                        {
+                                            if let Some(item) =
+                                                this.state.secondary_view.items.get_mut(idx)
+                                            {
+                                                item.size = size;
+                                                item.modified = modified;
+                                                item.created = created;
+                                                item.is_hidden = is_hidden;
+                                                item.is_system = is_system;
+                                            }
+                                        }
+                                        this.state.secondary_view.bump_items_revision();
+                                        this.state.secondary_file_items.update(cx, |m, _| {
+                                            m.items = this.state.secondary_view.items.clone();
+                                        });
+                                    } else {
+                                        if this.state.main_view.primary_path != target_dir {
+                                            return;
+                                        }
+                                        for (idx, size, modified, created, is_hidden, is_system) in
+                                            enriched
+                                        {
+                                            if let Some(item) =
+                                                this.state.main_view.items.get_mut(idx)
+                                            {
+                                                item.size = size;
+                                                item.modified = modified;
+                                                item.created = created;
+                                                item.is_hidden = is_hidden;
+                                                item.is_system = is_system;
+                                            }
+                                        }
+                                        this.state.main_view.bump_items_revision();
+                                        this.state.file_items.update(cx, |m, _| {
+                                            m.items = this.state.main_view.items.clone();
+                                        });
                                     }
-                                    this.state.main_view.bump_items_revision();
-                                    this.state.file_items.update(cx, |m, _| {
-                                        m.items = this.state.main_view.items.clone();
-                                    });
                                     cx.notify();
                                 })
                                 .ok();
@@ -355,7 +423,14 @@ impl AppWindow {
                         }
                         git_weak
                             .update(&mut git_cx, |this, cx| {
-                                this.state.main_view.git_status_cache.extend(git_statuses);
+                                this.state
+                                    .main_view
+                                    .git_status_cache
+                                    .extend(git_statuses.clone());
+                                this.state
+                                    .secondary_view
+                                    .git_status_cache
+                                    .extend(git_statuses);
                                 cx.notify();
                             })
                             .ok();
@@ -367,26 +442,10 @@ impl AppWindow {
                 // PHASE 3: Start icon extraction for visible viewport items
                 // =================================================================
                 if !cancel_token.is_cancelled() {
-                    let p3 = path_clone.clone();
                     this_weak
                         .update(&mut async_cx, |this, cx| {
-                            tracing::info!(
-                                "Phase 3: Starting icon extraction for {} items in {:?}",
-                                this.state.main_view.items.len(),
-                                p3
-                            );
                             this.load_icons(cx);
-                            this.state.main_view.icon_paths = this
-                                .state
-                                .icon_cache
-                                .lock()
-                                .map(|cache| {
-                                    crate::app_state::icon_paths_for_dir(
-                                        &cache,
-                                        p3.as_path(),
-                                    )
-                                })
-                                .unwrap_or_default();
+                            this.sync_pane_icon_paths();
                             cx.notify();
                         })
                         .ok();
@@ -394,41 +453,40 @@ impl AppWindow {
             })
             .detach();
 
-        // Update Jump List (recent folders)
-        let path_str = path.to_string_lossy().into_owned();
-        if !path_str.is_empty() {
-            tracing::info!("Adding {} to jump list", path_str);
-        }
-
-        // Check if we should switch to Home or Recycle Bin view
-        let path_str = path.to_string_lossy();
-        if path_str.is_empty() || path_str == "Home" {
-            self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
-            if let Ok(tags) = self.state.tag_service.get_all_tags() {
-                self.state.main_view.home_tags_cache = tags
-                    .into_iter()
-                    .map(|(name, count)| (name, "#808080".to_string(), count))
-                    .collect();
-            } else {
-                self.state.main_view.home_tags_cache = Vec::new();
-            }
-        } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
-            self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
-            #[cfg(windows)]
-            {
-                let service = RecycleBinService::new();
-                if let Ok(items) = service.list_contents_sync() {
-                    self.state.main_view.recycle_bin_items = items;
+        // Check if we should switch to Home or Recycle Bin view (Primary pane target)
+        if !is_secondary {
+            let path_str = path.to_string_lossy();
+            if path_str.is_empty() || path_str == "Home" {
+                self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
+                if let Ok(tags) = self.state.tag_service.get_all_tags() {
+                    self.state.main_view.home_tags_cache = tags
+                        .into_iter()
+                        .map(|(name, count)| (name, "#808080".to_string(), count))
+                        .collect();
                 } else {
+                    self.state.main_view.home_tags_cache = Vec::new();
+                }
+            } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
+                self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
+                #[cfg(windows)]
+                {
+                    let service = RecycleBinService::new();
+                    if let Ok(items) = service.list_contents_sync() {
+                        self.state.main_view.recycle_bin_items = items;
+                    } else {
+                        self.state.main_view.recycle_bin_items = Vec::new();
+                    }
+                }
+                #[cfg(not(windows))]
+                {
                     self.state.main_view.recycle_bin_items = Vec::new();
                 }
-            }
-            #[cfg(not(windows))]
-            {
-                self.state.main_view.recycle_bin_items = Vec::new();
+            } else {
+                self.state.main_view.target =
+                    crate::ui::views::main_view::ViewTarget::Directory(path.clone());
             }
         } else {
-            self.state.main_view.target =
+            self.state.secondary_view.target =
                 crate::ui::views::main_view::ViewTarget::Directory(path.clone());
         }
 
@@ -436,30 +494,58 @@ impl AppWindow {
         self.save_session_path(cx);
     }
 
+    /// Synchronize `icon_paths` for both Primary and Secondary panes from the shared LRU cache.
+    pub fn sync_pane_icon_paths(&mut self) {
+        if let Ok(cache) = self.state.icon_cache.lock() {
+            let mut map = crate::app_state::icon_paths_for_dir(
+                &cache,
+                self.state.main_view.primary_path.as_path(),
+            );
+            if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                let sec_map = crate::app_state::icon_paths_for_dir(
+                    &cache,
+                    self.state.secondary_view.primary_path.as_path(),
+                );
+                self.state.secondary_view.icon_paths = sec_map.clone();
+                map.extend(sec_map);
+            }
+            self.state.main_view.icon_paths = map;
+        }
+    }
+
     pub fn navigate_back(&mut self, cx: &mut Context<Self>) {
-        let maybe_path = self
-            .state
-            .navigation
-            .update(cx, |nav, _cx| nav.tabs.active_tab_mut().navigate_back());
+        let pane_focus = self.state.active_pane_focus();
+        let maybe_path = self.state.navigation.update(cx, |nav, _cx| {
+            if pane_focus == PaneFocus::Secondary {
+                nav.tabs.active_tab_mut().navigate_back_secondary()
+            } else {
+                nav.tabs.active_tab_mut().navigate_back()
+            }
+        });
         if let Some(path) = maybe_path {
-            self.navigate(path, cx);
+            self.navigate_pane(path, pane_focus, cx);
         }
     }
 
     pub fn navigate_forward(&mut self, cx: &mut Context<Self>) {
-        let maybe_path = self
-            .state
-            .navigation
-            .update(cx, |nav, _cx| nav.tabs.active_tab_mut().navigate_forward());
+        let pane_focus = self.state.active_pane_focus();
+        let maybe_path = self.state.navigation.update(cx, |nav, _cx| {
+            if pane_focus == PaneFocus::Secondary {
+                nav.tabs.active_tab_mut().navigate_forward_secondary()
+            } else {
+                nav.tabs.active_tab_mut().navigate_forward()
+            }
+        });
         if let Some(path) = maybe_path {
-            self.navigate(path, cx);
+            self.navigate_pane(path, pane_focus, cx);
         }
     }
 
     pub fn navigate_up(&mut self, cx: &mut Context<Self>) {
-        let current = self.state.main_view.primary_path.clone();
+        let pane_focus = self.state.active_pane_focus();
+        let current = self.state.pane_view(pane_focus).primary_path.clone();
         if let Ok(parent) = NavigationService::get_parent_path(&current) {
-            self.navigate(parent, cx);
+            self.navigate_pane(parent, pane_focus, cx);
         }
     }
 
@@ -467,9 +553,6 @@ impl AppWindow {
     pub fn navigate_home(&mut self, cx: &mut Context<Self>) {
         match crate::core::navigation_service::NavigationService::get_home_path() {
             Ok(home_path) => {
-                self.state.navigation.update(cx, |nav, _cx| {
-                    nav.tabs.active_tab_mut().navigate(home_path.clone());
-                });
                 self.navigate(home_path, cx);
             }
             Err(_) => {
@@ -480,9 +563,10 @@ impl AppWindow {
         }
     }
 
-    /// Navigate to the root of the current drive/path
+    /// Navigate to the root of the current drive/path in the active pane
     pub fn navigate_to_root(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.main_view.primary_path.clone();
+        let pane_focus = self.state.active_pane_focus();
+        let path = self.state.pane_view(pane_focus).primary_path.clone();
         let mut current = path.clone();
         while let Ok(parent) = NavigationService::get_parent_path(&current) {
             if parent.as_path().to_string_lossy() == current.as_path().to_string_lossy() {
@@ -491,16 +575,29 @@ impl AppWindow {
             current = parent;
         }
         if current != path {
-            self.navigate(current, cx);
+            self.navigate_pane(current, pane_focus, cx);
         }
     }
 
-    /// Open the selected item (file or folder)
+    /// Open the selected item (file or folder) in the currently active pane.
     pub fn open_item(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(item) = self.state.main_view.items.get(index) {
+        let pane_focus = self.state.active_pane_focus();
+        self.open_item_in_pane(pane_focus, index, cx);
+    }
+
+    /// Open the item at `index` in `pane_focus` (navigating into directories in that pane).
+    pub fn open_item_in_pane(
+        &mut self,
+        pane_focus: PaneFocus,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_pane(pane_focus, cx);
+        let item_opt = self.state.pane_view(pane_focus).items.get(index).cloned();
+        if let Some(item) = item_opt {
             match item.file_type {
                 FileType::Directory => {
-                    self.navigate(item.path.clone(), cx);
+                    self.navigate_pane(item.path.clone(), pane_focus, cx);
                 }
                 FileType::File => {
                     #[cfg(windows)]
@@ -540,7 +637,11 @@ impl AppWindow {
                     }
                 }
                 FileType::Symlink => {
-                    tracing::debug!("Opening symlink: {}", item.name);
+                    if item.path.as_path().is_dir() {
+                        self.navigate_pane(item.path.clone(), pane_focus, cx);
+                    } else {
+                        tracing::debug!("Opening symlink: {}", item.name);
+                    }
                 }
             }
         }
@@ -570,11 +671,13 @@ impl AppWindow {
     }
 
     pub fn open_in_new_tab(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        let mode = self.state.main_view.view_mode.clone();
-        let zoom = self.state.main_view.zoom_level;
+        let mode = self.state.active_view().view_mode.clone();
+        let zoom = self.state.active_view().zoom_level;
         self.state.navigation.update(cx, |nav, _cx| {
             nav.tabs.add_tab_with_zoom(path, mode, zoom);
         });
+        self.ensure_active_tab_visible(cx);
+        self.load_tab_thumbnails(cx);
         cx.notify();
     }
 
@@ -594,12 +697,17 @@ impl AppWindow {
         let file_items = cx.insert_entity(fi_res, |_| {
             crate::ui::views::main_view::FileItems::default()
         });
+        let view_mode = self.state.active_view().view_mode.clone();
+        // Each window owns its own independent NavigationState entity
+        let new_nav = cx.new(|_cx| {
+            crate::core::navigation_manager::NavigationState::new(path.clone(), view_mode)
+        });
         let app_state = AppState::new(
             path.clone(),
             file_items,
             self.state.settings.clone(),
             self.state.localization.clone(),
-            self.state.navigation.clone(),
+            new_nav,
             progress_engine.clone(),
             db,
             cx,
@@ -610,6 +718,9 @@ impl AppWindow {
                 origin: Default::default(),
                 size: gpui::size(gpui::Pixels::from(1280.0), gpui::Pixels::from(800.0)),
             })),
+            window_min_size: Some(gpui::size(gpui::Pixels::from(500.0), gpui::Pixels::from(340.0))),
+            titlebar: None,
+            window_background: gpui::WindowBackgroundAppearance::Opaque,
             ..gpui::WindowOptions::default()
         };
 

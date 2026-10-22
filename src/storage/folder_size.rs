@@ -23,6 +23,92 @@ impl FolderSizeService {
     }
 }
 
+// ─── Fast synchronous sizing with a content-signature cache ─────────────────
+// dust-style parallel walk (rayon) that skips reparse points. The cache maps a
+// directory to (signature, size): the signature is the directory's mtime mixed
+// with its entry count, so re-selecting a folder shows the cached size instantly
+// while any structural change makes the next lookup miss and recompute in the
+// background. Deep-only edits may not bump the top-level signature — accepted
+// for a status-bar hint (a future watcher hook can invalidate precisely).
+
+struct CacheEntry {
+    sig: u64,
+    size: u64,
+}
+
+fn size_cache() -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, CacheEntry>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, CacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn signature(dir: &std::path::Path) -> Option<u64> {
+    let md = std::fs::metadata(dir).ok()?;
+    let mtime = md
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let count = std::fs::read_dir(dir).ok()?.count() as u64;
+    Some(mtime.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(count))
+}
+
+/// Cached folder size when the content signature still matches.
+pub fn cached_size(dir: &std::path::Path) -> Option<u64> {
+    let sig = signature(dir)?;
+    let guard = size_cache().lock().ok()?;
+    guard.get(dir).filter(|e| e.sig == sig).map(|e| e.size)
+}
+
+/// Blocking dust-style parallel recursive walk; stores the result in the cache.
+/// Call from a background thread, never from render.
+pub fn compute_and_store(dir: &std::path::Path) -> u64 {
+    let total = walk_parallel(dir, 0);
+    if let Some(sig) = signature(dir) {
+        if let Ok(mut guard) = size_cache().lock() {
+            guard.insert(dir.to_path_buf(), CacheEntry { sig, size: total });
+        }
+    }
+    total
+}
+
+fn walk_parallel(dir: &std::path::Path, depth: u32) -> u64 {
+    use rayon::prelude::*;
+    if depth > 64 {
+        return 0;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let entries: Vec<std::fs::DirEntry> = rd.filter_map(|e| e.ok()).collect();
+    entries
+        .par_iter()
+        .map(|e| {
+            let Ok(ft) = e.file_type() else {
+                return 0;
+            };
+            if ft.is_dir() {
+                // Skip symlinks/junctions (reparse points): avoids cycles and
+                // double counting shared trees.
+                if e
+                    .path()
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    return 0;
+                }
+                walk_parallel(&e.path(), depth + 1)
+            } else {
+                e.metadata().map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

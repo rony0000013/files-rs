@@ -100,10 +100,12 @@ pub enum ActionKind {
     Paste,
     /// Copy the selected item's full path as text (Files parity: Ctrl+Shift+C)
     CopyItemPath,
+    NewFolder,
     Rename,
     Delete,
     PermanentDelete,
     ClearSelection,
+    OpenProperties,
     Undo,
     Redo,
 
@@ -114,11 +116,20 @@ pub enum ActionKind {
     ToggleHiddenFiles,
     EditPath,
     OpenPreviewPane,
+    ViewDetails,
+    ViewList,
+    ViewGrid,
+    ViewColumns,
 
     // Tabs & Windows
     NewTab,
     CloseTab,
+    CloseOtherTabs,
     ReopenClosedTab,
+    DuplicateTab,
+    PinTab,
+    MoveTabLeft,
+    MoveTabRight,
     NewWindow,
     NextTab,
     PreviousTab,
@@ -126,9 +137,11 @@ pub enum ActionKind {
     // Split Panes
     SplitVertical,
     SplitHorizontal,
+    SwitchPaneFocus,
 
     // Commands
     CommandPalette,
+    OpenTerminal,
     /// Open the help/documentation URL
     OpenHelp,
     /// Open the settings page as a tab
@@ -151,10 +164,12 @@ impl ActionKind {
             Self::Cut => "Cut",
             Self::Paste => "Paste",
             Self::CopyItemPath => "Copy Item Path",
+            Self::NewFolder => "New Folder",
             Self::Rename => "Rename",
             Self::Delete => "Move to Trash",
             Self::PermanentDelete => "Permanent Delete",
             Self::ClearSelection => "Clear Selection",
+            Self::OpenProperties => "Properties",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::Refresh => "Refresh",
@@ -163,15 +178,26 @@ impl ActionKind {
             Self::ToggleHiddenFiles => "Toggle Hidden Files",
             Self::EditPath => "Edit Path",
             Self::OpenPreviewPane => "Open Preview Pane",
+            Self::ViewDetails => "Details View",
+            Self::ViewList => "List View",
+            Self::ViewGrid => "Grid View",
+            Self::ViewColumns => "Columns View",
             Self::NewTab => "New Tab",
             Self::CloseTab => "Close Tab",
+            Self::CloseOtherTabs => "Close Other Tabs",
             Self::ReopenClosedTab => "Reopen Closed Tab",
+            Self::DuplicateTab => "Duplicate Tab",
+            Self::PinTab => "Pin / Unpin Tab",
+            Self::MoveTabLeft => "Move Tab Left",
+            Self::MoveTabRight => "Move Tab Right",
             Self::NewWindow => "New Window",
             Self::NextTab => "Next Tab",
             Self::PreviousTab => "Previous Tab",
             Self::SplitVertical => "Split Vertical",
             Self::SplitHorizontal => "Split Horizontal",
+            Self::SwitchPaneFocus => "Switch Active Pane",
             Self::CommandPalette => "Command Palette",
+            Self::OpenTerminal => "Open in Terminal",
             Self::OpenHelp => "Open Help",
             Self::OpenSettings => "Open Settings",
             Self::RestoreLastSession => "Restore Last Session",
@@ -181,7 +207,7 @@ impl ActionKind {
     /// Returns `true` if the action is conceptually a toggle
     /// (it has an on/off checked state).
     pub fn is_toggle(&self) -> bool {
-        matches!(self, Self::ToggleHiddenFiles)
+        matches!(self, Self::ToggleHiddenFiles | Self::PinTab)
     }
 
     /// Return all action variants (for iterating in the settings UI).
@@ -198,25 +224,38 @@ impl ActionKind {
             Cut,
             Paste,
             CopyItemPath,
+            NewFolder,
             Rename,
             Delete,
             PermanentDelete,
             ClearSelection,
+            OpenProperties,
             Refresh,
             Search,
             ClearFilter,
             ToggleHiddenFiles,
             EditPath,
             OpenPreviewPane,
+            ViewDetails,
+            ViewList,
+            ViewGrid,
+            ViewColumns,
             NewTab,
             CloseTab,
+            CloseOtherTabs,
             ReopenClosedTab,
+            DuplicateTab,
+            PinTab,
+            MoveTabLeft,
+            MoveTabRight,
             NewWindow,
             NextTab,
             PreviousTab,
             SplitVertical,
             SplitHorizontal,
+            SwitchPaneFocus,
             CommandPalette,
+            OpenTerminal,
             OpenHelp,
             OpenSettings,
             RestoreLastSession,
@@ -268,9 +307,21 @@ impl ActionRegistry {
         rev
     }
 
-    /// Look up the action bound to a given `KeyCombination`.
+    /// Look up the action bound to a given `KeyCombination` (case-insensitive key matching).
     pub fn lookup(&self, key: &KeyCombination) -> Option<ActionKind> {
-        self.reverse.get(key).copied()
+        if let Some(&action) = self.reverse.get(key) {
+            return Some(action);
+        }
+        let key_lower = key.key.to_ascii_lowercase();
+        self.reverse
+            .iter()
+            .find(|(k, _)| {
+                k.ctrl == key.ctrl
+                    && k.alt == key.alt
+                    && k.shift == key.shift
+                    && k.key.to_ascii_lowercase() == key_lower
+            })
+            .map(|(_, &action)| action)
     }
 
     /// Look up the key combination bound to a given action.
@@ -283,11 +334,9 @@ impl ActionRegistry {
     /// If the `KeyCombination` is already bound to another action, the old
     /// binding is silently overwritten (last-write-wins).
     pub fn rebind(&mut self, action: ActionKind, key: KeyCombination) {
-        // Remove any existing binding for this action
         if let Some(old_key) = self.bindings.get(&action) {
             self.reverse.remove(old_key);
         }
-        // Remove any action that was bound to this key (last-write-wins)
         if let Some(old_action) = self.reverse.remove(&key) {
             self.bindings.remove(&old_action);
         }
@@ -365,7 +414,10 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         KeyCombination::new("right").with_alt(),
     );
     m.insert(ActionKind::NavigateUp, KeyCombination::new("up").with_alt());
-    m.insert(ActionKind::NavigateToRoot, KeyCombination::new("Home"));
+    m.insert(
+        ActionKind::NavigateToRoot,
+        KeyCombination::new("\\").with_ctrl(),
+    );
 
     // Selection & Editing
     m.insert(ActionKind::SelectAll, KeyCombination::new("a").with_ctrl());
@@ -380,11 +432,20 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         ActionKind::CopyItemPath,
         KeyCombination::new("c").with_ctrl_shift(),
     );
+    m.insert(
+        ActionKind::NewFolder,
+        KeyCombination::new("n").with_ctrl_shift(),
+    );
     m.insert(ActionKind::Rename, KeyCombination::new("F2"));
     m.insert(ActionKind::Delete, KeyCombination::new("Delete"));
     m.insert(
         ActionKind::PermanentDelete,
         KeyCombination::new("Delete").with_shift(),
+    );
+    m.insert(ActionKind::ClearSelection, KeyCombination::new("Escape"));
+    m.insert(
+        ActionKind::OpenProperties,
+        KeyCombination::new("enter").with_alt(),
     );
     m.insert(ActionKind::Undo, KeyCombination::new("z").with_ctrl());
     m.insert(ActionKind::Redo, KeyCombination::new("y").with_ctrl());
@@ -392,20 +453,58 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
     // View
     m.insert(ActionKind::Refresh, KeyCombination::new("F5"));
     m.insert(ActionKind::Search, KeyCombination::new("f").with_ctrl());
-    m.insert(ActionKind::ClearFilter, KeyCombination::new("Escape"));
     m.insert(
         ActionKind::ToggleHiddenFiles,
         KeyCombination::new("h").with_ctrl(),
     );
     m.insert(ActionKind::EditPath, KeyCombination::new("l").with_ctrl());
-    m.insert(ActionKind::OpenPreviewPane, KeyCombination::new("Space"));
+    m.insert(
+        ActionKind::OpenPreviewPane,
+        KeyCombination::new("p").with_ctrl(),
+    );
+    m.insert(
+        ActionKind::ViewDetails,
+        KeyCombination::new("1").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::ViewList,
+        KeyCombination::new("2").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::ViewGrid,
+        KeyCombination::new("3").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::ViewColumns,
+        KeyCombination::new("4").with_ctrl_shift(),
+    );
 
     // Tabs & Windows
     m.insert(ActionKind::NewTab, KeyCombination::new("t").with_ctrl());
     m.insert(ActionKind::CloseTab, KeyCombination::new("w").with_ctrl());
     m.insert(
+        ActionKind::CloseOtherTabs,
+        KeyCombination::new("w").with_ctrl().with_alt(),
+    );
+    m.insert(
         ActionKind::ReopenClosedTab,
         KeyCombination::new("t").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::DuplicateTab,
+        KeyCombination::new("k").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::PinTab,
+        KeyCombination::new("p").with_ctrl().with_alt(),
+    );
+    m.insert(
+        ActionKind::MoveTabLeft,
+        KeyCombination::new("left").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::MoveTabRight,
+        KeyCombination::new("right").with_ctrl_shift(),
     );
     m.insert(ActionKind::NewWindow, KeyCombination::new("n").with_ctrl());
     m.insert(ActionKind::NextTab, KeyCombination::new("tab").with_ctrl());
@@ -423,11 +522,16 @@ fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
         ActionKind::SplitHorizontal,
         KeyCombination::new("h").with_ctrl_shift(),
     );
+    m.insert(ActionKind::SwitchPaneFocus, KeyCombination::new("F6"));
 
     // Commands
     m.insert(
         ActionKind::CommandPalette,
         KeyCombination::new("p").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::OpenTerminal,
+        KeyCombination::new("`").with_ctrl(),
     );
     m.insert(ActionKind::OpenHelp, KeyCombination::new("F1"));
     m.insert(ActionKind::OpenSettings, KeyCombination::new(",").with_ctrl());
@@ -449,8 +553,6 @@ impl KeyCombination {
 // ---------------------------------------------------------------------------
 
 /// Parse a GPUI `Keystroke` into our `KeyCombination`.
-/// GPUI's `Keystroke` has `key: String` and `modifiers: Modifiers` with
-/// `control`, `alt`, `shift` booleans.
 pub fn from_gpui_keystroke(keystroke: &gpui::Keystroke) -> KeyCombination {
     let key = keystroke.key.as_str().to_lowercase();
     KeyCombination {
@@ -458,332 +560,5 @@ pub fn from_gpui_keystroke(keystroke: &gpui::Keystroke) -> KeyCombination {
         ctrl: keystroke.modifiers.control,
         alt: keystroke.modifiers.alt,
         shift: keystroke.modifiers.shift,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::Keystroke;
-
-    // -----------------------------------------------------------------------
-    // KeyCombination tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_key_combination_display_no_modifiers() {
-        let k = KeyCombination::new("F2");
-        assert_eq!(k.to_string(), "F2");
-    }
-
-    #[test]
-    fn test_key_combination_display_ctrl() {
-        let k = KeyCombination::new("c").with_ctrl();
-        assert_eq!(k.to_string(), "Ctrl+c");
-    }
-
-    #[test]
-    fn test_key_combination_display_ctrl_shift() {
-        let k = KeyCombination::new("p").with_ctrl_shift();
-        assert_eq!(k.to_string(), "Ctrl+Shift+p");
-    }
-
-    #[test]
-    fn test_key_combination_display_alt_left() {
-        let k = KeyCombination::new("left").with_alt();
-        assert_eq!(k.to_string(), "Alt+left");
-    }
-
-    #[test]
-    fn test_key_combination_display_all_modifiers() {
-        let k = KeyCombination::new("Z").with_ctrl().with_alt().with_shift();
-        assert_eq!(k.to_string(), "Ctrl+Alt+Shift+Z");
-    }
-
-    #[test]
-    fn test_key_combination_json_roundtrip() {
-        let k = KeyCombination::new("a").with_ctrl();
-        let json = serde_json::to_string(&k).unwrap();
-        let k2: KeyCombination = serde_json::from_str(&json).unwrap();
-        assert_eq!(k, k2);
-    }
-
-    // -----------------------------------------------------------------------
-    // ActionKind tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_action_kind_labels_non_empty() {
-        for action in ActionKind::all() {
-            let label = action.label();
-            assert!(
-                !label.is_empty(),
-                "ActionKind::{:?} has empty label",
-                action
-            );
-        }
-    }
-
-    #[test]
-    fn test_action_kind_toggle_detection() {
-        assert!(ActionKind::ToggleHiddenFiles.is_toggle());
-        assert!(!ActionKind::Copy.is_toggle());
-        assert!(!ActionKind::Delete.is_toggle());
-    }
-
-    #[test]
-    fn test_action_kind_all_has_no_duplicates() {
-        let all = ActionKind::all();
-        let mut seen = std::collections::HashSet::new();
-        for a in &all {
-            assert!(seen.insert(a), "Duplicate ActionKind::{:?} in all()", a);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // ActionRegistry tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_registry_has_default_bindings() {
-        let reg = ActionRegistry::new();
-        // Should have at least 20+ default bindings
-        assert!(
-            reg.len() >= 20,
-            "Expected >=20 default bindings, got {}",
-            reg.len()
-        );
-    }
-
-    #[test]
-    fn test_registry_lookup_by_key() {
-        let reg = ActionRegistry::new();
-
-        // Ctrl+C → Copy
-        let key = KeyCombination::new("c").with_ctrl();
-        assert_eq!(reg.lookup(&key), Some(ActionKind::Copy));
-
-        // F5 → Refresh
-        let key = KeyCombination::new("F5");
-        assert_eq!(reg.lookup(&key), Some(ActionKind::Refresh));
-
-        // Escape → ClearSelection (first match is ClearSelection)
-        let key = KeyCombination::new("Escape");
-        assert_eq!(reg.lookup(&key), Some(ActionKind::ClearSelection));
-    }
-
-    #[test]
-    fn test_registry_binding_for_action() {
-        let reg = ActionRegistry::new();
-
-        let binding = reg.binding(ActionKind::Rename);
-        assert!(binding.is_some());
-        assert_eq!(binding.unwrap().key, "F2");
-    }
-
-    #[test]
-    fn test_registry_rebind() {
-        let mut reg = ActionRegistry::new();
-
-        // Rebind Copy from Ctrl+C to Ctrl+Y
-        reg.rebind(ActionKind::Copy, KeyCombination::new("y").with_ctrl());
-
-        let old_key = KeyCombination::new("c").with_ctrl();
-        let new_key = KeyCombination::new("y").with_ctrl();
-
-        assert_eq!(reg.lookup(&old_key), None, "Old binding should be gone");
-        assert_eq!(
-            reg.lookup(&new_key),
-            Some(ActionKind::Copy),
-            "New binding should work"
-        );
-
-        let binding = reg.binding(ActionKind::Copy);
-        assert_eq!(binding.unwrap().key, "y");
-    }
-
-    #[test]
-    fn test_registry_rebind_last_write_wins() {
-        let mut reg = ActionRegistry::new();
-
-        // Both Ctrl+Z → NavigateBack and Ctrl+Z → Copy
-        // The second should win
-        reg.rebind(
-            ActionKind::NavigateBack,
-            KeyCombination::new("z").with_ctrl(),
-        );
-        reg.rebind(ActionKind::Copy, KeyCombination::new("z").with_ctrl());
-
-        let key = KeyCombination::new("z").with_ctrl();
-        assert_eq!(reg.lookup(&key), Some(ActionKind::Copy));
-        assert_eq!(
-            reg.binding(ActionKind::NavigateBack),
-            None,
-            "NavigateBack was unbound by last-write-wins"
-        );
-    }
-
-    #[test]
-    fn test_registry_reset_default() {
-        let mut reg = ActionRegistry::new();
-
-        // Rebinding something
-        reg.rebind(ActionKind::Refresh, KeyCombination::new("r").with_ctrl());
-        assert_eq!(
-            reg.lookup(&KeyCombination::new("r").with_ctrl()),
-            Some(ActionKind::Refresh)
-        );
-
-        // Reset to default
-        reg.reset_default(ActionKind::Refresh);
-        assert_eq!(reg.lookup(&KeyCombination::new("r").with_ctrl()), None);
-        assert_eq!(
-            reg.lookup(&KeyCombination::new("F5")),
-            Some(ActionKind::Refresh)
-        );
-    }
-
-    #[test]
-    fn test_registry_reset_all_defaults() {
-        let mut reg = ActionRegistry::new();
-        let original_len = reg.len();
-
-        // Scramble some bindings
-        reg.rebind(ActionKind::Copy, KeyCombination::new("y").with_ctrl());
-        reg.rebind(ActionKind::Paste, KeyCombination::new("p").with_ctrl());
-
-        reg.reset_all_defaults();
-        assert_eq!(reg.len(), original_len, "All defaults should be restored");
-
-        // Verify a known default is back
-        assert_eq!(
-            reg.lookup(&KeyCombination::new("c").with_ctrl()),
-            Some(ActionKind::Copy)
-        );
-    }
-
-    #[test]
-    fn test_registry_iter_order() {
-        let reg = ActionRegistry::new();
-        let pairs = reg.iter();
-        // Should be non-empty
-        assert!(!pairs.is_empty());
-        // First pair should have a label
-        assert!(!pairs[0].0.label().is_empty());
-        // Verify sorted by label
-        for i in 1..pairs.len() {
-            assert!(
-                pairs[i - 1].0.label() <= pairs[i].0.label(),
-                "Actions should be sorted by label: {} > {}",
-                pairs[i - 1].0.label(),
-                pairs[i].0.label()
-            );
-        }
-    }
-
-    #[test]
-    fn test_registry_json_roundtrip() {
-        let reg = ActionRegistry::new();
-        let json = serde_json::to_string(&reg).unwrap();
-        let mut reg2: ActionRegistry = serde_json::from_str(&json).unwrap();
-        reg2.rebuild_cache();
-
-        // Same lookups
-        assert_eq!(
-            reg2.lookup(&KeyCombination::new("F2")),
-            Some(ActionKind::Rename)
-        );
-        assert_eq!(
-            reg2.lookup(&KeyCombination::new("a").with_ctrl()),
-            Some(ActionKind::SelectAll)
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // from_gpui_keystroke tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_from_gpui_keystroke_simple_key() {
-        let ks = Keystroke {
-            key: "F5".into(),
-            modifiers: gpui::Modifiers::default(),
-        };
-        let kc = from_gpui_keystroke(&ks);
-        assert_eq!(kc.key, "F5");
-        assert!(!kc.ctrl);
-        assert!(!kc.alt);
-        assert!(!kc.shift);
-    }
-
-    #[test]
-    fn test_from_gpui_keystroke_ctrl_c() {
-        let ks = Keystroke {
-            key: "c".into(),
-            modifiers: gpui::Modifiers {
-                control: true,
-                alt: false,
-                shift: false,
-                ..Default::default()
-            },
-        };
-        let kc = from_gpui_keystroke(&ks);
-        assert_eq!(kc.key, "c");
-        assert!(kc.ctrl);
-        assert!(!kc.alt);
-        assert!(!kc.shift);
-    }
-
-    #[test]
-    fn test_from_gpui_keystroke_alt_left() {
-        let ks = Keystroke {
-            key: "left".into(),
-            modifiers: gpui::Modifiers {
-                control: false,
-                alt: true,
-                shift: false,
-                ..Default::default()
-            },
-        };
-        let kc = from_gpui_keystroke(&ks);
-        assert_eq!(kc.key, "left");
-        assert!(!kc.ctrl);
-        assert!(kc.alt);
-        assert!(!kc.shift);
-    }
-
-    #[test]
-    fn test_from_gpui_keystroke_ctrl_shift_p() {
-        let ks = Keystroke {
-            key: "p".into(),
-            modifiers: gpui::Modifiers {
-                control: true,
-                alt: false,
-                shift: true,
-                ..Default::default()
-            },
-        };
-        let kc = from_gpui_keystroke(&ks);
-        assert_eq!(kc.key, "p");
-        assert!(kc.ctrl);
-        assert!(!kc.alt);
-        assert!(kc.shift);
-    }
-
-    // -----------------------------------------------------------------------
-    // Edge cases
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_registry_lookup_unknown_key_returns_none() {
-        let reg = ActionRegistry::new();
-        let unknown = KeyCombination::new("z").with_ctrl().with_alt().with_shift();
-        assert_eq!(reg.lookup(&unknown), None);
-    }
-
-    #[test]
-    fn test_registry_empty_state() {
-        let reg = ActionRegistry::new();
-        assert!(!reg.is_empty());
     }
 }

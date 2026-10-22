@@ -90,6 +90,10 @@ pub struct AppState {
     pub navigation: Entity<crate::core::navigation_manager::NavigationState>,
     pub main_view: MainViewState,
     pub file_items: Entity<FileItems>,
+    /// Independent state for the secondary pane in Dual-Pane split view
+    pub secondary_view: MainViewState,
+    /// Independent `FileItems` entity for the secondary pane's `uniform_list` closures
+    pub secondary_file_items: Entity<FileItems>,
     pub nav_bar: NavigationBarState,
     pub sidebar: SidebarState,
     pub sidebar_visible: bool,
@@ -128,8 +132,16 @@ pub struct AppState {
     pub is_maximized: bool,
     /// Ultra-fast thumbnail cache with hash-based invalidation
     pub thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache,
-    /// Cooperative cancellation guard for in-flight directory navigation tasks
+    /// Cooperative cancellation guard for in-flight directory navigation tasks (primary pane)
     pub nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard,
+    /// Cooperative cancellation guard for in-flight directory navigation tasks (secondary pane)
+    pub nav_cancel_guard_secondary: crate::core::perf::cancellable_load::CancelGuard,
+    /// Last known live window size (for responsive tab bar metrics and page navigation)
+    pub last_window_size: gpui::Size<gpui::Pixels>,
+    /// Buffer for incremental type-to-select file jumping
+    pub type_to_select_buffer: String,
+    /// Timestamp of the last type-to-select keystroke
+    pub type_to_select_last_time: Option<std::time::Instant>,
 }
 
 impl AppState {
@@ -150,8 +162,10 @@ impl AppState {
             settings,
             localization,
             navigation,
-            main_view: MainViewState::new(root.clone(), default_view_mode),
-            file_items,
+            main_view: MainViewState::new(root.clone(), default_view_mode.clone()),
+            file_items: file_items.clone(),
+            secondary_view: MainViewState::new(root.clone(), default_view_mode),
+            secondary_file_items: file_items,
             nav_bar: NavigationBarState::new(root),
             sidebar: SidebarState::new(),
             sidebar_visible: true,
@@ -189,7 +203,70 @@ impl AppState {
             is_maximized: false,
             thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::new(),
             nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard::new(),
+            nav_cancel_guard_secondary: crate::core::perf::cancellable_load::CancelGuard::new(),
+            last_window_size: gpui::size(gpui::px(1280.0), gpui::px(800.0)),
+            type_to_select_buffer: String::new(),
+            type_to_select_last_time: None,
         }
+    }
+
+    #[inline]
+    pub fn active_pane_focus(&self) -> crate::core::navigation_manager::PaneFocus {
+        if matches!(
+            self.main_view.pane_type,
+            crate::ui::views::main_view::PaneType::Dual
+        ) {
+            self.main_view.active_pane
+        } else {
+            crate::core::navigation_manager::PaneFocus::Primary
+        }
+    }
+
+    #[inline]
+    pub fn pane_view(&self, focus: crate::core::navigation_manager::PaneFocus) -> &MainViewState {
+        match focus {
+            crate::core::navigation_manager::PaneFocus::Primary => &self.main_view,
+            crate::core::navigation_manager::PaneFocus::Secondary => &self.secondary_view,
+        }
+    }
+
+    #[inline]
+    pub fn pane_view_mut(
+        &mut self,
+        focus: crate::core::navigation_manager::PaneFocus,
+    ) -> &mut MainViewState {
+        match focus {
+            crate::core::navigation_manager::PaneFocus::Primary => &mut self.main_view,
+            crate::core::navigation_manager::PaneFocus::Secondary => &mut self.secondary_view,
+        }
+    }
+
+    #[inline]
+    pub fn active_view(&self) -> &MainViewState {
+        self.pane_view(self.active_pane_focus())
+    }
+
+    #[inline]
+    pub fn active_view_mut(&mut self) -> &mut MainViewState {
+        self.pane_view_mut(self.active_pane_focus())
+    }
+
+    #[inline]
+    pub fn pane_file_items(
+        &self,
+        focus: crate::core::navigation_manager::PaneFocus,
+    ) -> Entity<FileItems> {
+        match focus {
+            crate::core::navigation_manager::PaneFocus::Primary => self.file_items.clone(),
+            crate::core::navigation_manager::PaneFocus::Secondary => {
+                self.secondary_file_items.clone()
+            }
+        }
+    }
+
+    #[inline]
+    pub fn active_file_items(&self) -> Entity<FileItems> {
+        self.pane_file_items(self.active_pane_focus())
     }
 }
 

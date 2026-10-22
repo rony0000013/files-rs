@@ -58,7 +58,7 @@ impl Default for SortState {
 // Pane types
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaneType {
     Single,
     Dual,
@@ -134,8 +134,16 @@ pub struct ShelfItem {
 /// Lasso (rubber-band) selection state
 #[derive(Debug, Clone, Default)]
 pub struct LassoState {
+    /// Start position in pane-local coordinates (relative to the list viewport top-left)
     pub start: Point<f32>,
+    /// Current position in pane-local coordinates
     pub current: Point<f32>,
+    /// Window-space origin of the list viewport used to convert window mouse events to local coords
+    pub pane_origin: Point<f32>,
+    /// Whether Ctrl or Shift was held when the lasso started (additive selection)
+    pub additive: bool,
+    /// Snapshot of selected_indices at the start of an additive lasso
+    pub initial_selection: HashSet<usize>,
 }
 
 /// Minimum delta in pixels to consider a mouse movement as a drag (not a click)
@@ -565,8 +573,17 @@ pub struct MainViewState {
     pub folder_background: FolderBackground,
     /// Which pane is currently focused in dual-pane mode
     pub active_pane: crate::core::navigation_manager::PaneFocus,
-    /// Last item clicked (for keyboard range select anchor)
+    /// Split ratio for dual-pane mode (0.2..=0.8, default 0.5)
+    #[serde(default = "default_dual_pane_ratio")]
+    pub dual_pane_ratio: f32,
+    /// Active drag state for dual-pane splitter: (start_mouse_coord, start_ratio)
+    #[serde(skip)]
+    pub dual_pane_resize_start: Option<(f32, f32)>,
+    /// Last item clicked / focused by keyboard
     pub last_clicked_index: Option<usize>,
+    /// Anchor item index for Shift+Arrow / Shift+Click range selection
+    #[serde(skip)]
+    pub selection_anchor_index: Option<usize>,
     /// Lasso (rubber-band) selection state (runtime-only, not persisted)
     #[serde(skip)]
     pub lasso_state: Option<LassoState>,
@@ -609,6 +626,22 @@ pub struct MainViewState {
     /// Last check timestamp for viewport-based icon refresh (debounce guard)
     #[serde(skip)]
     pub icon_refresh_last_check: Option<std::time::Instant>,
+    /// Miller Columns: scroll handle for Column 1 (parent siblings).
+    #[serde(skip)]
+    pub col1_scroll_handle: UniformListScrollHandle,
+    /// Miller Columns: scroll handle for Column 3 (child preview).
+    #[serde(skip)]
+    pub col3_scroll_handle: UniformListScrollHandle,
+    /// Cached Column 1 rows (name, path, is_current), keyed by `col1_siblings_for`.
+    #[serde(skip)]
+    pub col1_siblings: Vec<(String, FilesPath, bool)>,
+    #[serde(skip)]
+    pub col1_siblings_for: Option<FilesPath>,
+    /// Cached Column 3 preview rows (name, path, is_dir, size), keyed by `col3_children_for`.
+    #[serde(skip)]
+    pub col3_children: Vec<(String, FilesPath, bool, u64)>,
+    #[serde(skip)]
+    pub col3_children_for: Option<FilesPath>,
     /// Bouncy scroll state for the main file view content area (home, grouped, recycle bin only)
     #[serde(skip)]
     pub bouncy_scroll: BouncyScrollState,
@@ -672,4 +705,8 @@ pub struct VisibleCacheKey {
     pub is_searching: bool,
     pub search_query: String,
     pub search_results_len: usize,
+}
+
+fn default_dual_pane_ratio() -> f32 {
+    0.5
 }

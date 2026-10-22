@@ -13,6 +13,14 @@ fn default_version() -> u32 {
 
 /// Core application settings, persisted to disk.
 /// Mirrors the functionality of Files.App settings storage.
+/// Action behaviors for the file view, mirroring Files.app action settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActionsConfig {
+    /// When true, double-clicking empty space in the file view navigates up one level.
+    pub double_click_empty_space_go_up: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct AppConfig {
@@ -46,6 +54,9 @@ pub struct AppConfig {
     /// Default terminal application preference
     #[serde(default)]
     pub terminal_app: TerminalType,
+    /// Action behaviors for the file view (double-click empty space, etc.)
+    #[serde(default)]
+    pub actions: ActionsConfig,
     /// Keyboard shortcut override bindings
     #[serde(default)]
     pub action_bindings: Option<crate::core::action_registry::ActionRegistry>,
@@ -295,6 +306,7 @@ impl Default for AppConfig {
             },
             folder_preferences: HashMap::new(),
             experimental: ExperimentalConfig::default(),
+            actions: ActionsConfig::default(),
             session: SessionConfig::default(),
             appearance: AppearanceConfig::default(),
             terminal_app: TerminalType::default(),

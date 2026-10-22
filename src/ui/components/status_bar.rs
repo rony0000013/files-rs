@@ -28,6 +28,12 @@ pub struct StatusBarState {
     pub show_git_actions: bool,
     /// Current path (for display purposes)
     pub current_path: Option<String>,
+    /// Set while an async folder-size walk is in flight for `folder_size_for`.
+    pub folder_size_pending: bool,
+    /// Path the pending/computed folder size belongs to (guards stale async results).
+    pub folder_size_for: Option<crate::core::path_util::FilesPath>,
+    /// Spinner animation frame (0..3) for the pending folder size.
+    pub spinner_frame: u32,
 }
 
 impl StatusBarState {
@@ -44,6 +50,9 @@ impl StatusBarState {
         self.selected_size_bytes = 0;
         self.free_bytes = 0;
         self.total_bytes = 0;
+        self.folder_size_pending = false;
+        self.folder_size_for = None;
+        self.spinner_frame = 0;
     }
 }
 
@@ -101,6 +110,30 @@ impl StatusBarView {
             status_text.push_str(&format!(" | {} {}", state.selected_count, noun));
             if state.selected_size_bytes > 0 {
                 status_text.push_str(&format!(" | {}", format_size(state.selected_size_bytes)));
+            } else if state.folder_size_pending {
+                let dots = ".".repeat((state.spinner_frame % 4) as usize);
+                status_text.push_str(&format!(" | Calculating size{}", dots));
+            }
+            // Single-selection details live here (List/Grid cells show names only).
+            if state.selected_count == 1 {
+                let pane = _app.active_pane_focus();
+                if let Some(item) = _app
+                    .pane_view(pane)
+                    .selected_indices
+                    .iter()
+                    .next()
+                    .and_then(|&i| _app.pane_view(pane).items.get(i))
+                {
+                    let kind = if matches!(
+                        item.file_type,
+                        crate::storage::storage::FileType::Directory
+                    ) {
+                        "Folder"
+                    } else {
+                        "File"
+                    };
+                    status_text.push_str(&format!(" · {} ({})", item.name, kind));
+                }
             }
         }
 

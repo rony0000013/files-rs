@@ -81,6 +81,7 @@ fn main() {
                 point(px(0.0), px(0.0)),
                 size(px(1280.0), px(800.0)),
             ))),
+            window_min_size: Some(size(px(500.0), px(340.0))),
             titlebar: None,
             window_background,
             ..Default::default()

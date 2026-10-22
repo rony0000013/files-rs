@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::fs;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileItem {
     pub name: String,
     pub path: FilesPath,

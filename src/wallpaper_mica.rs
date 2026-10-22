@@ -61,6 +61,68 @@ pub fn main_hwnd_set() -> bool {
     MAIN_HWND.get().is_some()
 }
 
+/// Query the OS directly for whether the main window is currently maximized.
+/// Keeps caption button state in sync across native Aero Snap / drag-restore.
+pub fn is_main_hwnd_maximized() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
+        if let Some(&h) = MAIN_HWND.get() {
+            return Some(unsafe { IsZoomed(HWND(h as *mut core::ffi::c_void)).as_bool() });
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Synchronize GPUI's internal `window.viewport_size` with the OS client rect
+/// by posting an asynchronous `WM_SIZE` message to the main window.
+///
+/// In `gpui_windows`, `handle_size_change` updates `logical_size` and resizes
+/// the DirectX swapchain before invoking `callbacks.resize` (`window.bounds_changed`).
+/// If `WM_SIZE` arrived while `AppCell` was mutably borrowed (for example,
+/// during a synchronous `SendMessageW` modal drag loop), `logical_size` and
+/// the swapchain updated to the new dimensions while `window.viewport_size`
+/// remained stuck at the pre-drag size. Posting `WM_SIZE` once the borrow is
+/// released drives `handle_size_msg` -> `on_resize` -> `window.bounds_changed(cx)`.
+pub fn sync_window_size() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, IsIconic, IsZoomed, PostMessageW, SIZE_MAXIMIZED, SIZE_RESTORED, WM_SIZE,
+        };
+        if let Some(&h) = MAIN_HWND.get() {
+            unsafe {
+                let hwnd = HWND(h as *mut core::ffi::c_void);
+                if !IsIconic(hwnd).as_bool() {
+                    let mut rc = RECT::default();
+                    if GetClientRect(hwnd, &mut rc).is_ok() {
+                        let w = (rc.right - rc.left).max(1) as usize;
+                        let h_px = (rc.bottom - rc.top).max(1) as usize;
+                        let wparam = if IsZoomed(hwnd).as_bool() {
+                            SIZE_MAXIMIZED as usize
+                        } else {
+                            SIZE_RESTORED as usize
+                        };
+                        let lparam = ((h_px & 0xFFFF) << 16) | (w & 0xFFFF);
+                        let _ = PostMessageW(
+                            Some(hwnd),
+                            WM_SIZE,
+                            WPARAM(wparam),
+                            LPARAM(lparam as isize),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Force the OS to repaint the window, bypassing GPUI's dirty tracking.
 /// Used after geometry settles: if a mid-drag frame is stuck on screen,
 /// a real WM_PAINT heals what notify/pump-wake could not.

@@ -46,7 +46,14 @@ pub struct TabState {
     pub history_back: VecDeque<FilesPath>,
     pub history_forward: VecDeque<FilesPath>,
     pub secondary_pane_path: Option<FilesPath>,
+    #[serde(default)]
+    pub secondary_history_back: VecDeque<FilesPath>,
+    #[serde(default)]
+    pub secondary_history_forward: VecDeque<FilesPath>,
     pub selection: Vec<FilesPath>,
+    /// Whether this tab is pinned to the left of the tab strip.
+    #[serde(default)]
+    pub pinned: bool,
     /// The view target for this tab (Directory, Home, Settings, etc.)
     #[serde(default)]
     pub target: crate::ui::views::types::ViewTarget,
@@ -66,7 +73,10 @@ impl TabState {
             history_back: VecDeque::with_capacity(MAX_HISTORY),
             history_forward: VecDeque::with_capacity(MAX_HISTORY),
             secondary_pane_path: None,
+            secondary_history_back: VecDeque::with_capacity(MAX_HISTORY),
+            secondary_history_forward: VecDeque::with_capacity(MAX_HISTORY),
             selection: Vec::new(),
+            pinned: false,
             target: crate::ui::views::types::ViewTarget::Directory(path),
         }
     }
@@ -82,7 +92,10 @@ impl TabState {
             history_back: VecDeque::with_capacity(MAX_HISTORY),
             history_forward: VecDeque::with_capacity(MAX_HISTORY),
             secondary_pane_path: None,
+            secondary_history_back: VecDeque::with_capacity(MAX_HISTORY),
+            secondary_history_forward: VecDeque::with_capacity(MAX_HISTORY),
             selection: Vec::new(),
+            pinned: false,
             target: crate::ui::views::types::ViewTarget::Directory(path),
         }
     }
@@ -160,6 +173,62 @@ impl TabState {
 
     pub fn forward_history(&self) -> &VecDeque<FilesPath> {
         &self.history_forward
+    }
+
+    pub fn navigate_secondary(&mut self, path: FilesPath) {
+        let current = self
+            .secondary_pane_path
+            .clone()
+            .unwrap_or_else(|| self.path.clone());
+        if current == path && self.secondary_pane_path.is_some() {
+            return;
+        }
+        if self.secondary_pane_path.is_some() {
+            if self.secondary_history_back.len() >= MAX_HISTORY {
+                self.secondary_history_back.pop_front();
+            }
+            self.secondary_history_back.push_back(current);
+            self.secondary_history_forward.clear();
+        }
+        self.secondary_pane_path = Some(path);
+    }
+
+    pub fn navigate_back_secondary(&mut self) -> Option<FilesPath> {
+        if let Some(prev) = self.secondary_history_back.pop_back() {
+            if let Some(curr) = self.secondary_pane_path.clone() {
+                if self.secondary_history_forward.len() >= MAX_HISTORY {
+                    self.secondary_history_forward.pop_front();
+                }
+                self.secondary_history_forward.push_back(curr);
+            }
+            self.secondary_pane_path = Some(prev.clone());
+            Some(prev)
+        } else {
+            None
+        }
+    }
+
+    pub fn navigate_forward_secondary(&mut self) -> Option<FilesPath> {
+        if let Some(next) = self.secondary_history_forward.pop_back() {
+            if let Some(curr) = self.secondary_pane_path.clone() {
+                if self.secondary_history_back.len() >= MAX_HISTORY {
+                    self.secondary_history_back.pop_front();
+                }
+                self.secondary_history_back.push_back(curr);
+            }
+            self.secondary_pane_path = Some(next.clone());
+            Some(next)
+        } else {
+            None
+        }
+    }
+
+    pub fn can_go_back_secondary(&self) -> bool {
+        !self.secondary_history_back.is_empty()
+    }
+
+    pub fn can_go_forward_secondary(&self) -> bool {
+        !self.secondary_history_forward.is_empty()
     }
 }
 
@@ -421,6 +490,62 @@ impl TabManagerState {
         if let Some(tab) = self.closed_tabs.pop_front() {
             self.tabs.push(tab);
             self.active_tab_index = self.tabs.len() - 1;
+            self.record_mru(self.active_tab_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Toggle pinned state on a tab and move pinned tabs to the left of unpinned tabs.
+    pub fn toggle_pin_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        let now_pinned = !self.tabs[index].pinned;
+        self.tabs[index].pinned = now_pinned;
+        if now_pinned {
+            let target = self
+                .tabs
+                .iter()
+                .enumerate()
+                .position(|(i, t)| i != index && !t.pinned)
+                .unwrap_or(index);
+            if target < index {
+                self.reorder_tab(index, target);
+            }
+        } else {
+            let last_pinned = self
+                .tabs
+                .iter()
+                .enumerate()
+                .rposition(|(i, t)| i != index && t.pinned);
+            if let Some(lp) = last_pinned {
+                if index < lp {
+                    self.reorder_tab(index, lp);
+                }
+            }
+        }
+    }
+
+    /// Move the currently active tab one slot to the left (`Ctrl+Shift+PageUp` / `Ctrl+Shift+Left`).
+    pub fn move_active_tab_left(&mut self) -> bool {
+        if self.active_tab_index > 0 && self.tabs.len() > 1 {
+            let from = self.active_tab_index;
+            let to = from - 1;
+            self.reorder_tab(from, to);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move the currently active tab one slot to the right (`Ctrl+Shift+PageDown` / `Ctrl+Shift+Right`).
+    pub fn move_active_tab_right(&mut self) -> bool {
+        if self.active_tab_index + 1 < self.tabs.len() {
+            let from = self.active_tab_index;
+            let to = from + 1;
+            self.reorder_tab(from, to);
             true
         } else {
             false

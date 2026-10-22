@@ -1,52 +1,241 @@
 //! Selection-related methods for MainViewState.
 //!
-//! Extracted from main_view.rs for maintainability:
-//! - Lasso (rubber-band) selection
+//! Provides:
+//! - View-mode-aware Lasso (rubber-band) selection across Details, Grid, List, and Columns views
+//! - Live selection updates during mouse drag (accounting for scroll offset and additive Ctrl/Shift)
 //! - Drag and drop operations
 //! - Rectangular selection helpers
 
 use gpui::*;
+use std::collections::HashSet;
 
 use crate::config::config::ViewMode;
 use crate::storage::storage::FileType;
 
 use super::main_view::MainViewState;
-use super::types::{DragState, LassoState};
+use super::types::{rects_intersect, DragState, LassoState};
 
 impl MainViewState {
     // ─────────────────────────────────────────────────────────────────────────
     // Lasso (rubber-band) selection
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Start a lasso selection at the given point.
+    /// Start a lasso selection at the given point (in local coordinates).
     pub fn lasso_start(&mut self, point: Point<f32>) {
         self.lasso_state = Some(LassoState {
             start: point,
             current: point,
+            pane_origin: gpui::point(0.0, 0.0),
+            additive: false,
+            initial_selection: HashSet::new(),
         });
     }
 
-    /// Update the current lasso selection endpoint.
+    /// Start a lasso selection from window-space mouse coordinates with pane origin
+    /// and optional additive (`Ctrl`/`Shift`) modifier.
+    pub fn lasso_start_at_window_pos(
+        &mut self,
+        window_pos: Point<f32>,
+        pane_origin: Point<f32>,
+        additive: bool,
+    ) {
+        let local = point(
+            (window_pos.x - pane_origin.x).max(0.0),
+            (window_pos.y - pane_origin.y).max(0.0),
+        );
+        let initial_selection = if additive {
+            self.selected_indices.clone()
+        } else {
+            self.selected_indices.clear();
+            HashSet::new()
+        };
+        self.lasso_state = Some(LassoState {
+            start: local,
+            current: local,
+            pane_origin,
+            additive,
+            initial_selection,
+        });
+    }
+
+    /// Update the current lasso selection endpoint (local coordinates).
     pub fn lasso_update(&mut self, point: Point<f32>) {
         if let Some(ref mut state) = self.lasso_state {
             state.current = point;
         }
     }
 
+    /// Update the current lasso selection from a window-space mouse position
+    /// and immediately recompute `selected_indices` for live rubber-band highlighting.
+    pub fn lasso_update_at_window_pos(&mut self, window_pos: Point<f32>, pane_w: f32) -> bool {
+        let Some((rect, additive, initial)) = self.lasso_state.as_mut().map(|lasso| {
+            lasso.current = point(
+                (window_pos.x - lasso.pane_origin.x).max(0.0),
+                (window_pos.y - lasso.pane_origin.y).max(0.0),
+            );
+            (
+                lasso.rect(),
+                lasso.additive,
+                lasso.initial_selection.clone(),
+            )
+        }) else {
+            return false;
+        };
+
+        let dx = (rect.1.x - rect.0.x).abs();
+        let dy = (rect.1.y - rect.0.y).abs();
+        if dx <= super::types::LASSO_MIN_DELTA && dy <= super::types::LASSO_MIN_DELTA {
+            return false;
+        }
+
+        let scroll_y = {
+            let (curr_y, _, _, _) =
+                crate::ui::components::bouncy_scroll::uniformlist_scroll_info(
+                    &self.uniform_list_scroll_handle,
+                );
+            (-curr_y).max(0.0)
+        };
+
+        let content_rect = (
+            point(rect.0.x, rect.0.y + scroll_y),
+            point(rect.1.x, rect.1.y + scroll_y),
+        );
+
+        self.apply_rect_selection_for_view(content_rect, pane_w, additive, &initial);
+        true
+    }
+
+    /// Compute intersecting items for the current `view_mode` given a rectangle
+    /// in scroll-content coordinates.
+    pub fn apply_rect_selection_for_view(
+        &mut self,
+        content_rect: (Point<f32>, Point<f32>),
+        pane_w: f32,
+        additive: bool,
+        initial_selection: &HashSet<usize>,
+    ) {
+        let visible = self.visible_items_rc();
+        let mut next_selected = if additive {
+            initial_selection.clone()
+        } else {
+            HashSet::new()
+        };
+
+        let effective_w = if pane_w > 50.0 { pane_w } else { 1000.0 };
+
+        match self.view_mode {
+            ViewMode::Details => {
+                let row_h = 20.0 + self.zoom_level * 28.0;
+                for (i, &vi) in visible.iter().enumerate() {
+                    let y0 = i as f32 * row_h;
+                    let item_rect = (point(0.0, y0), point(effective_w, y0 + row_h));
+                    if rects_intersect(item_rect, content_rect) {
+                        next_selected.insert(vi);
+                    }
+                }
+            }
+            ViewMode::Columns => {
+                let row_h = 20.0 + self.zoom_level * 28.0;
+                let col2_w = (effective_w * 0.38).clamp(220.0, 420.0);
+                for (i, &vi) in visible.iter().enumerate() {
+                    let y0 = i as f32 * row_h;
+                    let item_rect = (point(0.0, y0), point(col2_w, y0 + row_h));
+                    if rects_intersect(item_rect, content_rect) {
+                        next_selected.insert(vi);
+                    }
+                }
+            }
+            ViewMode::List => {
+                let (cols, col_w, row_h, gap, padding) =
+                    Self::list_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
+                // Column-major flow (Files List view): items fill each column
+                // top-to-bottom, then continue at the top of the next column.
+                let rows_per_col = ((visible.len() + cols - 1) / cols.max(1)).max(1);
+                for (i, &vi) in visible.iter().enumerate() {
+                    let row = i % rows_per_col;
+                    let col = i / rows_per_col;
+                    let x0 = padding + col as f32 * (col_w + gap);
+                    let y0 = row as f32 * row_h;
+                    let item_rect = (point(x0, y0), point(x0 + col_w, y0 + row_h));
+                    if rects_intersect(item_rect, content_rect) {
+                        next_selected.insert(vi);
+                    }
+                }
+            }
+            ViewMode::Grid => {
+                let cols = Self::grid_columns_for_width(effective_w, self.zoom_level);
+                let params = Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
+                let item_h = if self.compact_mode {
+                    params.item_height - 8.0
+                } else {
+                    params.item_height
+                };
+                for (i, &vi) in visible.iter().enumerate() {
+                    let row = i / params.items_per_row.max(1);
+                    let col = i % params.items_per_row.max(1);
+                    let x0 = params.padding + col as f32 * (params.item_width + params.gap);
+                    let y0 = row as f32 * params.row_height;
+                    let item_rect = (
+                        point(x0, y0),
+                        point(x0 + params.item_width, y0 + item_h),
+                    );
+                    if rects_intersect(item_rect, content_rect) {
+                        next_selected.insert(vi);
+                    }
+                }
+            }
+        }
+
+        if let Some(&first) = next_selected.iter().next() {
+            if self.last_clicked_index.is_none() {
+                self.last_clicked_index = Some(first);
+            }
+        }
+        self.selected_indices = next_selected;
+    }
+
+    /// Multi-column / compact list layout metrics shared between ListView rendering,
+    /// rubber-band lasso hit-testing, and 2D keyboard navigation.
+    /// Returns `(cols, col_width, row_height, gap, horizontal_padding)`.
+    pub fn list_layout_metrics(
+        pane_w: f32,
+        zoom: f32,
+        compact: bool,
+    ) -> (usize, f32, f32, f32, f32) {
+        let row_h = if compact {
+            22.0 + zoom * 16.0
+        } else {
+            28.0 + zoom * 24.0
+        };
+        let padding = 12.0;
+        let gap = 8.0;
+        let min_col_w = 240.0 + zoom * 80.0;
+        let avail = (pane_w - padding * 2.0).max(min_col_w);
+        let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 6);
+        let col_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
+            .floor()
+            .max(160.0);
+        (cols, col_w, row_h, gap, padding)
+    }
+
     /// End lasso selection and apply it to selected_indices.
     pub fn lasso_end(&mut self, add_to_selection: bool) {
         if let Some(state) = self.lasso_state.take() {
+            if !state.has_exceeded_threshold() {
+                return;
+            }
             let (start, end) = state.rect();
             let min_x = start.x.min(end.x);
             let max_x = start.x.max(end.x);
             let min_y = start.y.min(end.y);
             let max_y = start.y.max(end.y);
 
-            if !add_to_selection {
+            if !add_to_selection && !state.additive {
                 self.selected_indices.clear();
+            } else if state.additive {
+                self.selected_indices = state.initial_selection;
             }
 
-            // For grid view: calculate which items intersect the lasso rectangle
             let items_per_row = match self.view_mode {
                 ViewMode::Grid => 6,
                 _ => 4,
@@ -75,6 +264,31 @@ impl MainViewState {
                 }
             }
         }
+    }
+
+    /// Whether a rubber-band (lasso) drag is currently active in this pane.
+    pub fn is_lasso_active(&self) -> bool {
+        self.lasso_state.is_some()
+    }
+
+    /// Detect a double-click on empty space (two presses within 500 ms).
+    /// Returns true on the second press; drives "double-click empty space to go up".
+    pub fn check_empty_space_double_click(&mut self) -> bool {
+        const DOUBLE_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.last_empty_click {
+            if now.duration_since(prev) < DOUBLE_CLICK_INTERVAL {
+                self.last_empty_click = None;
+                return true;
+            }
+        }
+        self.last_empty_click = Some(now);
+        false
+    }
+
+    /// Finish a live window-space lasso drag (selection was already updated during move).
+    pub fn finish_live_lasso(&mut self) {
+        self.lasso_state = None;
     }
 
     /// Cancel the current lasso operation without applying selection.

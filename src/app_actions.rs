@@ -393,9 +393,8 @@ impl AppWindow {
     // === Clipboard operations ===
 
     pub fn cut_selected(&mut self, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self
-            .state
-            .main_view
+        let active_view = self.state.active_view();
+        let indices: Vec<usize> = active_view
             .selected_indices
             .iter()
             .copied()
@@ -403,8 +402,7 @@ impl AppWindow {
         let items: Vec<ClipboardItem> = indices
             .iter()
             .filter_map(|&idx| {
-                self.state
-                    .main_view
+                active_view
                     .items
                     .get(idx)
                     .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
@@ -419,9 +417,8 @@ impl AppWindow {
     }
 
     pub fn copy_selected(&mut self, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self
-            .state
-            .main_view
+        let active_view = self.state.active_view();
+        let indices: Vec<usize> = active_view
             .selected_indices
             .iter()
             .copied()
@@ -429,8 +426,7 @@ impl AppWindow {
         let items: Vec<ClipboardItem> = indices
             .iter()
             .filter_map(|&idx| {
-                self.state
-                    .main_view
+                active_view
                     .items
                     .get(idx)
                     .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
@@ -447,17 +443,15 @@ impl AppWindow {
     /// Copy the first selected item's full path as text (Files parity:
     /// "Copy item path", Ctrl+Shift+C). Falls back to the current folder.
     pub fn copy_item_path(&mut self, cx: &mut Context<Self>) {
-        let path_str = self
-            .state
-            .main_view
+        let active_view = self.state.active_view();
+        let path_str = active_view
             .selected_indices
             .iter()
             .next()
-            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .and_then(|&idx| active_view.items.get(idx))
             .map(|item| item.path.as_path().to_string_lossy().to_string())
             .unwrap_or_else(|| {
-                self.state
-                    .main_view
+                active_view
                     .primary_path
                     .as_path()
                     .to_string_lossy()
@@ -545,7 +539,7 @@ impl AppWindow {
     }
 
     pub fn paste(&mut self, cx: &mut Context<Self>) {
-        let target_dir = self.state.main_view.primary_path.clone();
+        let target_dir = self.state.active_view().primary_path.clone();
         let target_path = target_dir.as_path().to_path_buf();
 
         let clipboard_items = match &self.state.clipboard {
@@ -1659,28 +1653,56 @@ impl AppWindow {
     }
 
     pub fn start_rename(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(item) = self.state.main_view.items.get(index) {
-            self.state.main_view.renaming_index = Some(index);
-            self.state.main_view.rename_text = item.name.clone();
+        let view = self.state.active_view_mut();
+        if let Some(item) = view.items.get(index) {
+            view.renaming_index = Some(index);
+            view.rename_text = item.name.clone();
             cx.notify();
         }
     }
 
     pub fn commit_rename(&mut self, cx: &mut Context<Self>) {
-        if let Some(idx) = self.state.main_view.renaming_index {
-            let new_name = self.state.main_view.rename_text.clone();
-            tracing::info!("Renaming item {} to {}", idx, new_name);
-            // In a real app, we'd call FileOperationService here
-            if let Some(item) = self.state.main_view.items.get_mut(idx) {
-                item.name = new_name;
+        let pane_focus = self.state.active_pane_focus();
+        let rename_info = {
+            let view = self.state.pane_view_mut(pane_focus);
+            if let Some(idx) = view.renaming_index.take() {
+                let new_name = view.rename_text.trim().to_string();
+                view.items.get(idx).map(|item| (idx, item.path.clone(), item.name.clone(), new_name))
+            } else {
+                None
             }
-            self.state.main_view.renaming_index = None;
+        };
+        if let Some((idx, old_path, old_name, new_name)) = rename_info {
+            if !new_name.is_empty() && new_name != old_name {
+                if let Some(parent) = old_path.as_path().parent() {
+                    let new_path = FilesPath::new(parent.join(&new_name));
+                    let action = crate::core::undo_redo::RenameAction {
+                        old_path: old_path.clone(),
+                        new_path: new_path.clone(),
+                    };
+                    if let Err(e) = self.state.undo_redo.perform(Box::new(action)) {
+                        tracing::error!("Failed to rename {:?} to {:?}: {}", old_path, new_path, e);
+                    } else {
+                        let view = self.state.pane_view_mut(pane_focus);
+                        if let Some(item) = view.items.get_mut(idx) {
+                            item.name = new_name;
+                            item.path = new_path;
+                        }
+                        view.bump_items_revision();
+                        let updated_items = view.items.clone();
+                        self.state.pane_file_items(pane_focus).update(cx, |m, _| {
+                            m.items = updated_items;
+                        });
+                    }
+                }
+            }
             cx.notify();
         }
     }
 
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         self.state.main_view.renaming_index = None;
+        self.state.secondary_view.renaming_index = None;
         cx.notify();
     }
 
@@ -2361,6 +2383,8 @@ impl AppWindow {
         });
         self.state.main_view.view_mode = mode.clone();
         self.state.main_view.zoom_level = new_zoom;
+        self.state.secondary_view.view_mode = mode.clone();
+        self.state.secondary_view.zoom_level = new_zoom;
 
         // Save last used view mode (always) + per-directory preferences if lock is enabled
         let path = self.state.main_view.primary_path.clone();
