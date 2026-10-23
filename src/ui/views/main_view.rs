@@ -1012,6 +1012,7 @@ impl MainView {
                     .id("side-pane-body-scroll")
                     .flex_1()
                     .w_full()
+                    .h_full()
                     .overflow_y_scroll()
                     .track_scroll(&state.side_pane_scroll_handle)
                     .p(px(12.0))
