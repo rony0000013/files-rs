@@ -12,7 +12,7 @@
 //!     Markdown, PDFs, Archives, Audio/Video Media, HTML, RTF, Plain Text, and Folder 12-item grid.
 
 use crate::domain::metadata::FileItem;
-use crate::platform::windows::drive_service::enumerate_drives;
+use crate::platform::windows::drive_service::{enumerate_drives, DriveInfo};
 use crate::storage::storage::FileType;
 use crate::ui::constants::UiConstants;
 use gpui::*;
@@ -20,6 +20,31 @@ use gpui::*;
 use super::helpers::*;
 use super::main_view::MainView;
 use super::types::*;
+
+std::thread_local! {
+    /// Drive list cache: `enumerate_drives()` hits Win32 volume APIs per
+    /// call, so renders (and especially resize-drag frames) share a
+    /// 30-second snapshot instead of re-querying every frame.
+    static DRIVE_LIST_CACHE: std::cell::RefCell<(Option<std::time::Instant>, Vec<DriveInfo>)> =
+        std::cell::RefCell::new((None, Vec::new()));
+}
+
+/// Cached `enumerate_drives()` with a 30s TTL for per-frame render paths.
+fn cached_drives() -> Vec<DriveInfo> {
+    DRIVE_LIST_CACHE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let now = std::time::Instant::now();
+        let stale = guard
+            .0
+            .map(|t| now.duration_since(t).as_secs() >= 30)
+            .unwrap_or(true);
+        if stale {
+            guard.1 = enumerate_drives();
+            guard.0 = Some(now);
+        }
+        guard.1.clone()
+    })
+}
 
 impl MainView {
     /// Render the `InfoPane` content when **no item is selected** (shows current folder & drive details, `Files-community` parity).
@@ -56,8 +81,10 @@ impl MainView {
             .map(|i| i.size)
             .sum();
 
-        // Check if current path belongs to a known drive so we can show Drive Storage Capacity Bar
-        let matched_drive = enumerate_drives().into_iter().find(|d| {
+        // Check if current path belongs to a known drive so we can show Drive Storage Capacity Bar.
+        // Uses a 30s TTL cache: raw enumerate_drives() hits Win32 volume APIs
+        // and must not run on every render frame (e.g. splitter drags).
+        let matched_drive = cached_drives().into_iter().find(|d| {
             path_str
                 .to_ascii_lowercase()
                 .starts_with(&d.root_path().to_ascii_lowercase())
@@ -495,8 +522,10 @@ impl MainView {
                 }
             }
             PreviewContent::Code { language } => {
-                if let Some(text) = &state.preview_text {
-                    Self::render_code_preview(text, language).into_any_element()
+                if state.preview_text.is_some() {
+                    let (lines, total, truncated) = Self::code_tokens_for_state(state);
+                    Self::render_code_preview(&lines, language, total, truncated)
+                        .into_any_element()
                 } else {
                     Self::render_default_preview(item, state).into_any_element()
                 }
@@ -1236,12 +1265,44 @@ impl MainView {
             break;
         }
 
-        div().flex_row().flex_wrap().children(children)
+        div().flex().flex_row().flex_wrap().children(children)
     }
 
-    fn render_code_preview(text: &str, language: &str) -> impl IntoElement {
-        let highlighted = Self::highlight_code(text);
-        let line_count = text.lines().count();
+    /// Max lines rendered in the code preview; the full text stays in state.
+    const CODE_PREVIEW_MAX_LINES: usize = 400;
+
+    /// Resolve highlighted lines for the current preview text, preferring the
+    /// load-time cache so resize drags never re-tokenize. Returns
+    /// (lines_to_render, total_lines, was_truncated).
+    pub(crate) fn code_tokens_for_state(
+        state: &MainViewState,
+    ) -> (Vec<Vec<(String, Option<u32>)>>, usize, bool) {
+        const MAX: usize = MainView::CODE_PREVIEW_MAX_LINES;
+        if let Some(text) = &state.preview_text {
+            if !text.is_empty() && state.preview_highlighted_src == *text {
+                let total = state.preview_highlighted.len();
+                let shown = total.min(MAX);
+                return (
+                    state.preview_highlighted[..shown].to_vec(),
+                    total,
+                    total > MAX,
+                );
+            }
+            let all = Self::highlight_code(text);
+            let total = all.len();
+            let shown = total.min(MAX);
+            (all[..shown].to_vec(), total, total > MAX)
+        } else {
+            (Vec::new(), 0, false)
+        }
+    }
+
+    fn render_code_preview(
+        lines: &[Vec<(String, Option<u32>)>],
+        language: &str,
+        total_lines: usize,
+        truncated: bool,
+    ) -> impl IntoElement {
 
         div()
             .flex_col()
@@ -1274,7 +1335,11 @@ impl MainView {
                         div()
                             .text_size(px(10.5))
                             .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                            .child(format!("{} lines", line_count)),
+                            .child(if truncated {
+                                format!("{} lines (showing first {})", total_lines, lines.len())
+                            } else {
+                                format!("{} lines", total_lines)
+                            }),
                     ),
             )
             .child(
@@ -1285,7 +1350,7 @@ impl MainView {
                         "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
                     )
                     .text_size(px(11.0))
-                    .children(highlighted.into_iter().enumerate().map(|(i, tokens)| {
+                    .children(lines.iter().enumerate().map(|(i, tokens)| {
                         div()
                             .flex()
                             .flex_row()
@@ -1300,12 +1365,13 @@ impl MainView {
                             )
                             .child(
                                 div()
+                                    .flex()
                                     .flex_row()
                                     .flex_wrap()
-                                    .children(tokens.into_iter().map(|(token, color_opt)| {
-                                        let mut el = div().child(token);
+                                    .children(tokens.iter().map(|(token, color_opt)| {
+                                        let mut el = div().child(token.clone());
                                         if let Some(color) = color_opt {
-                                            el = el.text_color(color);
+                                            el = el.text_color(rgba(*color));
                                         } else {
                                             el = el.text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA));
                                         }
@@ -1317,7 +1383,7 @@ impl MainView {
             )
     }
 
-    fn highlight_code(text: &str) -> Vec<Vec<(String, Option<gpui::Rgba>)>> {
+    pub(crate) fn highlight_code(text: &str) -> Vec<Vec<(String, Option<u32>)>> {
         let keywords: &[(&str, u32)] = &[
             ("fn", 0x569CD6FF),
             ("let", 0x569CD6FF),
@@ -1390,7 +1456,7 @@ impl MainView {
 
         let mut result = Vec::new();
         for line in text.lines() {
-            let mut tokens: Vec<(String, Option<gpui::Rgba>)> = Vec::new();
+            let mut tokens: Vec<(String, Option<u32>)> = Vec::new();
             let mut remaining = line;
 
             while !remaining.is_empty() {
@@ -1400,19 +1466,19 @@ impl MainView {
                         .find(quote)
                         .map(|i| i + 2)
                         .unwrap_or(remaining.len());
-                    tokens.push((remaining[..end].to_string(), Some(rgba(0xCE9178FFu32))));
+                    tokens.push((remaining[..end].to_string(), Some(0xCE9178FFu32)));
                     remaining = &remaining[end..];
                     continue;
                 }
                 if remaining.starts_with("//") || remaining.starts_with('#') {
-                    tokens.push((remaining.to_string(), Some(rgba(0x6A9955FFu32))));
+                    tokens.push((remaining.to_string(), Some(0x6A9955FFu32)));
                     break;
                 }
                 if remaining.starts_with(|c: char| c.is_ascii_digit()) {
                     let end = remaining
                         .find(|c: char| !c.is_ascii_digit() && c != '.' && c != 'x')
                         .unwrap_or(remaining.len());
-                    tokens.push((remaining[..end].to_string(), Some(rgba(0xB5CEA8FFu32))));
+                    tokens.push((remaining[..end].to_string(), Some(0xB5CEA8FFu32)));
                     remaining = &remaining[end..];
                     continue;
                 }
@@ -1424,7 +1490,7 @@ impl MainView {
                         let is_word_boundary = after.is_empty()
                             || !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
                         if is_word_boundary {
-                            tokens.push((kw.to_string(), Some(rgba(color))));
+                            tokens.push((kw.to_string(), Some(color)));
                             remaining = after;
                             matched = true;
                             break;
@@ -1437,7 +1503,7 @@ impl MainView {
 
                 let end = remaining
                     .find(|c: char| !c.is_alphanumeric() && c != '_')
-                    .unwrap_or(1);
+                    .unwrap_or(remaining.len());
                 if end > 0 {
                     tokens.push((remaining[..end].to_string(), None));
                     remaining = &remaining[end..];
@@ -1882,5 +1948,56 @@ impl MainView {
                             .into_any_element()
                     })),
             )
+    }
+}
+
+#[cfg(test)]
+mod code_preview_tests {
+    use super::MainView;
+
+    fn plain_text(lines: &[Vec<(String, Option<u32>)>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|tokens| {
+                tokens
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn identifiers_stay_whole_words() {
+        let lines = MainView::highlight_code("import os\nimport random\n");
+        assert_eq!(plain_text(&lines), vec!["import os", "import random"]);
+        // "os" / "random" must each be a single token, not per-char splits.
+        let first: Vec<&str> = lines[0].iter().map(|(t, _)| t.as_str()).collect();
+        assert!(first.contains(&"os"), "tokens were: {:?}", first);
+        // "import", " ", "random" — "random" must be one piece, not chars.
+        assert!(lines[1].iter().any(|(t, _)| t == "random"));
+    }
+
+    #[test]
+    fn keywords_keep_their_color() {
+        let lines = MainView::highlight_code("import os\n");
+        let import_tok = lines[0]
+            .iter()
+            .find(|(t, _)| t == "import")
+            .expect("import token missing");
+        assert!(import_tok.1.is_some(), "keyword lost its color");
+        let os_tok = lines[0]
+            .iter()
+            .find(|(t, _)| t == "os")
+            .expect("os token missing");
+        assert!(os_tok.1.is_none(), "plain identifier wrongly colored");
+    }
+
+    #[test]
+    fn roundtrip_preserves_source() {
+        let src = "import torch as t\nx = 42  # comment\n";
+        let lines = MainView::highlight_code(src);
+        let joined = plain_text(&lines).join("\n");
+        assert_eq!(joined, src.trim_end_matches('\n'));
     }
 }

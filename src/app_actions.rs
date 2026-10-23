@@ -942,11 +942,23 @@ impl AppWindow {
                                 } else {
                                     text
                                 };
+                                // Highlight once here (UI thread, once per file) so
+                                // every render — including resize drags — reuses
+                                // the cached tokens instead of re-tokenizing.
+                                let highlighted =
+                                    crate::ui::views::main_view::MainView::highlight_code(
+                                        &preview,
+                                    );
+                                this.state.main_view.preview_highlighted_src =
+                                    preview.clone();
+                                this.state.main_view.preview_highlighted = highlighted;
                                 this.state.main_view.preview_text = Some(preview);
                             }
                             Err(_) => {
                                 this.state.main_view.preview_text =
                                     Some("Unable to load preview.".to_string());
+                                this.state.main_view.preview_highlighted_src.clear();
+                                this.state.main_view.preview_highlighted.clear();
                             }
                         }
                         cx.notify();

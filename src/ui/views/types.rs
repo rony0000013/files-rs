@@ -584,6 +584,11 @@ pub struct MainViewState {
     pub compact_mode: bool,
     /// Cached text for file preview
     pub preview_text: Option<String>,
+    /// Source text the cached code highlight was computed from.
+    pub preview_highlighted_src: String,
+    /// Cached syntax-highlight tokens: (token, optional 0xRRGGBBAA color).
+    /// Computed once at preview load so resize drags never re-tokenize.
+    pub preview_highlighted: Vec<Vec<(String, Option<u32>)>>,
     /// Column widths for Details view
     pub column_widths: ColumnWidths,
     /// Column visibility for Details view (Name is always visible)

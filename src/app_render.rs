@@ -400,8 +400,19 @@ impl Render for AppWindow {
                                                             let min_width = 150.0;
                                                             let max_width = win_width * 0.65;
                                                             let new_width = (start_width - delta).max(min_width).min(max_width);
-                                                            this.state.main_view.side_pane_width = Some(new_width);
-                                                            cx.notify();
+                                                            // Coalesce sub-pixel jitter: only re-render on a real
+                                                            // >=1px change so a drag produces one layout per frame
+                                                            // at most instead of one per mouse event.
+                                                            let old_width = this
+                                                                .state
+                                                                .main_view
+                                                                .side_pane_width
+                                                                .unwrap_or(300.0);
+                                                            if (new_width - old_width).abs() >= 1.0 {
+                                                                this.state.main_view.side_pane_width =
+                                                                    Some(new_width);
+                                                                cx.notify();
+                                                            }
                                                         }
                                                         // Handle dual-pane splitter drag
                                                         if let Some((start_x, start_ratio)) =

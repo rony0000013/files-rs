@@ -50,6 +50,8 @@ impl MainViewState {
             rename_text: String::new(),
             compact_mode: false,
             preview_text: None,
+            preview_highlighted_src: String::new(),
+            preview_highlighted: Vec::new(),
             column_widths: ColumnWidths::default(),
             column_visibility: ColumnVisibility::default(),
             group_by: GroupColumn::None,
