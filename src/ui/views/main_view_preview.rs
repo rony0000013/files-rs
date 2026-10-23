@@ -1945,6 +1945,24 @@ impl MainView {
                                     .text_center()
                                     .child(entry.name.clone()),
                             )
+                            .child(if entry.is_dir {
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                                    .text_center()
+                                    .child(match entry.child_count {
+                                        Some(n) if n > 100 => "100+ items".to_string(),
+                                        Some(n) => format!(
+                                            "{} {}",
+                                            n,
+                                            if n == 1 { "item" } else { "items" }
+                                        ),
+                                        None => "Folder".to_string(),
+                                    })
+                                    .into_any_element()
+                            } else {
+                                div().into_any_element()
+                            })
                             .into_any_element()
                     })),
             )

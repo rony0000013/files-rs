@@ -222,6 +222,9 @@ pub struct FolderPreviewItem {
     pub name: String,
     /// Whether this is a directory
     pub is_dir: bool,
+    /// For directories: number of direct children (capped during scan).
+    /// `None` for files.
+    pub child_count: Option<usize>,
 }
 
 /// Preview content for different file types
@@ -655,6 +658,11 @@ pub struct MainViewState {
     /// Scroll handle for mouse wheel scrolling (runtime-only, not persisted)
     #[serde(skip)]
     pub scroll_handle: ScrollHandle,
+    /// Scroll handle for the side pane body (Details/Preview tabs).
+    /// Without a tracked handle GPUI wheel events have nowhere to apply,
+    /// which is why long previews could not be scrolled.
+    #[serde(skip)]
+    pub side_pane_scroll_handle: ScrollHandle,
     /// Scroll handle for uniform_list (runtime-only, not persisted)
     #[serde(skip)]
     pub uniform_list_scroll_handle: UniformListScrollHandle,

@@ -79,6 +79,7 @@ impl MainViewState {
             view_lock_enabled: false,
             zoom_level,
             scroll_handle: ScrollHandle::new(),
+            side_pane_scroll_handle: ScrollHandle::new(),
             uniform_list_scroll_handle: UniformListScrollHandle::new(),
             last_empty_click: None,
             col1_scroll_handle: UniformListScrollHandle::new(),
@@ -752,17 +753,28 @@ impl MainView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let is_resizing = state.side_pane_resize_start_x.is_some();
+        // Wide invisible grab zone (12px) with a thin centered visual grip,
+        // so the splitter is easy to catch without shifting the layout.
         div()
             .id("side-pane-splitter")
-            .w(px(4.0))
+            .w(px(12.0))
             .h_full()
             .cursor_col_resize()
-            .bg(if is_resizing {
-                rgba(UiConstants::ACCENT_RGBA)
-            } else {
-                rgba(UiConstants::BG_TRANSPARENT_RGBA)
-            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(UiConstants::BG_TRANSPARENT_RGBA))
             .hover(|s| s.bg(rgba(0xFFFFFF11u32)))
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h_full()
+                    .bg(if is_resizing {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    } else {
+                        rgba(0xFFFFFF14u32)
+                    }),
+            )
             .on_mouse_down(MouseButton::Left, {
                 let view = view.clone();
                 move |event, _win, cx| {
@@ -1001,6 +1013,7 @@ impl MainView {
                     .flex_1()
                     .w_full()
                     .overflow_y_scroll()
+                    .track_scroll(&state.side_pane_scroll_handle)
                     .p(px(12.0))
                     .flex()
                     .flex_col()

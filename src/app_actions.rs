@@ -1670,7 +1670,19 @@ impl AppWindow {
                         }
                         let name = entry.file_name().to_string_lossy().to_string();
                         let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                        items.push(FolderPreviewItem { name, is_dir });
+                        // Glimpse: count direct children for subfolders (bounded scan).
+                        let child_count = if is_dir {
+                            std::fs::read_dir(entry.path())
+                                .map(|it| it.take(101).filter_map(|e| e.ok()).count())
+                                .ok()
+                        } else {
+                            None
+                        };
+                        items.push(FolderPreviewItem {
+                            name,
+                            is_dir,
+                            child_count,
+                        });
                     }
                 }
 
