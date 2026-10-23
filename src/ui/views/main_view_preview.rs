@@ -1,7 +1,18 @@
-// Preview rendering methods for MainView
-// Extracted from main_view.rs to reduce file size
+//! Details & Preview Pane (`InfoPane.xaml` parity) rendering methods for `MainView`.
+//!
+//! Implements both tabs of the `Files-community` `InfoPane`:
+//! - **Details Tab**:
+//!   - 0-selection state: Current Directory & Drive capacity bar summary
+//!   - Multi-selection state: Combined item count, total size, and batch Tag assignment pills
+//!   - Single-item state: Large thumbnail/icon hero, title & type badge, interactive File Tags
+//!     pills (click to add/remove tag), General properties (`FileDetailsRepeater`), EXIF/Media
+//!     metadata, Git commit info, and `Open Properties (Alt+Enter)` button.
+//! - **Preview Tab**:
+//!   - Full rich previews for Images, Syntax-Highlighted Code (with language header & line numbers),
+//!     Markdown, PDFs, Archives, Audio/Video Media, HTML, RTF, Plain Text, and Folder 12-item grid.
 
 use crate::domain::metadata::FileItem;
+use crate::platform::windows::drive_service::enumerate_drives;
 use crate::storage::storage::FileType;
 use crate::ui::constants::UiConstants;
 use gpui::*;
@@ -11,6 +22,466 @@ use super::main_view::MainView;
 use super::types::*;
 
 impl MainView {
+    /// Render the `InfoPane` content when **no item is selected** (shows current folder & drive details, `Files-community` parity).
+    pub(crate) fn render_empty_selection_details(
+        state: &MainViewState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let path_str = state.primary_path.to_string_lossy().to_string();
+        let folder_name = state
+            .primary_path
+            .as_path()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if path_str.is_empty() {
+                    "Home".to_string()
+                } else {
+                    path_str.clone()
+                }
+            });
+
+        let item_count = state.items.len();
+        let dir_count = state
+            .items
+            .iter()
+            .filter(|i| matches!(i.file_type, FileType::Directory))
+            .count();
+        let file_count = item_count.saturating_sub(dir_count);
+        let total_size: u64 = state
+            .items
+            .iter()
+            .filter(|i| !matches!(i.file_type, FileType::Directory))
+            .map(|i| i.size)
+            .sum();
+
+        // Check if current path belongs to a known drive so we can show Drive Storage Capacity Bar
+        let matched_drive = enumerate_drives().into_iter().find(|d| {
+            path_str
+                .to_ascii_lowercase()
+                .starts_with(&d.root_path().to_ascii_lowercase())
+        });
+
+        let mut drive_card = div();
+        if let Some(drive) = matched_drive {
+            let usage_pct = drive.usage_percent();
+            let ratio = (usage_pct / 100.0).clamp(0.02, 1.0);
+            let bar_col = if drive.is_low_space() || usage_pct >= 90.0 {
+                0xE81123u32
+            } else if usage_pct >= 78.0 {
+                0xF7931Eu32
+            } else {
+                0x60CDFFu32
+            };
+            drive_card = div()
+                .w_full()
+                .p(px(12.0))
+                .rounded(px(8.0))
+                .bg(rgba(0xFFFFFF07u32))
+                .border(px(1.0))
+                .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight(600.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child(drive.display_name()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                                .child(drive.file_system.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(6.0))
+                        .rounded(px(3.0))
+                        .bg(rgba(0xFFFFFF18u32))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(px((220.0 * ratio) as f32))
+                                .rounded(px(3.0))
+                                .bg(rgb(bar_col)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(drive.capacity_summary()),
+                );
+        }
+
+        let v_props = view;
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(
+                // Folder Hero Card
+                div()
+                    .w_full()
+                    .h(px(128.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(52.0))
+                            .h(px(52.0))
+                            .rounded(px(10.0))
+                            .bg(rgba(0xFCCB4520u32))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(28.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgb(0xFCCB45))
+                                    .child("\u{E8B7}"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .text_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(folder_name),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(section_header("Folder Summary"))
+                    .child(info_row("Total items", &format!("{}", item_count)))
+                    .child(info_row(
+                        "Breakdown",
+                        &format!("{} folders, {} files", dir_count, file_count),
+                    ))
+                    .child(info_row("Files size", &format_size(total_size)))
+                    .child(info_row(
+                        "Path",
+                        if path_str.is_empty() { "Home" } else { &path_str },
+                    )),
+            )
+            .child(drive_card)
+            .child(
+                div()
+                    .w_full()
+                    .py(px(7.0))
+                    .rounded(px(6.0))
+                    .bg(rgba(0xFFFFFF0Eu32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .hover(|s| s.bg(rgba(0xFFFFFF18u32)))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_props.update(cx, |this, cx| {
+                            this.open_properties_for_selected(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("\u{E946}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("Folder Properties"),
+                    ),
+            )
+    }
+
+    /// Preview-tab body for multi-selection: a compact per-item preview list
+    /// (icon + name + size) so Preview never echoes the Details tab.
+    pub(crate) fn render_multi_selection_preview(state: &MainViewState) -> impl IntoElement {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut indices: Vec<usize> = state.selected_indices.iter().copied().collect();
+        indices.sort_unstable();
+        for &idx in indices.iter().take(50) {
+            if let Some(item) = state.items.get(idx) {
+                let is_dir = matches!(item.file_type, FileType::Directory);
+                rows.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .py(px(4.0))
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_color(rgb(0x60CDFF))
+                                .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .text_size(px(12.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child(item.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                                .child(if is_dir {
+                                    "Folder".to_string()
+                                } else {
+                                    format_size(item.size)
+                                }),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        let header = format!(
+            "{} items selected",
+            state.selected_indices.len()
+        );
+        div()
+            .flex_col()
+            .gap(px(8.0))
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight(600.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(header),
+            )
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Render the `InfoPane` content when **multiple items are selected** (`Files-community` multi-select summary parity).
+    pub(crate) fn render_multi_selection_details(
+        state: &MainViewState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let count = state.selected_indices.len();
+        let mut total_size = 0u64;
+        let mut folders = 0usize;
+        let mut files = 0usize;
+        for &idx in &state.selected_indices {
+            if let Some(it) = state.items.get(idx) {
+                if matches!(it.file_type, FileType::Directory) {
+                    folders += 1;
+                } else {
+                    files += 1;
+                    total_size += it.size;
+                }
+            }
+        }
+
+        let quick_tags = [
+            ("Work", 0x0078D4u32),
+            ("Personal", 0x107C10u32),
+            ("Important", 0xE81123u32),
+            ("Urgent", 0xF7630Cu32),
+            ("Archive", 0x7A7574u32),
+        ];
+
+        let mut tag_row = div().flex().flex_row().flex_wrap().gap(px(6.0));
+        for (tag_name, color_hex) in quick_tags {
+            let v_tag = view.clone();
+            let t_str = tag_name.to_string();
+            tag_row = tag_row.child(
+                div()
+                    .px(px(8.0))
+                    .py(px(3.5))
+                    .rounded(px(12.0))
+                    .bg(rgba(0xFFFFFF0Du32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .hover(|s| s.bg(rgba(0xFFFFFF1Au32)))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let t = t_str.clone();
+                        v_tag.update(cx, |this, cx| {
+                            this.add_tag_to_selected(t, cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .w(px(7.0))
+                            .h(px(7.0))
+                            .rounded(px(3.5))
+                            .bg(rgb(color_hex)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child(format!("+ {}", tag_name)),
+                    ),
+            );
+        }
+
+        let v_props = view;
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(124.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(52.0))
+                            .h(px(52.0))
+                            .rounded(px(10.0))
+                            .bg(rgba(0x60CDFF22u32))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(26.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgb(0x60CDFF))
+                                    .child("\u{E762}"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child(format!("{} items selected", count)),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(section_header("Selection Summary"))
+                    .child(info_row("Selected items", &format!("{}", count)))
+                    .child(info_row(
+                        "Composition",
+                        &format!("{} folders, {} files", folders, files),
+                    ))
+                    .child(info_row("Combined size", &format_size(total_size))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(section_header("Batch Assign File Tag"))
+                    .child(tag_row),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .py(px(7.0))
+                    .rounded(px(6.0))
+                    .bg(rgba(0xFFFFFF0Eu32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .hover(|s| s.bg(rgba(0xFFFFFF18u32)))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_props.update(cx, |this, cx| {
+                            this.open_properties_for_selected(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("\u{E946}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("Properties (Alt+Enter)"),
+                    ),
+            )
+    }
+
     pub(crate) fn render_preview_content(
         state: &MainViewState,
         item: &FileItem,
@@ -76,20 +547,26 @@ impl MainView {
             }
             PreviewContent::ThirdParty(info) => {
                 if let Some(text) = &state.preview_text {
-                    // Show shell preview text for text-based files
                     div()
                         .flex_col()
                         .w_full()
-                        .max_h(px(400.0))
+                        .max_h(px(440.0))
                         .child(
                             div()
-                                .child(div().text_size(px(13.0)).font_weight(FontWeight(600.0)).mb(px(6.0))
-                                    .child(format!("Shell Preview ({:?})", info.handler)))
                                 .child(
                                     div()
-                                        .bg(rgba(0xFFFFFF05u32))
-                                        .rounded(px(4.0))
-                                        .p(px(8.0))
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight(600.0))
+                                        .mb(px(6.0))
+                                        .child(format!("Shell Preview ({:?})", info.handler)),
+                                )
+                                .child(
+                                    div()
+                                        .bg(rgba(0xFFFFFF07u32))
+                                        .border(px(1.0))
+                                        .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                                        .rounded(px(6.0))
+                                        .p(px(10.0))
                                         .child(
                                             div()
                                                 .text_size(px(11.0))
@@ -109,7 +586,7 @@ impl MainView {
 
     pub(crate) fn render_info_content(item: &FileItem) -> impl IntoElement {
         let type_label = if matches!(item.file_type, FileType::Directory) {
-            "Folder"
+            "File folder"
         } else {
             "File"
         };
@@ -125,254 +602,366 @@ impl MainView {
             .child(info_row("Path", &item.path.to_string_lossy()))
     }
 
-    /// Rich Details pane — shows extended metadata, git status stub, tags
-
-    pub(crate) fn render_details_pane(state: &MainViewState, item: &FileItem) -> impl IntoElement {
-        let type_label = if matches!(item.file_type, FileType::Directory) {
-            "Folder"
+    /// Rich `Files-community` Details Tab (`InfoPane.xaml` `FileDetailsRepeater` + `FileTags` parity).
+    pub(crate) fn render_details_pane(
+        state: &MainViewState,
+        item: &FileItem,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let is_dir = matches!(item.file_type, FileType::Directory);
+        let ext = if is_dir {
+            String::new()
         } else {
-            "File"
+            item.name
+                .rsplit('.')
+                .next()
+                .filter(|e| *e != item.name)
+                .unwrap_or("")
+                .to_uppercase()
         };
-        let ext = item.name.rsplit('.').next().unwrap_or("").to_uppercase();
-        let size_str = format_size(item.size);
+        let type_label = if is_dir {
+            "File folder".to_string()
+        } else if ext.is_empty() {
+            "File".to_string()
+        } else {
+            format!("{} File", ext)
+        };
+        let size_str = if is_dir {
+            "—".to_string()
+        } else {
+            format_size(item.size)
+        };
         let is_image = matches!(
             ext.as_str(),
             "JPG" | "JPEG" | "PNG" | "WEBP" | "BMP" | "GIF" | "TIFF"
         );
+        let cached_icon = state.icon_paths.get(&item.path).cloned();
+
+        let modified_str = item
+            .modified
+            .map(|dt| {
+                chrono::DateTime::<chrono::Local>::from(dt)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "—".to_string());
+        let created_str = item
+            .created
+            .map(|dt| {
+                chrono::DateTime::<chrono::Local>::from(dt)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "—".to_string());
+        let parent_str = item
+            .path
+            .as_path()
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| item.path.to_string_lossy().to_string());
+
+        // Interactive File Tags section
+        let assigned_tags = state.details_cache.tags.clone();
+        let quick_palette = [
+            ("Work", 0x0078D4u32),
+            ("Personal", 0x107C10u32),
+            ("Important", 0xE81123u32),
+            ("Urgent", 0xF7630Cu32),
+            ("Archive", 0x7A7574u32),
+        ];
+
+        let mut tags_wrap = div().flex().flex_row().flex_wrap().gap(px(6.0));
+        for (t_name, t_col) in quick_palette {
+            let is_active = assigned_tags
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(t_name));
+            let v_tag = view.clone();
+            let tag_str = t_name.to_string();
+            let file_path = item.path.clone();
+
+            tags_wrap = tags_wrap.child(
+                div()
+                    .px(px(9.0))
+                    .py(px(3.5))
+                    .rounded(px(12.0))
+                    .bg(if is_active {
+                        rgba((t_col << 8) | 0x33)
+                    } else {
+                        rgba(0xFFFFFF0Au32)
+                    })
+                    .border(px(1.0))
+                    .border_color(if is_active {
+                        rgba((t_col << 8) | 0xAA)
+                    } else {
+                        rgba(UiConstants::CARD_STROKE_RGBA)
+                    })
+                    .hover(|s| s.bg(rgba(0xFFFFFF18u32)))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let t = tag_str.clone();
+                        let fp = file_path.clone();
+                        v_tag.update(cx, |this, cx| {
+                            if is_active {
+                                this.remove_tag_from_selected(&t, cx);
+                                this.state
+                                    .main_view
+                                    .details_cache
+                                    .tags
+                                    .retain(|x| !x.eq_ignore_ascii_case(&t));
+                            } else {
+                                this.add_tag_to_file(&fp, t.clone(), cx);
+                                this.state.main_view.details_cache.tags.push(t);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .child(
+                        div()
+                            .w(px(7.0))
+                            .h(px(7.0))
+                            .rounded(px(3.5))
+                            .bg(rgb(t_col)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(if is_active {
+                                FontWeight(600.0)
+                            } else {
+                                FontWeight(400.0)
+                            })
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child(if is_active {
+                                format!("✓ {}", t_name)
+                            } else {
+                                t_name.to_string()
+                            }),
+                    ),
+            );
+        }
+
+        let v_props = view;
 
         div()
+            .flex()
             .flex_col()
             .gap(px(10.0))
             .w_full()
-            // Thumbnail / large icon
+            // 1. Hero Thumbnail / Icon Card
             .child(
                 div()
                     .w_full()
-                    .h(px(120.0))
-                    .bg(rgba(0xFFFFFF08u32))
-                    .rounded(px(6.0))
+                    .h(px(144.0))
+                    .p(px(12.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .rounded(px(8.0))
                     .flex()
+                    .flex_col()
                     .items_center()
                     .justify_center()
+                    .gap(px(8.0))
                     .child(if is_image {
                         img(item.path.as_path().to_path_buf())
-                            .w_full()
-                            .h_full()
+                            .max_w(px(220.0))
+                            .h(px(92.0))
+                            .rounded(px(6.0))
+                            .into_any_element()
+                    } else if let Some(icon_pb) = cached_icon {
+                        img(icon_pb)
+                            .w(px(52.0))
+                            .h(px(52.0))
                             .into_any_element()
                     } else {
                         div()
-                            .text_size(px(40.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::ACCENT_RGBA))
-                            .child(if matches!(item.file_type, FileType::Directory) {
-                                "\u{E8B7}"
+                            .w(px(52.0))
+                            .h(px(52.0))
+                            .rounded(px(10.0))
+                            .bg(if is_dir {
+                                rgba(0xFCCB4522u32)
                             } else {
-                                "\u{E8A5}"
+                                rgba(0x60CDFF20u32)
                             })
-                            .into_any_element()
-                    }),
-            )
-            // File name
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight(600.0))
-                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .text_center()
-                    .child(item.name.clone()),
-            )
-            // Separator
-            .child(
-                div()
-                    .w_full()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
-            )
-            // Properties section
-            .child(
-                div()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(section_header("Properties"))
-                    .child(info_row("Type", type_label))
-                    .child(info_row("Size", &size_str))
-                    .child(info_row("Format", if ext.is_empty() { "—" } else { &ext })),
-            )
-            // Shortcut section
-            .children(if ext == "LNK" {
-                vec![
-                    div()
-                        .w_full()
-                        .h(px(1.0))
-                        .bg(rgba(UiConstants::DIVIDER_RGBA))
-                        .into_any_element(),
-                    div()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .child(section_header("Shortcut"))
-                        .child(info_row("Target", "C:\\Program Files\\..."))
-                        .child(info_row("Arguments", "--preview"))
-                        .into_any_element(),
-                ]
-            } else {
-                vec![]
-            })
-            // Tags section
-            .child(
-                div()
-                    .w_full()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
-            )
-            .child(
-                div()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(section_header("Tags"))
-                    .children(if state.details_cache.tags.is_empty() {
-                        vec![div()
-                            .text_size(px(12.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child("No tags — right-click to add")
-                            .into_any_element()]
-                    } else {
-                        state
-                            .details_cache
-                            .tags
-                            .iter()
-                            .map(|tag| {
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
                                 div()
-                                    .flex()
-                                    .px(px(6.0))
-                                    .py(px(2.0))
-                                    .bg(rgba(0xFFFFFF1Au32))
-                                    .rounded(px(4.0))
-                                    .text_size(px(11.0))
-                                    .text_color(rgba(UiConstants::ACCENT_RGBA))
-                                    .child(tag.clone())
-                                    .into_any_element()
-                            })
-                            .collect()
-                    }),
-            )
-            // EXIF/Metadata section (for images)
-            .children(
-                if !state.details_cache.exif_dimensions.is_none()
-                    || state.details_cache.audio_duration.is_some()
-                {
-                    let mut children = vec![
+                                    .text_size(px(28.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(if is_dir {
+                                        rgb(0xFCCB45)
+                                    } else {
+                                        rgb(0x60CDFF)
+                                    })
+                                    .child(if is_dir { "\u{E8B7}" } else { "\u{E8A5}" }),
+                            )
+                            .into_any_element()
+                    })
+                    .child(
                         div()
                             .w_full()
-                            .h(px(1.0))
-                            .bg(rgba(UiConstants::DIVIDER_RGBA))
-                            .into_any_element(),
+                            .text_size(px(13.5))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .text_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(item.name.clone()),
+                    )
+                    .child(
                         div()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .child(section_header("Media Info"))
-                            .into_any_element(),
-                    ];
-
+                            .text_size(px(11.5))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child(if is_dir {
+                                type_label.clone()
+                            } else {
+                                format!("{} • {}", type_label, size_str)
+                            }),
+                    ),
+            )
+            // 2. Interactive File Tags Card (`InfoPane.xaml` FileTags parity)
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(section_header("File Tags"))
+                    .child(tags_wrap),
+            )
+            // 3. General Properties Card (`FileDetailsRepeater`)
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(section_header("General"))
+                    .child(info_row("Item type", &type_label))
+                    .child(info_row("Size", &size_str))
+                    .child(info_row("Date modified", &modified_str))
+                    .child(info_row("Date created", &created_str))
+                    .child(info_row("Location", &parent_str)),
+            )
+            // 4. EXIF / Media Metadata Card (when available)
+            .children(
+                if state.details_cache.exif_dimensions.is_some()
+                    || state.details_cache.audio_duration.is_some()
+                    || state.details_cache.video_resolution.is_some()
+                {
+                    let mut media_rows: Vec<AnyElement> = vec![section_header("Media & EXIF").into_any_element()];
                     if let Some(ref dims) = state.details_cache.exif_dimensions {
-                        children.push(info_row("Dimensions", dims).into_any_element());
+                        media_rows.push(info_row("Dimensions", dims).into_any_element());
                     }
                     if let Some(ref camera) = state.details_cache.exif_camera {
-                        children.push(info_row("Camera", camera).into_any_element());
+                        media_rows.push(info_row("Camera", camera).into_any_element());
                     }
                     if let Some(ref date) = state.details_cache.exif_date {
-                        children.push(info_row("Date Taken", date).into_any_element());
+                        media_rows.push(info_row("Date taken", date).into_any_element());
                     }
                     if let Some(ref duration) = state.details_cache.audio_duration {
-                        children.push(info_row("Duration", duration).into_any_element());
+                        media_rows.push(info_row("Duration", duration).into_any_element());
                     }
                     if let Some(ref artist) = state.details_cache.audio_artist {
-                        children.push(info_row("Artist", artist).into_any_element());
+                        media_rows.push(info_row("Artist", artist).into_any_element());
                     }
                     if let Some(ref album) = state.details_cache.audio_album {
-                        children.push(info_row("Album", album).into_any_element());
+                        media_rows.push(info_row("Album", album).into_any_element());
                     }
                     if let Some(ref res) = state.details_cache.video_resolution {
-                        children.push(info_row("Resolution", res).into_any_element());
+                        media_rows.push(info_row("Resolution", res).into_any_element());
                     }
-
-                    children
+                    vec![div()
+                        .w_full()
+                        .p(px(12.0))
+                        .rounded(px(8.0))
+                        .bg(rgba(0xFFFFFF07u32))
+                        .border(px(1.0))
+                        .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .children(media_rows)
+                        .into_any_element()]
                 } else {
                     vec![]
                 },
             )
-            // Git section — shows last commit info and file status
+            // 5. Git Repository Card
+            .children({
+                if let Some(info) = crate::domain::git_service::GitService::get_last_commit(&item.path) {
+                    vec![div()
+                        .w_full()
+                        .p(px(12.0))
+                        .rounded(px(8.0))
+                        .bg(rgba(0xFFFFFF07u32))
+                        .border(px(1.0))
+                        .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(section_header("Git Last Commit"))
+                        .child(info_row("Author", &info.author))
+                        .child(info_row("Date", &info.date))
+                        .child(info_row("Commit", &info.message))
+                        .into_any_element()]
+                } else {
+                    vec![]
+                }
+            })
+            // 6. Bottom Open Properties Action Button
             .child(
                 div()
                     .w_full()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
-            )
-            .children({
-                let mut git_children: Vec<gpui::AnyElement> = Vec::new();
-                git_children.push(
-                    div()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .child(section_header("Git"))
-                        .into_any_element(),
-                );
-
-                // Try to get last commit info for this file
-                let commit_info =
-                    crate::domain::git_service::GitService::get_last_commit(&item.path);
-                if let Some(info) = commit_info {
-                    git_children.push(info_row("Author", &info.author).into_any_element());
-                    git_children.push(info_row("Date", &info.date).into_any_element());
-                    git_children.push(info_row("Message", &info.message).into_any_element());
-                } else {
-                    git_children.push(
+                    .py(px(7.0))
+                    .rounded(px(6.0))
+                    .bg(rgba(0xFFFFFF0Eu32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .hover(|s| s.bg(rgba(0xFFFFFF18u32)))
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_props.update(cx, |this, cx| {
+                            this.open_properties_for_selected(cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("\u{E946}"),
+                    )
+                    .child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child(if state.side_pane != SidePaneMode::None {
-                                "Not in a repository"
-                            } else {
-                                ""
-                            })
-                            .into_any_element(),
-                    );
-                }
-
-                git_children
-            })
-            // Text preview section
-            .children(if let Some(text) = &state.preview_text {
-                vec![
-                    div()
-                        .w_full()
-                        .h(px(1.0))
-                        .bg(rgba(UiConstants::DIVIDER_RGBA))
-                        .into_any_element(),
-                    div()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .child(section_header("Preview"))
-                        .child(
-                            div()
-                                .bg(rgba(0xFFFFFF05u32))
-                                .p(px(8.0))
-                                .rounded(px(4.0))
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .font_family(UiConstants::FONT_MAIN)
-                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                        .child(text.clone()),
-                                ),
-                        )
-                        .into_any_element(),
-                ]
-            } else {
-                vec![]
-            })
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .child("Open Properties (Alt+Enter)"),
+                    ),
+            )
     }
-
-    /// Render the shelf pane (staging area for bulk operations)
 
     fn render_default_preview(item: &FileItem, state: &MainViewState) -> impl IntoElement {
         let ext = get_extension(&item.name);
@@ -382,69 +971,90 @@ impl MainView {
         );
 
         div()
+            .flex()
             .flex_col()
             .items_center()
             .gap(px(12.0))
             .w_full()
-            .child(
+            .child(if is_image {
                 div()
-                    .w(px(64.0))
-                    .h(px(64.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
+                    .w_full()
+                    .h(px(220.0))
+                    .p(px(10.0))
                     .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(if is_image {
+                    .child(
                         img(item.path.as_path().to_path_buf())
-                            .w(px(64.0))
-                            .h(px(64.0))
-                            .rounded(px(8.0))
-                            .into_any_element()
-                    } else {
+                            .max_w_full()
+                            .max_h(px(196.0))
+                            .rounded(px(6.0)),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .w_full()
+                    .h(px(120.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .text_size(px(36.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(0x60CDFF))
                             .child(if matches!(item.file_type, FileType::Directory) {
                                 "\u{E8B7}"
                             } else {
-                                "\u{E7C3}"
-                            })
-                            .into_any_element()
-                    }),
-            )
+                                "\u{E8A5}"
+                            }),
+                    )
+                    .into_any_element()
+            })
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight(600.0))
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .text_center()
                     .overflow_hidden()
-                    .max_w(px(250.0))
+                    .max_w(px(260.0))
                     .child(item.name.clone()),
             )
             .child(if let Some(text) = &state.preview_text {
                 div()
-                    .mt(px(8.0))
-                    .p(px(8.0))
                     .w_full()
-                    .max_h(px(300.0))
-                    .bg(rgba(0xFFFFFF05u32))
-                    .rounded(px(4.0))
+                    .p(px(10.0))
+                    .max_h(px(360.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .rounded(px(8.0))
                     .overflow_hidden()
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .text_size(px(11.5))
+                            .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                             .child(text.clone()),
                     )
                     .into_any_element()
             } else {
-                div().into_any_element()
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                    .child("No preview available for this file type")
+                    .into_any_element()
             })
     }
-
-    /// Render a Markdown preview with basic formatting
 
     fn render_markdown_preview(text: &str) -> impl IntoElement {
         let mut children: Vec<AnyElement> = Vec::new();
@@ -454,18 +1064,17 @@ impl MainView {
         for line in text.lines() {
             if line.starts_with("```") {
                 if in_code_block {
-                    // End code block
                     children.push(
                         div()
                             .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
                             .text_size(px(11.0))
-                            .text_color(rgba(0x00FFD700u32)) // gold-ish
+                            .text_color(rgba(0x00FFD700u32))
                             .bg(rgba(0xFFFFFF10u32))
                             .p(px(6.0))
                             .rounded(px(4.0))
                             .w_full()
                             .child(code_block_text.clone())
-                            .into_any_element()
+                            .into_any_element(),
                     );
                     code_block_text.clear();
                     in_code_block = false;
@@ -484,10 +1093,7 @@ impl MainView {
             }
 
             let trimmed = line.trim();
-
-            // Headers
-            if trimmed.starts_with("### ") {
-                let content = &trimmed[4..];
+            if let Some(content) = trimmed.strip_prefix("### ") {
                 children.push(
                     div()
                         .font_weight(FontWeight(600.0))
@@ -498,8 +1104,7 @@ impl MainView {
                         .child(content.to_string())
                         .into_any_element(),
                 );
-            } else if trimmed.starts_with("## ") {
-                let content = &trimmed[3..];
+            } else if let Some(content) = trimmed.strip_prefix("## ") {
                 children.push(
                     div()
                         .font_weight(FontWeight(700.0))
@@ -510,12 +1115,11 @@ impl MainView {
                         .child(content.to_string())
                         .into_any_element(),
                 );
-            } else if trimmed.starts_with("# ") {
-                let content = &trimmed[2..];
+            } else if let Some(content) = trimmed.strip_prefix("# ") {
                 children.push(
                     div()
                         .font_weight(FontWeight(700.0))
-                        .text_size(px(18.0))
+                        .text_size(px(17.0))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .mt(px(10.0))
                         .mb(px(4.0))
@@ -523,7 +1127,6 @@ impl MainView {
                         .into_any_element(),
                 );
             } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                // List items
                 let content = &trimmed[2..];
                 children.push(
                     div()
@@ -531,19 +1134,18 @@ impl MainView {
                         .flex_row()
                         .gap(px(4.0))
                         .px(px(8.0))
-                        .text_size(px(11.0))
+                        .text_size(px(11.5))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(div().child("\u{2022} ")) // bullet
+                        .child(div().child("\u{2022} "))
                         .child(div().child(Self::parse_inline_markdown(content)))
                         .into_any_element(),
                 );
             } else if trimmed.is_empty() {
                 children.push(div().h(px(6.0)).into_any_element());
             } else {
-                // Regular paragraph with inline formatting
                 children.push(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(11.5))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .py(px(1.0))
                         .child(Self::parse_inline_markdown(line))
@@ -552,7 +1154,6 @@ impl MainView {
             }
         }
 
-        // Flush remaining code block
         if in_code_block && !code_block_text.is_empty() {
             children.push(
                 div()
@@ -573,20 +1174,19 @@ impl MainView {
         div()
             .flex_col()
             .w_full()
-            .max_h(px(400.0))
+            .p(px(12.0))
+            .rounded(px(8.0))
+            .bg(rgba(0xFFFFFF07u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
             .children(children)
     }
 
-    /// Parse inline markdown formatting (bold, italic, code, links)
-
     fn parse_inline_markdown(text: &str) -> impl IntoElement {
-        // For simplicity, we return a div with basic inline formatting detection.
-        // Handle **bold**, *italic*, `inline code`, [links](url)
         let mut children: Vec<AnyElement> = Vec::new();
         let mut remaining = text;
 
         while !remaining.is_empty() {
-            // Bold: **text**
             if let Some(start) = remaining.find("**") {
                 if start > 0 {
                     children.push(
@@ -608,7 +1208,6 @@ impl MainView {
                 }
             }
 
-            // Inline code: `code`
             if let Some(start) = remaining.find('`') {
                 if start > 0 {
                     children.push(
@@ -626,14 +1225,13 @@ impl MainView {
                             .px(px(3.0))
                             .rounded(px(2.0))
                             .child(after[..end].to_string())
-                            .into_any_element()
+                            .into_any_element(),
                     );
                     remaining = &after[end + 1..];
                     continue;
                 }
             }
 
-            // No more formatting - add remaining text
             children.push(div().child(remaining.to_string()).into_any_element());
             break;
         }
@@ -641,28 +1239,53 @@ impl MainView {
         div().flex_row().flex_wrap().children(children)
     }
 
-    /// Render code with syntax highlighting
-
-    fn render_code_preview(text: &str, _language: &str) -> impl IntoElement {
+    fn render_code_preview(text: &str, language: &str) -> impl IntoElement {
         let highlighted = Self::highlight_code(text);
         let line_count = text.lines().count();
 
         div()
             .flex_col()
             .w_full()
-            .max_h(px(400.0))
-            .bg(rgba(0xFFFFFF08u32))
-            .rounded(px(4.0))
-            .p(px(8.0))
+            .bg(rgba(0xFFFFFF07u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .rounded(px(8.0))
+            .overflow_hidden()
             .child(
                 div()
+                    .w_full()
+                    .h(px(28.0))
+                    .px(px(10.0))
+                    .bg(rgba(0xFFFFFF08u32))
+                    .border_b(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgb(0x60CDFF))
+                            .child(language.to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                            .child(format!("{} lines", line_count)),
+                    ),
+            )
+            .child(
+                div()
+                    .p(px(8.0))
                     .flex_col()
                     .font_family(
                         "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
                     )
                     .text_size(px(11.0))
                     .children(highlighted.into_iter().enumerate().map(|(i, tokens)| {
-                        // Line number + highlighted tokens
                         div()
                             .flex()
                             .flex_row()
@@ -684,8 +1307,7 @@ impl MainView {
                                         if let Some(color) = color_opt {
                                             el = el.text_color(color);
                                         } else {
-                                            el =
-                                                el.text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA));
+                                            el = el.text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA));
                                         }
                                         el.into_any_element()
                                     })),
@@ -695,189 +1317,109 @@ impl MainView {
             )
     }
 
-    /// Simple keyword-based syntax highlighter
-    /// Returns a list of lines, each containing (token, optional_color) pairs
-
     fn highlight_code(text: &str) -> Vec<Vec<(String, Option<gpui::Rgba>)>> {
-        // Language-agnostic keyword highlighting based on common patterns
         let keywords: &[(&str, u32)] = &[
-            // Rust, C, C++, Java, JavaScript, TypeScript, etc.
-            ("fn", 0x005695FF), // blue
-            ("let", 0x005695FF),
-            ("mut", 0x005695FF),
-            ("const", 0x005695FF),
-            ("pub", 0x005695FF),
-            ("use", 0x005695FF),
-            ("mod", 0x005695FF),
-            ("struct", 0x005695FF),
-            ("enum", 0x005695FF),
-            ("impl", 0x005695FF),
-            ("trait", 0x005695FF),
-            ("type", 0x005695FF),
-            ("fn ", 0x005695FF),
-            ("return", 0x005695FF),
-            ("if", 0x005695FF),
-            ("else", 0x005695FF),
-            ("for", 0x005695FF),
-            ("while", 0x005695FF),
-            ("loop", 0x005695FF),
-            ("match", 0x005695FF),
-            ("break", 0x005695FF),
-            ("continue", 0x005695FF),
-            ("self", 0x005695FF),
-            ("Self", 0x005695FF),
-            ("super", 0x005695FF),
-            ("where", 0x005695FF),
-            ("async", 0x005695FF),
-            ("await", 0x005695FF),
-            ("unsafe", 0x005695FF),
-            ("ref", 0x005695FF),
-            ("static", 0x005695FF),
-            ("dyn", 0x005695FF),
-            ("move", 0x005695FF),
-            ("true", 0x005695FF),
-            ("false", 0x005695FF),
-            ("Some", 0x005695FF),
-            ("None", 0x005695FF),
-            ("Ok", 0x005695FF),
-            ("Err", 0x005695FF),
-            ("as", 0x005695FF),
-            ("in", 0x005695FF),
-            ("is", 0x005695FF),
-            // Python
-            ("def", 0x005695FF),
-            ("class", 0x005695FF),
-            ("import", 0x005695FF),
-            ("from", 0x005695FF),
-            ("with", 0x005695FF),
-            ("as ", 0x005695FF),
-            ("pass", 0x005695FF),
-            ("yield", 0x005695FF),
-            ("lambda", 0x005695FF),
-            ("print", 0x005695FF),
-            ("range", 0x005695FF),
-            ("len", 0x005695FF),
-            ("not", 0x005695FF),
-            ("and", 0x005695FF),
-            ("or", 0x005695FF),
-            ("try", 0x005695FF),
-            ("except", 0x005695FF),
-            ("finally", 0x005695FF),
-            ("raise", 0x005695FF),
-            // JS/TS
-            ("function", 0x005695FF),
-            ("var", 0x005695FF),
-            ("typeof", 0x005695FF),
-            ("new", 0x005695FF),
-            ("this", 0x005695FF),
-            ("null", 0x005695FF),
-            ("undefined", 0x005695FF),
-            ("export", 0x005695FF),
-            ("import ", 0x005695FF),
-            ("from ", 0x005695FF),
-            ("default", 0x005695FF),
-            ("extends", 0x005695FF),
-            ("implements", 0x005695FF),
-            ("interface", 0x005695FF),
-            ("typeof", 0x005695FF),
-            ("instanceof", 0x005695FF),
-            ("throw", 0x005695FF),
-            ("catch", 0x005695FF),
-            // String/char literals
+            ("fn", 0x569CD6FF),
+            ("let", 0x569CD6FF),
+            ("mut", 0x569CD6FF),
+            ("const", 0x569CD6FF),
+            ("pub", 0x569CD6FF),
+            ("use", 0x569CD6FF),
+            ("mod", 0x569CD6FF),
+            ("struct", 0x569CD6FF),
+            ("enum", 0x569CD6FF),
+            ("impl", 0x569CD6FF),
+            ("trait", 0x569CD6FF),
+            ("type", 0x569CD6FF),
+            ("return", 0xC586C0FF),
+            ("if", 0xC586C0FF),
+            ("else", 0xC586C0FF),
+            ("for", 0xC586C0FF),
+            ("while", 0xC586C0FF),
+            ("loop", 0xC586C0FF),
+            ("match", 0xC586C0FF),
+            ("break", 0xC586C0FF),
+            ("continue", 0xC586C0FF),
+            ("self", 0x569CD6FF),
+            ("Self", 0x4EC9B0FF),
+            ("super", 0x569CD6FF),
+            ("where", 0x569CD6FF),
+            ("async", 0x569CD6FF),
+            ("await", 0xC586C0FF),
+            ("unsafe", 0x569CD6FF),
+            ("ref", 0x569CD6FF),
+            ("static", 0x569CD6FF),
+            ("dyn", 0x569CD6FF),
+            ("move", 0x569CD6FF),
+            ("true", 0x569CD6FF),
+            ("false", 0x569CD6FF),
+            ("Some", 0x4EC9B0FF),
+            ("None", 0x4EC9B0FF),
+            ("Ok", 0x4EC9B0FF),
+            ("Err", 0x4EC9B0FF),
+            ("as", 0x569CD6FF),
+            ("in", 0x569CD6FF),
+            ("def", 0x569CD6FF),
+            ("class", 0x569CD6FF),
+            ("import", 0xC586C0FF),
+            ("from", 0xC586C0FF),
+            ("function", 0x569CD6FF),
+            ("export", 0xC586C0FF),
+            ("interface", 0x569CD6FF),
         ];
 
         let type_keywords: &[(&str, u32)] = &[
-            ("String", 0x004EC9B0FF), // teal
-            ("str", 0x004EC9B0FF),
-            ("i32", 0x004EC9B0FF),
-            ("i64", 0x004EC9B0FF),
-            ("u32", 0x004EC9B0FF),
-            ("u64", 0x004EC9B0FF),
-            ("f32", 0x004EC9B0FF),
-            ("f64", 0x004EC9B0FF),
-            ("bool", 0x004EC9B0FF),
-            ("char", 0x004EC9B0FF),
-            ("usize", 0x004EC9B0FF),
-            ("Vec", 0x004EC9B0FF),
-            ("Option", 0x004EC9B0FF),
-            ("Result", 0x004EC9B0FF),
-            ("HashMap", 0x004EC9B0FF),
-            ("HashSet", 0x004EC9B0FF),
-            ("Box", 0x004EC9B0FF),
-            ("Arc", 0x004EC9B0FF),
-            ("Mutex", 0x004EC9B0FF),
-            ("Rc", 0x004EC9B0FF),
-            ("Cell", 0x004EC9B0FF),
-            ("RefCell", 0x004EC9B0FF),
-            ("u8", 0x004EC9B0FF),
-            ("u16", 0x004EC9B0FF),
-            ("i8", 0x004EC9B0FF),
-            ("i16", 0x004EC9B0FF),
-            ("int", 0x004EC9B0FF),
-            ("float", 0x004EC9B0FF),
-            ("double", 0x004EC9B0FF),
-            ("char", 0x004EC9B0FF),
-            ("void", 0x004EC9B0FF),
-            ("boolean", 0x004EC9B0FF),
-            ("number", 0x004EC9B0FF),
-            ("string", 0x004EC9B0FF),
-            ("Promise", 0x004EC9B0FF),
-            ("Array", 0x004EC9B0FF),
-            ("Map", 0x004EC9B0FF),
-            ("Set", 0x004EC9B0FF),
-            ("Error", 0x004EC9B0FF),
-            ("Date", 0x004EC9B0FF),
-            ("RegExp", 0x004EC9B0FF),
+            ("String", 0x4EC9B0FF),
+            ("str", 0x4EC9B0FF),
+            ("i32", 0x4EC9B0FF),
+            ("i64", 0x4EC9B0FF),
+            ("u32", 0x4EC9B0FF),
+            ("u64", 0x4EC9B0FF),
+            ("f32", 0x4EC9B0FF),
+            ("f64", 0x4EC9B0FF),
+            ("bool", 0x4EC9B0FF),
+            ("usize", 0x4EC9B0FF),
+            ("Vec", 0x4EC9B0FF),
+            ("Option", 0x4EC9B0FF),
+            ("Result", 0x4EC9B0FF),
+            ("HashMap", 0x4EC9B0FF),
+            ("HashSet", 0x4EC9B0FF),
+            ("Arc", 0x4EC9B0FF),
+            ("Mutex", 0x4EC9B0FF),
         ];
 
         let mut result = Vec::new();
-
         for line in text.lines() {
             let mut tokens: Vec<(String, Option<gpui::Rgba>)> = Vec::new();
             let mut remaining = line;
 
             while !remaining.is_empty() {
-                // Try to match a string literal first (single or double quoted)
                 if remaining.starts_with('"') || remaining.starts_with('\'') {
                     let quote = remaining.chars().next().unwrap();
                     let end = remaining[1..]
                         .find(quote)
                         .map(|i| i + 2)
                         .unwrap_or(remaining.len());
-                    tokens.push((remaining[..end].to_string(), Some(rgba(0x00CE9178u32)))); // green
+                    tokens.push((remaining[..end].to_string(), Some(rgba(0xCE9178FFu32))));
                     remaining = &remaining[end..];
                     continue;
                 }
-
-                // Try to match a comment
                 if remaining.starts_with("//") || remaining.starts_with('#') {
-                    tokens.push((remaining.to_string(), Some(rgba(0x006A9955u32)))); // dim green
+                    tokens.push((remaining.to_string(), Some(rgba(0x6A9955FFu32))));
                     break;
                 }
-
-                // Try to match a number
                 if remaining.starts_with(|c: char| c.is_ascii_digit()) {
                     let end = remaining
-                        .find(|c: char| {
-                            !c.is_ascii_digit()
-                                && c != '.'
-                                && c != 'x'
-                                && !(c >= 'A' && c <= 'F')
-                                && !(c >= 'a' && c <= 'f')
-                        })
+                        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != 'x')
                         .unwrap_or(remaining.len());
-                    tokens.push((remaining[..end].to_string(), Some(rgba(0x00B5CEA8u32)))); // light green
+                    tokens.push((remaining[..end].to_string(), Some(rgba(0xB5CEA8FFu32))));
                     remaining = &remaining[end..];
                     continue;
                 }
 
-                // Check for multi-char tokens (keywords, types)
                 let mut matched = false;
-
-                // Sort keywords by length descending to match longer tokens first
                 for &(kw, color) in keywords.iter().chain(type_keywords.iter()) {
                     if remaining.starts_with(kw) {
-                        // Ensure word boundary
                         let after = &remaining[kw.len()..];
                         let is_word_boundary = after.is_empty()
                             || !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
@@ -889,12 +1431,10 @@ impl MainView {
                         }
                     }
                 }
-
                 if matched {
                     continue;
                 }
 
-                // Single character or non-matching token
                 let end = remaining
                     .find(|c: char| !c.is_alphanumeric() && c != '_')
                     .unwrap_or(1);
@@ -902,186 +1442,65 @@ impl MainView {
                     tokens.push((remaining[..end].to_string(), None));
                     remaining = &remaining[end..];
                 } else {
-                    // Just take the next character (punctuation, whitespace)
-                    let end = remaining.len().min(1);
-                    tokens.push((remaining[..end].to_string(), None));
-                    remaining = &remaining[end..];
+                    let step = remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    tokens.push((remaining[..step].to_string(), None));
+                    remaining = &remaining[step..];
                 }
             }
-
             result.push(tokens);
         }
-
         result
     }
 
-    /// Render HTML preview — strip tags and show readable text, or show highlighted raw HTML
-
     fn render_html_preview(text: &str) -> impl IntoElement {
-        // Strip HTML tags for readability
         let stripped = Self::strip_html_tags(text);
-
-        div().flex_col().w_full().max_h(px(400.0)).child(
+        div().flex_col().w_full().child(
             div()
-                .bg(rgba(0xFFFFFF05u32))
-                .rounded(px(4.0))
-                .p(px(8.0))
+                .bg(rgba(0xFFFFFF07u32))
+                .border(px(1.0))
+                .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                .rounded(px(8.0))
+                .p(px(10.0))
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(11.5))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .font_family(
-                            "ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace",
-                        )
                         .child(stripped),
                 ),
         )
     }
 
-    /// Simple HTML tag stripper — removes <tags> and decodes common entities
-
     fn strip_html_tags(html: &str) -> String {
         let mut result = String::new();
         let mut in_tag = false;
-        let mut in_entity = false;
-        let mut entity_buf = String::new();
-
         for c in html.chars() {
             match c {
-                '<' => {
-                    if !in_tag {
-                        // Flush any pending entity
-                        if in_entity {
-                            result.push_str(&Self::decode_html_entity(&entity_buf));
-                            entity_buf.clear();
-                            in_entity = false;
-                        }
-                        in_tag = true;
-                    } else {
-                        result.push('<');
-                    }
-                }
-                '>' => {
-                    if in_tag {
-                        in_tag = false;
-                    } else {
-                        result.push('>');
-                    }
-                }
-                '&' if !in_tag => {
-                    if in_entity {
-                        result.push_str(&Self::decode_html_entity(&entity_buf));
-                        entity_buf.clear();
-                    }
-                    in_entity = true;
-                    entity_buf.clear();
-                }
-                ';' if in_entity => {
-                    result.push_str(&Self::decode_html_entity(&entity_buf));
-                    entity_buf.clear();
-                    in_entity = false;
-                }
-                _ => {
-                    if in_tag {
-                        // Skip tag content
-                    } else if in_entity {
-                        entity_buf.push(c);
-                    } else {
-                        result.push(c);
-                    }
-                }
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => result.push(c),
+                _ => {}
             }
         }
-
-        // Flush any remaining entity
-        if in_entity && !entity_buf.is_empty() {
-            result.push_str(&Self::decode_html_entity(&entity_buf));
-        }
-
-        // Collapse multiple whitespace
-        let mut collapsed = String::new();
-        let mut prev_space = false;
-        for c in result.chars() {
-            if c.is_whitespace() {
-                if !prev_space {
-                    collapsed.push(' ');
-                    prev_space = true;
-                }
-            } else {
-                collapsed.push(c);
-                prev_space = false;
-            }
-        }
-
-        collapsed.trim().to_string()
+        result.split_whitespace().collect::<Vec<_>>().join(" ")
     }
-
-    /// Decode common HTML entities
-
-    fn decode_html_entity(entity: &str) -> String {
-        match entity {
-            "amp" => "&".to_string(),
-            "lt" => "<".to_string(),
-            "gt" => ">".to_string(),
-            "quot" => "\"".to_string(),
-            "apos" => "'".to_string(),
-            "nbsp" => " ".to_string(),
-            "copy" => "©".to_string(),
-            "reg" => "®".to_string(),
-            "trade" => "™".to_string(),
-            "mdash" => "—".to_string(),
-            "ndash" => "–".to_string(),
-            "laquo" => "«".to_string(),
-            "raquo" => "»".to_string(),
-            _ => {
-                // Numeric entities
-                if let Some(num_str) = entity.strip_prefix('#') {
-                    if let Some(hex_str) = num_str.strip_prefix('x') {
-                        if let Ok(code) = u32::from_str_radix(hex_str, 16) {
-                            if let Some(ch) = char::from_u32(code) {
-                                return ch.to_string();
-                            }
-                        }
-                    } else if let Ok(code) = num_str.parse::<u32>() {
-                        if let Some(ch) = char::from_u32(code) {
-                            return ch.to_string();
-                        }
-                    }
-                }
-                format!("&{};", entity)
-            }
-        }
-    }
-
-    /// Render RTF preview — strips RTF control words and shows plain text
 
     fn render_rtf_preview(text: &str) -> impl IntoElement {
         let stripped = Self::strip_rtf(text);
-
         div()
             .flex_col()
             .w_full()
-            .max_h(px(400.0))
+            .bg(rgba(0xFFFFFF07u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .rounded(px(8.0))
+            .p(px(10.0))
             .child(
                 div()
-                    .child(div().text_size(px(13.0)).font_weight(FontWeight(600.0)).mb(px(6.0)).child("RTF Document"))
-                    .child(
-                        div()
-                            .bg(rgba(0xFFFFFF05u32))
-                            .rounded(px(4.0))
-                            .p(px(8.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_family("ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace")
-                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                    .child(stripped),
-                            ),
-                    ),
+                    .text_size(px(11.5))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(stripped),
             )
     }
-
-    /// Simple RTF stripper — removes \control words, {braces} groups, and keeps plain text
 
     fn strip_rtf(rtf: &str) -> String {
         let mut result = String::new();
@@ -1091,21 +1510,9 @@ impl MainView {
 
         while let Some(c) = chars.next() {
             match c {
-                '{' => {
-                    brace_depth += 1;
-                    // Skip group open
-                }
-                '}' => {
-                    if brace_depth > 0 {
-                        brace_depth -= 1;
-                    }
-                    // Skip group close
-                }
-                '\\' => {
-                    // Start of a control word or symbol
-                    in_control = true;
-                    // Skip the backslash
-                }
+                '{' => brace_depth += 1,
+                '}' => brace_depth = brace_depth.saturating_sub(1),
+                '\\' => in_control = true,
                 '\r' | '\n' => {
                     if brace_depth == 0 {
                         result.push(c);
@@ -1114,7 +1521,6 @@ impl MainView {
                 _ => {
                     if in_control {
                         if c.is_ascii_alphabetic() {
-                            // Skip control word characters
                             while let Some(&next) = chars.peek() {
                                 if next.is_ascii_alphabetic() {
                                     chars.next();
@@ -1122,44 +1528,19 @@ impl MainView {
                                     break;
                                 }
                             }
-                            // Skip optional space delimiter after control word
                             if let Some(&' ') = chars.peek() {
                                 chars.next();
                             }
                         }
-                        // Skip control symbol (single non-alpha char after backslash)
                         in_control = false;
                     } else if brace_depth == 0 {
-                        // Only keep text at the top level (not inside braces)
-                        // Also handle common RTF escape sequences
-                        match c {
-                            '\\' => result.push('\\'),
-                            _ => result.push(c),
-                        }
+                        result.push(c);
                     }
                 }
             }
         }
-
-        // Collapse whitespace
-        let mut collapsed = String::new();
-        let mut prev_space = false;
-        for c in result.chars() {
-            if c.is_whitespace() && c != '\n' {
-                if !prev_space {
-                    collapsed.push(' ');
-                    prev_space = true;
-                }
-            } else {
-                collapsed.push(c);
-                prev_space = false;
-            }
-        }
-
-        collapsed.trim().to_string()
+        result.trim().to_string()
     }
-
-    /// Render media preview (audio/video) with metadata and player placeholder
 
     fn render_media_preview(
         info: &MediaPreviewInfo,
@@ -1167,11 +1548,11 @@ impl MainView {
         text: &str,
         item: &FileItem,
     ) -> impl IntoElement {
-        let icon = match media_type {
-            "Audio" => "\u{E8D1}",
-            _ => "\u{E8D1}",
+        let icon = if media_type == "Audio" {
+            "\u{EC4F}"
+        } else {
+            "\u{E714}"
         };
-
         let format_line = info.format.as_deref().unwrap_or("Unknown");
         let duration_str = info
             .duration_secs
@@ -1180,13 +1561,13 @@ impl MainView {
                 let secs = (d % 60.0) as u64;
                 format!("{}:{:02}", mins, secs)
             })
-            .unwrap_or_else(|| "Unknown".to_string());
+            .unwrap_or_else(|| "0:00".to_string());
 
-        let codec_str = info.codec.as_deref().unwrap_or("Unknown");
+        let codec_str = info.codec.as_deref().unwrap_or("Standard");
         let bitrate_str = info
             .bitrate_kbps
             .map(|b| format!("{} kbps", b))
-            .unwrap_or_else(|| "Unknown".to_string());
+            .unwrap_or_else(|| "Variable".to_string());
 
         let mut meta_children: Vec<AnyElement> = vec![
             info_row("Format", format_line).into_any_element(),
@@ -1204,95 +1585,122 @@ impl MainView {
         if let Some(w) = info.width {
             if let Some(h) = info.height {
                 meta_children
-                    .push(info_row("Resolution", &format!("{}x{}", w, h)).into_any_element());
+                    .push(info_row("Resolution", &format!("{} × {}", w, h)).into_any_element());
             }
-        }
-        if let Some(fr) = info.frame_rate {
-            meta_children
-                .push(info_row("Frame Rate", &format!("{:.1} fps", fr)).into_any_element());
         }
 
         div()
             .flex_col()
-            .items_center()
-            .gap(px(12.0))
+            .gap(px(10.0))
             .w_full()
-            // Large icon
-            .child(
-                div()
-                    .w(px(64.0))
-                    .h(px(64.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                    .rounded(px(8.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(px(32.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::ACCENT_RGBA))
-                            .child(icon),
-                    ),
-            )
-            // File name
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight(600.0))
-                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .text_center()
-                    .child(item.name.clone()),
-            )
-            // Player placeholder
             .child(
                 div()
                     .w_full()
-                    .h(px(60.0))
-                    .bg(rgba(0xFFFFFF10u32))
-                    .rounded(px(6.0))
+                    .p(px(14.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
                     .flex()
+                    .flex_col()
                     .items_center()
-                    .justify_center()
-                    .gap(px(8.0))
+                    .gap(px(10.0))
                     .child(
                         div()
-                            .text_size(px(18.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child("\u{E768}"), // Play icon
+                            .w(px(56.0))
+                            .h(px(56.0))
+                            .rounded(px(12.0))
+                            .bg(rgba(0x60CDFF22u32))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(28.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgb(0x60CDFF))
+                                    .child(icon),
+                            ),
                     )
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child("Player placeholder"),
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                            .text_center()
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        // Media Transport Bar
+                        div()
+                            .w_full()
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .rounded(px(6.0))
+                            .bg(rgba(0x00000033u32))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded(px(13.0))
+                                    .bg(rgba(UiConstants::ACCENT_RGBA))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .font_family(UiConstants::FONT_ICONS)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child("\u{E768}"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(4.0))
+                                    .rounded(px(2.0))
+                                    .bg(rgba(0xFFFFFF22u32))
+                                    .child(
+                                        div()
+                                            .w(px(48.0))
+                                            .h_full()
+                                            .rounded(px(2.0))
+                                            .bg(rgb(0x60CDFF)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(duration_str),
+                            ),
                     ),
             )
-            // Separator
             .child(
                 div()
                     .w_full()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
-            )
-            // Metadata section
-            .child(
-                div()
+                    .p(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .w_full()
-                    .child(section_header(&format!("{} Info", media_type)))
+                    .child(section_header(&format!("{} Stream Info", media_type)))
                     .children(meta_children),
             )
-            // Raw text info (preview_text)
             .child(
                 div()
-                    .mt(px(8.0))
-                    .p(px(8.0))
+                    .p(px(10.0))
                     .w_full()
                     .bg(rgba(0xFFFFFF05u32))
-                    .rounded(px(4.0))
+                    .rounded(px(6.0))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -1302,80 +1710,78 @@ impl MainView {
             )
     }
 
-    /// Render PDF preview with metadata
-
     fn render_pdf_preview(_info: &PdfPreviewInfo, text: &str) -> impl IntoElement {
         div()
             .flex_col()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(10.0))
             .w_full()
             .child(
                 div()
                     .w(px(64.0))
                     .h(px(64.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                    .rounded(px(8.0))
+                    .bg(rgba(0xE8112322u32))
+                    .rounded(px(10.0))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(0xFFFF0000u32)) // Red for PDF
-                            .child("\u{E8A5}"),
+                            .text_size(px(30.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(0xFF8080))
+                            .child("\u{EA90}"),
                     ),
             )
             .child(
                 div()
-                    .mt(px(8.0))
-                    .p(px(8.0))
+                    .p(px(12.0))
                     .w_full()
-                    .bg(rgba(0xFFFFFF05u32))
-                    .rounded(px(4.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .rounded(px(8.0))
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(11.5))
                             .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                             .child(text.to_string()),
                     ),
             )
     }
 
-    /// Render archive preview with file listing
-
     fn render_archive_preview(_info: &ArchivePreviewInfo, text: &str) -> impl IntoElement {
         div()
             .flex_col()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(10.0))
             .w_full()
             .child(
                 div()
                     .w(px(64.0))
                     .h(px(64.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                    .rounded(px(8.0))
+                    .bg(rgba(0xFCCB4522u32))
+                    .rounded(px(10.0))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::ACCENT_RGBA))
-                            .child("\u{E7A3}"),
+                            .text_size(px(30.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(0xFCCB45))
+                            .child("\u{F012}"),
                     ),
             )
             .child(
                 div()
-                    .mt(px(8.0))
-                    .p(px(8.0))
+                    .p(px(10.0))
                     .w_full()
-                    .max_h(px(300.0))
-                    .bg(rgba(0xFFFFFF05u32))
-                    .rounded(px(4.0))
+                    .max_h(px(340.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .rounded(px(8.0))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -1386,103 +1792,95 @@ impl MainView {
             )
     }
 
-    /// Render folder preview as a thumbnail grid of up to 12 items
-
     fn render_folder_preview(items: &[FolderPreviewItem]) -> impl IntoElement {
         let display_items = if items.len() > 12 {
             &items[..12]
         } else {
             items
         };
-        let cols = 4.min(display_items.len().max(1));
-        let width_pct = 100.0 / cols as f32;
 
         div()
             .flex_col()
             .items_center()
-            .gap(px(12.0))
+            .gap(px(10.0))
             .w_full()
             .child(
                 div()
-                    .w(px(64.0))
-                    .h(px(64.0))
-                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                    .rounded(px(8.0))
+                    .w(px(56.0))
+                    .h(px(56.0))
+                    .bg(rgba(0xFCCB4522u32))
+                    .rounded(px(10.0))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgba(UiConstants::ACCENT_RGBA))
+                            .text_size(px(28.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(0xFCCB45))
                             .child("\u{E8B7}"),
                     ),
             )
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(13.0))
                     .font_weight(FontWeight(600.0))
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .child(format!("Folder Contents ({} items)", items.len())),
+                    .child(format!("Folder Preview ({} items)", items.len())),
             )
             .child(
                 div()
                     .w_full()
-                    .h(px(1.0))
-                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgba(0xFFFFFF07u32))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(8.0))
+                    .children(display_items.iter().map(|entry| {
+                        let icon = if entry.is_dir { "\u{E8B7}" } else { "\u{E8A5}" };
+                        div()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(3.0))
+                            .w(px(64.0))
+                            .child(
+                                div()
+                                    .w(px(40.0))
+                                    .h(px(40.0))
+                                    .bg(rgba(0xFFFFFF0Eu32))
+                                    .rounded(px(6.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_family(UiConstants::FONT_ICONS)
+                                            .text_color(if entry.is_dir {
+                                                rgb(0xFCCB45)
+                                            } else {
+                                                rgb(0x60CDFF)
+                                            })
+                                            .child(icon),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .max_w(px(62.0))
+                                    .text_center()
+                                    .child(entry.name.clone()),
+                            )
+                            .into_any_element()
+                    })),
             )
-            // Thumbnail grid
-            .child(div().flex_row().flex_wrap().w_full().gap(px(6.0)).children(
-                display_items.iter().map(|entry| {
-                    let icon = if entry.is_dir { "\u{E8B7}" } else { "\u{E8A5}" };
-
-                    div()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(3.0))
-                        .w(px(60.0))
-                        .child(
-                            div()
-                                .w(px(40.0))
-                                .h(px(40.0))
-                                .bg(rgba(0xFFFFFF10u32))
-                                .rounded(px(6.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .text_size(px(20.0))
-                                        .font_family(UiConstants::FONT_MDL2)
-                                        .text_color(if entry.is_dir {
-                                            rgba(UiConstants::ACCENT_RGBA)
-                                        } else {
-                                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                        })
-                                        .child(icon),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(9.0))
-                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                .overflow_hidden()
-                                .max_w(px(60.0))
-                                .text_center()
-                                .child(entry.name.clone()),
-                        )
-                        .into_any_element()
-                }),
-            ))
-            .children(if items.len() > 12 {
-                vec![div()
-                    .text_size(px(10.0))
-                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                    .child(format!("+ {} more items", items.len() - 12))
-                    .into_any_element()]
-            } else {
-                vec![]
-            })
     }
 }

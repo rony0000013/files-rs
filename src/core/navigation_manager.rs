@@ -607,6 +607,10 @@ pub enum PaneLayout {
     Single,
     Horizontal,
     Vertical,
+    /// Side-by-side dual pane (vertical split line)
+    DualHorizontal,
+    /// Stacked dual pane (horizontal split line)
+    DualVertical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

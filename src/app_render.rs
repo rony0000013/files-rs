@@ -172,14 +172,28 @@ impl Render for AppWindow {
         let _nav = state.navigation.read(cx);
 
         // Batch settings reads into a single entity borrow
-        let (mica_enabled, mica_alt, font_family, font_size) = {
+        let (
+            mica_enabled,
+            mica_alt,
+            font_family,
+            font_size,
+            show_toolbar,
+            show_toolbar_labels,
+            show_status_bar,
+            show_fps_cfg,
+        ) = {
             let settings = self.state.settings.read(cx);
-            let appearance = &settings.config().appearance;
+            let cfg = settings.config();
+            let appearance = &cfg.appearance;
             (
                 appearance.mica_enabled,
                 appearance.mica_alt,
                 appearance.font_family.clone(),
                 appearance.font_size,
+                appearance.show_toolbar,
+                appearance.show_toolbar_labels,
+                appearance.show_status_bar,
+                cfg.devtools.show_fps_telemetry,
             )
         };
 
@@ -243,6 +257,38 @@ impl Render for AppWindow {
                                     });
                                 }
                             })
+                            .on_mouse_down(
+                                MouseButton::Navigate(NavigationDirection::Back),
+                                {
+                                    let view = cx.entity().clone();
+                                    move |ev, _window, cx| {
+                                        let mods = ev.modifiers;
+                                        view.update(cx, |this, cx| {
+                                            this.handle_mouse_button_combination(
+                                                MouseButton::Navigate(NavigationDirection::Back),
+                                                &mods,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                },
+                            )
+                            .on_mouse_down(
+                                MouseButton::Navigate(NavigationDirection::Forward),
+                                {
+                                    let view = cx.entity().clone();
+                                    move |ev, _window, cx| {
+                                        let mods = ev.modifiers;
+                                        view.update(cx, |this, cx| {
+                                            this.handle_mouse_button_combination(
+                                                MouseButton::Navigate(NavigationDirection::Forward),
+                                                &mods,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                },
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -446,6 +492,9 @@ impl Render for AppWindow {
                                                 .flex_grow()
                                                 .w_full()
                                                 .h_full()
+                                                .pr(px(8.0))
+                                                .pb(px(4.0))
+                                                .gap(px(4.0))
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let view = cx.entity();
                                                     move |_event, _window, cx| {
@@ -459,20 +508,23 @@ impl Render for AppWindow {
                                                         });
                                                     }
                                                 })
-                                                .child(
-                                                    // Toolbar (fixed height)
-                                                    div().flex_shrink_0().w_full().child(
-                                                        ToolbarView::build(
-                                                            &state.main_view.view_mode,
-                                                            &state.main_view.toolbar_customization,
-                                                            !state.main_view.selected_indices.is_empty(),
-                                                            state.main_view.selected_indices.len() == 1,
-                                                            !matches!(state.clipboard, ClipboardState::Empty),
-                                                             state.main_view.filter_text.clone(),
-                                                             cx.entity(),
-                                                        ),
-                                                    ),
-                                                )
+                                                .children(if show_toolbar
+                                                    && !matches!(
+                                                        state.main_view.target,
+                                                        crate::ui::views::types::ViewTarget::Settings
+                                                    ) {
+                                                    vec![div()
+                                                        .flex_shrink_0()
+                                                        .w_full()
+                                                        .child(ToolbarView::build_from_state(
+                                                            state,
+                                                            show_toolbar_labels,
+                                                            cx.entity(),
+                                                        ))
+                                                        .into_any_element()]
+                                                } else {
+                                                    vec![]
+                                                })
                                                 .child(
                                                     // Main Content (flex_grow to fill remaining space)
                                                     div()
@@ -481,8 +533,13 @@ impl Render for AppWindow {
                                                         .flex_grow()
                                                         .w_full()
                                                         .h_full()
+                                                        .min_h(px(0.0))
                                                         .child({
-                                                            let settings_data = if matches!(state.main_view.target, crate::ui::views::types::ViewTarget::Settings) {
+                                                            let settings_data = if matches!(
+                                                                state.main_view.target,
+                                                                crate::ui::views::types::ViewTarget::Settings
+                                                                    | crate::ui::views::types::ViewTarget::Home
+                                                            ) {
                                                                 Some(crate::ui::components::dialogs::DialogsView::pre_read_settings_data(&self.state, cx))
                                                             } else {
                                                                 None
@@ -525,9 +582,8 @@ impl Render for AppWindow {
                                                             tree.into_any_element()
                                                         }),
                                                 )
-                                                .child(
-                                                    // Status bar (fixed height at bottom)
-                                                    div()
+                                                .children(if show_status_bar {
+                                                    vec![div()
                                                         .flex_shrink_0()
                                                         .w_full()
                                                         .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW
@@ -536,8 +592,11 @@ impl Render for AppWindow {
                                                             &state.status_bar,
                                                             state,
                                                             cx.entity(),
-                                                        )),
-                                                ),
+                                                        ))
+                                                        .into_any_element()]
+                                                } else {
+                                                    vec![]
+                                                }),
                                         )
                                     }),
                             )
@@ -1031,37 +1090,43 @@ impl Render for AppWindow {
             ));
         }
 
-        // Opportunistic icon refresh check: if the viewport shows items
-        // without cached icons (e.g. after scrolling), schedule a load.
-        // This runs outside the render element tree and is idempotent.
-        if !self.state.main_view.items.is_empty()
-            && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
-        {
-            // Only check every ~500ms max to avoid hammering the executor
+        // Opportunistic icon refresh check: computed up-front (no borrow held)
+        // so the later `let state = &self.state` shared borrow is not violated.
+        let needs_icon_refresh_check = {
             let now = std::time::Instant::now();
             let last_check = self.state.main_view.icon_refresh_last_check;
             let elapsed = last_check
                 .map(|t| now - t)
                 .unwrap_or(std::time::Duration::MAX);
-            if elapsed > std::time::Duration::from_millis(500) {
-                self.state.main_view.icon_refresh_last_check = Some(now);
-                let mut trigger = cx.to_async();
-                let weak = cx.weak_entity();
-                // Defer to next tick to avoid side-effects inside render
-                cx.foreground_executor()
-                    .spawn(async move {
-                        weak.update(&mut trigger, |this, cx| {
-                            this.refresh_icons_for_viewport(cx);
-                        })
-                        .ok();
+            !self.state.main_view.items.is_empty()
+                && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
+                && elapsed > std::time::Duration::from_millis(500)
+        };
+        if needs_icon_refresh_check {
+            let mut trigger = cx.to_async();
+            let weak = cx.weak_entity();
+            // Defer to next tick to avoid side-effects inside render
+            // (also performs the timestamp write there, keeping this
+            // function's shared `state` borrow unviolated).
+            cx.foreground_executor()
+                .spawn(async move {
+                    weak.update(&mut trigger, |this, cx| {
+                        this.state.main_view.icon_refresh_last_check =
+                            Some(std::time::Instant::now());
+                        this.refresh_icons_for_viewport(cx);
                     })
-                    .detach();
-            }
+                    .ok();
+                })
+                .detach();
         }
 
         // FPS counter overlay (debug only: opt-in via FILES_RS_FPS=1 so the
         // chrome matches Files-community by default).
-        let show_fps = std::env::var("FILES_RS_FPS").is_ok();
+        if let Some(flyout_overlay) = ToolbarView::build_flyout_overlay(state, cx.entity()) {
+            base = base.child(flyout_overlay);
+        }
+
+        let show_fps = std::env::var("FILES_RS_FPS").is_ok() || show_fps_cfg;
         if show_fps {
             let fps_text = format!("{:.0} FPS", self.fps_current);
             let fps_color = if self.fps_current >= 110.0 {

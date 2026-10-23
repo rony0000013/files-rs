@@ -110,6 +110,7 @@ pub struct AppState {
     pub clipboard: ClipboardState,
     pub active_dialog: Option<DialogType>,
     pub active_settings_tab: SettingsTab,
+    pub settings_ui: crate::ui::components::dialogs::SettingsUiState,
     pub is_fullscreen: bool,
     pub action_registry: crate::core::action_registry::ActionRegistry,
     pub show_shortcut_overlay: bool,
@@ -186,6 +187,7 @@ impl AppState {
             clipboard: ClipboardState::default(),
             active_dialog: None,
             active_settings_tab: SettingsTab::General,
+            settings_ui: crate::ui::components::dialogs::SettingsUiState::default(),
             is_fullscreen: false,
             action_registry: config
                 .config()

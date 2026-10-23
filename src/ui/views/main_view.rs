@@ -36,6 +36,7 @@ impl MainViewState {
             selected_indices: HashSet::default(),
             sort: SortState::default(),
             filter_text: String::new(),
+            show_filter_bar: false,
             show_dot_files: false,
             show_hidden_files: false,
             show_extensions: true,
@@ -134,6 +135,7 @@ impl MainViewState {
             sort_ascending: self.sort.ascending,
             folders_first: self.sort.folders_first,
             filter_text: self.filter_text.clone(),
+            show_filter_bar: self.show_filter_bar,
             show_dot_files: self.show_dot_files,
             show_hidden_files: self.show_hidden_files,
             show_system_files: self.show_system_files,
@@ -333,7 +335,8 @@ impl MainView {
         content_w: f32,
         base_left_x: f32,
     ) -> impl IntoElement {
-        let has_side_pane = state.side_pane != SidePaneMode::None;
+        let has_side_pane = state.side_pane != SidePaneMode::None
+            && !matches!(state.target, ViewTarget::Settings);
         let show_shelf = state.shelf_visible;
         let v2 = view.clone();
         let v3 = view.clone();
@@ -774,9 +777,12 @@ impl MainView {
 
     fn render_side_pane(
         state: &MainViewState,
-        _view: Entity<crate::app::AppWindow>,
+        view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let mode = &state.side_pane;
+        let is_preview_tab = matches!(mode, SidePaneMode::Preview);
+        let is_details_tab = !is_preview_tab;
+        let sel_count = state.selected_indices.len();
         let selected_item = state
             .selected_indices
             .iter()
@@ -784,61 +790,219 @@ impl MainView {
             .and_then(|&i| state.items.get(i));
         let pane_w = state.side_pane_width.unwrap_or(300.0);
 
-        div()
-            .id("side-pane")
-            .w(px(pane_w))
-            .h_full()
-            .flex_col()
-            .bg(rgba(UiConstants::BG_TOOLBAR_RGBA))
-            .border_l(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+        let v_details = view.clone();
+        let v_preview = view.clone();
+        let v_close = view.clone();
+        let selected_path = selected_item.map(|it| it.path.clone());
+
+        let segmented_tabs = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.0))
+            .p(px(3.0))
+            .rounded(px(6.0))
+            .bg(rgba(0x00000028u32))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
             .child(
                 div()
+                    .px(px(12.0))
+                    .py(px(4.0))
+                    .rounded(px(4.5))
+                    .cursor_pointer()
+                    .bg(if is_details_tab {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    } else {
+                        rgba(0x00000000u32)
+                    })
+                    .hover(|s| {
+                        if is_details_tab {
+                            s
+                        } else {
+                            s.bg(rgba(0xFFFFFF12u32))
+                        }
+                    })
                     .flex()
                     .flex_row()
-                    .h(px(36.0))
                     .items_center()
-                    .px(px(8.0))
-                    .border_b(px(1.0))
-                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                    .gap(px(6.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_details.update(cx, |this, cx| {
+                            this.state.main_view.side_pane = SidePaneMode::Details;
+                            cx.notify();
+                        });
+                    })
                     .child(
                         div()
-                            .text_size(AbsoluteLength::Pixels(px(12.0)))
-                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                            .child(match mode {
-                                SidePaneMode::Preview => "Preview",
-                                SidePaneMode::Info => "Info",
-                                SidePaneMode::Details => "Details",
-                                SidePaneMode::None => "",
-                            }),
+                            .text_size(px(11.5))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(if is_details_tab {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child("\u{E946}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(if is_details_tab {
+                                FontWeight(600.0)
+                            } else {
+                                FontWeight(400.0)
+                            })
+                            .text_color(if is_details_tab {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child("Details"),
                     ),
             )
             .child(
                 div()
-                    .flex_grow()
-                    .flex_col()
+                    .px(px(12.0))
+                    .py(px(4.0))
+                    .rounded(px(4.5))
+                    .cursor_pointer()
+                    .bg(if is_preview_tab {
+                        rgba(UiConstants::ACCENT_RGBA)
+                    } else {
+                        rgba(0x00000000u32)
+                    })
+                    .hover(|s| {
+                        if is_preview_tab {
+                            s
+                        } else {
+                            s.bg(rgba(0xFFFFFF12u32))
+                        }
+                    })
+                    .flex()
+                    .flex_row()
                     .items_center()
+                    .gap(px(6.0))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let sp = selected_path.clone();
+                        v_preview.update(cx, |this, cx| {
+                            this.state.main_view.side_pane = SidePaneMode::Preview;
+                            if let Some(p) = sp {
+                                this.load_preview_content(p, cx);
+                            } else {
+                                // No single selection: drop stale content so the
+                                // Preview tab never echoes a previous file.
+                                this.state.main_view.preview_content =
+                                    crate::ui::views::main_view::PreviewContent::None;
+                                this.state.main_view.preview_text = None;
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(if is_preview_tab {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child("\u{E890}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(if is_preview_tab {
+                                FontWeight(600.0)
+                            } else {
+                                FontWeight(400.0)
+                            })
+                            .text_color(if is_preview_tab {
+                                rgb(0xFFFFFF)
+                            } else {
+                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                            })
+                            .child("Preview"),
+                    ),
+            );
+
+        let body_element: AnyElement = if sel_count == 0 {
+            Self::render_empty_selection_details(state, view.clone()).into_any_element()
+        } else if sel_count > 1 {
+            if is_preview_tab {
+                Self::render_multi_selection_preview(state).into_any_element()
+            } else {
+                Self::render_multi_selection_details(state, view.clone()).into_any_element()
+            }
+        } else if let Some(item) = selected_item {
+            if is_preview_tab {
+                Self::render_preview_content(state, item).into_any_element()
+            } else {
+                Self::render_details_pane(state, item, view.clone()).into_any_element()
+            }
+        } else {
+            Self::render_empty_selection_details(state, view.clone()).into_any_element()
+        };
+
+        div()
+            .id("side-pane")
+            .w(px(pane_w))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .rounded(px(8.0))
+            .bg(rgba(UiConstants::BG_MAIN_RGBA))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .h(px(42.0))
+                    .items_center()
+                    .justify_between()
+                    .px(px(10.0))
+                    .border_b(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .bg(rgba(0xFFFFFF05u32))
+                    .child(segmented_tabs)
+                    .child(
+                        div()
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .rounded(px(5.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                v_close.update(cx, |this, cx| {
+                                    this.state.main_view.side_pane = SidePaneMode::None;
+                                    cx.notify();
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E711}"),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("side-pane-body-scroll")
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scroll()
                     .p(px(12.0))
-                    .children(match selected_item {
-                        None => vec![div()
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .text_size(AbsoluteLength::Pixels(px(12.0)))
-                            .text_center()
-                            .child("Select an item to preview")
-                            .into_any_element()],
-                        Some(item) => match mode {
-                            SidePaneMode::Preview => {
-                                vec![Self::render_preview_content(state, item).into_any_element()]
-                            }
-                            SidePaneMode::Info => {
-                                vec![Self::render_info_content(item).into_any_element()]
-                            }
-                            SidePaneMode::Details => {
-                                vec![Self::render_details_pane(state, item).into_any_element()]
-                            }
-                            SidePaneMode::None => vec![],
-                        },
-                    }),
+                    .flex()
+                    .flex_col()
+                    .child(body_element),
             )
     }
 
@@ -1008,6 +1172,10 @@ impl MainView {
             .flex_grow()
             .h_full()
             .w_full()
+            .rounded(px(8.0))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .overflow_hidden()
             .bg(if is_active {
                 rgba(UiConstants::BG_MAIN_RGBA)
             } else {
@@ -1017,6 +1185,7 @@ impl MainView {
                 let v = view.clone();
                 move |_ev, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.close_toolbar_flyout(cx);
                         this.focus_pane(pane_focus, cx);
                     });
                 }
@@ -1044,12 +1213,12 @@ impl MainView {
             Self::render_settings_view(data, view.clone()).into_any_element()
         } else if is_recycle_bin {
             Self::render_recycle_bin_view(state, view.clone()).into_any_element()
+        } else if is_home {
+            Self::render_home_view(state, settings_data, view.clone()).into_any_element()
         } else {
             match state.view_mode {
                 ViewMode::Details => {
-                    if matches!(state.target, ViewTarget::Home) {
-                        Self::render_home_view(state, view.clone()).into_any_element()
-                    } else {
+                    {
                         let list_origin = point(
                             base_origin.x,
                             base_origin.y + filter_offset_y + 28.0,

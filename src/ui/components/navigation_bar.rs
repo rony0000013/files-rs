@@ -1005,89 +1005,11 @@ impl NavigationBarState {
     }
 
     pub fn command_category(action: ActionKind) -> &'static str {
-        match action {
-            ActionKind::NavigateBack
-            | ActionKind::NavigateForward
-            | ActionKind::NavigateUp
-            | ActionKind::NavigateToRoot
-            | ActionKind::EditPath => "Navigation",
-            ActionKind::NewTab
-            | ActionKind::CloseTab
-            | ActionKind::ReopenClosedTab
-            | ActionKind::NextTab
-            | ActionKind::PreviousTab
-            | ActionKind::DuplicateTab
-            | ActionKind::PinTab
-            | ActionKind::MoveTabLeft
-            | ActionKind::MoveTabRight
-            | ActionKind::CloseOtherTabs
-            | ActionKind::NewWindow => "Tabs & Windows",
-            ActionKind::SplitVertical
-            | ActionKind::SplitHorizontal
-            | ActionKind::SwitchPaneFocus => "Dual Pane",
-            ActionKind::Copy
-            | ActionKind::Cut
-            | ActionKind::Paste
-            | ActionKind::CopyItemPath
-            | ActionKind::Rename
-            | ActionKind::NewFolder
-            | ActionKind::Delete
-            | ActionKind::PermanentDelete
-            | ActionKind::Undo
-            | ActionKind::Redo
-            | ActionKind::OpenProperties => "File Operations",
-            ActionKind::SelectAll
-            | ActionKind::InvertSelection
-            | ActionKind::ClearSelection => "Selection",
-            ActionKind::ViewDetails
-            | ActionKind::ViewList
-            | ActionKind::ViewGrid
-            | ActionKind::ViewColumns
-            | ActionKind::ToggleHiddenFiles
-            | ActionKind::OpenPreviewPane
-            | ActionKind::Refresh => "View & Layout",
-            ActionKind::Search | ActionKind::ClearFilter => "Search & Filter",
-            ActionKind::OpenTerminal
-            | ActionKind::OpenSettings
-            | ActionKind::OpenHelp
-            | ActionKind::RestoreLastSession
-            | ActionKind::CommandPalette => "System",
-        }
+        action.category().label()
     }
 
     pub fn command_icon(action: ActionKind) -> &'static str {
-        match action {
-            ActionKind::NavigateBack => "\u{E72B}",
-            ActionKind::NavigateForward => "\u{E72A}",
-            ActionKind::NavigateUp | ActionKind::NavigateToRoot => "\u{E74A}",
-            ActionKind::EditPath => "\u{E8B7}",
-            ActionKind::NewTab | ActionKind::DuplicateTab => "\u{E710}",
-            ActionKind::CloseTab | ActionKind::CloseOtherTabs => "\u{E8BB}",
-            ActionKind::ReopenClosedTab | ActionKind::RestoreLastSession => "\u{E81C}",
-            ActionKind::PinTab => "\u{E718}",
-            ActionKind::NextTab | ActionKind::PreviousTab | ActionKind::MoveTabLeft | ActionKind::MoveTabRight => "\u{E8AB}",
-            ActionKind::NewWindow => "\u{E8A7}",
-            ActionKind::SplitVertical | ActionKind::SplitHorizontal | ActionKind::SwitchPaneFocus => "\u{E140}",
-            ActionKind::Copy | ActionKind::CopyItemPath => "\u{E8C8}",
-            ActionKind::Cut => "\u{E8C6}",
-            ActionKind::Paste => "\u{E77F}",
-            ActionKind::Rename => "\u{E8AC}",
-            ActionKind::NewFolder => "\u{E8F4}",
-            ActionKind::Delete | ActionKind::PermanentDelete => "\u{E74D}",
-            ActionKind::Undo => "\u{E7A7}",
-            ActionKind::Redo => "\u{E7A6}",
-            ActionKind::OpenProperties => "\u{E946}",
-            ActionKind::SelectAll | ActionKind::InvertSelection | ActionKind::ClearSelection => "\u{E762}",
-            ActionKind::ViewDetails | ActionKind::ViewList | ActionKind::ViewGrid | ActionKind::ViewColumns => "\u{E8FD}",
-            ActionKind::ToggleHiddenFiles => "\u{E7B3}",
-            ActionKind::OpenPreviewPane => "\u{E890}",
-            ActionKind::Refresh => "\u{E72C}",
-            ActionKind::Search | ActionKind::ClearFilter => "\u{E721}",
-            ActionKind::OpenTerminal => "\u{E756}",
-            ActionKind::OpenSettings => "\u{E713}",
-            ActionKind::OpenHelp => "\u{E897}",
-            ActionKind::CommandPalette => "\u{E943}",
-        }
+        action.icon()
     }
 
     /// Open the breadcrumb sibling dropdown at a given screen position.

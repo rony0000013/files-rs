@@ -1234,6 +1234,7 @@ impl AppWindow {
             }
         });
         self.state.main_view.show_hidden_files = !current;
+        self.state.nav_bar.search_options.include_hidden = !current;
         cx.notify();
     }
 
@@ -1354,21 +1355,123 @@ impl AppWindow {
             return;
         }
 
+        let mut needs_refresh = false;
+        let mut needs_resort = false;
         let settings = self.state.settings.clone();
         settings.update(cx, |s, _cx| {
             match key {
+                "open_tab_in_existing_instance" => {
+                    s.config.session.open_tab_in_existing_instance =
+                        !s.config.session.open_tab_in_existing_instance
+                }
+                "always_switch_to_new_tab" => {
+                    s.config.session.always_switch_to_new_tab =
+                        !s.config.session.always_switch_to_new_tab
+                }
+                "mru_tab_cycle" => s.config.session.mru_tab_cycle = !s.config.session.mru_tab_cycle,
+                "widget_quick_access" => {
+                    s.config.home_widgets.show_quick_access =
+                        !s.config.home_widgets.show_quick_access
+                }
+                "widget_drives" => {
+                    s.config.home_widgets.show_drives = !s.config.home_widgets.show_drives
+                }
+                "widget_network" => {
+                    s.config.home_widgets.show_network_locations =
+                        !s.config.home_widgets.show_network_locations
+                }
+                "widget_file_tags" => {
+                    s.config.home_widgets.show_file_tags = !s.config.home_widgets.show_file_tags
+                }
+                "widget_recent_files" => {
+                    s.config.home_widgets.show_recent_files =
+                        !s.config.home_widgets.show_recent_files
+                }
+                "ctx_show_open_in_new_tab" => {
+                    s.config.preferences.ctx_show_open_in_new_tab =
+                        !s.config.preferences.ctx_show_open_in_new_tab
+                }
+                "ctx_show_open_in_new_window" => {
+                    s.config.preferences.ctx_show_open_in_new_window =
+                        !s.config.preferences.ctx_show_open_in_new_window
+                }
+                "ctx_show_open_in_new_pane" => {
+                    s.config.preferences.ctx_show_open_in_new_pane =
+                        !s.config.preferences.ctx_show_open_in_new_pane
+                }
+                "ctx_show_copy_path" => {
+                    s.config.preferences.ctx_show_copy_path =
+                        !s.config.preferences.ctx_show_copy_path
+                }
+                "ctx_show_create_folder_with_selection" => {
+                    s.config.preferences.ctx_show_create_folder_with_selection =
+                        !s.config.preferences.ctx_show_create_folder_with_selection
+                }
+                "ctx_show_create_shortcut" => {
+                    s.config.preferences.ctx_show_create_shortcut =
+                        !s.config.preferences.ctx_show_create_shortcut
+                }
+                "ctx_show_pin_to_sidebar" => {
+                    s.config.preferences.ctx_show_pin_to_sidebar =
+                        !s.config.preferences.ctx_show_pin_to_sidebar
+                }
+                "ctx_show_compression_options" => {
+                    s.config.preferences.ctx_show_compression_options =
+                        !s.config.preferences.ctx_show_compression_options
+                }
+                "ctx_show_send_to" => {
+                    s.config.preferences.ctx_show_send_to = !s.config.preferences.ctx_show_send_to
+                }
+                "ctx_show_open_terminal" => {
+                    s.config.preferences.ctx_show_open_terminal =
+                        !s.config.preferences.ctx_show_open_terminal
+                }
+                "ctx_show_edit_tags" => {
+                    s.config.preferences.ctx_show_edit_tags =
+                        !s.config.preferences.ctx_show_edit_tags
+                }
+                "move_shell_extensions_to_submenu" => {
+                    s.config.preferences.move_shell_extensions_to_submenu =
+                        !s.config.preferences.move_shell_extensions_to_submenu
+                }
+                "enable_smooth_scrolling" => {
+                    s.config.preferences.enable_smooth_scrolling =
+                        !s.config.preferences.enable_smooth_scrolling
+                }
+                "reverse_tab_scroll_direction" => {
+                    s.config.preferences.reverse_tab_scroll_direction =
+                        !s.config.preferences.reverse_tab_scroll_direction
+                }
                 "show_file_extensions" => {
                     s.config.preferences.show_file_extensions =
                         !s.config.preferences.show_file_extensions
                 }
                 "show_hidden_files" => {
-                    s.config.preferences.show_hidden_files = !s.config.preferences.show_hidden_files
+                    s.config.preferences.show_hidden_files = !s.config.preferences.show_hidden_files;
+                    needs_refresh = true;
                 }
                 "show_dot_files" => {
-                    s.config.preferences.show_dot_files = !s.config.preferences.show_dot_files
+                    s.config.preferences.show_dot_files = !s.config.preferences.show_dot_files;
+                    needs_refresh = true;
                 }
                 "show_system_files" => {
-                    s.config.preferences.show_system_files = !s.config.preferences.show_system_files
+                    s.config.preferences.show_system_files = !s.config.preferences.show_system_files;
+                    needs_refresh = true;
+                }
+                "show_alternate_data_streams" => {
+                    s.config.preferences.show_alternate_data_streams =
+                        !s.config.preferences.show_alternate_data_streams
+                }
+                "show_thumbnails" => {
+                    s.config.preferences.show_thumbnails = !s.config.preferences.show_thumbnails
+                }
+                "show_checkboxes_when_selecting" => {
+                    s.config.preferences.show_checkboxes_when_selecting =
+                        !s.config.preferences.show_checkboxes_when_selecting
+                }
+                "show_file_extension_warning" => {
+                    s.config.preferences.show_file_extension_warning =
+                        !s.config.preferences.show_file_extension_warning
                 }
                 "confirm_delete" => {
                     s.config.preferences.confirm_delete = !s.config.preferences.confirm_delete
@@ -1380,12 +1483,162 @@ impl AppWindow {
                 "transparent_window" => {
                     s.config.appearance.transparent_window = !s.config.appearance.transparent_window
                 }
-                "folder_on_top" => s.config.view.folder_on_top = !s.config.view.folder_on_top,
-                "mru_tab_cycle" => s.config.session.mru_tab_cycle = !s.config.session.mru_tab_cycle,
+                "show_shelf_button" => {
+                    s.config.appearance.show_shelf_button = !s.config.appearance.show_shelf_button
+                }
+                "show_toolbar_labels" => {
+                    s.config.appearance.show_toolbar_labels =
+                        !s.config.appearance.show_toolbar_labels
+                }
+                "show_tab_actions" => {
+                    s.config.appearance.show_tab_actions = !s.config.appearance.show_tab_actions
+                }
+                "show_toolbar" => {
+                    s.config.appearance.show_toolbar = !s.config.appearance.show_toolbar
+                }
+                "show_status_bar" => {
+                    s.config.appearance.show_status_bar = !s.config.appearance.show_status_bar
+                }
+                "always_open_dual_pane_in_new_tab" => {
+                    s.config.view.always_open_dual_pane_in_new_tab =
+                        !s.config.view.always_open_dual_pane_in_new_tab
+                }
+                "adaptive_layout_enabled" => {
+                    s.config.view.adaptive_layout_enabled = !s.config.view.adaptive_layout_enabled
+                }
+                "sync_folder_preferences" => {
+                    s.config.view.sync_folder_preferences = !s.config.view.sync_folder_preferences
+                }
+                "folder_on_top" => {
+                    s.config.view.folder_on_top = !s.config.view.folder_on_top;
+                    needs_resort = true;
+                }
+                "sort_descending" => {
+                    s.config.view.sort_ascending = !s.config.view.sort_ascending;
+                    needs_resort = true;
+                }
+                "group_descending" => {
+                    s.config.view.group_ascending = !s.config.view.group_ascending;
+                    needs_resort = true;
+                }
+                "show_date_column" => {
+                    s.config.view.show_date_column = !s.config.view.show_date_column
+                }
+                "show_date_created_column" => {
+                    s.config.view.show_date_created_column =
+                        !s.config.view.show_date_created_column
+                }
+                "show_type_column" => {
+                    s.config.view.show_type_column = !s.config.view.show_type_column
+                }
+                "show_size_column" => {
+                    s.config.view.show_size_column = !s.config.view.show_size_column
+                }
+                "show_tag_column" => {
+                    s.config.view.show_tag_column = !s.config.view.show_tag_column
+                }
+                "auto_size_columns" => {
+                    s.config.view.auto_size_columns = !s.config.view.auto_size_columns
+                }
+                "calculate_folder_sizes" => {
+                    s.config.view.calculate_folder_sizes = !s.config.view.calculate_folder_sizes
+                }
+                "open_files_with_single_click" => {
+                    s.config.actions.open_files_with_single_click =
+                        !s.config.actions.open_files_with_single_click
+                }
+                "open_folders_with_single_click" => {
+                    s.config.actions.open_folders_with_single_click =
+                        !s.config.actions.open_folders_with_single_click
+                }
+                "open_folders_in_columns_with_single_click" => {
+                    s.config.actions.open_folders_in_columns_with_single_click =
+                        !s.config.actions.open_folders_in_columns_with_single_click
+                }
+                "open_folders_in_new_tab" => {
+                    s.config.actions.open_folders_in_new_tab =
+                        !s.config.actions.open_folders_in_new_tab
+                }
+                "select_files_on_hover" => {
+                    s.config.actions.select_files_on_hover =
+                        !s.config.actions.select_files_on_hover
+                }
+                "double_click_empty_space_go_up" => {
+                    s.config.actions.double_click_empty_space_go_up =
+                        !s.config.actions.double_click_empty_space_go_up
+                }
+                "scroll_to_previous_folder_when_navigating_up" => {
+                    s.config.actions.scroll_to_previous_folder_when_navigating_up =
+                        !s.config.actions.scroll_to_previous_folder_when_navigating_up
+                }
+                "show_fps_telemetry" => {
+                    s.config.devtools.show_fps_telemetry = !s.config.devtools.show_fps_telemetry
+                }
+                "open_on_windows_startup" => {
+                    s.config.experimental.open_on_windows_startup =
+                        !s.config.experimental.open_on_windows_startup
+                }
+                "leave_app_running_in_background" => {
+                    s.config.experimental.leave_app_running_in_background =
+                        !s.config.experimental.leave_app_running_in_background
+                }
+                "show_system_tray_icon" => {
+                    s.config.experimental.show_system_tray_icon =
+                        !s.config.experimental.show_system_tray_icon
+                }
+                "set_as_default_file_manager" => {
+                    s.config.experimental.set_as_default_file_manager =
+                        !s.config.experimental.set_as_default_file_manager
+                }
+                "replace_open_file_dialog" => {
+                    s.config.experimental.replace_open_file_dialog =
+                        !s.config.experimental.replace_open_file_dialog
+                }
+                "enable_thumbnail_cache" => {
+                    s.config.experimental.enable_thumbnail_cache =
+                        !s.config.experimental.enable_thumbnail_cache
+                }
+                "show_flatten_options" => {
+                    s.config.experimental.show_flatten_options =
+                        !s.config.experimental.show_flatten_options
+                }
                 _ => {}
             }
             let _ = s.config.save();
         });
+
+        // Sync column visibility flags with MainViewState
+        let (show_hidden, show_dot, show_sys, folder_on_top, sort_asc, show_date, show_type, show_size, show_ext) = {
+            let cfg = &self.state.settings.read(cx).config;
+            (
+                cfg.preferences.show_hidden_files,
+                cfg.preferences.show_dot_files,
+                cfg.preferences.show_system_files,
+                cfg.view.folder_on_top,
+                cfg.view.sort_ascending,
+                cfg.view.show_date_column,
+                cfg.view.show_type_column,
+                cfg.view.show_size_column,
+                cfg.preferences.show_file_extensions,
+            )
+        };
+        self.state.main_view.show_hidden_files = show_hidden;
+        self.state.main_view.show_dot_files = show_dot;
+        self.state.main_view.show_system_files = show_sys;
+        self.state.main_view.show_extensions = show_ext;
+        self.state.main_view.sort.folders_first = folder_on_top;
+        self.state.main_view.sort.ascending = sort_asc;
+        self.state.main_view.column_visibility.date = show_date;
+        self.state.main_view.column_visibility.type_col = show_type;
+        self.state.main_view.column_visibility.size = show_size;
+        self.state.nav_bar.search_options.include_hidden = show_hidden;
+
+        if needs_refresh {
+            self.refresh(cx);
+        } else if needs_resort {
+            self.state.main_view.apply_sort();
+            self.state.main_view.bump_items_revision();
+        }
         cx.notify();
     }
     pub(crate) fn load_folder_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
@@ -2486,6 +2739,613 @@ impl AppWindow {
                     .ok();
             })
             .detach();
+    }
+
+    pub fn delete_recycle_bin_item(&mut self, index: usize, cx: &mut Context<Self>) {
+        let items = self.state.main_view.recycle_bin_items.clone();
+        if let Some(item) = items.get(index) {
+            let path = std::path::PathBuf::from(&item.original_path);
+            let service = RecycleBinService::new();
+            let mut async_cx = cx.to_async();
+            let this_weak = cx.weak_entity();
+            cx.foreground_executor()
+                .spawn(async move {
+                    let _ = service.delete_item(&path).await;
+                    this_weak
+                        .update(&mut async_cx, |this, cx| {
+                            if index < this.state.main_view.recycle_bin_items.len() {
+                                this.state.main_view.recycle_bin_items.remove(index);
+                            }
+                            this.state.main_view.selected_indices.remove(&index);
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .detach();
+        }
+    }
+
+    pub fn restore_selected_recycle_bin(&mut self, cx: &mut Context<Self>) {
+        let mut indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .copied()
+            .collect();
+        if indices.is_empty() {
+            return;
+        }
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        let paths: Vec<(usize, std::path::PathBuf)> = indices
+            .into_iter()
+            .filter_map(|idx| {
+                self.state
+                    .main_view
+                    .recycle_bin_items
+                    .get(idx)
+                    .map(|it| (idx, std::path::PathBuf::from(&it.original_path)))
+            })
+            .collect();
+
+        let service = RecycleBinService::new();
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        cx.foreground_executor()
+            .spawn(async move {
+                for (_, p) in &paths {
+                    let _ = service.restore_item(p).await;
+                }
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        for (idx, _) in &paths {
+                            if *idx < this.state.main_view.recycle_bin_items.len() {
+                                this.state.main_view.recycle_bin_items.remove(*idx);
+                            }
+                        }
+                        this.state.main_view.selected_indices.clear();
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    pub fn delete_selected_recycle_bin(&mut self, cx: &mut Context<Self>) {
+        let mut indices: Vec<usize> = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .copied()
+            .collect();
+        if indices.is_empty() {
+            return;
+        }
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        let paths: Vec<(usize, std::path::PathBuf)> = indices
+            .into_iter()
+            .filter_map(|idx| {
+                self.state
+                    .main_view
+                    .recycle_bin_items
+                    .get(idx)
+                    .map(|it| (idx, std::path::PathBuf::from(&it.original_path)))
+            })
+            .collect();
+
+        let service = RecycleBinService::new();
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        cx.foreground_executor()
+            .spawn(async move {
+                for (_, p) in &paths {
+                    let _ = service.delete_item(p).await;
+                }
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        for (idx, _) in &paths {
+                            if *idx < this.state.main_view.recycle_bin_items.len() {
+                                this.state.main_view.recycle_bin_items.remove(*idx);
+                            }
+                        }
+                        this.state.main_view.selected_indices.clear();
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    pub fn set_string_setting(&mut self, key: &str, value: String, cx: &mut Context<Self>) {
+        let mut new_pane_layout: Option<String> = None;
+        let mut new_sort_priority: Option<String> = None;
+        let settings = self.state.settings.clone();
+        settings.update(cx, |s, _cx| {
+            match key {
+                "locale" => s.config.preferences.locale = value,
+                "startup_mode" => s.config.session.startup_mode = value,
+                "date_format" => s.config.preferences.date_format = value,
+                "size_unit_format" => s.config.preferences.size_unit_format = value,
+                "status_center_visibility" => {
+                    s.config.appearance.status_center_visibility = value
+                }
+                "delete_confirmation_policy" => {
+                    s.config.preferences.confirm_delete = value != "never";
+                    s.config.preferences.delete_confirmation_policy = value;
+                }
+                "theme_preset" => s.config.appearance.theme_preset = value,
+                "sort_priority" => {
+                    s.config.view.folder_on_top = value == "folders_first";
+                    s.config.view.sort_priority = value.clone();
+                    new_sort_priority = Some(value);
+                }
+                "group_by_date_unit" => s.config.view.group_by_date_unit = value,
+                "pane_layout" => {
+                    new_pane_layout = Some(value);
+                }
+                "mouse4_action" => s.config.actions.mouse4_action = value,
+                "mouse5_action" => s.config.actions.mouse5_action = value,
+                "middle_click_folder_action" => {
+                    s.config.actions.middle_click_folder_action = value
+                }
+                "middle_click_tab_action" => s.config.actions.middle_click_tab_action = value,
+                "ctrl_click_folder_action" => s.config.actions.ctrl_click_folder_action = value,
+                "double_click_empty_action" => {
+                    s.config.actions.double_click_empty_space_go_up = value == "navigate_up";
+                    s.config.actions.double_click_empty_action = value;
+                }
+                "ctrl_wheel_action" => s.config.actions.ctrl_wheel_action = value,
+                "shift_wheel_action" => s.config.actions.shift_wheel_action = value,
+                "open_in_ide_visibility" => s.config.devtools.open_in_ide_visibility = value,
+                "default_ide_name" => s.config.devtools.ide_name = value,
+                "default_ide_path" => s.config.devtools.ide_path = value,
+                _ => {}
+            }
+            let _ = s.config.save();
+        });
+
+        if let Some(layout_str) = new_pane_layout {
+            use crate::core::navigation_manager::PaneLayout;
+            let layout = match layout_str.as_str() {
+                "vertical" => PaneLayout::DualVertical,
+                "horizontal" => PaneLayout::DualHorizontal,
+                _ => PaneLayout::Single,
+            };
+            self.state.navigation.update(cx, |nav, _cx| {
+                nav.pane_layout = layout;
+            });
+            self.state.main_view.pane_type = match layout {
+                PaneLayout::Single => crate::ui::views::main_view::PaneType::Single,
+                _ => crate::ui::views::main_view::PaneType::Dual,
+            };
+            if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+                self.sync_secondary_pane_on_split(cx);
+            }
+        }
+
+        if let Some(prio) = new_sort_priority {
+            self.state.main_view.sort.folders_first = prio == "folders_first";
+            self.state.main_view.apply_sort();
+            self.state.main_view.bump_items_revision();
+        }
+
+        cx.notify();
+    }
+
+    pub fn set_backdrop_material(&mut self, material: String, cx: &mut Context<Self>) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            match material.as_str() {
+                "MicaAlt" => {
+                    s.config.appearance.mica_enabled = true;
+                    s.config.appearance.mica_alt = true;
+                    s.config.appearance.transparent_window = false;
+                }
+                "Mica" => {
+                    s.config.appearance.mica_enabled = true;
+                    s.config.appearance.mica_alt = false;
+                    s.config.appearance.transparent_window = false;
+                }
+                "Acrylic" | "Transparent" => {
+                    s.config.appearance.mica_enabled = false;
+                    s.config.appearance.mica_alt = false;
+                    s.config.appearance.transparent_window = true;
+                }
+                _ => {
+                    s.config.appearance.mica_enabled = false;
+                    s.config.appearance.mica_alt = false;
+                    s.config.appearance.transparent_window = false;
+                }
+            }
+            s.config.appearance.backdrop_material = material;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn add_startup_page(&mut self, path: String, cx: &mut Context<Self>) {
+        if path.trim().is_empty() {
+            return;
+        }
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            if !s.config.session.startup_pages.contains(&path) {
+                s.config.session.startup_pages.push(path);
+                let _ = s.config.save();
+            }
+        });
+        cx.notify();
+    }
+
+    pub fn open_keybinding_recorder(
+        &mut self,
+        action: crate::core::action_registry::ActionKind,
+        is_add_mode: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.state.action_registry.get_key(action).cloned();
+        self.state.settings_ui.recorder = Some(crate::ui::components::dialogs::KeyBindingRecorderState {
+            action,
+            is_add_mode,
+            recorded_combo: current,
+            conflict_action: None,
+            validation_error: None,
+        });
+        cx.notify();
+    }
+
+    pub fn record_candidate_binding(
+        &mut self,
+        combo: crate::core::action_registry::KeyCombination,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref mut rec) = self.state.settings_ui.recorder {
+            let conflict = self
+                .state
+                .action_registry
+                .find_conflict(&combo, Some(rec.action));
+            rec.recorded_combo = Some(combo);
+            rec.conflict_action = conflict;
+            rec.validation_error = None;
+            cx.notify();
+        }
+    }
+
+    pub fn commit_keybinding_recorder(&mut self, cx: &mut Context<Self>) {
+        if let Some(rec) = self.state.settings_ui.recorder.take() {
+            if let Some(combo) = rec.recorded_combo {
+                if !combo.is_empty() {
+                    self.state.action_registry.rebind(rec.action, combo);
+                    self.persist_action_bindings(cx);
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn reset_single_action_binding(
+        &mut self,
+        action: crate::core::action_registry::ActionKind,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(default_combo) = crate::core::action_registry::ActionRegistry::default_binding(action) {
+            self.state.action_registry.rebind(action, default_combo);
+        } else {
+            self.state.action_registry.unbind(action);
+        }
+        self.persist_action_bindings(cx);
+        cx.notify();
+    }
+
+    pub fn reset_all_action_bindings(&mut self, cx: &mut Context<Self>) {
+        self.state.action_registry.reset_all_defaults();
+        self.state.settings_ui.recorder = None;
+        self.persist_action_bindings(cx);
+        cx.notify();
+    }
+
+    pub fn unbind_action(
+        &mut self,
+        action: crate::core::action_registry::ActionKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.action_registry.unbind(action);
+        if let Some(ref rec) = self.state.settings_ui.recorder {
+            if rec.action == action {
+                self.state.settings_ui.recorder = None;
+            }
+        }
+        self.persist_action_bindings(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn persist_action_bindings(&mut self, cx: &mut Context<Self>) {
+        let mut map = std::collections::HashMap::new();
+        for (action, combo) in self.state.action_registry.iter() {
+            map.insert(format!("{:?}", action), combo.to_string());
+        }
+        let reg_clone = self.state.action_registry.clone();
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.keybindings.bindings = map;
+            s.config.action_bindings = Some(reg_clone);
+            let _ = s.config.save();
+        });
+    }
+
+    pub fn refresh_home_tags_cache(&mut self, cx: &mut Context<Self>) {
+        let defined_tags = self.state.settings.read(cx).config.file_tags.clone();
+        let db_counts: std::collections::HashMap<String, i64> = self
+            .state
+            .tag_service
+            .get_all_tags()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let mut merged: Vec<(String, String, i64)> = Vec::new();
+        for def in &defined_tags {
+            let count = db_counts.get(&def.name).copied().unwrap_or(0);
+            merged.push((def.name.clone(), def.color.clone(), count));
+        }
+        for (tag_name, count) in db_counts {
+            if !merged.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(&tag_name)) {
+                merged.push((tag_name, "#0078D4".to_string(), count));
+            }
+        }
+        self.state.main_view.home_tags_cache = merged;
+    }
+
+    pub fn commit_create_tag(&mut self, cx: &mut Context<Self>) {
+        let name = self.state.settings_ui.new_tag_name.trim().to_string();
+        let color = self.state.settings_ui.new_tag_color.clone();
+        if name.is_empty() {
+            return;
+        }
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            if !s
+                .config
+                .file_tags
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(&name))
+            {
+                s.config.file_tags.push(crate::config::config::TagDefinition {
+                    id: format!("tag_{}", s.config.file_tags.len() + 1),
+                    name,
+                    color,
+                });
+                let _ = s.config.save();
+            }
+        });
+        self.state.settings_ui.new_tag_name.clear();
+        self.state.settings_ui.is_creating_tag = false;
+        self.refresh_home_tags_cache(cx);
+        cx.notify();
+    }
+
+    pub fn update_tag_color(&mut self, tag_name: String, color: String, cx: &mut Context<Self>) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            if let Some(t) = s
+                .config
+                .file_tags
+                .iter_mut()
+                .find(|t| t.name.eq_ignore_ascii_case(&tag_name))
+            {
+                t.color = color;
+                let _ = s.config.save();
+            }
+        });
+        self.refresh_home_tags_cache(cx);
+        cx.notify();
+    }
+
+    pub fn delete_tag_definition(&mut self, tag_name: String, cx: &mut Context<Self>) {
+        let _ = self.state.tag_service.delete_tag(&tag_name);
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config
+                .file_tags
+                .retain(|t| !t.name.eq_ignore_ascii_case(&tag_name));
+            let _ = s.config.save();
+        });
+        self.refresh_home_tags_cache(cx);
+        cx.notify();
+    }
+
+    pub fn clear_thumbnail_cache(&mut self, cx: &mut Context<Self>) {
+        if let Ok(mut cache) = self.state.icon_cache.lock() {
+            cache.clear();
+        }
+        self.state.main_view.icon_paths.clear();
+        self.state.secondary_view.icon_paths.clear();
+        let cache_dir = crate::app_state::icons_cache_dir();
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let _ = std::fs::create_dir_all(&cache_dir);
+        self.state.status_center.push_notification(
+            "Thumbnail Cache Cleared".to_string(),
+            "All cached thumbnails and icons have been removed.".to_string(),
+            crate::ui::components::status_center::NotificationSeverity::Success,
+            None,
+        );
+        cx.notify();
+    }
+
+    pub fn export_settings_backup(&mut self, cx: &mut Context<Self>) {
+        let backup_path = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("files-rs-settings-backup.json");
+        let cfg = self.state.settings.read(cx).config.clone();
+        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
+            if std::fs::write(&backup_path, json).is_ok() {
+                self.state.status_center.push_notification(
+                    "Settings Exported".to_string(),
+                    format!("Saved backup to {}", backup_path.display()),
+                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    None,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn import_settings_backup(&mut self, cx: &mut Context<Self>) {
+        let backup_path = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("files-rs-settings-backup.json");
+        if let Ok(content) = std::fs::read_to_string(&backup_path) {
+            if let Ok(imported) = serde_json::from_str::<crate::config::config::AppConfig>(&content)
+            {
+                let settings = self.state.settings.clone();
+                settings.update(cx, move |s, _cx| {
+                    s.config = imported;
+                    let _ = s.config.save();
+                });
+                self.state.status_center.push_notification(
+                    "Settings Imported".to_string(),
+                    format!("Restored configuration from {}", backup_path.display()),
+                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    None,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn open_settings_json_file(&mut self, cx: &mut Context<Self>) {
+        let config_path = crate::config::config::AppConfig::config_path();
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if !config_path.exists() {
+            let _ = self.state.settings.read(cx).config.save();
+        }
+        self.open_in_ide(Some(FilesPath::from(config_path)), cx);
+    }
+
+    pub fn remove_recent_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.session.recent_paths.retain(|p| p != &path);
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn clear_recent_files(&mut self, cx: &mut Context<Self>) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, |s, _cx| {
+            s.config.session.recent_paths.clear();
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn set_sort_column(&mut self, col: crate::config::config::SortBy, cx: &mut Context<Self>) {
+        self.state.main_view.toggle_sort(col.clone());
+        self.state.main_view.bump_items_revision();
+        let asc = self.state.main_view.sort.ascending;
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.view.sort_by = col;
+            s.config.view.sort_ascending = asc;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn set_sort_ascending(&mut self, ascending: bool, cx: &mut Context<Self>) {
+        self.state.main_view.sort.ascending = ascending;
+        self.state.main_view.apply_sort();
+        self.state.main_view.bump_items_revision();
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.view.sort_ascending = ascending;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn set_group_by(
+        &mut self,
+        group: crate::config::config::GroupColumn,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.main_view.group_by = group;
+        self.state.main_view.collapsed_groups.clear();
+        self.state.main_view.bump_items_revision();
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.view.group_by = group;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
+    pub fn toggle_toolbar_flyout(&mut self, flyout_id: &str, cx: &mut Context<Self>) {
+        if self.state.main_view.toolbar_customization.active_flyout.as_deref() == Some(flyout_id) {
+            self.state.main_view.toolbar_customization.active_flyout = None;
+        } else {
+            self.state.main_view.toolbar_customization.active_flyout = Some(flyout_id.to_string());
+        }
+        cx.notify();
+    }
+
+    pub fn close_toolbar_flyout(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.toolbar_customization.active_flyout.is_some() {
+            self.state.main_view.toolbar_customization.active_flyout = None;
+            cx.notify();
+        }
+    }
+
+    pub fn compress_selected_items(&mut self, cx: &mut Context<Self>) {
+        let sources: Vec<std::path::PathBuf> = self
+            .state
+            .active_view()
+            .selected_indices
+            .iter()
+            .filter_map(|&i| self.state.active_view().items.get(i))
+            .map(|item| item.path.as_path().to_path_buf())
+            .collect();
+        let current_dir = self.state.active_view().primary_path.as_path().to_path_buf();
+        let first_name = sources
+            .first()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Archive".to_string());
+        let destination = current_dir.join(format!("{}.zip", first_name));
+        self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::CreateArchive {
+            state: Box::new(
+                crate::ui::dialog_services::archive_dialog::CreateArchiveState::new(
+                    sources,
+                    destination,
+                ),
+            ),
+        });
+        cx.notify();
+    }
+
+    pub fn extract_selected_archive(&mut self, cx: &mut Context<Self>) {
+        if let Some(&idx) = self.state.active_view().selected_indices.iter().next() {
+            if let Some(item) = self.state.active_view().items.get(idx) {
+                let archive_path = item.path.as_path().to_path_buf();
+                let current_dir = self.state.active_view().primary_path.as_path().to_path_buf();
+                self.state.active_dialog =
+                    Some(crate::ui::components::dialogs::DialogType::DecompressArchive {
+                        state: Box::new(
+                            crate::ui::dialog_services::decompress_dialog::DecompressState::new(
+                                archive_path,
+                                current_dir,
+                            ),
+                        ),
+                    });
+                cx.notify();
+            }
+        }
     }
 }
 

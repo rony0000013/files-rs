@@ -181,6 +181,109 @@ pub enum SettingsTab {
     About,
 }
 
+/// Interactive state for recording a new keyboard or mouse combination in Settings -> Actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBindingRecorderState {
+    pub action: crate::core::action_registry::ActionKind,
+    pub is_add_mode: bool,
+    pub recorded_combo: Option<crate::core::action_registry::KeyCombination>,
+    pub conflict_action: Option<crate::core::action_registry::ActionKind>,
+    pub validation_error: Option<String>,
+}
+
+/// Interactive UI state for the Settings page (expanders, search, shortcut recorder, tag editor, IDE editor).
+#[derive(Debug, Clone)]
+pub struct SettingsUiState {
+    pub search_query: String,
+    pub search_focused: bool,
+    pub expanded_sections: std::collections::HashSet<String>,
+    pub actions_search_query: String,
+    pub actions_search_focused: bool,
+    pub actions_filter: String,
+    pub recorder: Option<KeyBindingRecorderState>,
+    pub confirming_restore_defaults: bool,
+    pub pending_delete_action: Option<crate::core::action_registry::ActionKind>,
+    pub is_creating_tag: bool,
+    pub new_tag_name: String,
+    pub new_tag_color: String,
+    pub editing_tag_index: Option<usize>,
+    pub editing_tag_name: String,
+    pub editing_tag_color: String,
+    pub is_editing_ide: bool,
+    pub edit_ide_name: String,
+    pub edit_ide_path: String,
+    pub ide_focused_field: Option<String>,
+}
+
+impl Default for SettingsUiState {
+    fn default() -> Self {
+        let mut expanded = std::collections::HashSet::new();
+        for key in [
+            "home_quick_access",
+            "home_drives",
+            "home_network",
+            "home_file_tags",
+            "home_recent_files",
+            "general_startup",
+            "general_widgets",
+            "general_context_menu",
+            "appearance_theme_colors",
+            "appearance_address_bar",
+            "appearance_toolbar",
+            "layout_sort",
+            "layout_group",
+            "layout_columns",
+            "folders_hidden",
+            "folders_single_click",
+            "folders_sizes",
+            "actions_mouse",
+            "actions_commands",
+            "tags_list",
+            "devtools_ide",
+            "advanced_cache",
+            "about_feedback",
+            "about_oss",
+        ] {
+            expanded.insert(key.to_string());
+        }
+        Self {
+            search_query: String::new(),
+            search_focused: false,
+            expanded_sections: expanded,
+            actions_search_query: String::new(),
+            actions_search_focused: false,
+            actions_filter: "all".to_string(),
+            recorder: None,
+            confirming_restore_defaults: false,
+            pending_delete_action: None,
+            is_creating_tag: false,
+            new_tag_name: String::new(),
+            new_tag_color: "#0078D4".to_string(),
+            editing_tag_index: None,
+            editing_tag_name: String::new(),
+            editing_tag_color: "#0078D4".to_string(),
+            is_editing_ide: false,
+            edit_ide_name: "VS Code".to_string(),
+            edit_ide_path: "code".to_string(),
+            ide_focused_field: None,
+        }
+    }
+}
+
+impl SettingsUiState {
+    pub fn is_expanded(&self, key: &str) -> bool {
+        self.expanded_sections.contains(key)
+    }
+
+    pub fn toggle_expander(&mut self, key: &str) {
+        if self.expanded_sections.contains(key) {
+            self.expanded_sections.remove(key);
+        } else {
+            self.expanded_sections.insert(key.to_string());
+        }
+    }
+}
+
 pub struct DialogsView;
 
 /// Pre-read data for the Settings dialog to avoid BorrowMutError during render.
@@ -192,11 +295,21 @@ pub struct SettingsPreReadData {
         crate::core::action_registry::ActionKind,
         crate::core::action_registry::KeyCombination,
     )>,
+    pub all_actions: Vec<(
+        crate::core::action_registry::ActionKind,
+        Option<crate::core::action_registry::KeyCombination>,
+        bool,
+    )>,
+    pub ui_state: SettingsUiState,
+    pub tag_counts: std::collections::HashMap<String, i64>,
+    pub cached_icon_count: usize,
     pub toolbar_new_folder: bool,
     pub toolbar_new_file: bool,
     pub toolbar_cut: bool,
     pub toolbar_copy: bool,
     pub toolbar_paste: bool,
+    pub toolbar_rename: bool,
+    pub toolbar_delete: bool,
     pub toolbar_details_view: bool,
     pub toolbar_grid_view: bool,
     pub toolbar_columns_view: bool,
@@ -213,16 +326,34 @@ impl DialogsView {
     ) -> SettingsPreReadData {
         let config = state.settings.read(cx).config().clone();
         let action_pairs = state.action_registry.iter();
+        let all_actions = state.action_registry.all_entries();
         let tb = &state.main_view.toolbar_customization;
+        let tag_counts = state
+            .tag_service
+            .get_all_tags()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let cached_icon_count = state
+            .icon_cache
+            .lock()
+            .map(|c| c.len())
+            .unwrap_or(0);
         SettingsPreReadData {
             active_tab: state.active_settings_tab,
             config,
             action_pairs,
+            all_actions,
+            ui_state: state.settings_ui.clone(),
+            tag_counts,
+            cached_icon_count,
             toolbar_new_folder: tb.is_visible("new_folder"),
             toolbar_new_file: tb.is_visible("new_file"),
             toolbar_cut: tb.is_visible("cut"),
             toolbar_copy: tb.is_visible("copy"),
             toolbar_paste: tb.is_visible("paste"),
+            toolbar_rename: tb.is_visible("rename"),
+            toolbar_delete: tb.is_visible("delete"),
             toolbar_details_view: tb.is_visible("details_view"),
             toolbar_grid_view: tb.is_visible("grid_view"),
             toolbar_columns_view: tb.is_visible("columns_view"),

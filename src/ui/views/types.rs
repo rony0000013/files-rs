@@ -407,6 +407,8 @@ pub struct DetailsPaneCache {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolbarCustomizationState {
     pub visible_buttons: std::collections::HashMap<String, bool>,
+    #[serde(skip)]
+    pub active_flyout: Option<String>,
 }
 
 impl Default for ToolbarCustomizationState {
@@ -432,6 +434,7 @@ impl Default for ToolbarCustomizationState {
         }
         Self {
             visible_buttons: map,
+            active_flyout: None,
         }
     }
 }
@@ -554,6 +557,8 @@ pub struct MainViewState {
     pub sort: SortState,
     /// Filter text (shown in filter header)
     pub filter_text: String,
+    /// Whether the inline filter bar is visible
+    pub show_filter_bar: bool,
     /// Show dot-prefixed files
     pub show_dot_files: bool,
     /// Show hidden (system-hidden) files
@@ -727,6 +732,7 @@ pub struct VisibleCacheKey {
     pub sort_ascending: bool,
     pub folders_first: bool,
     pub filter_text: String,
+    pub show_filter_bar: bool,
     pub show_dot_files: bool,
     pub show_hidden_files: bool,
     pub show_system_files: bool,
@@ -737,4 +743,47 @@ pub struct VisibleCacheKey {
 
 fn default_dual_pane_ratio() -> f32 {
     0.5
+}
+
+impl MainViewState {
+    /// Re-sort `items` in place from the current `sort` settings.
+    pub fn apply_sort(&mut self) {
+        let asc = self.sort.ascending;
+        let folders_first = self.sort.folders_first;
+        let col = self.sort.column.clone();
+        self.items.sort_by(|a, b| {
+            if folders_first {
+                let ad = a.file_type == FileType::Directory;
+                let bd = b.file_type == FileType::Directory;
+                if ad != bd {
+                    return if ad {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                }
+            }
+            let ord = match col {
+                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortBy::DateModified => a.modified.cmp(&b.modified),
+                SortBy::DateCreated => a.created.cmp(&b.created),
+                SortBy::Size => a.size.cmp(&b.size),
+                SortBy::Type => a
+                    .name
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .cmp(
+                        &b.name
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or("")
+                            .to_lowercase(),
+                    ),
+                SortBy::Tag => std::cmp::Ordering::Equal,
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+    }
 }

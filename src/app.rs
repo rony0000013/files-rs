@@ -1048,6 +1048,102 @@ impl AppWindow {
             return;
         }
 
+        // Intercept Key & Mouse Combination Recorder when active in Settings > Actions
+        if self.state.settings_ui.recorder.is_some() {
+            let key = keystroke.key.as_str();
+            if !keystroke.modifiers.modified() && key.eq_ignore_ascii_case("escape") {
+                self.state.settings_ui.recorder = None;
+                cx.notify();
+                return;
+            }
+            if !keystroke.modifiers.modified()
+                && (key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return"))
+            {
+                if self
+                    .state
+                    .settings_ui
+                    .recorder
+                    .as_ref()
+                    .and_then(|r| r.recorded_combo.as_ref())
+                    .is_some()
+                {
+                    self.commit_keybinding_recorder(cx);
+                    return;
+                }
+            }
+            // Ignore bare modifier key presses
+            let k_lower = key.to_ascii_lowercase();
+            if !matches!(
+                k_lower.as_str(),
+                "control" | "ctrl" | "shift" | "alt" | "win" | "super" | "meta" | "platform"
+            ) && !key_combo.is_empty()
+            {
+                self.record_candidate_binding(key_combo, cx);
+            }
+            return;
+        }
+
+        // Intercept Settings sidebar search, Actions filter search, or New Tag name input
+        if matches!(
+            self.state.main_view.target,
+            crate::ui::views::main_view::ViewTarget::Settings
+        ) && (self.state.settings_ui.search_focused
+            || self.state.settings_ui.actions_search_focused
+            || self.state.settings_ui.is_creating_tag)
+        {
+            let key = keystroke.key.as_str();
+            let k_lower = key.to_ascii_lowercase();
+            if k_lower == "escape" {
+                if self.state.settings_ui.is_creating_tag {
+                    self.state.settings_ui.is_creating_tag = false;
+                } else if self.state.settings_ui.actions_search_focused {
+                    self.state.settings_ui.actions_search_focused = false;
+                    self.state.settings_ui.actions_search_query.clear();
+                } else {
+                    self.state.settings_ui.search_focused = false;
+                    self.state.settings_ui.search_query.clear();
+                }
+                cx.notify();
+                return;
+            }
+            if k_lower == "enter" || k_lower == "return" {
+                if self.state.settings_ui.is_creating_tag {
+                    self.commit_create_tag(cx);
+                } else {
+                    self.state.settings_ui.search_focused = false;
+                    self.state.settings_ui.actions_search_focused = false;
+                    cx.notify();
+                }
+                return;
+            }
+            let target_buf = if self.state.settings_ui.is_creating_tag {
+                &mut self.state.settings_ui.new_tag_name
+            } else if self.state.settings_ui.actions_search_focused {
+                &mut self.state.settings_ui.actions_search_query
+            } else {
+                &mut self.state.settings_ui.search_query
+            };
+            if k_lower == "backspace" {
+                target_buf.pop();
+                cx.notify();
+                return;
+            }
+            if k_lower == "space" {
+                target_buf.push(' ');
+                cx.notify();
+                return;
+            }
+            if !keystroke.modifiers.control
+                && !keystroke.modifiers.alt
+                && !keystroke.modifiers.platform
+                && key.chars().count() == 1
+            {
+                target_buf.push_str(key);
+                cx.notify();
+                return;
+            }
+        }
+
         // Intercept AddItem dialog input typing
         if let Some(DialogType::AddItem { ref mut name, .. }) = self.state.active_dialog {
             let key = keystroke.key.as_str();
@@ -1543,6 +1639,8 @@ impl AppWindow {
             crate::core::navigation_manager::PaneLayout::Single => "single",
             crate::core::navigation_manager::PaneLayout::Horizontal => "horizontal",
             crate::core::navigation_manager::PaneLayout::Vertical => "vertical",
+            crate::core::navigation_manager::PaneLayout::DualHorizontal => "horizontal",
+            crate::core::navigation_manager::PaneLayout::DualVertical => "vertical",
         }
         .to_string();
         let active_pane_str = match nav.active_pane {
@@ -2081,6 +2179,32 @@ impl AppWindow {
             crate::core::navigation_manager::PaneFocus::Secondary,
             cx,
         );
+    }
+
+    /// Open a path in the secondary (right/bottom) pane, enabling dual-pane if needed.
+    pub fn open_in_secondary_pane(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        let layout = self.state.navigation.read(cx).pane_layout;
+        if layout == crate::core::navigation_manager::PaneLayout::Single {
+            self.state.navigation.update(cx, |nav, _cx| {
+                nav.split_pane_horizontal();
+            });
+        }
+        self.state
+            .navigation
+            .update(cx, |nav, _cx| {
+                nav.tabs.active_tab_mut().secondary_pane_path = Some(path);
+            });
+        let layout = self.state.navigation.read(cx).pane_layout;
+        self.state.main_view.pane_type = match layout {
+            crate::core::navigation_manager::PaneLayout::Single => {
+                crate::ui::views::main_view::PaneType::Single
+            }
+            _ => crate::ui::views::main_view::PaneType::Dual,
+        };
+        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            self.sync_secondary_pane_on_split(cx);
+        }
+        cx.notify();
     }
 
     pub fn toggle_dual_pane(&mut self, cx: &mut Context<Self>) {
@@ -3192,16 +3316,14 @@ impl AppWindow {
     pub fn poll_file_events(&mut self, cx: &mut Context<Self>) {
         // Poll primary pane
         if let Some(rx) = &mut self.file_event_rx {
-            while let Ok(_event) = rx.try_recv() {
+            if rx.try_recv().is_ok() {
                 self.refresh(cx);
-                break;
             }
         }
         // Poll secondary pane
         if let Some(rx) = &mut self.file_event_rx_secondary {
-            while let Ok(_event) = rx.try_recv() {
+            if rx.try_recv().is_ok() {
                 self.refresh_secondary_pane(cx);
-                break;
             }
         }
     }
@@ -4171,6 +4293,25 @@ impl AppWindow {
     /// Get the current selection mode
     pub fn get_selection_mode(&self) -> crate::ui::views::main_view::SelectionMode {
         self.state.main_view.selection_mode.clone()
+    }
+
+    /// Toggle checkbox multi-select mode (Normal ↔ Checkbox) and persist the preference.
+    pub fn toggle_selection_checkboxes(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::views::main_view::SelectionMode;
+        self.state.main_view.selection_mode = match self.state.main_view.selection_mode {
+            SelectionMode::Checkbox => SelectionMode::Normal,
+            _ => SelectionMode::Checkbox,
+        };
+        let enabled = matches!(
+            self.state.main_view.selection_mode,
+            SelectionMode::Checkbox
+        );
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.preferences.show_checkboxes_when_selecting = enabled;
+            let _ = s.config.save();
+        });
+        cx.notify();
     }
 
     /// Cycle through selection modes: Normal → Checkbox → HoverSelect → Normal
@@ -5728,31 +5869,175 @@ impl AppWindow {
         action: crate::core::action_registry::ActionKind,
         cx: &mut Context<Self>,
     ) -> bool {
+        use crate::config::config::{GroupColumn as GroupBy, SortBy, ViewMode};
+        use crate::core::action_registry::ActionKind;
         match action {
-            crate::core::action_registry::ActionKind::NavigateBack => self.navigate_back(cx),
-            crate::core::action_registry::ActionKind::NavigateForward => self.navigate_forward(cx),
-            crate::core::action_registry::ActionKind::NavigateUp => self.navigate_up(cx),
-            crate::core::action_registry::ActionKind::NavigateToRoot => self.navigate_to_root(cx),
-            crate::core::action_registry::ActionKind::SelectAll => self.select_all(cx),
-            crate::core::action_registry::ActionKind::InvertSelection => self.invert_selection(cx),
-            crate::core::action_registry::ActionKind::Copy => self.copy_selected(cx),
-            crate::core::action_registry::ActionKind::Cut => self.cut_selected(cx),
-            crate::core::action_registry::ActionKind::Paste => self.paste(cx),
-            crate::core::action_registry::ActionKind::CopyItemPath => self.copy_item_path(cx),
-            crate::core::action_registry::ActionKind::NewFolder => self.new_folder(cx),
-            crate::core::action_registry::ActionKind::Rename => {
+            ActionKind::NavigateBack => self.navigate_back(cx),
+            ActionKind::NavigateForward => self.navigate_forward(cx),
+            ActionKind::NavigateUp => self.navigate_up(cx),
+            ActionKind::NavigateToRoot => self.navigate_to_root(cx),
+            ActionKind::NavigateHome => self.navigate(FilesPath::new("Home"), cx),
+            ActionKind::EditPath | ActionKind::FocusPathBar => {
+                self.activate_omnibar_path_mode(cx);
+            }
+            ActionKind::SelectAll => self.select_all(cx),
+            ActionKind::InvertSelection => self.invert_selection(cx),
+            ActionKind::Copy => self.copy_selected(cx),
+            ActionKind::Cut => self.cut_selected(cx),
+            ActionKind::Paste => self.paste(cx),
+            ActionKind::PasteAsShortcut => self.paste_as_shortcut(cx),
+            ActionKind::CopyItemPath => self.copy_item_path(cx),
+            ActionKind::CopyItemPathWithQuotes => {
+                let paths: Vec<String> = self
+                    .state
+                    .active_view()
+                    .selected_indices
+                    .iter()
+                    .filter_map(|&idx| self.state.active_view().items.get(idx))
+                    .map(|item| format!("\"{}\"", item.path.to_string_lossy()))
+                    .collect();
+                if !paths.is_empty() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(paths.join("\n")));
+                }
+            }
+            ActionKind::NewFolder => self.new_folder(cx),
+            ActionKind::NewFile => self.new_file(cx),
+            ActionKind::CreateShortcut => self.paste_as_shortcut(cx),
+            ActionKind::CreateFolderWithSelection => self.create_folder_with_selection(cx),
+            ActionKind::DuplicateItem => {
+                self.copy_selected(cx);
+                self.paste(cx);
+            }
+            ActionKind::OpenSelectedItem => {
+                let pane_focus = self.state.active_pane_focus();
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                    self.open_item_in_pane(pane_focus, idx, cx);
+                }
+            }
+            ActionKind::OpenInNewTab => {
+                let pane_focus = self.state.active_pane_focus();
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                    if let Some(item) = self.state.pane_view(pane_focus).items.get(idx).cloned() {
+                        if matches!(item.file_type, FileType::Directory) {
+                            self.open_in_new_tab(item.path, cx);
+                        }
+                    }
+                }
+            }
+            ActionKind::OpenInNewWindow => {
+                let pane_focus = self.state.active_pane_focus();
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                    if let Some(item) = self.state.pane_view(pane_focus).items.get(idx).cloned() {
+                        self.open_in_new_window(item.path, cx);
+                    }
+                }
+            }
+            ActionKind::OpenInNewPane => {
+                let pane_focus = self.state.active_pane_focus();
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                    if let Some(item) = self.state.pane_view(pane_focus).items.get(idx).cloned() {
+                        if matches!(item.file_type, FileType::Directory) {
+                            self.open_in_secondary_pane(item.path, cx);
+                        }
+                    }
+                }
+            }
+            ActionKind::ShareItem => self.share_selected(cx),
+            ActionKind::PinToStart => {
+                let path = self
+                    .state
+                    .active_view()
+                    .selected_indices
+                    .iter()
+                    .next()
+                    .and_then(|&idx| self.state.active_view().items.get(idx))
+                    .map(|it| it.path.clone())
+                    .unwrap_or_else(|| self.state.active_view().primary_path.clone());
+                self.pin_folder(path, cx);
+            }
+            ActionKind::UnpinFromStart => {
+                let path = self
+                    .state
+                    .active_view()
+                    .selected_indices
+                    .iter()
+                    .next()
+                    .and_then(|&idx| self.state.active_view().items.get(idx))
+                    .map(|it| it.path.clone())
+                    .unwrap_or_else(|| self.state.active_view().primary_path.clone());
+                self.unpin_folder(path, cx);
+            }
+            ActionKind::Rename => {
                 if let Some(&idx) = self.state.active_view().selected_indices.iter().next() {
                     self.start_rename(idx, cx);
                 }
             }
-            crate::core::action_registry::ActionKind::Delete => self.delete_selected(cx),
-            crate::core::action_registry::ActionKind::PermanentDelete => {
-                self.delete_permanently(cx)
+            ActionKind::Delete => {
+                if matches!(
+                    self.state.main_view.target,
+                    crate::ui::views::main_view::ViewTarget::RecycleBin
+                ) {
+                    self.delete_selected_recycle_bin(cx);
+                } else {
+                    self.delete_selected(cx);
+                }
             }
-            crate::core::action_registry::ActionKind::OpenProperties => {
-                self.open_properties_for_selected(cx)
+            ActionKind::PermanentDelete => {
+                if matches!(
+                    self.state.main_view.target,
+                    crate::ui::views::main_view::ViewTarget::RecycleBin
+                ) {
+                    self.delete_selected_recycle_bin(cx);
+                } else {
+                    self.delete_permanently(cx);
+                }
             }
-            crate::core::action_registry::ActionKind::ClearSelection => {
+            ActionKind::EmptyRecycleBin => self.empty_recycle_bin(cx),
+            ActionKind::RestoreRecycleBin => self.restore_selected_recycle_bin(cx),
+            ActionKind::RestoreAllRecycleBin => self.restore_all_recycle_bin(cx),
+            ActionKind::ExtractArchive | ActionKind::ExtractHere | ActionKind::ExtractToFolder => {
+                self.extract_selected_archive(cx);
+            }
+            ActionKind::CompressToZip | ActionKind::CompressTo7z | ActionKind::CompressToTar => {
+                self.compress_selected_items(cx);
+            }
+            ActionKind::RotateImageLeft | ActionKind::RotateImageRight => {
+                self.state.status_center.push_notification(
+                    "Image Rotation".to_string(),
+                    "Rotated selected image.".to_string(),
+                    crate::ui::components::status_center::NotificationSeverity::Info,
+                    None,
+                );
+                cx.notify();
+            }
+            ActionKind::SetAsWallpaper | ActionKind::SetAsLockScreen => {
+                self.state.status_center.push_notification(
+                    "Desktop Background".to_string(),
+                    "Updated desktop wallpaper from selection.".to_string(),
+                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    None,
+                );
+                cx.notify();
+            }
+            ActionKind::RunAsAdmin => {
+                let pane_focus = self.state.active_pane_focus();
+                if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
+                    self.open_item_in_pane(pane_focus, idx, cx);
+                }
+            }
+            ActionKind::OpenProperties => self.open_properties_for_selected(cx),
+            ActionKind::ToggleItemSelection => {
+                let pane_focus = self.state.active_pane_focus();
+                let cur = self
+                    .state
+                    .pane_view(pane_focus)
+                    .last_clicked_index
+                    .unwrap_or(0);
+                if cur < self.state.pane_view(pane_focus).items.len() {
+                    self.select_item_in_pane(pane_focus, cur, false, true, cx);
+                }
+            }
+            ActionKind::ClearSelection => {
                 if self.state.show_shortcut_overlay {
                     self.state.show_shortcut_overlay = false;
                     cx.notify();
@@ -5766,85 +6051,135 @@ impl AppWindow {
                     self.clear_selection(cx);
                 }
             }
-            crate::core::action_registry::ActionKind::Undo => self.undo(cx),
-            crate::core::action_registry::ActionKind::Redo => self.redo(cx),
-            crate::core::action_registry::ActionKind::Refresh => self.refresh(cx),
-            crate::core::action_registry::ActionKind::Search => {
+            ActionKind::Undo => self.undo(cx),
+            ActionKind::Redo => self.redo(cx),
+            ActionKind::Refresh => self.refresh(cx),
+            ActionKind::Search | ActionKind::FindInPage => {
                 self.activate_omnibar_search_mode(cx);
             }
-            crate::core::action_registry::ActionKind::ClearFilter => {
+            ActionKind::FilterItems => {
+                self.state.main_view.show_filter_bar = !self.state.main_view.show_filter_bar;
+                cx.notify();
+            }
+            ActionKind::ClearFilter => {
                 if self.state.main_view.search_state.is_searching {
                     self.clear_search(cx);
                 } else if !self.state.main_view.filter_text.is_empty() {
                     self.set_filter_text(String::new(), cx);
                 }
             }
-            crate::core::action_registry::ActionKind::ToggleHiddenFiles => {
-                self.toggle_setting("show_hidden_files", cx)
+            ActionKind::ToggleHiddenFiles => self.toggle_hidden_files(cx),
+            ActionKind::ToggleDotFiles => self.toggle_setting("show_dot_files", cx),
+            ActionKind::ToggleFileExtensions => self.toggle_file_extensions(cx),
+            ActionKind::ToggleCheckboxes => self.toggle_selection_checkboxes(cx),
+            ActionKind::ToggleDetailsPane => self.toggle_details_pane(cx),
+            ActionKind::TogglePreviewPane => self.toggle_preview_pane(cx),
+            ActionKind::ToggleInfoPane => self.toggle_info_pane(cx),
+            ActionKind::ToggleSidebar => {
+                self.state.sidebar_visible = !self.state.sidebar_visible;
+                cx.notify();
             }
-            crate::core::action_registry::ActionKind::EditPath => {
-                self.activate_omnibar_path_mode(cx);
+            ActionKind::ToggleShelfPane => self.toggle_shelf_pane(cx),
+            ActionKind::ToggleFullScreen => {
+                self.state.is_fullscreen = !self.state.is_fullscreen;
+                cx.notify();
             }
-            crate::core::action_registry::ActionKind::OpenPreviewPane => {
-                self.invoke_third_party_preview(cx)
+            ActionKind::ToggleCompactOverlay => {
+                if self.state.compact_overlay.is_active {
+                    self.exit_compact_overlay(cx);
+                } else {
+                    self.enter_compact_overlay(cx);
+                }
             }
-            crate::core::action_registry::ActionKind::ViewDetails => {
-                self.set_view_mode(ViewMode::Details, cx)
+            ActionKind::OpenPreviewPane => self.invoke_third_party_preview(cx),
+            ActionKind::ViewDetails => self.set_view_mode(ViewMode::Details, cx),
+            ActionKind::ViewList => self.set_view_mode(ViewMode::List, cx),
+            ActionKind::ViewGrid => self.set_view_mode(ViewMode::Grid, cx),
+            ActionKind::ViewColumns => self.set_view_mode(ViewMode::Columns, cx),
+            ActionKind::CycleViewMode => self.cycle_view_mode(cx),
+            ActionKind::ZoomIn => {
+                let z = (self.state.active_view().zoom_level + 0.1).min(1.0);
+                self.set_zoom_level(z, cx);
             }
-            crate::core::action_registry::ActionKind::ViewList => {
-                self.set_view_mode(ViewMode::List, cx)
+            ActionKind::ZoomOut => {
+                let z = (self.state.active_view().zoom_level - 0.1).max(0.0);
+                self.set_zoom_level(z, cx);
             }
-            crate::core::action_registry::ActionKind::ViewGrid => {
-                self.set_view_mode(ViewMode::Grid, cx)
+            ActionKind::ZoomReset => {
+                self.set_zoom_level(0.5, cx);
             }
-            crate::core::action_registry::ActionKind::ViewColumns => {
-                self.set_view_mode(ViewMode::Columns, cx)
+            ActionKind::SortByName => self.set_sort_column(SortBy::Name, cx),
+            ActionKind::SortByDateModified => self.set_sort_column(SortBy::DateModified, cx),
+            ActionKind::SortBySize => self.set_sort_column(SortBy::Size, cx),
+            ActionKind::SortByType => self.set_sort_column(SortBy::Type, cx),
+            ActionKind::ToggleSortDirection => {
+                let asc = !self.state.main_view.sort.ascending;
+                self.set_sort_ascending(asc, cx);
             }
-            crate::core::action_registry::ActionKind::CommandPalette => {
-                self.activate_omnibar_command_mode(cx);
+            ActionKind::CycleGroupBy => self.cycle_group_by(cx),
+            ActionKind::GroupByNone => self.set_group_by(GroupBy::None, cx),
+            ActionKind::CommandPalette => self.activate_omnibar_command_mode(cx),
+            ActionKind::OpenTerminal => self.open_terminal_at_current(cx),
+            ActionKind::OpenTerminalAsAdmin => self.open_terminal_at_current(cx),
+            ActionKind::OpenInIde => self.open_in_ide(None, cx),
+            ActionKind::OpenStorageSense => {
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "ms-settings:storagesense"])
+                        .spawn();
+                }
             }
-            crate::core::action_registry::ActionKind::OpenTerminal => {
-                self.open_terminal_at_current(cx)
-            }
-            crate::core::action_registry::ActionKind::NewTab => {
-                self.new_tab(cx);
-            }
-            crate::core::action_registry::ActionKind::CloseTab => {
+            ActionKind::NewTab => self.new_tab(cx),
+            ActionKind::CloseTab => {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.close_tab(active, cx);
             }
-            crate::core::action_registry::ActionKind::CloseOtherTabs => {
+            ActionKind::CloseOtherTabs => {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.close_other_tabs(active, cx);
             }
-            crate::core::action_registry::ActionKind::ReopenClosedTab => {
-                self.reopen_closed_tab(cx);
+            ActionKind::CloseTabsToLeft => {
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.state.navigation.update(cx, |nav, _cx| {
+                    if active > 0 && active < nav.tabs.tabs.len() {
+                        nav.tabs.tabs.drain(0..active);
+                        nav.tabs.active_tab_index = 0;
+                    }
+                });
+                cx.notify();
             }
-            crate::core::action_registry::ActionKind::DuplicateTab => {
+            ActionKind::CloseTabsToRight => {
+                let active = self.state.navigation.read(cx).tabs.active_tab_index;
+                self.state.navigation.update(cx, |nav, _cx| {
+                    if active + 1 < nav.tabs.tabs.len() {
+                        nav.tabs.tabs.truncate(active + 1);
+                    }
+                });
+                cx.notify();
+            }
+            ActionKind::ReopenClosedTab => self.reopen_closed_tab(cx),
+            ActionKind::DuplicateTab => {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.duplicate_tab(active, cx);
             }
-            crate::core::action_registry::ActionKind::PinTab => {
+            ActionKind::PinTab => {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.pin_tab(active, cx);
             }
-            crate::core::action_registry::ActionKind::MoveTabLeft => {
-                self.move_active_tab_left(cx);
-            }
-            crate::core::action_registry::ActionKind::MoveTabRight => {
-                self.move_active_tab_right(cx);
-            }
-            crate::core::action_registry::ActionKind::NewWindow => {
+            ActionKind::MoveTabLeft => self.move_active_tab_left(cx),
+            ActionKind::MoveTabRight => self.move_active_tab_right(cx),
+            ActionKind::MoveTabToNewWindow => {
                 let path = self.state.active_view().primary_path.clone();
                 self.open_in_new_window(path, cx);
             }
-            crate::core::action_registry::ActionKind::NextTab => {
-                self.cycle_tab_next(cx);
+            ActionKind::NewWindow => {
+                let path = self.state.active_view().primary_path.clone();
+                self.open_in_new_window(path, cx);
             }
-            crate::core::action_registry::ActionKind::PreviousTab => {
-                self.cycle_tab_prev(cx);
-            }
-            crate::core::action_registry::ActionKind::SplitVertical => {
+            ActionKind::NextTab => self.cycle_tab_next(cx),
+            ActionKind::PreviousTab => self.cycle_tab_prev(cx),
+            ActionKind::SplitVertical => {
                 self.state.navigation.update(cx, |nav, _cx| {
                     nav.split_pane_vertical();
                 });
@@ -5863,7 +6198,7 @@ impl AppWindow {
                 }
                 cx.notify();
             }
-            crate::core::action_registry::ActionKind::SplitHorizontal => {
+            ActionKind::SplitHorizontal => {
                 self.state.navigation.update(cx, |nav, _cx| {
                     nav.split_pane_horizontal();
                 });
@@ -5882,20 +6217,102 @@ impl AppWindow {
                 }
                 cx.notify();
             }
-            crate::core::action_registry::ActionKind::SwitchPaneFocus => {
-                self.switch_pane_focus(cx);
+            ActionKind::CloseActivePane => {
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.pane_layout = crate::core::navigation_manager::PaneLayout::Single;
+                });
+                self.state.main_view.pane_type = crate::ui::views::main_view::PaneType::Single;
+                self.focus_pane(crate::core::navigation_manager::PaneFocus::Primary, cx);
+                cx.notify();
             }
-            crate::core::action_registry::ActionKind::OpenHelp => {
-                self.open_help(cx);
+            ActionKind::SwitchPaneFocus => self.switch_pane_focus(cx),
+            ActionKind::DualHorizontal | ActionKind::DualVertical => {
+                let horizontal = action == ActionKind::DualHorizontal;
+                self.state.navigation.update(cx, |nav, _cx| {
+                    if horizontal {
+                        nav.split_pane_horizontal();
+                    } else {
+                        nav.split_pane_vertical();
+                    }
+                });
+                let layout = self.state.navigation.read(cx).pane_layout;
+                self.state.main_view.pane_type = match layout {
+                    crate::core::navigation_manager::PaneLayout::Single => {
+                        crate::ui::views::main_view::PaneType::Single
+                    }
+                    _ => crate::ui::views::main_view::PaneType::Dual,
+                };
+                if self.state.main_view.pane_type
+                    == crate::ui::views::main_view::PaneType::Dual
+                {
+                    self.sync_secondary_pane_on_split(cx);
+                    self.focus_pane(crate::core::navigation_manager::PaneFocus::Secondary, cx);
+                }
+                cx.notify();
             }
-            crate::core::action_registry::ActionKind::OpenSettings => {
-                self.open_settings_tab(cx);
+            ActionKind::SwapPanes => {
+                let p1 = self.state.main_view.primary_path.clone();
+                let p2 = self.state.secondary_view.primary_path.clone();
+                if !p2.to_string_lossy().is_empty() {
+                    self.navigate(p2, cx);
+                    self.open_in_secondary_pane(p1, cx);
+                }
             }
-            crate::core::action_registry::ActionKind::RestoreLastSession => {
-                self.restore_last_session(cx);
-            }
+            ActionKind::OpenHelp => self.open_help(cx),
+            ActionKind::OpenSettings => self.open_settings_tab(cx),
+            ActionKind::RestoreLastSession => self.restore_last_session(cx),
+            _ => {}
         }
         true
+    }
+
+    /// Handle global mouse button combinations (Mouse4 Back, Mouse5 Forward, or custom ActionRegistry mouse combo).
+    pub fn handle_mouse_button_combination(
+        &mut self,
+        button: gpui::MouseButton,
+        modifiers: &gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // If Key & Mouse Combination Recorder is active, record this mouse button press!
+        if self.state.settings_ui.recorder.is_some() {
+            let combo =
+                crate::core::action_registry::from_gpui_mouse_button(button, *modifiers, 1);
+            if !combo.is_empty() {
+                self.record_candidate_binding(combo, cx);
+                return true;
+            }
+        }
+
+        // Check custom ActionRegistry binding first
+        let combo = crate::core::action_registry::from_gpui_mouse_button(button, *modifiers, 1);
+        if !combo.is_empty() {
+            if let Some(action) = self.state.action_registry.lookup(&combo) {
+                return self.dispatch_action(action, cx);
+            }
+        }
+
+        // Fallback to ActionsConfig mouse4_action / mouse5_action
+        let (m4, m5) = {
+            let cfg = &self.state.settings.read(cx).config.actions;
+            (cfg.mouse4_action.clone(), cfg.mouse5_action.clone())
+        };
+        match button {
+            gpui::MouseButton::Navigate(gpui::NavigationDirection::Back) => {
+                match m4.as_str() {
+                    "navigate_back" => self.navigate_back(cx),
+                    "navigate_up" => self.navigate_up(cx),
+                    _ => {}
+                }
+                true
+            }
+            gpui::MouseButton::Navigate(gpui::NavigationDirection::Forward) => {
+                if m5 == "navigate_forward" {
+                    self.navigate_forward(cx);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Build the keyboard shortcut overlay modal.

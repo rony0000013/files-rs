@@ -158,7 +158,26 @@ impl AppWindow {
             target_view.show_hidden_files = app_prefs.show_hidden_files;
             target_view.show_extensions = app_prefs.show_file_extensions;
             target_view.show_system_files = app_prefs.show_system_files;
+            // Restore persisted checkbox mode without clobbering HoverSelect.
+            if app_prefs.show_checkboxes_when_selecting {
+                if matches!(
+                    target_view.selection_mode,
+                    crate::ui::views::main_view::SelectionMode::Normal
+                ) {
+                    target_view.selection_mode =
+                        crate::ui::views::main_view::SelectionMode::Checkbox;
+                }
+            } else if matches!(
+                target_view.selection_mode,
+                crate::ui::views::main_view::SelectionMode::Checkbox
+            ) {
+                target_view.selection_mode =
+                    crate::ui::views::main_view::SelectionMode::Normal;
+            }
         }
+
+        // Keep omnibar path completions in sync with the hidden-files preference.
+        self.state.nav_bar.search_options.include_hidden = app_prefs.show_hidden_files;
 
         tracing::info!(
             "Navigating {:?} pane to {:?}, using view mode: {:?}",
@@ -458,27 +477,14 @@ impl AppWindow {
             let path_str = path.to_string_lossy();
             if path_str.is_empty() || path_str == "Home" {
                 self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
-                if let Ok(tags) = self.state.tag_service.get_all_tags() {
-                    self.state.main_view.home_tags_cache = tags
-                        .into_iter()
-                        .map(|(name, count)| (name, "#808080".to_string(), count))
-                        .collect();
-                } else {
-                    self.state.main_view.home_tags_cache = Vec::new();
-                }
+                self.refresh_home_tags_cache(cx);
             } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
                 self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
-                #[cfg(windows)]
-                {
-                    let service = RecycleBinService::new();
-                    if let Ok(items) = service.list_contents_sync() {
-                        self.state.main_view.recycle_bin_items = items;
-                    } else {
-                        self.state.main_view.recycle_bin_items = Vec::new();
-                    }
-                }
-                #[cfg(not(windows))]
-                {
+                self.state.main_view.selected_indices.clear();
+                let service = RecycleBinService::new();
+                if let Ok(items) = service.list_contents_sync() {
+                    self.state.main_view.recycle_bin_items = items;
+                } else {
                     self.state.main_view.recycle_bin_items = Vec::new();
                 }
             } else {

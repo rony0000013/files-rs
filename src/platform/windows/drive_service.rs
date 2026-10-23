@@ -69,6 +69,36 @@ impl DriveInfo {
     pub fn free_formatted(&self) -> String {
         humanize_bytes(self.free_bytes)
     }
+    /// Compatibility helpers for the Home / Preview drive widgets.
+    pub fn usage_percent(&self) -> f64 {
+        self.usage_ratio() * 100.0
+    }
+    pub fn is_low_space(&self) -> bool {
+        self.is_low_storage()
+    }
+    pub fn root_path(&self) -> String {
+        self.root.to_string_lossy().to_string()
+    }
+    pub fn display_name(&self) -> String {
+        let root = self.root.to_string_lossy().to_string();
+        if self.label.trim().is_empty() {
+            root
+        } else {
+            format!("{} ({})", self.label, root)
+        }
+    }
+    pub fn capacity_summary(&self) -> String {
+        format!("{} free of {}", self.free_formatted(), self.total_formatted())
+    }
+    pub fn icon(&self) -> &'static str {
+        match self.drive_type {
+            DriveType::Removable => "\u{E88F}",
+            DriveType::Network => "\u{E968}",
+            DriveType::CdRom => "\u{E8B2}",
+            DriveType::RamDisk => "\u{E967}",
+            _ => "\u{E8B7}",
+        }
+    }
 }
 
 #[cfg(windows)]

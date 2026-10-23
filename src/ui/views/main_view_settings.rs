@@ -1,8 +1,8 @@
 //! Settings page rendering for MainView.
-//! Renders the full settings page as a tab content (not a modal dialog).
-//! Follows the Files-community design: sidebar navigation + content area.
+//! Renders the full settings page as a tab content area matching `Files-community` (`SettingsPage.xaml`):
+//! - Left 240px `SettingsSidebar` with title, interactive Settings Search box, and 10 navigation items with active left indicator pill
+//! - Right scrollable `SettingsContentFrame` with WinUI 3 `SubtitleTextBlockStyle` page heading and `SettingsCard` / `SettingsExpander` blocks.
 
-use crate::config::config::AppConfig;
 use crate::ui::components::dialogs::{SettingsPreReadData, SettingsTab};
 use crate::ui::constants::UiConstants;
 use gpui::*;
@@ -10,14 +10,14 @@ use gpui::*;
 use super::main_view::MainView;
 
 impl MainView {
-    /// Render the settings page as a full tab content area.
-    /// Layout: [Settings Sidebar 240px] [Settings Content flex-grow]
+    /// Render the settings page as a full tab content area (`SettingsPage.xaml` parity).
     pub fn render_settings_view(
         data: &SettingsPreReadData,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let active_tab = data.active_tab;
         let config = &data.config;
+        let is_searching = !data.ui_state.search_query.trim().is_empty();
 
         div()
             .flex()
@@ -25,78 +25,172 @@ impl MainView {
             .w_full()
             .h_full()
             .overflow_hidden()
+            .child(Self::build_settings_sidebar(
+                active_tab,
+                &data.ui_state.search_query,
+                data.ui_state.search_focused,
+                view.clone(),
+            ))
             .child(
-                // Settings Sidebar (left navigation)
-                Self::build_settings_sidebar(active_tab, view.clone()),
-            )
-            .child(
-                // Settings Content (right, scrollable)
                 div()
                     .id("settings-content-scroll")
+                    .flex()
                     .flex_col()
                     .flex_grow()
                     .h_full()
                     .overflow_y_scroll()
-                    .px(px(32.0))
-                    .py(px(24.0))
+                    .px(px(28.0))
+                    .py(px(20.0))
                     .child(
-                        // Page title
                         div()
-                            .text_size(px(28.0))
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .font_weight(FontWeight(600.0))
-                            .mb(px(8.0))
-                            .child(Self::settings_page_title(active_tab)),
-                    )
-                    .child(
-                        // Page description
-                        div()
-                            .text_size(px(14.0))
-                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                            .mb(px(24.0))
-                            .child(Self::settings_page_description(active_tab)),
-                    )
-                    .child(crate::ui::components::dialogs::DialogsView::build_settings_content(
-                        active_tab,
-                        config,
-                        data,
-                        view.clone(),
-                    )),
+                            .max_w(px(1000.0))
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .children(if !is_searching {
+                                vec![
+                                    div()
+                                        .text_size(px(22.0))
+                                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                        .font_weight(FontWeight(600.0))
+                                        .pb(px(14.0))
+                                        .child(Self::settings_page_title(active_tab))
+                                        .into_any_element(),
+                                ]
+                            } else {
+                                vec![]
+                            })
+                            .child(
+                                crate::ui::components::dialogs::DialogsView::build_settings_content(
+                                    active_tab,
+                                    config,
+                                    data,
+                                    view.clone(),
+                                ),
+                            ),
+                    ),
             )
     }
 
-    /// Build the settings sidebar navigation
+    /// Build the 240px left Settings navigation sidebar (`SettingsPage.xaml` `SettingsSidebar` parity).
     fn build_settings_sidebar(
         active_tab: SettingsTab,
+        search_query: &str,
+        search_focused: bool,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
+        let v_focus_search = view.clone();
+        let v_clear_search = view.clone();
+        let q_str = search_query.to_string();
+
         div()
             .w(px(240.0))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(UiConstants::BG_SIDEBAR_RGB))
+            .flex()
+            .flex_col()
+            .bg(rgba(0x00000022u32))
             .border_r(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
             .child(
-                // Sidebar header
+                // Header + Search Box
                 div()
-                    .px(px(20.0))
-                    .py(px(16.0))
-                    .border_b(px(1.0))
-                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                    .px(px(16.0))
+                    .pt(px(14.0))
+                    .pb(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
                     .child(
                         div()
-                            .text_size(px(16.0))
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .text_size(px(18.0))
+                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                             .font_weight(FontWeight(600.0))
                             .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(32.0))
+                            .px(px(10.0))
+                            .rounded(px(5.0))
+                            .bg(rgba(0xFFFFFF0Eu32))
+                            .border(px(1.0))
+                            .border(px(if search_focused { 2.0 } else { 1.0 }))
+                            .border_color(if search_focused {
+                                rgb(0x60CDFF)
+                            } else {
+                                rgba(UiConstants::STROKE_RGBA)
+                            })
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .cursor_text()
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_focus_search.update(cx, |this, cx| {
+                                    this.state.settings_ui.search_focused = true;
+                                    this.state.settings_ui.actions_search_focused = false;
+                                    cx.notify();
+                                });
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("\u{E721}"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_size(px(12.5))
+                                    .text_color(if q_str.is_empty() {
+                                        rgba(UiConstants::TEXT_MUTED_RGBA)
+                                    } else {
+                                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                                    })
+                                    .child(if q_str.is_empty() {
+                                        if search_focused {
+                                            "Find a setting... |".to_string()
+                                        } else {
+                                            "Find a setting".to_string()
+                                        }
+                                    } else if search_focused {
+                                        format!("{}|", q_str)
+                                    } else {
+                                        q_str.clone()
+                                    }),
+                            )
+                            .children(if !q_str.is_empty() {
+                                vec![div()
+                                    .text_size(px(10.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        v_clear_search.update(cx, |this, cx| {
+                                            this.state.settings_ui.search_query.clear();
+                                            cx.notify();
+                                        });
+                                    })
+                                    .child("\u{E711}")
+                                    .into_any_element()]
+                            } else {
+                                vec![]
+                            }),
                     ),
             )
             .child(
-                // Navigation items
+                // Navigation items matching Files-community SettingsPageViewModel
                 div()
+                    .flex()
                     .flex_col()
-                    .p(px(8.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
                     .gap(px(2.0))
                     .child(Self::settings_nav_item(
                         "\u{E713}",
@@ -113,7 +207,7 @@ impl MainView {
                         view.clone(),
                     ))
                     .child(Self::settings_nav_item(
-                        "\u{E8A9}",
+                        "\u{E8BA}",
                         "Layout",
                         SettingsTab::Layout,
                         active_tab == SettingsTab::Layout,
@@ -121,16 +215,9 @@ impl MainView {
                     ))
                     .child(Self::settings_nav_item(
                         "\u{E8B7}",
-                        "Folders",
+                        "Files & folders",
                         SettingsTab::Folders,
                         active_tab == SettingsTab::Folders,
-                        view.clone(),
-                    ))
-                    .child(Self::settings_nav_item(
-                        "\u{E8EC}",
-                        "Tags",
-                        SettingsTab::Tags,
-                        active_tab == SettingsTab::Tags,
                         view.clone(),
                     ))
                     .child(Self::settings_nav_item(
@@ -141,26 +228,40 @@ impl MainView {
                         view.clone(),
                     ))
                     .child(Self::settings_nav_item(
-                        "\u{E700}",
+                        "\u{E8EC}",
+                        "File tags",
+                        SettingsTab::Tags,
+                        active_tab == SettingsTab::Tags,
+                        view.clone(),
+                    ))
+                    .child(Self::settings_nav_item(
+                        "\u{E712}",
                         "Toolbar",
                         SettingsTab::Toolbar,
                         active_tab == SettingsTab::Toolbar,
                         view.clone(),
                     ))
                     .child(Self::settings_nav_item(
-                        "\u{E783}",
+                        "\u{E7AC}",
+                        "Dev tools",
+                        SettingsTab::DevTools,
+                        active_tab == SettingsTab::DevTools,
+                        view.clone(),
+                    ))
+                    .child(Self::settings_nav_item(
+                        "\u{E90F}",
                         "Advanced",
                         SettingsTab::Advanced,
                         active_tab == SettingsTab::Advanced,
                         view.clone(),
                     ))
-                    .child(Self::settings_nav_item(
-                        "\u{E7B8}",
-                        "DevTools",
-                        SettingsTab::DevTools,
-                        active_tab == SettingsTab::DevTools,
-                        view.clone(),
-                    ))
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .my(px(4.0))
+                            .bg(rgba(UiConstants::DIVIDER_RGBA)),
+                    )
                     .child(Self::settings_nav_item(
                         "\u{E946}",
                         "About",
@@ -171,7 +272,7 @@ impl MainView {
             )
     }
 
-    /// A single settings navigation item (icon + label)
+    /// A single settings navigation item (active indicator pill + icon + label).
     fn settings_nav_item(
         icon: &str,
         label: &str,
@@ -183,36 +284,52 @@ impl MainView {
         div()
             .id(SharedString::from(format!("settings-nav-{:?}", tab)))
             .flex()
+            .flex_row()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .py(px(10.0))
+            .h(px(36.0))
+            .px(px(8.0))
+            .gap(px(10.0))
             .rounded(px(6.0))
             .cursor_pointer()
             .bg(if active {
-                rgba(0xFFFFFF14u32) // SubtleFillColorTertiary
+                rgba(0xFFFFFF12u32)
             } else {
                 rgba(0x00000000u32)
             })
             .hover(|s| {
                 if !active {
-                    s.bg(rgba(0xFFFFFF0Au32))
+                    s.bg(rgba(0xFFFFFF09u32))
                 } else {
                     s
                 }
             })
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                v.update(cx, |this, cx| this.set_settings_tab(tab, cx));
+                v.update(cx, |this, cx| {
+                    this.state.settings_ui.search_query.clear();
+                    this.state.settings_ui.search_focused = false;
+                    this.set_settings_tab(tab, cx);
+                });
             })
             .child(
-                // Icon
+                // WinUI 3 3px Left Selection Indicator Pill
                 div()
-                    .text_size(px(16.0))
-                    .font_family(UiConstants::FONT_MDL2)
-                    .text_color(if active {
-                        rgb(UiConstants::ACCENT_COLOR_RGB)
+                    .w(px(3.0))
+                    .h(px(16.0))
+                    .rounded(px(1.5))
+                    .bg(if active {
+                        rgb(0x60CDFF)
                     } else {
-                        rgb(UiConstants::TEXT_SECONDARY_RGB)
+                        rgba(0x00000000u32)
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(if active {
+                        rgb(0x60CDFF)
+                    } else {
+                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
                     })
                     .w(px(20.0))
                     .flex()
@@ -221,47 +338,35 @@ impl MainView {
                     .child(icon.to_string()),
             )
             .child(
-                // Label
                 div()
-                    .text_size(px(14.0))
-                    .text_color(if active {
-                        rgb(UiConstants::TEXT_PRIMARY_RGB)
+                    .text_size(px(13.5))
+                    .font_weight(if active {
+                        FontWeight(600.0)
                     } else {
-                        rgb(UiConstants::TEXT_SECONDARY_RGB)
+                        FontWeight(400.0)
+                    })
+                    .text_color(if active {
+                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                    } else {
+                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
                     })
                     .child(label.to_string()),
             )
     }
 
-    /// Get the page title for a settings tab
+    /// Get the page title for a settings tab (`Files-community` headers).
     fn settings_page_title(tab: SettingsTab) -> &'static str {
         match tab {
             SettingsTab::General => "General",
             SettingsTab::Appearance => "Appearance",
             SettingsTab::Layout => "Layout",
-            SettingsTab::Folders => "Folders",
-            SettingsTab::Tags => "Tags",
+            SettingsTab::Folders => "Files & folders",
+            SettingsTab::Tags => "File tags",
             SettingsTab::Actions => "Actions",
             SettingsTab::Toolbar => "Toolbar",
             SettingsTab::Advanced => "Advanced",
-            SettingsTab::DevTools => "DevTools",
+            SettingsTab::DevTools => "Dev tools",
             SettingsTab::About => "About",
-        }
-    }
-
-    /// Get the page description for a settings tab
-    fn settings_page_description(tab: SettingsTab) -> &'static str {
-        match tab {
-            SettingsTab::General => "Configure general application behavior and startup options.",
-            SettingsTab::Appearance => "Customize the visual appearance, theme, and fonts.",
-            SettingsTab::Layout => "Set default view modes, sorting, and grouping options.",
-            SettingsTab::Folders => "Control folder visibility and file display settings.",
-            SettingsTab::Tags => "Manage file tags for organization.",
-            SettingsTab::Actions => "View and customize keyboard shortcuts.",
-            SettingsTab::Toolbar => "Choose which buttons appear on the toolbar.",
-            SettingsTab::Advanced => "Experimental features and advanced options.",
-            SettingsTab::DevTools => "Developer tools and logging.",
-            SettingsTab::About => "Application information and links.",
         }
     }
 }

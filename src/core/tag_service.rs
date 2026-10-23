@@ -59,6 +59,27 @@ impl TagService {
         Ok(paths)
     }
 
+    pub fn delete_tag(&self, tag: &str) -> anyhow::Result<()> {
+        let conn = self.db.get_conn();
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute("DELETE FROM file_tags WHERE tag = ?1", params![tag])?;
+        Ok(())
+    }
+
+    pub fn rename_tag(&self, old_tag: &str, new_tag: &str) -> anyhow::Result<()> {
+        let conn = self.db.get_conn();
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        conn.execute(
+            "UPDATE OR IGNORE file_tags SET tag = ?2 WHERE tag = ?1",
+            params![old_tag, new_tag],
+        )?;
+        Ok(())
+    }
+
     pub fn get_all_tags(&self) -> anyhow::Result<Vec<(String, i64)>> {
         let conn = self.db.get_conn();
         let conn = conn
