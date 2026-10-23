@@ -4418,7 +4418,7 @@ impl AppWindow {
     }
 
     /// Update the details pane cache with tags and extended properties from path
-    fn update_details_cache_from_path(&mut self, path: &FilesPath, _cx: &mut Context<Self>) {
+    fn update_details_cache_from_path(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
         let mut cache = DetailsPaneCache::default();
 
         // Get tags from TagService
@@ -4442,6 +4442,40 @@ impl AppWindow {
         }
 
         self.state.main_view.details_cache = cache;
+
+        // Git last-commit requires a full revwalk — far too expensive for
+        // the render path, so resolve it on the background executor and
+        // only apply if the selection hasn't moved on meanwhile.
+        let path_clone = path.clone();
+        let path_for_check = path.clone();
+        let bg = cx.background_executor().spawn(async move {
+            crate::domain::git_service::GitService::get_last_commit(&path_clone)
+        });
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        cx.foreground_executor()
+            .spawn(async move {
+                let info = bg.await;
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        let still_selected = this
+                            .state
+                            .main_view
+                            .selected_indices
+                            .iter()
+                            .any(|&i| {
+                                this.state.main_view.items.get(i).map_or(false, |it| {
+                                    it.path == path_for_check
+                                })
+                            });
+                        if still_selected {
+                            this.state.main_view.details_cache.git_last_commit = info;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+            })
+            .detach();
     }
 
     // ═══════════════════════════════════════════════════════════════

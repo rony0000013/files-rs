@@ -403,6 +403,11 @@ pub struct DetailsPaneCache {
     pub audio_duration: Option<String>,
     pub video_duration: Option<String>,
     pub video_resolution: Option<String>,
+    /// Last commit touching the selected file. Resolved off the UI thread
+    /// on selection change — the revwalk is far too expensive to run
+    /// per render frame (it froze splitter drags).
+    #[serde(skip)]
+    pub git_last_commit: Option<crate::domain::git_service::GitCommitInfo>,
 }
 
 /// Toolbar customization: tracks which toolbar buttons are visible.

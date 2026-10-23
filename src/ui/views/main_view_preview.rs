@@ -933,9 +933,9 @@ impl MainView {
                     vec![]
                 },
             )
-            // 5. Git Repository Card
+            // 5. Git Repository Card (cached on selection change — never revwalk per frame)
             .children({
-                if let Some(info) = crate::domain::git_service::GitService::get_last_commit(&item.path) {
+                if let Some(info) = &state.details_cache.git_last_commit {
                     vec![div()
                         .w_full()
                         .p(px(12.0))
