@@ -118,10 +118,7 @@ impl RecentItemsService {
         // The target path is stored at a specific offset
         if let Ok(mut file) = fs::File::open(lnk_path) {
             let mut buffer = vec![0u8; 1024];
-            if let Ok(bytes_read) = file.read(&mut buffer) {
-                if bytes_read == 0 {
-                    return None;
-                }
+            if let Ok(_) = file.read(&mut buffer) {
                 // Look for the target path in the .lnk file
                 // This is a simplified approach - a full implementation
                 // would properly parse the shell link format

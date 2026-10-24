@@ -27,6 +27,10 @@ pub enum GitFileStatus {
     Renamed,
     /// File has been copied
     Copied,
+    /// File has been staged (in index, awaiting commit)
+    Staged,
+    /// File has merge conflicts
+    Conflicted,
     /// File has been ignored
     Ignored,
     /// Unknown status
@@ -44,6 +48,8 @@ impl GitFileStatus {
             GitFileStatus::Untracked => "?",
             GitFileStatus::Renamed => "→",
             GitFileStatus::Copied => "⊕",
+            GitFileStatus::Staged => "●",
+            GitFileStatus::Conflicted => "⚠",
             GitFileStatus::Ignored => "!",
             GitFileStatus::Unknown => "·",
         }
@@ -59,6 +65,8 @@ impl GitFileStatus {
             GitFileStatus::Untracked => "Untracked",
             GitFileStatus::Renamed => "Renamed",
             GitFileStatus::Copied => "Copied",
+            GitFileStatus::Staged => "Staged",
+            GitFileStatus::Conflicted => "Conflicted",
             GitFileStatus::Ignored => "Ignored",
             GitFileStatus::Unknown => "Unknown",
         }

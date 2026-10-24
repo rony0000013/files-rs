@@ -959,6 +959,34 @@ impl SidebarView {
                             });
                         }
                     }
+                })
+                .on_mouse_move({
+                    let v_move = view.clone();
+                    let item_id_move = item_id.clone();
+                    let label_move = label.to_string();
+                    move |ev, win, cx| {
+                        if let Some(path) = item_id_move.get_path() {
+                            let pos = gpui::point(ev.position.x.into(), ev.position.y.into());
+                            v_move.update(cx, |this, cx| {
+                                if this.state.main_view.drag_state.is_dragging
+                                    || this.state.main_view.drag_state.pending_candidate.is_some()
+                                {
+                                    this.update_file_drag_move(pos, ev.modifiers, Some((path.clone(), label_move.clone())), cx);
+                                }
+                            });
+                        }
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, {
+                    let v_up = view.clone();
+                    move |ev, _win, cx| {
+                        let pos = gpui::point(ev.position.x.into(), ev.position.y.into());
+                        v_up.update(cx, |this, cx| {
+                            if this.state.main_view.drag_state.is_dragging {
+                                this.end_drag(pos.x, pos.y, cx);
+                            }
+                        });
+                    }
                 });
         }
 

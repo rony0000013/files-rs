@@ -42,9 +42,9 @@ impl MainView {
                 d.config.home_widgets.show_network_locations,
                 d.config.home_widgets.show_file_tags,
                 d.config.home_widgets.show_recent_files,
-                d.config.pinned_folders.clone(),
+                d.config.sidebar.pinned_locations.clone(),
                 d.config.session.recent_paths.clone(),
-                d.config.file_tags.clone(),
+                d.config.tag_definitions.clone(),
                 d.ui_state.expanded_sections.clone(),
             )
         } else {
@@ -180,8 +180,14 @@ impl MainView {
             .px(px(24.0))
             .py(px(18.0))
             .gap(px(18.0))
+            .min_h(px(0.0))
             .overflow_y_scroll()
             .track_scroll(&state.scroll_handle)
+            .on_scroll_wheel(crate::ui::components::bouncy_scroll::smooth_scroll_handle_wheel(
+                view.clone(),
+                |app_state| &mut app_state.main_view.bouncy_scroll,
+                |app_state| &app_state.main_view.scroll_handle,
+            ))
             .children(widgets)
     }
 
@@ -538,7 +544,7 @@ impl MainView {
                 drive.file_system.clone()
             };
             let ratio = (drive.usage_percent() / 100.0).clamp(0.02, 1.0);
-            let bar_color = if drive.is_low_space() || drive.usage_percent() >= 90.0 {
+            let bar_color = if drive.is_low_storage() || drive.usage_percent() >= 90.0 {
                 0xE81123u32
             } else if drive.usage_percent() >= 78.0 {
                 0xF7931Eu32

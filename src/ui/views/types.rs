@@ -2,6 +2,8 @@ use crate::config::config::{GroupColumn, SortBy, ViewMode};
 use crate::core::path_util::FilesPath;
 use crate::domain::extended_metadata::ExtendedMetadataExtractor;
 use crate::domain::metadata::FileItem;
+use crate::platform::windows::media_player::VideoFrame;
+use crate::platform::windows::office_preview_host::OfficePreviewHost;
 use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::storage::storage::FileType;
 use crate::ui::components::bouncy_scroll::BouncyScrollState;
@@ -183,19 +185,33 @@ pub fn rects_intersect(a: (Point<f32>, Point<f32>), b: (Point<f32>, Point<f32>))
     a_left < b_right && a_right > b_left && a_top < b_bottom && a_bottom > b_top
 }
 
-/// Drag operation state
+/// Drag operation state (supports internal multi-target drop + out-of-window OS native drag)
 #[derive(Debug, Clone, Default)]
 pub struct DragState {
-    /// Indices of items being dragged
+    /// Indices of items being dragged in `source_pane`
     pub indices: Vec<usize>,
-    /// Starting mouse position
+    /// Full paths of items being dragged
+    pub paths: Vec<FilesPath>,
+    /// Source pane where drag started
+    pub source_pane: crate::core::navigation_manager::PaneFocus,
+    /// Starting mouse position (window coordinates)
     pub start: Point<f32>,
-    /// Current mouse position
+    /// Current mouse position (window coordinates)
     pub current: Point<f32>,
     /// Whether dragging will copy (true) or move (false)
     pub is_copy: bool,
+    /// Whether Alt is held to create a shortcut/symlink
+    pub is_link: bool,
     /// Whether a drag operation is in progress
     pub is_dragging: bool,
+    /// Pending mouse-down candidate before crossing the 6px drag threshold: `(pane, item_idx, start_pos)`
+    pub pending_candidate: Option<(crate::core::navigation_manager::PaneFocus, usize, Point<f32>)>,
+    /// Hovered destination folder path (if hovering a folder row/tile, tab, breadcrumb, or sidebar item)
+    pub hovered_target_folder: Option<FilesPath>,
+    /// Hovered destination display name for the floating Files-community drag badge
+    pub hovered_target_label: Option<String>,
+    /// Whether native OS drag-and-drop (`SHDoDragDrop` / `CF_HDROP` / `text/uri-list`) was triggered for this gesture
+    pub os_drag_dispatched: bool,
 }
 
 /// Drag state for reordering items within/between groups
@@ -215,31 +231,40 @@ pub struct GroupDragState {
     pub is_dragging: bool,
 }
 
-/// A single item in a folder preview thumbnail grid
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A single item in a folder preview contents list/grid
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FolderPreviewItem {
     /// File or folder name
     pub name: String,
     /// Whether this is a directory
     pub is_dir: bool,
-    /// For directories: number of direct children (capped during scan).
-    /// `None` for files.
-    pub child_count: Option<usize>,
+    /// Full path for direct navigation on click
+    #[serde(default)]
+    pub path: FilesPath,
+    /// File size in bytes
+    #[serde(default)]
+    pub size: u64,
+    /// Formatted modified date
+    #[serde(default)]
+    pub modified: Option<String>,
+    /// Uppercase extension or "FOLDER"
+    #[serde(default)]
+    pub ext: String,
 }
 
-/// Preview content for different file types
+/// Preview content for wide range of file types and folders
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub enum PreviewContent {
     /// No preview available
     #[default]
     None,
-    /// Text preview content (with 10k char limit)
+    /// Text preview content
     Text(String),
-    /// PDF preview info (page count, title, author)
+    /// PDF preview info (page count, title, author, extracted text)
     Pdf(PdfPreviewInfo),
-    /// Audio preview info (duration, bitrate, codec)
+    /// Audio preview info (duration, bitrate, codec, ID3/Vorbis tags)
     Audio(MediaPreviewInfo),
-    /// Video preview info (duration, resolution, codec)
+    /// Video preview info (duration, resolution, fps, codec, poster frame)
     Video(MediaPreviewInfo),
     /// Archive contents listing
     Archive(ArchivePreviewInfo),
@@ -253,15 +278,165 @@ pub enum PreviewContent {
     Html,
     /// Rich text (RTF) preview with stripped control words
     RichText,
-    /// Folder contents thumbnail grid
+    /// Folder contents preview (subfolders & files with metadata)
     Folder(Vec<FolderPreviewItem>),
+    /// Tabular CSV / TSV / XLSX spreadsheet preview
+    CsvTable {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+        total_rows: usize,
+        delimiter: char,
+        /// Table source label ("CSV", "TSV", "XLSX ... sheet")
+        kind: String,
+    },
+    /// Office / E-Book document preview (.docx, .xlsx, .pptx, .odt, .epub)
+    Document {
+        doc_type: String,
+        title: Option<String>,
+        sections: Vec<String>,
+        summary: String,
+    },
+    /// SQLite database schema & table row counts preview
+    Database {
+        tables: Vec<(String, usize)>,
+        page_size: u32,
+    },
+    /// Typography Font specimen waterfall preview (.ttf, .otf, .woff, .woff2)
+    Font {
+        family_name: String,
+        format: String,
+        file_size: u64,
+    },
+    /// Office document rendered as real page/slide images by the pure-Rust
+    /// BetterOffice engine (DOCX layout, XLSX grid, PPTX slides -> PNG).
+    Office {
+        /// Rendered page/slide PNG cache files, in document order.
+        pages: Vec<std::path::PathBuf>,
+        /// Human label, e.g. "Excel Worksheet" or "PowerPoint Slides".
+        label: String,
+    },
+    /// Binary / Executable (PE, ELF, Mach-O, WASM) header & Hex + ASCII inspector
+    BinaryHex {
+        format_description: String,
+        arch: Option<String>,
+        hex_lines: Vec<(u32, String, String)>,
+    },
+    /// Rich Image preview (with bounded VRAM cache path, dimensions, megapixels, aspect ratio, EXIF)
+    Image(ImagePreviewInfo),
+    /// Vector SVG preview (rasterized via `resvg` + viewBox/element stats + XML source)
+    Svg(SvgPreviewInfo),
+    /// Visual Office / E-Book preview (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.epub`)
+    /// with rendered page/slide canvas, multi-sheet Excel grid, or paginated document view
+    OfficeVisual(OfficePreviewInfo),
 }
 
-/// PDF metadata for preview
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum OfficeDocKind {
+    #[default]
+    WordDocument,
+    Spreadsheet,
+    Presentation,
+    EBook,
+}
+
+/// Visual Cross-Platform Office & E-Book Preview state (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.epub`)
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct OfficePreviewInfo {
+    pub doc_kind: OfficeDocKind,
+    pub format_label: String,
+    /// Optional rendered page/slide/cover PNG path (from embedded thumbnail, LibreOffice/OS shell, or slide canvas)
+    pub rendered_page_path: Option<std::path::PathBuf>,
+    /// Extracted embedded images (`word/media/*`, `ppt/media/*`, EPUB cover) cached to disk
+    pub embedded_media_paths: Vec<std::path::PathBuf>,
+    /// Page titles, Slide titles, or Worksheet tab names
+    pub section_titles: Vec<String>,
+    /// Paginated text blocks per page (Word/ODT/EPUB) or bullet lines per slide (PPTX/ODP)
+    pub pages_blocks: Vec<Vec<String>>,
+    /// Currently selected 0-based page, slide, or worksheet tab index
+    pub active_index: usize,
+    /// For Spreadsheets (`.xlsx`, `.ods`): column headers (`A`, `B`, `C`...)
+    pub sheet_headers: Vec<String>,
+    /// For Spreadsheets (`.xlsx`, `.ods`): bounded cell rows (max 50 rows × 12 cols) for instant 120 FPS rendering
+    pub sheet_rows: Vec<Vec<String>>,
+    /// Estimated total rows in active worksheet
+    pub total_rows: usize,
+}
+
+/// Rich Image metadata & bounded-VRAM preview path
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ImagePreviewInfo {
+    /// Path to display in GPUI `img(...)` (downscaled cached PNG if source > 1280px or TIFF/ICO/TGA)
+    pub display_path: std::path::PathBuf,
+    /// Original width in pixels
+    pub width: u32,
+    /// Original height in pixels
+    pub height: u32,
+    /// Format label (e.g., "PNG", "JPEG", "WEBP", "TIFF", "ICO", "TGA")
+    pub format: String,
+    /// Color / bit-depth description (e.g., "RGBA8 (32-bit)", "RGB8 (24-bit)")
+    pub color_type: String,
+    /// Aspect ratio string (e.g., "16:9", "4:3", "1:1")
+    pub aspect_ratio: String,
+    /// Megapixels (e.g., 2.07 for 1920x1080)
+    pub megapixels: f32,
+    /// Whether the displayed image is a <=1024px VRAM-optimized proxy
+    #[serde(default)]
+    pub is_downscaled_preview: bool,
+    /// Optional EXIF camera & exposure summary
+    pub exif_summary: Option<String>,
+    #[serde(default)]
+    pub camera_model: Option<String>,
+    #[serde(default)]
+    pub lens_model: Option<String>,
+    #[serde(default)]
+    pub iso: Option<String>,
+    #[serde(default)]
+    pub aperture: Option<String>,
+    #[serde(default)]
+    pub exposure_time: Option<String>,
+    #[serde(default)]
+    pub focal_length: Option<String>,
+    #[serde(default)]
+    pub exif_date: Option<String>,
+}
+
+/// Vector SVG metadata & rasterized preview path (`resvg`)
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SvgPreviewInfo {
+    /// Path to rasterized 512x512 PNG in `icons_cache_dir()`
+    pub rendered_png_path: Option<std::path::PathBuf>,
+    /// SVG viewBox string (e.g., "0 0 512 512")
+    pub view_box: String,
+    /// SVG viewBox width
+    pub width: f32,
+    /// SVG viewBox height
+    pub height: f32,
+    /// Number of vector path/shape elements
+    pub element_count: usize,
+    /// Bounded XML source snippet
+    pub xml_snippet: String,
+}
+
+/// Visual Rendered PDF Page preview info (no raw text dump; renders actual PDF pages to PNG)
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PdfPreviewInfo {
-    /// Number of pages in the PDF
+    /// Total number of pages in the PDF
     pub page_count: u32,
+    /// Currently viewed 1-based page number (`1..=page_count`)
+    #[serde(default)]
+    pub current_page: u32,
+    /// Path to the rasterized PNG image of `current_page` in `icons_cache_dir()`
+    #[serde(default)]
+    pub rendered_page_path: Option<std::path::PathBuf>,
+    /// Page width in PDF points (e.g. 595.0 for A4, 612.0 for Letter)
+    #[serde(default)]
+    pub page_width_pt: f32,
+    /// Page height in PDF points (e.g. 842.0 for A4, 792.0 for Letter)
+    #[serde(default)]
+    pub page_height_pt: f32,
+    /// Name of the active PDF rendering backend
+    #[serde(default)]
+    pub renderer_backend: String,
     /// PDF title (if available)
     pub title: Option<String>,
     /// PDF author (if available)
@@ -270,6 +445,18 @@ pub struct PdfPreviewInfo {
     pub subject: Option<String>,
     /// PDF creator application
     pub creator: Option<String>,
+    /// Extracted text preview from PDF pages
+    #[serde(default)]
+    pub extracted_text: Option<String>,
+    /// PDF specification version (e.g. "1.7")
+    #[serde(default)]
+    pub pdf_version: Option<String>,
+    /// File size in bytes
+    #[serde(default)]
+    pub file_size: u64,
+    /// Rasterized page images (PNG cache files, first N pages via Pdfium)
+    #[serde(skip)]
+    pub pages: Vec<std::path::PathBuf>,
 }
 
 /// Audio/Video metadata for preview
@@ -279,7 +466,7 @@ pub struct MediaPreviewInfo {
     pub duration_secs: Option<f64>,
     /// Bitrate in kbps (if available)
     pub bitrate_kbps: Option<u32>,
-    /// Codec name (e.g., "h264", "aac")
+    /// Codec name (e.g., "H.264 / AVC", "HEVC", "AAC", "MP3")
     pub codec: Option<String>,
     /// For video: width in pixels
     pub width: Option<u32>,
@@ -291,10 +478,22 @@ pub struct MediaPreviewInfo {
     pub sample_rate: Option<u32>,
     /// Number of audio channels
     pub channels: Option<u8>,
-    /// Media format (e.g., "MP4", "MP3", "FLAC")
+    /// Media format (e.g., "MP4", "MKV", "MP3", "FLAC")
     pub format: Option<String>,
     /// Artist name (for audio)
     pub artist: Option<String>,
+    /// Track/Video title
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Album name
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Extracted video poster frame or album art path
+    #[serde(default)]
+    pub poster_path: Option<std::path::PathBuf>,
+    /// Container & audio stream summary
+    #[serde(default)]
+    pub container_info: Option<String>,
 }
 
 /// Archive contents for preview
@@ -395,19 +594,38 @@ pub struct DetailsPaneCache {
     pub git_branch: Option<String>,
     pub git_status: Option<String>,
     pub git_dirty: bool,
+    #[serde(default)]
+    pub git_commit_author: Option<String>,
+    #[serde(default)]
+    pub git_commit_date: Option<String>,
+    #[serde(default)]
+    pub git_commit_message: Option<String>,
     pub exif_camera: Option<String>,
     pub exif_date: Option<String>,
     pub exif_dimensions: Option<String>,
+    #[serde(default)]
+    pub exif_iso: Option<String>,
+    #[serde(default)]
+    pub exif_aperture: Option<String>,
+    #[serde(default)]
+    pub exif_exposure: Option<String>,
+    #[serde(default)]
+    pub exif_focal_length: Option<String>,
+    #[serde(default)]
+    pub exif_lens: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
     pub audio_artist: Option<String>,
     pub audio_album: Option<String>,
     pub audio_duration: Option<String>,
     pub video_duration: Option<String>,
     pub video_resolution: Option<String>,
-    /// Last commit touching the selected file. Resolved off the UI thread
-    /// on selection change — the revwalk is far too expensive to run
-    /// per render frame (it froze splitter drags).
-    #[serde(skip)]
-    pub git_last_commit: Option<crate::domain::git_service::GitCommitInfo>,
+    #[serde(default)]
+    pub folder_subfolders: usize,
+    #[serde(default)]
+    pub folder_files: usize,
+    #[serde(default)]
+    pub folder_total_size: u64,
 }
 
 /// Toolbar customization: tracks which toolbar buttons are visible.
@@ -565,8 +783,6 @@ pub struct MainViewState {
     pub sort: SortState,
     /// Filter text (shown in filter header)
     pub filter_text: String,
-    /// Whether the inline filter bar is visible
-    pub show_filter_bar: bool,
     /// Show dot-prefixed files
     pub show_dot_files: bool,
     /// Show hidden (system-hidden) files
@@ -592,11 +808,6 @@ pub struct MainViewState {
     pub compact_mode: bool,
     /// Cached text for file preview
     pub preview_text: Option<String>,
-    /// Source text the cached code highlight was computed from.
-    pub preview_highlighted_src: String,
-    /// Cached syntax-highlight tokens: (token, optional 0xRRGGBBAA color).
-    /// Computed once at preview load so resize drags never re-tokenize.
-    pub preview_highlighted: Vec<Vec<(String, Option<u32>)>>,
     /// Column widths for Details view
     pub column_widths: ColumnWidths,
     /// Column visibility for Details view (Name is always visible)
@@ -663,11 +874,6 @@ pub struct MainViewState {
     /// Scroll handle for mouse wheel scrolling (runtime-only, not persisted)
     #[serde(skip)]
     pub scroll_handle: ScrollHandle,
-    /// Scroll handle for the side pane body (Details/Preview tabs).
-    /// Without a tracked handle GPUI wheel events have nowhere to apply,
-    /// which is why long previews could not be scrolled.
-    #[serde(skip)]
-    pub side_pane_scroll_handle: ScrollHandle,
     /// Scroll handle for uniform_list (runtime-only, not persisted)
     #[serde(skip)]
     pub uniform_list_scroll_handle: UniformListScrollHandle,
@@ -676,7 +882,7 @@ pub struct MainViewState {
     pub last_empty_click: Option<std::time::Instant>,
     /// Last check timestamp for viewport-based icon refresh (debounce guard)
     #[serde(skip)]
-    pub icon_refresh_last_check: Option<std::time::Instant>,
+    pub icon_refresh_last_check: std::cell::Cell<Option<std::time::Instant>>,
     /// Miller Columns: scroll handle for Column 1 (parent siblings).
     #[serde(skip)]
     pub col1_scroll_handle: UniformListScrollHandle,
@@ -706,61 +912,56 @@ pub struct MainViewState {
     /// Interior-mutable per-generation cache of filtered+sorted item indices (eliminates per-frame sorting)
     #[serde(skip)]
     pub visible_cache: std::cell::RefCell<Option<(VisibleCacheKey, std::rc::Rc<Vec<usize>>)>>,
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Grouped item types (used for grouped grid view)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum GroupedItemType {
-    Header {
-        key: String,
-        label: String,
-        count: usize,
-    },
-    Item(usize),
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum GroupedGridItem {
-    Header {
-        key: String,
-        label: String,
-        count: usize,
-    },
-    Row(Vec<usize>),
-}
-
-// FileItems is defined in main_view.rs (required by GPUI uniform_list pattern)
-// Re-exported here for convenience
-pub use super::main_view::FileItems;
-
-
-/// Key used to validate whether the cached `visible_items()` index vector is still current.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisibleCacheKey {
-    pub primary_path: FilesPath,
-    pub items_len: usize,
-    pub items_revision: u64,
-    pub first_modified: Option<std::time::SystemTime>,
-    pub last_modified: Option<std::time::SystemTime>,
-    pub last_size: u64,
-    pub sort_col_discriminant: usize,
-    pub sort_ascending: bool,
-    pub folders_first: bool,
-    pub filter_text: String,
+    /// Scroll handle for the right-hand Details / Preview SidePane
+    #[serde(skip)]
+    pub side_pane_scroll_handle: ScrollHandle,
+    /// Horizontal scroll handle for wide spreadsheet tables in the preview pane.
+    #[serde(skip)]
+    pub preview_table_scroll: ScrollHandle,
+    /// Smooth scroll state for the right-hand Details / Preview SidePane
+    #[serde(skip)]
+    pub side_pane_bouncy_scroll: BouncyScrollState,
+    /// Scroll handle for the Spacebar Peek Preview Modal
+    #[serde(skip)]
+    pub peek_scroll_handle: ScrollHandle,
+    /// Smooth scroll state for the Spacebar Peek Preview Modal
+    #[serde(skip)]
+    pub peek_bouncy_scroll: BouncyScrollState,
+    /// Whether the Spacebar Peek Preview Modal is currently open
+    #[serde(skip)]
+    pub show_peek_modal: bool,
+    /// Monotonic generation ID for cancelling stale background preview loads
+    #[serde(skip)]
+    pub preview_request_id: u64,
+    /// Pre-tokenized syntax-highlighted lines for code preview (prevents re-tokenizing on every resize frame)
+    #[serde(skip)]
+    pub preview_highlighted_lines: std::sync::Arc<Vec<Vec<(String, Option<gpui::Rgba>)>>>,
+    /// Cached drive list for empty-selection Details pane (prevents Win32 drive queries during resize)
+    #[serde(skip)]
+    pub cached_drives: Vec<crate::platform::windows::drive_service::DriveInfo>,
+    /// Interactive video preview playback state
+    #[serde(skip)]
+    pub video_playing: bool,
+    /// Interactive video preview scrub progress (0.0..=1.0)
+    #[serde(skip)]
+    pub video_progress: f32,
+    /// Interactive video preview mute state
+    #[serde(skip)]
+    pub video_muted: bool,
+    /// Latest decoded video frame (Media Foundation pump). Rendered via
+    /// `ImageSource::Render` so no per-frame files or cache entries exist.
+    #[serde(skip)]
+    pub video_frame: Option<std::sync::Arc<VideoFrame>>,
+    /// WYSIWYG Office preview host (registered IPreviewHandler in a child HWND).
+    /// Falls back to Markdown when no handler is registered.
+    #[serde(skip)]
+    pub office_preview: OfficePreviewHost,
+    /// Whether the inline filter bar is toggled open
+    #[serde(default)]
     pub show_filter_bar: bool,
-    pub show_dot_files: bool,
-    pub show_hidden_files: bool,
-    pub show_system_files: bool,
-    pub is_searching: bool,
-    pub search_query: String,
-    pub search_results_len: usize,
-}
-
-fn default_dual_pane_ratio() -> f32 {
-    0.5
+    /// Whether groups are ordered ascending (`true`) or descending (`false`)
+    #[serde(default = "default_true_bool")]
+    pub group_ascending: bool,
 }
 
 impl MainViewState {
@@ -804,4 +1005,60 @@ impl MainViewState {
             if asc { ord } else { ord.reverse() }
         });
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grouped item types (used for grouped grid view)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum GroupedItemType {
+    Header {
+        key: String,
+        label: String,
+        count: usize,
+    },
+    Item(usize),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum GroupedGridItem {
+    Header {
+        key: String,
+        label: String,
+        count: usize,
+    },
+    Row(Vec<usize>),
+}
+
+// FileItems is defined in main_view.rs (required by GPUI uniform_list pattern)
+// Re-exported here for convenience
+pub use super::main_view::FileItems;
+
+
+/// Key used to validate whether the cached `visible_items()` index vector is still current.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleCacheKey {
+    pub primary_path: FilesPath,
+    pub items_len: usize,
+    pub items_revision: u64,
+    pub first_modified: Option<std::time::SystemTime>,
+    pub last_modified: Option<std::time::SystemTime>,
+    pub last_size: u64,
+    pub sort_col_discriminant: usize,
+    pub sort_ascending: bool,
+    pub folders_first: bool,
+    pub group_col_discriminant: usize,
+    pub group_ascending: bool,
+    pub filter_text: String,
+    pub show_dot_files: bool,
+    pub show_hidden_files: bool,
+    pub show_system_files: bool,
+    pub is_searching: bool,
+    pub search_query: String,
+    pub search_results_len: usize,
+}
+
+fn default_dual_pane_ratio() -> f32 {
+    0.5
 }

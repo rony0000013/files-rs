@@ -1276,7 +1276,7 @@ impl AppWindow {
             }
         }
 
-        // Ctrl+Shift+1..4 -> View mode switching
+        // Ctrl+Shift+1..5 -> View mode switching (Details, List, Cards, Grid, Columns)
         if keystroke.modifiers.control && keystroke.modifiers.shift && !keystroke.modifiers.alt {
             match key_str {
                 "1" | "!" => {
@@ -1288,10 +1288,14 @@ impl AppWindow {
                     return;
                 }
                 "3" | "#" => {
-                    self.set_view_mode(ViewMode::Grid, cx);
+                    self.set_view_mode(ViewMode::Cards, cx);
                     return;
                 }
                 "4" | "$" => {
+                    self.set_view_mode(ViewMode::Grid, cx);
+                    return;
+                }
+                "5" | "%" => {
                     self.set_view_mode(ViewMode::Columns, cx);
                     return;
                 }
@@ -1379,19 +1383,41 @@ impl AppWindow {
         let view_mode = self.state.pane_view(pane_focus).view_mode.clone();
         let zoom_level = self.state.pane_view(pane_focus).zoom_level;
 
-        // Space toggles selection on focused item
+        // Space opens/closes the big Peek Preview Modal (Shift+Space toggles selection)
         if key.eq_ignore_ascii_case("space") {
-            if len > 0 {
-                let current = self
-                    .state
-                    .pane_view(pane_focus)
-                    .last_clicked_index
-                    .unwrap_or(0)
-                    .min(len - 1);
-                self.select_item_in_pane(pane_focus, current, shift, true, cx);
-                self.scroll_item_into_view(pane_focus, current);
+            if shift {
+                if len > 0 {
+                    let current = self
+                        .state
+                        .pane_view(pane_focus)
+                        .last_clicked_index
+                        .unwrap_or(0)
+                        .min(len - 1);
+                    self.select_item_in_pane(pane_focus, current, shift, true, cx);
+                    self.scroll_item_into_view(pane_focus, current);
+                }
+            } else {
+                self.toggle_peek_modal(cx);
             }
             return true;
+        }
+
+        // When Spacebar Peek Modal is open, Left/Up and Right/Down cycle through items live
+        if self.state.main_view.show_peek_modal && !shift {
+            if matches!(
+                key.to_ascii_lowercase().as_str(),
+                "left" | "arrowleft" | "up" | "arrowup"
+            ) {
+                self.peek_navigate_prev(cx);
+                return true;
+            }
+            if matches!(
+                key.to_ascii_lowercase().as_str(),
+                "right" | "arrowright" | "down" | "arrowdown"
+            ) {
+                self.peek_navigate_next(cx);
+                return true;
+            }
         }
 
         // In Columns (Miller) view, Left/Right arrows navigate up/into folders directly
@@ -1436,19 +1462,30 @@ impl AppWindow {
         }
         let viewport_h = (win_h - 170.0).max(160.0);
 
+        let visible = self.state.pane_view(pane_focus).visible_items_rc();
+        let vis_len = visible.len();
+        if vis_len == 0 {
+            return false;
+        }
+
         let grid_cols = {
             let cols = MainViewState::grid_columns_for_width(pane_w, zoom_level);
             MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, cols)
                 .items_per_row
                 .max(1)
         };
-        let (list_cols, _list_col_w, list_row_h, _list_gap, _list_pad) =
+        let (list_cols, _list_col_w, _list_row_h, _list_gap, _list_pad) =
             MainViewState::list_layout_metrics(
                 pane_w,
                 zoom_level,
                 self.state.pane_view(pane_focus).compact_mode,
             );
-        let list_rows_per_col = (len + list_cols - 1) / list_cols.max(1);
+        let (cards_cols, _card_w, _card_rh, _card_gap, _card_pad) =
+            MainViewState::cards_layout_metrics(
+                pane_w,
+                zoom_level,
+                self.state.pane_view(pane_focus).compact_mode,
+            );
         let details_page_rows = ((viewport_h / 32.0).floor() as usize).max(1);
         let grid_page_items = {
             let params =
@@ -1456,27 +1493,31 @@ impl AppWindow {
             let rows = ((viewport_h / params.row_height).floor() as usize).max(1);
             (rows * grid_cols).max(grid_cols)
         };
-        let _ = list_row_h;
 
         let had_selection = !self.state.pane_view(pane_focus).selected_indices.is_empty();
-        let current = self
+        let current_item_idx = self
             .state
             .pane_view(pane_focus)
             .last_clicked_index
             .or_else(|| self.state.pane_view(pane_focus).selected_indices.iter().next().copied())
-            .unwrap_or(0)
-            .min(len - 1);
+            .unwrap_or(visible[0]);
+        let cur_vis_pos = visible
+            .iter()
+            .position(|&i| i == current_item_idx)
+            .unwrap_or(0);
 
-        let target_idx: Option<usize> = match key.to_ascii_lowercase().as_str() {
+        let target_vis_pos: Option<usize> = match key.to_ascii_lowercase().as_str() {
             "down" | "arrowdown" => {
                 if !had_selection {
                     Some(0)
                 } else {
                     let step = match view_mode {
-                        ViewMode::Grid => grid_cols,
+                        ViewMode::Grid => grid_cols.max(1),
+                        ViewMode::Cards => cards_cols.max(1),
+                        ViewMode::List => list_cols.max(1),
                         _ => 1,
                     };
-                    Some((current + step).min(len - 1))
+                    Some((cur_vis_pos + step).min(vis_len - 1))
                 }
             }
             "up" | "arrowup" => {
@@ -1484,58 +1525,53 @@ impl AppWindow {
                     Some(0)
                 } else {
                     let step = match view_mode {
-                        ViewMode::Grid => grid_cols,
+                        ViewMode::Grid => grid_cols.max(1),
+                        ViewMode::Cards => cards_cols.max(1),
+                        ViewMode::List => list_cols.max(1),
                         _ => 1,
                     };
-                    Some(current.saturating_sub(step))
+                    Some(cur_vis_pos.saturating_sub(step))
                 }
             }
             "right" | "arrowright" => {
                 if !had_selection {
                     Some(0)
                 } else {
-                    let step = match view_mode {
-                        ViewMode::Grid => 1,
-                        ViewMode::List => list_rows_per_col,
-                        _ => 1,
-                    };
-                    Some((current + step).min(len - 1))
+                    Some((cur_vis_pos + 1).min(vis_len - 1))
                 }
             }
             "left" | "arrowleft" => {
                 if !had_selection {
                     Some(0)
                 } else {
-                    let step = match view_mode {
-                        ViewMode::Grid => 1,
-                        ViewMode::List => list_rows_per_col,
-                        _ => 1,
-                    };
-                    Some(current.saturating_sub(step))
+                    Some(cur_vis_pos.saturating_sub(1))
                 }
             }
             "home" => Some(0),
-            "end" => Some(len - 1),
+            "end" => Some(vis_len - 1),
             "pagedown" => {
                 let step = match view_mode {
                     ViewMode::Grid => grid_page_items,
-                    ViewMode::List => list_rows_per_col,
+                    ViewMode::Cards => cards_cols.max(1) * 6,
+                    ViewMode::List => list_cols.max(1) * 10,
                     _ => details_page_rows,
                 };
-                Some((current + step).min(len - 1))
+                Some((cur_vis_pos + step).min(vis_len - 1))
             }
             "pageup" => {
                 let step = match view_mode {
                     ViewMode::Grid => grid_page_items,
-                    ViewMode::List => list_rows_per_col,
+                    ViewMode::Cards => cards_cols.max(1) * 6,
+                    ViewMode::List => list_cols.max(1) * 10,
                     _ => details_page_rows,
                 };
-                Some(current.saturating_sub(step))
+                Some(cur_vis_pos.saturating_sub(step))
             }
             _ => None,
         };
 
-        if let Some(idx) = target_idx {
+        if let Some(vis_pos) = target_vis_pos {
+            let idx = visible[vis_pos];
             self.select_item_in_pane(pane_focus, idx, shift, false, cx);
             self.scroll_item_into_view(pane_focus, idx);
             return true;
@@ -2179,32 +2215,6 @@ impl AppWindow {
             crate::core::navigation_manager::PaneFocus::Secondary,
             cx,
         );
-    }
-
-    /// Open a path in the secondary (right/bottom) pane, enabling dual-pane if needed.
-    pub fn open_in_secondary_pane(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        let layout = self.state.navigation.read(cx).pane_layout;
-        if layout == crate::core::navigation_manager::PaneLayout::Single {
-            self.state.navigation.update(cx, |nav, _cx| {
-                nav.split_pane_horizontal();
-            });
-        }
-        self.state
-            .navigation
-            .update(cx, |nav, _cx| {
-                nav.tabs.active_tab_mut().secondary_pane_path = Some(path);
-            });
-        let layout = self.state.navigation.read(cx).pane_layout;
-        self.state.main_view.pane_type = match layout {
-            crate::core::navigation_manager::PaneLayout::Single => {
-                crate::ui::views::main_view::PaneType::Single
-            }
-            _ => crate::ui::views::main_view::PaneType::Dual,
-        };
-        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
-            self.sync_secondary_pane_on_split(cx);
-        }
-        cx.notify();
     }
 
     pub fn toggle_dual_pane(&mut self, cx: &mut Context<Self>) {
@@ -3316,14 +3326,16 @@ impl AppWindow {
     pub fn poll_file_events(&mut self, cx: &mut Context<Self>) {
         // Poll primary pane
         if let Some(rx) = &mut self.file_event_rx {
-            if rx.try_recv().is_ok() {
+            while let Ok(_event) = rx.try_recv() {
                 self.refresh(cx);
+                break;
             }
         }
         // Poll secondary pane
         if let Some(rx) = &mut self.file_event_rx_secondary {
-            if rx.try_recv().is_ok() {
+            while let Ok(_event) = rx.try_recv() {
                 self.refresh_secondary_pane(cx);
+                break;
             }
         }
     }
@@ -3383,6 +3395,8 @@ impl AppWindow {
         let sidebar_tick;
         let main_tick;
         let secondary_tick;
+        let side_pane_tick;
+        let peek_tick;
         {
             let bs = &mut self.state.sidebar.bouncy_scroll;
             bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
@@ -3410,27 +3424,155 @@ impl AppWindow {
                 false
             };
         }
-        if sidebar_tick || main_tick || secondary_tick || tab_anim_tick || nav_anim_tick || status_anim_tick || os_drag_active {
-            if main_tick {
+        {
+            let bs = &mut self.state.main_view.side_pane_bouncy_scroll;
+            bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
+            side_pane_tick = if bs.animating {
+                bs.tick_spring(dt)
+            } else {
+                false
+            };
+        }
+        {
+            let bs = &mut self.state.main_view.peek_bouncy_scroll;
+            bs.post_settle_cooldown = bs.post_settle_cooldown.saturating_sub(1);
+            peek_tick = if bs.animating {
+                bs.tick_spring(dt)
+            } else {
+                false
+            };
+        }
+        let mut video_tick = false;
+        // Real player drives the timeline when present; otherwise simulate.
+        if self.state.video_player.is_some()
+            && matches!(
+                self.state.main_view.preview_content,
+                crate::ui::views::main_view::PreviewContent::Video(_)
+            )
+        {
+            let player = self.state.video_player.as_ref().unwrap();
+            let dur = player.duration_secs().max(0.1);
+            let pos = player.progress_secs().clamp(0.0, dur);
+            self.state.main_view.video_progress = (pos / dur) as f32;
+            if player.has_ended() {
+                self.state.main_view.video_playing = false;
+            } else {
+                self.state.main_view.video_playing = player.is_playing();
+            }
+            self.state.main_view.video_frame = player.current_frame();
+            video_tick = true;
+        } else if self.state.main_view.video_playing {
+            let dur = match &self.state.main_view.preview_content {
+                crate::ui::views::main_view::PreviewContent::Video(info)
+                | crate::ui::views::main_view::PreviewContent::Audio(info) => {
+                    info.duration_secs.unwrap_or(30.0).max(5.0) as f32
+                }
+                _ => 30.0,
+            };
+            self.state.main_view.video_progress += dt / dur;
+            if self.state.main_view.video_progress >= 1.0 {
+                self.state.main_view.video_progress = 0.0;
+                self.state.main_view.video_playing = false;
+            }
+            video_tick = true;
+        }
+
+        if sidebar_tick
+            || main_tick
+            || secondary_tick
+            || side_pane_tick
+            || peek_tick
+            || video_tick
+            || tab_anim_tick
+            || nav_anim_tick
+            || status_anim_tick
+            || os_drag_active
+        {
+            if main_tick
+                || (!self.state.main_view.bouncy_scroll.animating
+                    && self.state.main_view.bouncy_scroll.post_settle_cooldown == 4)
+            {
                 let offset = self.state.main_view.bouncy_scroll.offset;
-                let handle = &self.state.main_view.uniform_list_scroll_handle;
-                handle
+                if matches!(
+                    self.state.main_view.target,
+                    crate::ui::views::main_view::ViewTarget::Home
+                        | crate::ui::views::main_view::ViewTarget::Settings
+                        | crate::ui::views::main_view::ViewTarget::RecycleBin
+                ) {
+                    self.state
+                        .main_view
+                        .scroll_handle
+                        .set_offset(gpui::point(px(0.0), px(offset)));
+                } else {
+                    self.state
+                        .main_view
+                        .uniform_list_scroll_handle
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(gpui::point(px(0.0), px(offset)));
+                }
+            }
+            if secondary_tick
+                || (!self.state.secondary_view.bouncy_scroll.animating
+                    && self.state.secondary_view.bouncy_scroll.post_settle_cooldown == 4)
+            {
+                let offset = self.state.secondary_view.bouncy_scroll.offset;
+                self.state
+                    .secondary_view
+                    .uniform_list_scroll_handle
                     .0
                     .borrow()
                     .base_handle
                     .set_offset(gpui::point(px(0.0), px(offset)));
             }
-            if secondary_tick {
-                let offset = self.state.secondary_view.bouncy_scroll.offset;
-                let handle = &self.state.secondary_view.uniform_list_scroll_handle;
-                handle
-                    .0
-                    .borrow()
-                    .base_handle
+            if side_pane_tick
+                || (!self.state.main_view.side_pane_bouncy_scroll.animating
+                    && self.state.main_view.side_pane_bouncy_scroll.post_settle_cooldown == 4)
+            {
+                let offset = self.state.main_view.side_pane_bouncy_scroll.offset;
+                self.state
+                    .main_view
+                    .side_pane_scroll_handle
+                    .set_offset(gpui::point(px(0.0), px(offset)));
+            }
+            if peek_tick
+                || (!self.state.main_view.peek_bouncy_scroll.animating
+                    && self.state.main_view.peek_bouncy_scroll.post_settle_cooldown == 4)
+            {
+                let offset = self.state.main_view.peek_bouncy_scroll.offset;
+                self.state
+                    .main_view
+                    .peek_scroll_handle
                     .set_offset(gpui::point(px(0.0), px(offset)));
             }
             cx.notify();
         }
+    }
+
+    pub fn open_in_secondary_pane(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        let layout = self.state.navigation.read(cx).pane_layout;
+        if layout == crate::core::navigation_manager::PaneLayout::Single {
+            self.state.navigation.update(cx, |nav, _cx| {
+                nav.split_pane_horizontal();
+            });
+        }
+        self.state
+            .navigation
+            .update(cx, |nav, _cx| {
+                nav.tabs.active_tab_mut().secondary_pane_path = Some(path);
+            });
+        let layout = self.state.navigation.read(cx).pane_layout;
+        self.state.main_view.pane_type = match layout {
+            crate::core::navigation_manager::PaneLayout::Single => {
+                crate::ui::views::main_view::PaneType::Single
+            }
+            _ => crate::ui::views::main_view::PaneType::Dual,
+        };
+        if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            self.sync_secondary_pane_on_split(cx);
+        }
+        cx.notify();
     }
 
     /// Refresh the secondary pane (for split view)
@@ -3714,8 +3856,7 @@ impl AppWindow {
 
     /// Sort the file list by the given column (toggles direction if same column).
     pub fn sort_by(&mut self, col: SortBy, cx: &mut Context<Self>) {
-        self.state.main_view.toggle_sort(col);
-        cx.notify();
+        self.set_sort_column(col, cx);
     }
 
     /// Select a single item by its index in the currently active pane.
@@ -3725,7 +3866,7 @@ impl AppWindow {
     }
 
     /// Select an item in the specified pane (`PaneFocus::Primary` or `PaneFocus::Secondary`),
-    /// supporting `Shift` range selection from `selection_anchor_index` and `Ctrl` toggle.
+    /// supporting `Shift` range selection in visual sorted order (`visible_items_rc`) and `Ctrl` toggle.
     pub fn select_item_in_pane(
         &mut self,
         pane_focus: crate::core::navigation_manager::PaneFocus,
@@ -3749,6 +3890,7 @@ impl AppWindow {
                 }
                 view.selection_anchor_index = Some(index);
             } else if shift {
+                let visible = view.visible_items_rc();
                 let anchor = view
                     .selection_anchor_index
                     .or(view.last_clicked_index)
@@ -3756,11 +3898,22 @@ impl AppWindow {
                     .unwrap_or(index)
                     .min(view.items.len().saturating_sub(1));
                 view.selection_anchor_index = Some(anchor);
-                let start = anchor.min(index);
-                let end = anchor.max(index);
                 view.selected_indices.clear();
-                for i in start..=end {
-                    view.selected_indices.insert(i);
+
+                let pos_a = visible.iter().position(|&i| i == anchor);
+                let pos_b = visible.iter().position(|&i| i == index);
+                if let (Some(pa), Some(pb)) = (pos_a, pos_b) {
+                    let start = pa.min(pb);
+                    let end = pa.max(pb);
+                    for &vi in &visible[start..=end] {
+                        view.selected_indices.insert(vi);
+                    }
+                } else {
+                    let start = anchor.min(index);
+                    let end = anchor.max(index);
+                    for i in start..=end {
+                        view.selected_indices.insert(i);
+                    }
                 }
             } else {
                 view.selected_indices.clear();
@@ -3786,15 +3939,22 @@ impl AppWindow {
             }
         };
 
+        let preview_visible = !matches!(
+            self.state.main_view.side_pane,
+            crate::ui::views::main_view::SidePaneMode::None
+        ) || self.state.main_view.show_peek_modal;
+
         if let Some((item_path, is_file)) = single_item_info {
-            if is_file {
-                self.load_preview_content(item_path.clone(), cx);
-            } else {
-                self.state.main_view.preview_text =
-                    Some("Loading folder contents...".to_string());
-                self.load_folder_preview(item_path.clone(), cx);
+            if preview_visible {
+                if is_file {
+                    self.load_preview_content(item_path.clone(), cx);
+                } else {
+                    self.state.main_view.preview_text =
+                        Some("Loading folder contents...".to_string());
+                    self.load_folder_preview(item_path.clone(), cx);
+                }
+                self.update_details_cache_from_path(&item_path, cx);
             }
-            self.update_details_cache_from_path(&item_path, cx);
         } else {
             self.state.main_view.preview_text = None;
             self.state.main_view.preview_content =
@@ -3835,12 +3995,25 @@ impl AppWindow {
             return;
         }
 
+        let visible = view.visible_items_rc();
+        let vis_pos = visible
+            .iter()
+            .position(|&i| i == item_index)
+            .unwrap_or(item_index);
         let (row_idx, row_h) = match view.view_mode {
             ViewMode::Grid => {
                 let cols = MainViewState::grid_columns_for_width(pane_w, view.zoom_level);
                 let params =
                     MainViewState::grid_layout_params_for_width_pub(pane_w, view.zoom_level, cols);
-                (item_index / params.items_per_row.max(1), params.row_height)
+                (vis_pos / params.items_per_row.max(1), params.row_height)
+            }
+            ViewMode::Cards => {
+                let (cols, _card_w, rh, _gap, _pad) = MainViewState::cards_layout_metrics(
+                    pane_w,
+                    view.zoom_level,
+                    view.compact_mode,
+                );
+                (vis_pos / cols.max(1), rh)
             }
             ViewMode::List => {
                 let (cols, _col_w, rh, _gap, _pad) = MainViewState::list_layout_metrics(
@@ -3848,17 +4021,12 @@ impl AppWindow {
                     view.zoom_level,
                     view.compact_mode,
                 );
-                let rows_per_col = (view.items.len() + cols - 1) / cols.max(1);
-                (item_index % rows_per_col.max(1), rh)
+                (vis_pos / cols.max(1), rh)
             }
-            ViewMode::Columns => (item_index, 30.0),
-            _ => {
-                let rh = if view.compact_mode {
-                    24.0
-                } else {
-                    28.0 + (view.zoom_level * 20.0)
-                };
-                (item_index, rh)
+            ViewMode::Columns => (vis_pos, 30.0),
+            ViewMode::Details => {
+                let rh = 20.0 + view.zoom_level * 28.0;
+                (vis_pos, rh)
             }
         };
 
@@ -3875,9 +4043,7 @@ impl AppWindow {
         };
 
         if let Some(target_scroll) = new_scroll {
-            view.bouncy_scroll.offset = -target_scroll;
-            view.bouncy_scroll.velocity = 0.0;
-            view.bouncy_scroll.animating = false;
+            view.bouncy_scroll.set_immediate_offset(-target_scroll);
             view.uniform_list_scroll_handle
                 .0
                 .borrow()
@@ -3975,7 +4141,7 @@ impl AppWindow {
     }
 
     /// Synchronize status bar selection counters and the GPUI `FileItems` entity for `pane_focus`.
-    fn sync_pane_selection_model(
+    pub(crate) fn sync_pane_selection_model(
         &mut self,
         pane_focus: crate::core::navigation_manager::PaneFocus,
         cx: &mut Context<Self>,
@@ -4168,90 +4334,387 @@ impl AppWindow {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Start dragging selected items from the given position.
-    pub fn start_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let indices: Vec<usize> = self
-            .state
-            .main_view
-            .selected_indices
-            .iter()
-            .cloned()
-            .collect();
-        if indices.is_empty() {
+    /// Handle left mouse-down on an item row/card/tile across all 5 views:
+    /// - Double-click opens the file or navigates into the directory.
+    /// - Single-click selects the item (preserving multi-selection if dragging an already-selected group)
+    ///   and records a drag candidate so moving >= 6px starts an internal/external file drag!
+    pub fn handle_item_mouse_down(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        idx: usize,
+        path: FilesPath,
+        is_dir: bool,
+        click_count: usize,
+        pos: gpui::Point<f32>,
+        modifiers: gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_pane(pane_focus, cx);
+        if click_count == 2 {
+            self.state.main_view.drag_state.pending_candidate = None;
+            if is_dir {
+                self.navigate_pane(path, pane_focus, cx);
+            } else {
+                self.open_item_in_pane(pane_focus, idx, cx);
+            }
             return;
         }
 
+        let already_in_multi_selection = {
+            let pv = self.state.pane_view(pane_focus);
+            pv.selected_indices.len() > 1
+                && pv.selected_indices.contains(&idx)
+                && !modifiers.shift
+                && !modifiers.control
+        };
+
+        if !already_in_multi_selection {
+            self.select_item_in_pane(pane_focus, idx, modifiers.shift, modifiers.control, cx);
+        } else {
+            self.state.pane_view_mut(pane_focus).last_clicked_index = Some(idx);
+        }
+
+        // Record drag candidate on main_view.drag_state
+        self.state
+            .main_view
+            .record_drag_candidate(pane_focus, idx, pos);
+    }
+
+    /// Update global or item-level file drag on mouse move.
+    /// Promotes `pending_candidate` into an active `DragState` once movement exceeds 6px,
+    /// highlights hovered folder targets, and triggers native OS drag-and-drop (`SHDoDragDrop` / `CF_HDROP`
+    /// on Windows, `dragon-drop` / `text/uri-list` on Linux/macOS) when dragging out of the window!
+    pub fn update_file_drag_move(
+        &mut self,
+        pos: gpui::Point<f32>,
+        modifiers: gpui::Modifiers,
+        hovered_folder: Option<(FilesPath, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        // 1. Check if a pending candidate crosses the 6px drag threshold
+        if !self.state.main_view.drag_state.is_dragging {
+            if let Some((src_pane, anchor_idx, start_pos)) =
+                self.state.main_view.drag_state.pending_candidate
+            {
+                let dist = (pos.x - start_pos.x).hypot(pos.y - start_pos.y);
+                if dist >= crate::ui::views::main_view_selection::FILE_DRAG_THRESHOLD_PX {
+                    let (indices, paths) = {
+                        let pv = self.state.pane_view(src_pane);
+                        let mut idxs: Vec<usize> = pv.selected_indices.iter().copied().collect();
+                        if !idxs.contains(&anchor_idx) {
+                            idxs.push(anchor_idx);
+                        }
+                        idxs.sort_unstable();
+                        let ps: Vec<FilesPath> = idxs
+                            .iter()
+                            .filter_map(|&i| pv.items.get(i))
+                            .map(|it| it.path.clone())
+                            .collect();
+                        (idxs, ps)
+                    };
+                    if !paths.is_empty() {
+                        self.state.main_view.drag_state = crate::ui::views::types::DragState {
+                            indices,
+                            paths,
+                            source_pane: src_pane,
+                            start: start_pos,
+                            current: pos,
+                            is_copy: modifiers.control,
+                            is_link: modifiers.alt,
+                            is_dragging: true,
+                            pending_candidate: None,
+                            hovered_target_folder: None,
+                            hovered_target_label: None,
+                            os_drag_dispatched: false,
+                        };
+                    }
+                }
+            }
+        }
+
+        if !self.state.main_view.drag_state.is_dragging {
+            return;
+        }
+
+        self.state.main_view.drag_state.current = pos;
+        self.state.main_view.drag_state.is_link = modifiers.alt;
+
+        // Filter out hovered_folder if it is one of the dragged folders itself
+        let valid_target = hovered_folder.as_ref().filter(|(target_path, _)| {
+            !self
+                .state
+                .main_view
+                .drag_state
+                .paths
+                .iter()
+                .any(|p| p == target_path)
+        });
+
+        // Default to Copy if Ctrl is held OR if target is on a different drive root (unless Shift held)
+        let mut is_copy = modifiers.control;
+        if let Some((target_path, target_label)) = valid_target {
+            if !modifiers.shift {
+                if let Some(first_src) = self.state.main_view.drag_state.paths.first() {
+                    let src_root = first_src.to_string_lossy();
+                    let dst_root = target_path.to_string_lossy();
+                    if src_root.get(0..2) != dst_root.get(0..2) {
+                        is_copy = true;
+                    }
+                }
+            }
+            self.state.main_view.drag_state.hovered_target_folder = Some(target_path.clone());
+            self.state.main_view.drag_state.hovered_target_label = Some(target_label.clone());
+        } else if hovered_folder.is_none() {
+            // Keep existing hovered target only if updated from item, otherwise clear when over background
+            self.state.main_view.drag_state.hovered_target_folder = None;
+            self.state.main_view.drag_state.hovered_target_label = None;
+        }
+        self.state.main_view.drag_state.is_copy = is_copy;
+
+        // 2. Check if cursor is dragging out of the window boundary -> launch native OS drag-and-drop!
+        let win_w = f32::from(self.state.last_window_size.width).max(400.0);
+        let win_h = f32::from(self.state.last_window_size.height).max(300.0);
+        let near_outside =
+            pos.x <= 8.0 || pos.y <= 8.0 || pos.x >= win_w - 8.0 || pos.y >= win_h - 8.0;
+        if near_outside && !self.state.main_view.drag_state.os_drag_dispatched {
+            self.state.main_view.drag_state.os_drag_dispatched = true;
+            let paths = self.state.main_view.drag_state.paths.clone();
+            crate::platform::windows::shell::start_native_os_file_drag(&paths, is_copy);
+        }
+
+        cx.notify();
+    }
+
+    /// Execute a file/folder transfer (Copy, Move, or Shortcut) from drag-and-drop or external drop.
+    pub fn execute_drag_drop_transfer(
+        &mut self,
+        sources: Vec<std::path::PathBuf>,
+        dest_dir: std::path::PathBuf,
+        is_copy: bool,
+        is_link: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let filtered_sources: Vec<std::path::PathBuf> = sources
+            .into_iter()
+            .filter(|src| src != &dest_dir && src.parent() != Some(dest_dir.as_path()))
+            .collect();
+        if filtered_sources.is_empty() || !dest_dir.is_dir() {
+            return;
+        }
+
+        if is_link {
+            // Create shortcuts (.lnk on Windows, symlink on Unix) in dest_dir
+            for src in &filtered_sources {
+                if let Some(name) = src.file_name() {
+                    let link_dest = dest_dir.join(name);
+                    #[cfg(unix)]
+                    {
+                        let _ = std::os::unix::fs::symlink(src, &link_dest);
+                    }
+                    #[cfg(windows)]
+                    {
+                        let lnk_path = dest_dir.join(format!("{}.lnk", name.to_string_lossy()));
+                        let _ = crate::core::shortcut_service::ShortcutService::create_shortcut(
+                            crate::core::shortcut_service::ShortcutOptions::new(
+                                FilesPath::new(src),
+                                FilesPath::new(lnk_path),
+                            ),
+                        );
+                    }
+                }
+            }
+            self.refresh(cx);
+            return;
+        }
+
+        let progress_engine = self.state.progress_engine.clone();
+        let this_weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let total = filtered_sources.len();
+        let dest_name = dest_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| dest_dir.to_string_lossy().to_string());
+
+        self.state.status_center.push_notification(
+            format!(
+                "{} {} item{}",
+                if is_copy { "Copying" } else { "Moving" },
+                total,
+                if total == 1 { "" } else { "s" }
+            ),
+            format!("Destination: {}", dest_name),
+            crate::ui::components::status_center::ToastSeverity::Info,
+            None,
+        );
+
+        cx.foreground_executor()
+            .spawn(async move {
+                use crate::core::progress::OpKind;
+                use crate::core::transfer::{run_copy_job_rt, run_move_job_rt, TransferOutcome};
+                let (op_label, kind) = if is_copy {
+                    ("Copy", OpKind::Copy)
+                } else {
+                    ("Move", OpKind::Move)
+                };
+                let job_id = progress_engine
+                    .start_job(format!("{} ({} items)", op_label, total), kind)
+                    .await;
+                let outcome = if is_copy {
+                    run_copy_job_rt(progress_engine.clone(), job_id, filtered_sources, dest_dir)
+                        .await
+                } else {
+                    run_move_job_rt(progress_engine.clone(), job_id, filtered_sources, dest_dir)
+                        .await
+                };
+                match outcome {
+                    TransferOutcome::Done => progress_engine.complete_job(job_id).await,
+                    TransferOutcome::Cancelled => {}
+                    TransferOutcome::Failed(reason) => {
+                        progress_engine.fail_job(job_id, reason).await
+                    }
+                }
+                let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    this.refresh(cx);
+                });
+            })
+            .detach();
+    }
+
+    /// Handle external files dropped from another OS application (`gpui::ExternalPaths`) into `files-rs`.
+    pub fn handle_external_paths_drop(
+        &mut self,
+        external_paths: &[std::path::PathBuf],
+        target_folder_override: Option<FilesPath>,
+        modifiers: gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if external_paths.is_empty() {
+            return;
+        }
+        let pane_focus = self.state.active_pane_focus();
+        let dest_dir = target_folder_override
+            .or_else(|| self.state.main_view.drag_state.hovered_target_folder.clone())
+            .unwrap_or_else(|| self.state.pane_view(pane_focus).primary_path.clone())
+            .as_path()
+            .to_path_buf();
+
+        let is_copy = !modifiers.shift; // External drops default to Copy unless Shift is held
+        let is_link = modifiers.alt;
+        self.execute_drag_drop_transfer(external_paths.to_vec(), dest_dir, is_copy, is_link, cx);
+    }
+
+    pub fn start_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+        let indices: Vec<usize> = self.state.main_view.selected_indices.iter().copied().collect();
+        if indices.is_empty() {
+            return;
+        }
         use gpui::Point;
         self.state.main_view.drag_start(indices, Point::new(x, y));
         cx.notify();
     }
 
-    /// Update the current drag position. Call this on mouse move while dragging.
-    /// is_copy indicates whether Ctrl modifier is held (for copy vs move).
     pub fn update_drag(&mut self, x: f32, y: f32, is_copy: bool, cx: &mut Context<Self>) {
         use gpui::Point;
         self.state.main_view.drag_update(Point::new(x, y), is_copy);
         cx.notify();
     }
 
-    /// End the drag operation. Call this on mouse up.
-    /// If a valid drop target is under the cursor, performs the operation.
     pub fn end_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         use gpui::Point;
         let point = Point::new(x, y);
-        let visible = self.state.main_view.visible_items_rc();
+        self.state.main_view.drag_state.pending_candidate = None;
 
-        // Check if we're over a valid drop target (directory)
-        if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
-            if let Some(target_item) = self.state.main_view.items.get(target_idx) {
-                let indices = self.state.main_view.drag_state.indices.clone();
-                let is_copy = self.state.main_view.drag_state.is_copy;
+        if !self.state.main_view.drag_state.is_dragging {
+            return;
+        }
 
-                let dest_dir = target_item.path.as_path().to_path_buf();
-                let sources: Vec<std::path::PathBuf> = indices
-                    .iter()
-                    .filter_map(|&idx| self.state.main_view.items.get(idx))
-                    .map(|it| it.path.as_path().to_path_buf())
-                    .filter(|src| src != &dest_dir)
-                    .collect();
-                if !sources.is_empty() && dest_dir.is_dir() {
-                    let progress_engine = self.state.progress_engine.clone();
-                    let this_weak = cx.weak_entity();
-                    let mut async_cx = cx.to_async();
-                    let total = sources.len();
-                    cx.foreground_executor()
-                        .spawn(async move {
-                            use crate::core::progress::OpKind;
-                            use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
-                            let (op_label, kind) = if is_copy {
-                                ("Copy", OpKind::Copy)
-                            } else {
-                                ("Move", OpKind::Move)
-                            };
-                            let job_id = progress_engine
-                                .start_job(format!("{} ({} items)", op_label, total), kind)
-                                .await;
-                            let outcome = if is_copy {
-                                run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
-                            } else {
-                                run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
-                            };
-                            match outcome {
-                                TransferOutcome::Done => progress_engine.complete_job(job_id).await,
-                                TransferOutcome::Cancelled => {}
-                                TransferOutcome::Failed(reason) => {
-                                    progress_engine.fail_job(job_id, reason).await
-                                }
-                            }
-                            let _ = this_weak.update(&mut async_cx, |this, cx| {
-                                this.refresh(cx);
-                            });
-                        })
-                        .detach();
+        let is_copy = self.state.main_view.drag_state.is_copy;
+        let is_link = self.state.main_view.drag_state.is_link;
+        let src_pane = self.state.main_view.drag_state.source_pane;
+        let sources: Vec<std::path::PathBuf> = self
+            .state
+            .main_view
+            .drag_state
+            .paths
+            .iter()
+            .map(|p| p.as_path().to_path_buf())
+            .collect();
+
+        // 1. Check if hovering a specific target folder (in any view, sidebar, or breadcrumb)
+        let mut target_dir: Option<std::path::PathBuf> = self
+            .state
+            .main_view
+            .drag_state
+            .hovered_target_folder
+            .as_ref()
+            .map(|p| p.as_path().to_path_buf());
+
+        // 2. Fallback to geometric drop target check
+        if target_dir.is_none() {
+            let visible = self.state.main_view.visible_items_rc();
+            if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
+                if let Some(target_item) = self.state.main_view.items.get(target_idx) {
+                    target_dir = Some(target_item.path.as_path().to_path_buf());
                 }
             }
         }
 
+        // 3. Check if dropped into the opposite pane in Dual-Pane mode
+        if target_dir.is_none()
+            && self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual
+        {
+            let win_w = f32::from(self.state.last_window_size.width).max(800.0);
+            let sidebar_w = if self.state.sidebar_visible {
+                self.state.sidebar.width
+            } else {
+                0.0
+            };
+            let split_x =
+                sidebar_w + (win_w - sidebar_w) * self.state.main_view.dual_pane_ratio.clamp(0.2, 0.8);
+            if src_pane == crate::core::navigation_manager::PaneFocus::Primary && x > split_x {
+                target_dir = Some(self.state.secondary_view.primary_path.as_path().to_path_buf());
+            } else if src_pane == crate::core::navigation_manager::PaneFocus::Secondary
+                && x > sidebar_w
+                && x < split_x
+            {
+                target_dir = Some(self.state.main_view.primary_path.as_path().to_path_buf());
+            }
+        }
+
+        // 4. Check if dropped onto the Bottom Shelf Pane
+        let win_h = f32::from(self.state.last_window_size.height).max(600.0);
+        if target_dir.is_none() && self.state.main_view.shelf_visible && y >= win_h - 215.0 {
+            for p in &self.state.main_view.drag_state.paths.clone() {
+                if !self.state.main_view.shelf_items.iter().any(|s| &s.path == p) {
+                    let meta = std::fs::metadata(p.as_path()).ok();
+                    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.to_string_lossy().to_string());
+                    self.state
+                        .main_view
+                        .shelf_items
+                        .push(crate::ui::views::types::ShelfItem {
+                            path: p.clone(),
+                            name,
+                            is_dir,
+                            size,
+                        });
+                }
+            }
+            self.state.main_view.drag_end();
+            cx.notify();
+            return;
+        }
+
         self.state.main_view.drag_end();
+
+        if let Some(dest_dir) = target_dir {
+            self.execute_drag_drop_transfer(sources, dest_dir, is_copy, is_link, cx);
+        }
         cx.notify();
     }
 
@@ -4295,7 +4758,7 @@ impl AppWindow {
         self.state.main_view.selection_mode.clone()
     }
 
-    /// Toggle checkbox multi-select mode (Normal ↔ Checkbox) and persist the preference.
+    /// Cycle through selection modes: Normal → Checkbox → HoverSelect → Normal
     pub fn toggle_selection_checkboxes(&mut self, cx: &mut Context<Self>) {
         use crate::ui::views::main_view::SelectionMode;
         self.state.main_view.selection_mode = match self.state.main_view.selection_mode {
@@ -4417,61 +4880,66 @@ impl AppWindow {
         self.state.main_view.last_clicked_index = Some(new_idx);
     }
 
-    /// Update the details pane cache with tags and extended properties from path
-    fn update_details_cache_from_path(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
+    /// Update the details pane cache asynchronously on the background executor (zero UI thread blocking).
+    pub(crate) fn update_details_cache_from_path(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
         let mut cache = DetailsPaneCache::default();
-
-        // Get tags from TagService
         cache.tags = self.get_file_tags(path);
-
-        // Get extended properties for media files
-        if let Ok(ext_props) = ExtendedMetadataExtractor::extract(path) {
-            // Dimensions (images/video)
-            if let Some((w, h)) = ext_props.dimensions {
-                cache.exif_dimensions = Some(format!("{}x{}", w, h));
-            }
-
-            // Duration (audio/video)
-            if let Some(dur) = ext_props.duration {
-                let total_secs = dur.as_secs();
-                let mins = total_secs / 60;
-                let secs = total_secs % 60;
-                cache.audio_duration = Some(format!("{}:{:02}", mins, secs));
-                cache.video_duration = Some(format!("{}:{:02}", mins, secs));
-            }
-        }
-
+        cache.folder_subfolders = self.state.main_view.details_cache.folder_subfolders;
+        cache.folder_files = self.state.main_view.details_cache.folder_files;
+        cache.folder_total_size = self.state.main_view.details_cache.folder_total_size;
         self.state.main_view.details_cache = cache;
 
-        // Git last-commit requires a full revwalk — far too expensive for
-        // the render path, so resolve it on the background executor and
-        // only apply if the selection hasn't moved on meanwhile.
+        let req_id = self.state.main_view.preview_request_id;
         let path_clone = path.clone();
-        let path_for_check = path.clone();
-        let bg = cx.background_executor().spawn(async move {
-            crate::domain::git_service::GitService::get_last_commit(&path_clone)
-        });
         let mut async_cx = cx.to_async();
         let this_weak = cx.weak_entity();
+
+        let bg = cx.background_executor().spawn(async move {
+            let ext_props = ExtendedMetadataExtractor::extract(&path_clone).ok();
+            let commit_info = crate::domain::git_service::GitService::get_last_commit(&path_clone);
+            let (mime_type, _) = crate::storage::preview_service::detect_mime_and_extension(&path_clone);
+            (ext_props, commit_info, mime_type)
+        });
+
         cx.foreground_executor()
             .spawn(async move {
-                let info = bg.await;
+                let (ext_props, commit_info, mime_type) = bg.await;
                 this_weak
                     .update(&mut async_cx, |this, cx| {
-                        let still_selected = this
-                            .state
-                            .main_view
-                            .selected_indices
-                            .iter()
-                            .any(|&i| {
-                                this.state.main_view.items.get(i).map_or(false, |it| {
-                                    it.path == path_for_check
-                                })
-                            });
-                        if still_selected {
-                            this.state.main_view.details_cache.git_last_commit = info;
-                            cx.notify();
+                        if this.state.main_view.preview_request_id != req_id {
+                            return;
                         }
+                        this.state.main_view.details_cache.mime_type = Some(mime_type);
+                        if let Some(props) = ext_props {
+                            if let Some((w, h)) = props.dimensions {
+                                this.state.main_view.details_cache.exif_dimensions =
+                                    Some(format!("{} × {}", w, h));
+                            }
+                            this.state.main_view.details_cache.exif_camera = props.camera_model;
+                            this.state.main_view.details_cache.exif_date = props.exif_date;
+                            this.state.main_view.details_cache.exif_iso = props.iso.map(|v| format!("ISO {}", v));
+                            this.state.main_view.details_cache.exif_aperture = props.aperture;
+                            this.state.main_view.details_cache.exif_exposure = props.exposure_time;
+                            this.state.main_view.details_cache.exif_focal_length = props.focal_length;
+                            this.state.main_view.details_cache.exif_lens = props.lens_model;
+                            if let Some(dur) = props.duration {
+                                let total_secs = dur.as_secs();
+                                let mins = total_secs / 60;
+                                let secs = total_secs % 60;
+                                let fmt_dur = format!("{}:{:02}", mins, secs);
+                                this.state.main_view.details_cache.audio_duration =
+                                    Some(fmt_dur.clone());
+                                this.state.main_view.details_cache.video_duration = Some(fmt_dur);
+                            }
+                        }
+                        if let Some(commit) = commit_info {
+                            this.state.main_view.details_cache.git_commit_author =
+                                Some(commit.author);
+                            this.state.main_view.details_cache.git_commit_date = Some(commit.date);
+                            this.state.main_view.details_cache.git_commit_message =
+                                Some(commit.message);
+                        }
+                        cx.notify();
                     })
                     .ok();
             })
@@ -4866,6 +5334,7 @@ impl AppWindow {
                                     is_system: false,
                                     modified,
                                     created,
+                                    tags: Vec::new(),
                                 }
                             })
                             .collect();
@@ -4965,6 +5434,7 @@ impl AppWindow {
                 is_system: false,
                 modified: modified_time,
                 created: created_time,
+                tags: Vec::new(),
             };
 
             if let Some((score, match_indices, match_snippet)) =
@@ -5078,6 +5548,7 @@ impl AppWindow {
                         is_system: false,
                         modified: md.as_ref().and_then(|m| m.modified().ok()),
                         created: md.as_ref().and_then(|m| m.created().ok()),
+                        tags: Vec::new(),
                     };
                     this.state.active_dialog =
                         Some(crate::ui::components::dialogs::DialogType::Properties { item });
@@ -5364,6 +5835,27 @@ impl AppWindow {
             current_zoom,
             current_mode,
         });
+        cx.notify();
+    }
+
+    pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
+        let next = (self.state.main_view.zoom_level + 0.1).min(1.0);
+        self.set_zoom_level(next, cx);
+    }
+
+    pub fn zoom_out(&mut self, cx: &mut Context<Self>) {
+        let next = (self.state.main_view.zoom_level - 0.1).max(0.0);
+        self.set_zoom_level(next, cx);
+    }
+
+    pub fn reset_zoom(&mut self, cx: &mut Context<Self>) {
+        let mode = self.state.main_view.view_mode.clone();
+        let next = crate::ui::views::helpers::zoom_for_view_mode(&mode);
+        self.set_zoom_level(next, cx);
+    }
+
+    pub fn toggle_shelf(&mut self, cx: &mut Context<Self>) {
+        self.state.main_view.shelf_visible = !self.state.main_view.shelf_visible;
         cx.notify();
     }
 
@@ -5903,7 +6395,7 @@ impl AppWindow {
         action: crate::core::action_registry::ActionKind,
         cx: &mut Context<Self>,
     ) -> bool {
-        use crate::config::config::{GroupColumn as GroupBy, SortBy, ViewMode};
+        use crate::config::config::{GroupColumn, SortBy, ViewMode};
         use crate::core::action_registry::ActionKind;
         match action {
             ActionKind::NavigateBack => self.navigate_back(cx),
@@ -5942,13 +6434,13 @@ impl AppWindow {
                 self.copy_selected(cx);
                 self.paste(cx);
             }
-            ActionKind::OpenSelectedItem => {
+            ActionKind::OpenSelectedItem | ActionKind::OpenItem => {
                 let pane_focus = self.state.active_pane_focus();
                 if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
                     self.open_item_in_pane(pane_focus, idx, cx);
                 }
             }
-            ActionKind::OpenInNewTab => {
+            ActionKind::OpenInNewTab | ActionKind::MiddleClickOpenNewTab => {
                 let pane_focus = self.state.active_pane_focus();
                 if let Some(&idx) = self.state.pane_view(pane_focus).selected_indices.iter().next() {
                     if let Some(item) = self.state.pane_view(pane_focus).items.get(idx).cloned() {
@@ -6029,17 +6521,23 @@ impl AppWindow {
             ActionKind::EmptyRecycleBin => self.empty_recycle_bin(cx),
             ActionKind::RestoreRecycleBin => self.restore_selected_recycle_bin(cx),
             ActionKind::RestoreAllRecycleBin => self.restore_all_recycle_bin(cx),
-            ActionKind::ExtractArchive | ActionKind::ExtractHere | ActionKind::ExtractToFolder => {
+            ActionKind::ExtractArchive
+            | ActionKind::ExtractHere
+            | ActionKind::ExtractToFolder
+            | ActionKind::ExtractArchiveHere => {
                 self.extract_selected_archive(cx);
             }
-            ActionKind::CompressToZip | ActionKind::CompressTo7z | ActionKind::CompressToTar => {
+            ActionKind::CompressToZip
+            | ActionKind::CompressTo7z
+            | ActionKind::CompressToTar
+            | ActionKind::CreateArchive => {
                 self.compress_selected_items(cx);
             }
             ActionKind::RotateImageLeft | ActionKind::RotateImageRight => {
                 self.state.status_center.push_notification(
                     "Image Rotation".to_string(),
                     "Rotated selected image.".to_string(),
-                    crate::ui::components::status_center::NotificationSeverity::Info,
+                    crate::ui::components::status_center::ToastSeverity::Info,
                     None,
                 );
                 cx.notify();
@@ -6048,7 +6546,7 @@ impl AppWindow {
                 self.state.status_center.push_notification(
                     "Desktop Background".to_string(),
                     "Updated desktop wallpaper from selection.".to_string(),
-                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    crate::ui::components::status_center::ToastSeverity::Success,
                     None,
                 );
                 cx.notify();
@@ -6072,7 +6570,9 @@ impl AppWindow {
                 }
             }
             ActionKind::ClearSelection => {
-                if self.state.show_shortcut_overlay {
+                if self.state.main_view.show_peek_modal {
+                    self.close_peek_modal(cx);
+                } else if self.state.show_shortcut_overlay {
                     self.state.show_shortcut_overlay = false;
                     cx.notify();
                 } else if self.state.splash_state.visible {
@@ -6102,10 +6602,9 @@ impl AppWindow {
                     self.set_filter_text(String::new(), cx);
                 }
             }
-            ActionKind::ToggleHiddenFiles => self.toggle_hidden_files(cx),
+            ActionKind::ToggleHiddenFiles => self.toggle_setting("show_hidden_files", cx),
             ActionKind::ToggleDotFiles => self.toggle_setting("show_dot_files", cx),
-            ActionKind::ToggleFileExtensions => self.toggle_file_extensions(cx),
-            ActionKind::ToggleCheckboxes => self.toggle_selection_checkboxes(cx),
+            ActionKind::ToggleFileExtensions => self.toggle_setting("show_file_extensions", cx),
             ActionKind::ToggleDetailsPane => self.toggle_details_pane(cx),
             ActionKind::TogglePreviewPane => self.toggle_preview_pane(cx),
             ActionKind::ToggleInfoPane => self.toggle_info_pane(cx),
@@ -6125,17 +6624,17 @@ impl AppWindow {
                     self.enter_compact_overlay(cx);
                 }
             }
-            ActionKind::OpenPreviewPane => self.invoke_third_party_preview(cx),
+            ActionKind::OpenPreviewPane => self.toggle_peek_modal(cx),
             ActionKind::ViewDetails => self.set_view_mode(ViewMode::Details, cx),
             ActionKind::ViewList => self.set_view_mode(ViewMode::List, cx),
             ActionKind::ViewGrid => self.set_view_mode(ViewMode::Grid, cx),
             ActionKind::ViewColumns => self.set_view_mode(ViewMode::Columns, cx),
             ActionKind::CycleViewMode => self.cycle_view_mode(cx),
-            ActionKind::ZoomIn => {
+            ActionKind::ZoomIn | ActionKind::MouseWheelZoomIn => {
                 let z = (self.state.active_view().zoom_level + 0.1).min(1.0);
                 self.set_zoom_level(z, cx);
             }
-            ActionKind::ZoomOut => {
+            ActionKind::ZoomOut | ActionKind::MouseWheelZoomOut => {
                 let z = (self.state.active_view().zoom_level - 0.1).max(0.0);
                 self.set_zoom_level(z, cx);
             }
@@ -6151,11 +6650,11 @@ impl AppWindow {
                 self.set_sort_ascending(asc, cx);
             }
             ActionKind::CycleGroupBy => self.cycle_group_by(cx),
-            ActionKind::GroupByNone => self.set_group_by(GroupBy::None, cx),
+            ActionKind::GroupByNone => self.set_group_by(GroupColumn::None, cx),
             ActionKind::CommandPalette => self.activate_omnibar_command_mode(cx),
             ActionKind::OpenTerminal => self.open_terminal_at_current(cx),
             ActionKind::OpenTerminalAsAdmin => self.open_terminal_at_current(cx),
-            ActionKind::OpenInIde => self.open_in_ide(None, cx),
+            ActionKind::OpenInIde | ActionKind::OpenInIDE => self.open_in_ide(None, cx),
             ActionKind::OpenStorageSense => {
                 #[cfg(windows)]
                 {
@@ -6165,7 +6664,7 @@ impl AppWindow {
                 }
             }
             ActionKind::NewTab => self.new_tab(cx),
-            ActionKind::CloseTab => {
+            ActionKind::CloseTab | ActionKind::MiddleClickCloseTab => {
                 let active = self.state.navigation.read(cx).tabs.active_tab_index;
                 self.close_tab(active, cx);
             }
@@ -6260,6 +6759,17 @@ impl AppWindow {
                 cx.notify();
             }
             ActionKind::SwitchPaneFocus => self.switch_pane_focus(cx),
+            ActionKind::SwapPanes => {
+                let p1 = self.state.main_view.primary_path.clone();
+                let p2 = self.state.secondary_view.primary_path.clone();
+                if !p2.to_string_lossy().is_empty() {
+                    self.navigate(p2, cx);
+                    self.open_in_secondary_pane(p1, cx);
+                }
+            }
+            ActionKind::OpenHelp => self.open_help(cx),
+            ActionKind::OpenSettings => self.open_settings_tab(cx),
+            ActionKind::ToggleCheckboxes => self.toggle_selection_checkboxes(cx),
             ActionKind::DualHorizontal | ActionKind::DualVertical => {
                 let horizontal = action == ActionKind::DualHorizontal;
                 self.state.navigation.update(cx, |nav, _cx| {
@@ -6284,18 +6794,22 @@ impl AppWindow {
                 }
                 cx.notify();
             }
-            ActionKind::SwapPanes => {
-                let p1 = self.state.main_view.primary_path.clone();
-                let p2 = self.state.secondary_view.primary_path.clone();
-                if !p2.to_string_lossy().is_empty() {
-                    self.navigate(p2, cx);
-                    self.open_in_secondary_pane(p1, cx);
-                }
+            ActionKind::BulkRename => self.bulk_rename(cx),
+            ActionKind::CycleSortColumn => self.cycle_sort_column(cx),
+            ActionKind::CloseAllTabs => {
+                self.state.navigation.update(cx, |nav, _cx| {
+                    nav.tabs.close_all_tabs();
+                });
+                self.save_session(cx);
+                self.sync_active_tab_to_views(cx);
+                cx.notify();
             }
-            ActionKind::OpenHelp => self.open_help(cx),
-            ActionKind::OpenSettings => self.open_settings_tab(cx),
+            ActionKind::ToggleDualPane => self.toggle_dual_pane(cx),
+            ActionKind::ToggleToolbar => self.toggle_setting("show_toolbar", cx),
+            ActionKind::MouseNavigateBack => self.navigate_back(cx),
+            ActionKind::MouseNavigateForward => self.navigate_forward(cx),
+            ActionKind::DoubleClickBlankGoUp => self.navigate_up(cx),
             ActionKind::RestoreLastSession => self.restore_last_session(cx),
-            _ => {}
         }
         true
     }
@@ -6311,15 +6825,14 @@ impl AppWindow {
         if self.state.settings_ui.recorder.is_some() {
             let combo =
                 crate::core::action_registry::from_gpui_mouse_button(button, *modifiers, 1);
-            if !combo.is_empty() {
-                self.record_candidate_binding(combo, cx);
-                return true;
-            }
+            self.record_candidate_binding(combo, cx);
+            return true;
         }
 
         // Check custom ActionRegistry binding first
-        let combo = crate::core::action_registry::from_gpui_mouse_button(button, *modifiers, 1);
-        if !combo.is_empty() {
+        {
+            let combo =
+                crate::core::action_registry::from_gpui_mouse_button(button, *modifiers, 1);
             if let Some(action) = self.state.action_registry.lookup(&combo) {
                 return self.dispatch_action(action, cx);
             }

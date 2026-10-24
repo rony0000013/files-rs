@@ -1,19 +1,24 @@
-//! Selection-related methods for MainViewState.
+//! Selection & Drag-and-Drop methods for `MainViewState`.
 //!
 //! Provides:
-//! - View-mode-aware Lasso (rubber-band) selection across Details, Grid, List, and Columns views
+//! - View-mode-aware Lasso (rubber-band) selection across `Details`, `List`, `Cards`, `Grid`, and `Columns` views
 //! - Live selection updates during mouse drag (accounting for scroll offset and additive Ctrl/Shift)
-//! - Drag and drop operations
-//! - Rectangular selection helpers
+//! - Internal + Out-of-Window Drag-and-Drop state management (`DragState`)
+//! - Shared layout metrics for `List` and `Cards` (Tiles) views
 
 use gpui::*;
 use std::collections::HashSet;
 
 use crate::config::config::ViewMode;
+use crate::core::navigation_manager::PaneFocus;
+use crate::core::path_util::FilesPath;
 use crate::storage::storage::FileType;
 
 use super::main_view::MainViewState;
 use super::types::{rects_intersect, DragState, LassoState};
+
+/// Pixel movement threshold to distinguish a click from a file/folder drag gesture.
+pub const FILE_DRAG_THRESHOLD_PX: f32 = 6.0;
 
 impl MainViewState {
     // ─────────────────────────────────────────────────────────────────────────
@@ -148,12 +153,10 @@ impl MainViewState {
             ViewMode::List => {
                 let (cols, col_w, row_h, gap, padding) =
                     Self::list_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
-                // Column-major flow (Files List view): items fill each column
-                // top-to-bottom, then continue at the top of the next column.
-                let rows_per_col = ((visible.len() + cols - 1) / cols.max(1)).max(1);
+                let cols_safe = cols.max(1);
                 for (i, &vi) in visible.iter().enumerate() {
-                    let row = i % rows_per_col;
-                    let col = i / rows_per_col;
+                    let row = i / cols_safe;
+                    let col = i % cols_safe;
                     let x0 = padding + col as f32 * (col_w + gap);
                     let y0 = row as f32 * row_h;
                     let item_rect = (point(x0, y0), point(x0 + col_w, y0 + row_h));
@@ -162,9 +165,25 @@ impl MainViewState {
                     }
                 }
             }
+            ViewMode::Cards => {
+                let (cols, card_w, row_h, gap, padding) =
+                    Self::cards_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
+                let cols_safe = cols.max(1);
+                for (i, &vi) in visible.iter().enumerate() {
+                    let row = i / cols_safe;
+                    let col = i % cols_safe;
+                    let x0 = padding + col as f32 * (card_w + gap);
+                    let y0 = row as f32 * row_h;
+                    let item_rect = (point(x0, y0), point(x0 + card_w, y0 + row_h));
+                    if rects_intersect(item_rect, content_rect) {
+                        next_selected.insert(vi);
+                    }
+                }
+            }
             ViewMode::Grid => {
                 let cols = Self::grid_columns_for_width(effective_w, self.zoom_level);
-                let params = Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
+                let params =
+                    Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
                 let item_h = if self.compact_mode {
                     params.item_height - 8.0
                 } else {
@@ -194,7 +213,7 @@ impl MainViewState {
         self.selected_indices = next_selected;
     }
 
-    /// Multi-column / compact list layout metrics shared between ListView rendering,
+    /// Multi-column / compact list layout metrics shared between `ListView` rendering,
     /// rubber-band lasso hit-testing, and 2D keyboard navigation.
     /// Returns `(cols, col_width, row_height, gap, horizontal_padding)`.
     pub fn list_layout_metrics(
@@ -203,22 +222,45 @@ impl MainViewState {
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
         let row_h = if compact {
-            22.0 + zoom * 16.0
+            20.0 + zoom * 14.0
         } else {
-            28.0 + zoom * 24.0
+            24.0 + zoom * 20.0
         };
-        let padding = 12.0;
-        let gap = 8.0;
-        let min_col_w = 240.0 + zoom * 80.0;
+        let padding = 10.0;
+        let gap = 6.0;
+        let min_col_w = (165.0 + zoom * 110.0).clamp(155.0, 290.0);
         let avail = (pane_w - padding * 2.0).max(min_col_w);
-        let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 6);
+        let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 8);
         let col_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .floor()
-            .max(160.0);
+            .max(140.0);
         (cols, col_w, row_h, gap, padding)
     }
 
-    /// End lasso selection and apply it to selected_indices.
+    /// `Files-community` Cards (Tiles) view layout metrics.
+    /// Returns `(cols, card_width, row_height, gap, horizontal_padding)`.
+    pub fn cards_layout_metrics(
+        pane_w: f32,
+        zoom: f32,
+        compact: bool,
+    ) -> (usize, f32, f32, f32, f32) {
+        let row_h = if compact {
+            54.0 + zoom * 22.0
+        } else {
+            62.0 + zoom * 26.0
+        };
+        let padding = 12.0;
+        let gap = 8.0;
+        let min_card_w = (220.0 + zoom * 80.0).clamp(210.0, 320.0);
+        let avail = (pane_w - padding * 2.0).max(min_card_w);
+        let cols = (((avail + gap) / (min_card_w + gap)).floor() as usize).clamp(1, 6);
+        let card_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
+            .floor()
+            .max(190.0);
+        (cols, card_w, row_h, gap, padding)
+    }
+
+    /// End lasso selection and apply it to `selected_indices`.
     pub fn lasso_end(&mut self, add_to_selection: bool) {
         if let Some(state) = self.lasso_state.take() {
             if !state.has_exceeded_threshold() {
@@ -266,14 +308,10 @@ impl MainViewState {
         }
     }
 
-    /// Finish a live window-space lasso drag (selection was already updated during move).
-    /// Whether a rubber-band (lasso) drag is currently active in this pane.
     pub fn is_lasso_active(&self) -> bool {
         self.lasso_state.is_some()
     }
 
-    /// Detect a double-click on empty space (two presses within 500 ms).
-    /// Returns true on the second press; drives "double-click empty space to go up".
     pub fn check_empty_space_double_click(&mut self) -> bool {
         const DOUBLE_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
         let now = std::time::Instant::now();
@@ -287,33 +325,52 @@ impl MainViewState {
         false
     }
 
-    /// Finish a live window-space lasso drag (selection was already updated during move).
     pub fn finish_live_lasso(&mut self) {
         self.lasso_state = None;
     }
 
-    /// Cancel the current lasso operation without applying selection.
     pub fn lasso_cancel(&mut self) {
         self.lasso_state = None;
     }
 
-    /// Get the current lasso rectangle if active.
     pub fn lasso_rect(&self) -> Option<(Point<f32>, Point<f32>)> {
         self.lasso_state.as_ref().map(|s| s.rect())
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Drag and drop
+    // Drag and drop (Internal + Out-of-Window OS Native Drag)
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Record a mouse-down on item `item_idx` in `pane_focus` as a potential drag gesture.
+    pub fn record_drag_candidate(
+        &mut self,
+        pane_focus: PaneFocus,
+        item_idx: usize,
+        window_pos: Point<f32>,
+    ) {
+        self.drag_state.pending_candidate = Some((pane_focus, item_idx, window_pos));
+    }
 
     /// Start a drag operation with the given items and mouse position.
     pub fn drag_start(&mut self, indices: Vec<usize>, point: Point<f32>) {
+        let paths: Vec<FilesPath> = indices
+            .iter()
+            .filter_map(|&idx| self.items.get(idx))
+            .map(|it| it.path.clone())
+            .collect();
         self.drag_state = DragState {
             indices,
+            paths,
+            source_pane: PaneFocus::Primary,
             start: point,
             current: point,
             is_copy: false,
+            is_link: false,
             is_dragging: true,
+            pending_candidate: None,
+            hovered_target_folder: None,
+            hovered_target_label: None,
+            os_drag_dispatched: false,
         };
     }
 
@@ -325,8 +382,7 @@ impl MainViewState {
 
     /// End the drag operation.
     pub fn drag_end(&mut self) {
-        self.drag_state.is_dragging = false;
-        self.drag_state.indices.clear();
+        self.drag_state = DragState::default();
     }
 
     /// Check if a drag operation is in progress.
@@ -339,6 +395,14 @@ impl MainViewState {
         if !self.drag_state.is_dragging {
             return None;
         }
+        // First check if a folder row/tile/card explicitly registered itself as hovered
+        if let Some(ref target_path) = self.drag_state.hovered_target_folder {
+            if let Some(idx) = self.items.iter().position(|it| &it.path == target_path) {
+                if !self.drag_state.indices.contains(&idx) {
+                    return Some(idx);
+                }
+            }
+        }
 
         let items_per_row = 6;
         let item_width = 180.0;
@@ -348,6 +412,9 @@ impl MainViewState {
         let padding = 16.0;
 
         for (i, &idx) in visible.iter().enumerate() {
+            if self.drag_state.indices.contains(&idx) {
+                continue;
+            }
             if let Some(item) = self.items.get(idx) {
                 if !matches!(item.file_type, FileType::Directory) {
                     continue;

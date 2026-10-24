@@ -1409,6 +1409,7 @@ impl TabBarView {
                     let view_label = match tab.view_mode {
                         crate::config::config::ViewMode::Details => "Details View",
                         crate::config::config::ViewMode::List => "List View",
+                        crate::config::config::ViewMode::Cards => "Cards View",
                         crate::config::config::ViewMode::Grid => "Grid View",
                         crate::config::config::ViewMode::Columns => "Columns View",
                         _ => "Details View",

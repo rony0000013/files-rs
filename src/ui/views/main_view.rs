@@ -1,9 +1,11 @@
 use crate::core::path_util::FilesPath;
+use crate::platform::windows::office_preview_host::OfficePreviewHost;
 use crate::platform::windows::recycle_bin_service::RecycleBinItem;
 use crate::ui::components::bouncy_scroll::{
     bouncy_overscroll_content, bouncy_scroll_content, bouncy_scroll_handler,
-    bouncy_scroll_handler_with_handle, start_bouncy_animation, uniform_list_scrollbar,
-    uniformlist_scroll_info, BouncyScrollState, MAX_OVERSCROLL, VELOCITY_BLEND_HISTORY,
+    bouncy_scroll_handler_with_handle, smooth_scroll_handle_wheel, start_bouncy_animation,
+    uniform_list_scrollbar, uniformlist_scroll_info, BouncyScrollState, MAX_OVERSCROLL,
+    VELOCITY_BLEND_HISTORY,
 };
 use crate::ui::components::dialogs::{DialogType, SettingsTab};
 use crate::ui::components::icon_renderer::{is_thumbnail_image, IconRenderer, ThumbnailRenderer};
@@ -36,7 +38,6 @@ impl MainViewState {
             selected_indices: HashSet::default(),
             sort: SortState::default(),
             filter_text: String::new(),
-            show_filter_bar: false,
             show_dot_files: false,
             show_hidden_files: false,
             show_extensions: true,
@@ -50,8 +51,6 @@ impl MainViewState {
             rename_text: String::new(),
             compact_mode: false,
             preview_text: None,
-            preview_highlighted_src: String::new(),
-            preview_highlighted: Vec::new(),
             column_widths: ColumnWidths::default(),
             column_visibility: ColumnVisibility::default(),
             group_by: GroupColumn::None,
@@ -79,7 +78,6 @@ impl MainViewState {
             view_lock_enabled: false,
             zoom_level,
             scroll_handle: ScrollHandle::new(),
-            side_pane_scroll_handle: ScrollHandle::new(),
             uniform_list_scroll_handle: UniformListScrollHandle::new(),
             last_empty_click: None,
             col1_scroll_handle: UniformListScrollHandle::new(),
@@ -88,11 +86,27 @@ impl MainViewState {
             col1_siblings_for: None,
             col3_children: Vec::new(),
             col3_children_for: None,
-            icon_refresh_last_check: None,
+            icon_refresh_last_check: std::cell::Cell::new(None),
             bouncy_scroll: BouncyScrollState::new(),
             git_status_cache: std::collections::HashMap::new(),
             items_revision: 0,
             visible_cache: std::cell::RefCell::new(None),
+            side_pane_scroll_handle: ScrollHandle::new(),
+            preview_table_scroll: ScrollHandle::new(),
+            side_pane_bouncy_scroll: BouncyScrollState::new(),
+            peek_scroll_handle: ScrollHandle::new(),
+            peek_bouncy_scroll: BouncyScrollState::new(),
+            show_peek_modal: false,
+            preview_request_id: 0,
+            preview_highlighted_lines: std::sync::Arc::new(Vec::new()),
+            cached_drives: crate::platform::windows::drive_service::enumerate_drives(),
+            video_playing: false,
+            video_progress: 0.0,
+            video_muted: false,
+            video_frame: None,
+            office_preview: OfficePreviewHost::default(),
+            show_filter_bar: false,
+            group_ascending: true,
         }
     }
 
@@ -125,7 +139,16 @@ impl MainViewState {
             SortBy::Type => 3,
             SortBy::Size => 4,
             SortBy::Tag => 5,
-            _ => 6,
+        };
+        let group_discriminant = match self.group_by {
+            GroupColumn::None => 0,
+            GroupColumn::Name => 1,
+            GroupColumn::DateModified => 2,
+            GroupColumn::DateCreated => 3,
+            GroupColumn::Size => 4,
+            GroupColumn::FileType => 5,
+            GroupColumn::SyncStatus => 6,
+            GroupColumn::Tag => 7,
         };
         let key = VisibleCacheKey {
             primary_path: self.primary_path.clone(),
@@ -137,8 +160,9 @@ impl MainViewState {
             sort_col_discriminant: sort_discriminant,
             sort_ascending: self.sort.ascending,
             folders_first: self.sort.folders_first,
+            group_col_discriminant: group_discriminant,
+            group_ascending: self.group_ascending,
             filter_text: self.filter_text.clone(),
-            show_filter_bar: self.show_filter_bar,
             show_dot_files: self.show_dot_files,
             show_hidden_files: self.show_hidden_files,
             show_system_files: self.show_system_files,
@@ -591,6 +615,7 @@ impl MainView {
         let v_up = view.clone();
         let v_orient = view.clone();
         let v_close = view.clone();
+        let v_peek_expand = view.clone();
 
         div()
             .flex()
@@ -753,38 +778,41 @@ impl MainView {
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let is_resizing = state.side_pane_resize_start_x.is_some();
-        // Wide invisible grab zone (12px) with a thin centered visual grip,
-        // so the splitter is easy to catch without shifting the layout.
         div()
             .id("side-pane-splitter")
-            .w(px(12.0))
+            .w(px(6.0))
             .h_full()
+            .flex_shrink_0()
             .cursor_col_resize()
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(UiConstants::BG_TRANSPARENT_RGBA))
-            .hover(|s| s.bg(rgba(0xFFFFFF11u32)))
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h_full()
-                    .bg(if is_resizing {
-                        rgba(UiConstants::ACCENT_RGBA)
-                    } else {
-                        rgba(0xFFFFFF14u32)
-                    }),
-            )
+            .bg(if is_resizing {
+                rgba(UiConstants::ACCENT_RGBA)
+            } else {
+                rgba(UiConstants::BG_TRANSPARENT_RGBA)
+            })
+            .hover(|s| s.bg(rgba(0x60CDFF33u32)))
             .on_mouse_down(MouseButton::Left, {
                 let view = view.clone();
                 move |event, _win, cx| {
+                    cx.stop_propagation();
                     let x: f32 = event.position.x.into();
-                    view.update(cx, |this, cx| {
-                        let width = this.state.main_view.side_pane_width.unwrap_or(300.0);
-                        this.state.main_view.side_pane_resize_start_x = Some(x);
-                        this.state.main_view.side_pane_resize_start_width = Some(width);
-                        cx.notify();
-                    });
+                    if event.click_count == 2 {
+                        view.update(cx, |this, cx| {
+                            this.state.main_view.side_pane_width = Some(300.0);
+                            this.state.main_view.side_pane_resize_start_x = None;
+                            this.state.main_view.side_pane_resize_start_width = None;
+                            cx.notify();
+                        });
+                    } else {
+                        view.update(cx, |this, cx| {
+                            let width = this.state.main_view.side_pane_width.unwrap_or(300.0);
+                            this.state.main_view.side_pane_resize_start_x = Some(x);
+                            this.state.main_view.side_pane_resize_start_width = Some(width);
+                            cx.notify();
+                        });
+                    }
                 }
             })
     }
@@ -807,6 +835,7 @@ impl MainView {
         let v_details = view.clone();
         let v_preview = view.clone();
         let v_close = view.clone();
+        let v_peek_expand = view.clone();
         let selected_path = selected_item.map(|it| it.path.clone());
 
         let segmented_tabs = div()
@@ -902,14 +931,8 @@ impl MainView {
                             this.state.main_view.side_pane = SidePaneMode::Preview;
                             if let Some(p) = sp {
                                 this.load_preview_content(p, cx);
-                            } else {
-                                // No single selection: drop stale content so the
-                                // Preview tab never echoes a previous file.
-                                this.state.main_view.preview_content =
-                                    crate::ui::views::main_view::PreviewContent::None;
-                                this.state.main_view.preview_text = None;
-                                cx.notify();
                             }
+                            cx.notify();
                         });
                     })
                     .child(
@@ -943,14 +966,10 @@ impl MainView {
         let body_element: AnyElement = if sel_count == 0 {
             Self::render_empty_selection_details(state, view.clone()).into_any_element()
         } else if sel_count > 1 {
-            if is_preview_tab {
-                Self::render_multi_selection_preview(state).into_any_element()
-            } else {
-                Self::render_multi_selection_details(state, view.clone()).into_any_element()
-            }
+            Self::render_multi_selection_details(state, view.clone()).into_any_element()
         } else if let Some(item) = selected_item {
             if is_preview_tab {
-                Self::render_preview_content(state, item).into_any_element()
+                Self::render_preview_content(state, item, view.clone()).into_any_element()
             } else {
                 Self::render_details_pane(state, item, view.clone()).into_any_element()
             }
@@ -984,26 +1003,64 @@ impl MainView {
                     .child(segmented_tabs)
                     .child(
                         div()
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .rounded(px(5.0))
                             .flex()
+                            .flex_row()
                             .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_close.update(cx, |this, cx| {
-                                    this.state.main_view.side_pane = SidePaneMode::None;
-                                    cx.notify();
-                                });
-                            })
+                            .gap(px(4.0))
                             .child(
                                 div()
-                                    .text_size(px(10.5))
-                                    .font_family(UiConstants::FONT_ICONS)
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E711}"),
+                                    .px(px(6.0))
+                                    .h(px(26.0))
+                                    .rounded(px(5.0))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(4.0))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        v_peek_expand.update(cx, |this, cx| {
+                                            this.toggle_peek_modal(cx);
+                                        });
+                                    })
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_family(UiConstants::FONT_ICONS)
+                                            .text_color(rgb(0x60CDFF))
+                                            .child("\u{E740}"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                            .child("Peek"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded(px(5.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        v_close.update(cx, |this, cx| {
+                                            this.state.main_view.side_pane = SidePaneMode::None;
+                                            cx.notify();
+                                        });
+                                    })
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_family(UiConstants::FONT_ICONS)
+                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                            .child("\u{E711}"),
+                                    ),
                             ),
                     ),
             )
@@ -1011,10 +1068,16 @@ impl MainView {
                 div()
                     .id("side-pane-body-scroll")
                     .flex_1()
-                    .w_full()
+                    .min_h(px(0.0))
                     .h_full()
+                    .w_full()
                     .overflow_y_scroll()
                     .track_scroll(&state.side_pane_scroll_handle)
+                    .on_scroll_wheel(smooth_scroll_handle_wheel(
+                        view.clone(),
+                        |app_state| &mut app_state.main_view.side_pane_bouncy_scroll,
+                        |app_state| &app_state.main_view.side_pane_scroll_handle,
+                    ))
                     .p(px(12.0))
                     .flex()
                     .flex_col()
@@ -1179,9 +1242,10 @@ impl MainView {
         let is_home = matches!(state.target, ViewTarget::Home);
         let is_settings = matches!(state.target, ViewTarget::Settings);
 
-        let has_filter_header =
-            !state.filter_text.is_empty() || state.group_by != GroupColumn::None;
-        let filter_offset_y = if has_filter_header { 32.0 } else { 0.0 };
+        let has_filter_header = state.show_filter_bar
+            || !state.filter_text.is_empty()
+            || state.group_by != GroupColumn::None;
+        let filter_offset_y = if has_filter_header { 34.0 } else { 0.0 };
 
         let mut outer = div()
             .flex_col()
@@ -1226,7 +1290,7 @@ impl MainView {
 
         let content: gpui::AnyElement = if is_settings {
             let data = settings_data.expect("Settings data required for Settings view");
-            Self::render_settings_view(data, view.clone()).into_any_element()
+            Self::render_settings_view(state, data, view.clone()).into_any_element()
         } else if is_recycle_bin {
             Self::render_recycle_bin_view(state, view.clone()).into_any_element()
         } else if is_home {
@@ -1260,6 +1324,16 @@ impl MainView {
                             list_origin,
                             pane_w,
                         )
+                }
+                ViewMode::Cards => {
+                    let list_origin = point(base_origin.x, base_origin.y + filter_offset_y);
+                    state.render_cards_view_for_pane(
+                        file_items,
+                        view.clone(),
+                        pane_focus,
+                        list_origin,
+                        pane_w,
+                    )
                 }
                 ViewMode::Grid => {
                     let cols =
@@ -1301,7 +1375,7 @@ impl MainView {
             .w_full()
             .overflow_hidden();
 
-        if !is_home && !is_settings {
+        if !is_home && !is_settings && !is_recycle_bin {
             view_container = view_container.on_scroll_wheel(bouncy_scroll_handler_with_handle(
                 view.clone(),
                 move |app_state: &mut crate::app::AppState| {
@@ -1316,18 +1390,21 @@ impl MainView {
         outer
             .child(
                 view_container
-                    .child(if is_recycle_bin {
-                        bouncy_scroll_content(&state.bouncy_scroll, [content]).into_any_element()
-                    } else if !is_home {
+                    .child(if !is_home && !is_settings && !is_recycle_bin {
                         bouncy_overscroll_content(&state.bouncy_scroll, [content])
                             .into_any_element()
                     } else {
                         content
                     })
-                    .child(uniform_list_scrollbar(
-                        &state.bouncy_scroll,
-                        &state.uniform_list_scroll_handle,
-                    )),
+                    .children(if !is_home && !is_settings && !is_recycle_bin {
+                        vec![uniform_list_scrollbar(
+                            &state.bouncy_scroll,
+                            &state.uniform_list_scroll_handle,
+                        )
+                        .into_any_element()]
+                    } else {
+                        vec![]
+                    }),
             )
             .into_any_element()
     }
@@ -1336,101 +1413,328 @@ impl MainView {
         state: &MainViewState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let is_filtering = !state.filter_text.is_empty();
-        let has_selection = !state.selected_indices.is_empty();
+        let is_filtering = state.show_filter_bar || !state.filter_text.is_empty();
         let is_grouping = state.group_by != GroupColumn::None;
 
-        // Show header if filtering or grouping
         if !is_filtering && !is_grouping {
-            return div();
+            return div().into_any_element();
         }
 
-        let selection_count = state.selected_indices.len();
+        let visible_count = state.visible_items_rc().len();
         let total_items = state.items.len();
 
-        // Determine status text and icon
-        let (icon, status_text) = if is_filtering {
-            ("\u{E71C}", format!("Filtering by: {}", state.filter_text))
-        } else {
-            ("\u{E8EC}", "Grouped view".to_string()) // group icon
-        };
+        let group_options = [
+            (GroupColumn::Name, "Name"),
+            (GroupColumn::FileType, "Type"),
+            (GroupColumn::Size, "Size"),
+            (GroupColumn::DateModified, "Date Modified"),
+            (GroupColumn::DateCreated, "Date Created"),
+            (GroupColumn::Tag, "Tag"),
+        ];
 
-        // Group-by label for display
-        let group_label = match state.group_by {
-            GroupColumn::None => "No grouping",
-            GroupColumn::Name => "Name",
-            GroupColumn::DateModified => "Date Modified",
-            GroupColumn::DateCreated => "Date Created",
-            GroupColumn::Size => "Size",
-            GroupColumn::FileType => "Type",
-            GroupColumn::SyncStatus => "Sync Status",
-            GroupColumn::Tag => "Tag",
-        };
+        let mut group_pills = div().flex().flex_row().items_center().gap(px(4.0));
+        if is_grouping {
+            for (g_col, g_name) in group_options {
+                let active = state.group_by == g_col;
+                let v_pill = view.clone();
+                group_pills = group_pills.child(
+                    div()
+                        .px(px(8.0))
+                        .py(px(2.5))
+                        .rounded(px(5.0))
+                        .bg(if active {
+                            rgba(UiConstants::ACCENT_RGBA)
+                        } else {
+                            rgba(0xFFFFFF0Au32)
+                        })
+                        .hover(|s| {
+                            if active {
+                                s
+                            } else {
+                                s.bg(rgba(0xFFFFFF16u32))
+                            }
+                        })
+                        .cursor_pointer()
+                        .text_size(px(11.0))
+                        .font_weight(if active {
+                            FontWeight(600.0)
+                        } else {
+                            FontWeight(400.0)
+                        })
+                        .text_color(if active {
+                            rgb(0xFFFFFF)
+                        } else {
+                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            v_pill.update(cx, |this, cx| {
+                                this.set_group_by(g_col, cx);
+                            });
+                        })
+                        .child(if active {
+                            format!(
+                                "{} {}",
+                                g_name,
+                                if state.group_ascending { "↑" } else { "↓" }
+                            )
+                        } else {
+                            g_name.to_string()
+                        }),
+                );
+            }
 
-        let v_group = view.clone();
+            let v_clear_group = view.clone();
+            group_pills = group_pills.child(
+                div()
+                    .px(px(7.0))
+                    .py(px(2.5))
+                    .rounded(px(5.0))
+                    .bg(rgba(0xE8112328u32))
+                    .hover(|s| s.bg(rgba(0xE8112344u32)))
+                    .cursor_pointer()
+                    .text_size(px(10.5))
+                    .text_color(rgb(0xFF8080))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_clear_group.update(cx, |this, cx| {
+                            this.set_group_by(GroupColumn::None, cx);
+                        });
+                    })
+                    .child("✕ Ungroup"),
+            );
+        }
+
+        let v_clear_filter = view.clone();
 
         div()
             .flex()
+            .flex_row()
             .items_center()
-            .h(px(32.0))
-            .px(px(UiConstants::PADDING_LARGE_RAW as f32))
-            .bg(rgba(0xFFFFFF05u32))
+            .justify_between()
+            .h(px(34.0))
+            .px(px(12.0))
+            .bg(rgba(0xFFFFFF06u32))
             .border_b(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
             .gap(px(8.0))
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(12.0)))
-                    .font_family(UiConstants::FONT_MDL2)
-                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child(icon),
-            )
-            .child(
-                div()
-                    .flex_grow()
-                    .text_size(AbsoluteLength::Pixels(px(12.0)))
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .child(status_text),
-            )
-            // Group-by toggle button (visible when grouping is active)
-            .child(if is_grouping {
-                div()
                     .flex()
+                    .flex_row()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(px(8.0))
-                    .py(px(2.0))
-                    .rounded(px(4.0))
-                    .bg(rgba(UiConstants::ACCENT_RGBA))
-                    .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        v_group.update(cx, |this, cx| {
-                            this.cycle_group_by(cx);
-                        });
+                    .gap(px(8.0))
+                    .children(if is_filtering {
+                        vec![div()
+                            .px(px(8.0))
+                            .py(px(2.5))
+                            .rounded(px(5.0))
+                            .bg(rgba(0x60CDFF1Eu32))
+                            .border(px(1.0))
+                            .border_color(rgba(0x60CDFF55u32))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgb(0x60CDFF))
+                                    .child("\u{E71C}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                    .child(if state.filter_text.is_empty() {
+                                        "Filter active (type to filter)".to_string()
+                                    } else {
+                                        format!("Filter: \"{}\"", state.filter_text)
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .text_size(px(10.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        v_clear_filter.update(cx, |this, cx| {
+                                            this.state.main_view.show_filter_bar = false;
+                                            this.set_filter_text(String::new(), cx);
+                                        });
+                                    })
+                                    .child("\u{E711}"),
+                            )
+                            .into_any_element()]
+                    } else {
+                        vec![]
                     })
-                    .child(
-                        div()
-                            .text_size(AbsoluteLength::Pixels(px(11.0)))
-                            .font_family(UiConstants::FONT_MDL2)
-                            .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                            .child("\u{E8EC}"), // group icon
-                    )
-                    .child(
-                        div()
-                            .text_size(AbsoluteLength::Pixels(px(11.0)))
-                            .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                            .child(group_label),
-                    )
-            } else {
-                div()
-            })
+                    .children(if is_grouping {
+                        vec![
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .font_family(UiConstants::FONT_MDL2)
+                                        .text_color(rgb(0x60CDFF))
+                                        .child("\u{E8EC}"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .font_weight(FontWeight(600.0))
+                                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                        .child("Group by:"),
+                                )
+                                .into_any_element(),
+                            group_pills.into_any_element(),
+                        ]
+                    } else {
+                        vec![]
+                    }),
+            )
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(11.0)))
-                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                    .child(format!("{} items", total_items)),
+                    .text_size(px(11.0))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                    .child(if visible_count != total_items {
+                        format!("{} of {} items", visible_count, total_items)
+                    } else {
+                        format!("{} items", total_items)
+                    }),
             )
+            .into_any_element()
     }
+
+    /// Render the floating `Files-community` multi-item drag badge at the cursor during active file drags.
+    pub fn render_floating_file_drag_badge(state: &MainViewState) -> Option<AnyElement> {
+        if !state.drag_state.is_dragging || state.drag_state.paths.is_empty() {
+            return None;
+        }
+        let count = state.drag_state.paths.len();
+        let first_name = state
+            .drag_state
+            .paths
+            .first()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Item".to_string());
+
+        let is_copy = state.drag_state.is_copy;
+        let is_link = state.drag_state.is_link;
+        let is_os_drag = state.drag_state.os_drag_dispatched;
+
+        let (action_icon, action_text, badge_col) = if is_os_drag {
+            ("\u{E8A7}", "Dragging to external app".to_string(), 0x107C10u32)
+        } else if is_link {
+            (
+                "\u{E71B}",
+                match &state.drag_state.hovered_target_label {
+                    Some(lbl) => format!("Create shortcut in {}", lbl),
+                    None => "Create shortcut (Alt)".to_string(),
+                },
+                0xC586C0u32,
+            )
+        } else if is_copy {
+            (
+                "\u{E8C8}",
+                match &state.drag_state.hovered_target_label {
+                    Some(lbl) => format!("+ Copy to {}", lbl),
+                    None => "+ Copy items (Ctrl)".to_string(),
+                },
+                0x0078D4u32,
+            )
+        } else {
+            (
+                "\u{E8DE}",
+                match &state.drag_state.hovered_target_label {
+                    Some(lbl) => format!("→ Move to {}", lbl),
+                    None => "Move items".to_string(),
+                },
+                0x60CDFFu32,
+            )
+        };
+
+        let x = state.drag_state.current.x + 14.0;
+        let y = state.drag_state.current.y + 14.0;
+
+        Some(
+            div()
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(rgba(0x20232BE8u32))
+                .border(px(1.5))
+                .border_color(rgb(badge_col))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(1.5))
+                                .rounded(px(10.0))
+                                .bg(rgb(badge_col))
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight(700.0))
+                                .text_color(rgb(0xFFFFFF))
+                                .child(format!("{}", count)),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(180.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight(600.0))
+                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                .child(if count == 1 {
+                                    first_name
+                                } else {
+                                    format!("{} + {} more", first_name, count - 1)
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_family(UiConstants::FONT_MDL2)
+                                .text_color(rgb(badge_col))
+                                .child(action_icon),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight(600.0))
+                                .text_color(rgb(badge_col))
+                                .child(action_text),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn empty_state(state: &MainViewState) -> impl IntoElement {
         let (icon, msg) = if !state.filter_text.is_empty() {
             ("\u{E721}", "No items match your search") // Search icon
@@ -1489,6 +1793,7 @@ mod tests {
             is_system: false,
             modified: None,
             created: None,
+            tags: Vec::new(),
         }
     }
 
@@ -1497,6 +1802,7 @@ mod tests {
         let lasso = LassoState {
             start: point(100.0, 200.0),
             current: point(50.0, 150.0),
+            ..Default::default()
         };
         let (start, end) = lasso.rect();
 
@@ -1512,6 +1818,7 @@ mod tests {
         let lasso = LassoState {
             start: point(100.0, 100.0),
             current: point(100.0, 100.0),
+            ..Default::default()
         };
         let (start, end) = lasso.rect();
 
@@ -1776,6 +2083,7 @@ mod tests {
             current: point(200.0, 300.0),
             is_copy: true,
             is_dragging: true,
+            ..Default::default()
         };
 
         let cloned = drag.clone();
@@ -1790,6 +2098,7 @@ mod tests {
         let lasso = LassoState {
             start: point(50.0, 50.0),
             current: point(150.0, 150.0),
+            ..Default::default()
         };
 
         let cloned = lasso.clone();
@@ -1963,6 +2272,7 @@ mod tests {
                 is_system: false,
                 modified: None,
                 created: None,
+                tags: Vec::new(),
             },
             FileItem {
                 name: "file2.txt".to_string(),

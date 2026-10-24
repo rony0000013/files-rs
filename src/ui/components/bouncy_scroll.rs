@@ -1,15 +1,17 @@
-//! Scroll container with momentum physics and strict viewport bounds clamping.
-//!
-//! Also provides minimal scrollbar rendering helpers for use with BouncyScrollState
-//! and UniformListScrollHandle.
+//! Smooth scroll engine with WinUI 3 / `Files-community` target interpolation,
+//! strict viewport bounds clamping, and overscroll spring physics.
 //!
 //! Ensures that:
-//! 1. When all items fit inside the viewport (`content_height <= viewport_height`
-//!    or `max_offset == 0.0`), scrolling is completely disabled (`offset = 0.0`)
-//!    so the view never scrolls or bounces when blank space remains on screen.
-//! 2. When content exceeds the viewport (`content_height > viewport_height`),
-//!    scrolling and momentum are strictly clamped to `[max_offset, 0.0]` so the
-//!    view never scrolls past the first or last item into empty space.
+//! 1. Wheel deltas are applied **exactly once** to `target_offset` (preventing the
+//!    double-scroll bug caused by `uniform_list`'s internal bubble-phase wheel handler).
+//! 2. On every frame, `offset` smoothly interpolates toward `target_offset` using
+//!    frame-rate-independent exponential smoothing (`1 - exp(-SMOOTH_SPEED * dt)`),
+//!    matching `Files-community`'s WinUI 3 `ScrollViewer` smooth wheel feel.
+//! 3. When all items fit inside the viewport (`content_height <= viewport_height`
+//!    or `max_offset == 0.0`), scrolling is completely disabled (`offset = 0.0`).
+//! 4. All scrollable surfaces in the app (`Details`, `Grid`, `List`, `Columns`,
+//!    `Sidebar`, `Home`, `RecycleBin`, `Settings`, `SidePane` Preview/Details, and
+//!    `PeekModal`) share this unified smooth scrolling behavior.
 
 use gpui::*;
 
@@ -17,13 +19,19 @@ use gpui::*;
 // Physics constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Spring stiffness for overscroll pull-back (k). Higher = faster return.
-/// 220 with damping 32 is critically damped (2 * sqrt(220) ≈ 29.7).
+/// Spring stiffness for overscroll pull-back (k).
 const SPRING_STIFFNESS: f32 = 220.0;
 
-/// Spring damping coefficient (b). Critically damped: zero oscillation,
-/// single smooth glide back to the boundary.
+/// Spring damping coefficient (b). Critically damped.
 const SPRING_DAMPING: f32 = 32.0;
+
+/// WinUI 3 smooth scroll interpolation speed (1/s).
+/// At 24.0, ~90% of a wheel step completes smoothly within ~95ms across 60–240Hz.
+const SMOOTH_SCROLL_SPEED: f32 = 24.0;
+
+/// Fraction of `(target_offset - offset)` applied immediately on the wheel event
+/// frame so scrolling feels zero-latency while still gliding smoothly.
+const INITIAL_STEP_FRACTION: f32 = 0.34;
 
 /// Rubber-band resistance.
 pub(crate) const RUBBER_BAND_RESISTANCE: f32 = 30.0;
@@ -31,38 +39,38 @@ pub(crate) const RUBBER_BAND_RESISTANCE: f32 = 30.0;
 /// Hard cap on overscroll distance.
 pub(crate) const MAX_OVERSCROLL: f32 = 48.0;
 
-/// Velocity below which animation stops.
+/// Velocity below which spring animation stops.
 const SETTLE_VELOCITY: f32 = 1.0;
 
-/// Offset distance below which we snap to boundary target.
-const SETTLE_OFFSET: f32 = 0.75;
+/// Offset distance below which we snap to target.
+const SETTLE_OFFSET: f32 = 0.45;
 
-/// How many ticks with no input before momentum kicks in (scroll wheel only).
-pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 6;
+/// Legacy constant kept for compatibility.
+pub(crate) const MOMENTUM_GRACE_TICKS: u32 = 1;
 
-/// Per-tick friction multiplier for momentum phase.
-const MOMENTUM_FRICTION_PER_TICK: f32 = 0.88;
-
-/// Velocity blending factor when accumulating from scroll deltas.
-pub(crate) const VELOCITY_BLEND_HISTORY: f32 = 0.85;
+/// Velocity blending factor.
+pub(crate) const VELOCITY_BLEND_HISTORY: f32 = 0.80;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BouncyScrollState
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Tracks scroll offset with strict bounds clamping, momentum, and spring physics.
+/// Tracks scroll offset and smooth target offset with strict bounds clamping.
 #[derive(Debug, Clone)]
 pub struct BouncyScrollState {
-    /// Current scroll offset (0 at top, negative when scrolled down).
+    /// Current rendered scroll offset (0 at top, negative when scrolled down).
     pub offset: f32,
+
+    /// Target scroll offset that `offset` smoothly interpolates toward.
+    pub target_offset: f32,
 
     /// Maximum (most negative) normal scroll offset (`-(content_height - viewport_height).max(0.0)`).
     pub max_offset: f32,
 
-    /// Current velocity (pixels per 16ms tick).
+    /// Current velocity (used for spring return when overscrolled).
     pub velocity: f32,
 
-    /// Whether the momentum/spring animation is running.
+    /// Whether the smooth interpolation or spring animation is running.
     pub animating: bool,
 
     /// Whether the user is actively scrolling.
@@ -89,7 +97,7 @@ pub struct BouncyScrollState {
     /// Raw cumulative overscroll distance (kept for API compatibility).
     pub raw_overscroll: f32,
 
-    /// Cooldown counter (ticks) after spring-back settles.
+    /// Cooldown counter (ticks) after settle.
     pub post_settle_cooldown: u32,
 }
 
@@ -103,6 +111,7 @@ impl BouncyScrollState {
     pub fn new() -> Self {
         Self {
             offset: 0.0,
+            target_offset: 0.0,
             max_offset: 0.0,
             velocity: 0.0,
             animating: false,
@@ -118,6 +127,20 @@ impl BouncyScrollState {
         }
     }
 
+    /// Immediately jump both `offset` and `target_offset` to `y` (clamped if bounds are known).
+    pub fn set_immediate_offset(&mut self, y: f32) {
+        let clamped = if self.max_offset < -0.5 {
+            y.clamp(self.max_offset, 0.0)
+        } else {
+            y.min(0.0)
+        };
+        self.offset = clamped;
+        self.target_offset = clamped;
+        self.velocity = 0.0;
+        self.animating = false;
+        self.is_active = false;
+    }
+
     /// Returns true only when content is taller than the viewport and there are
     /// off-screen items to scroll to.
     #[inline]
@@ -125,9 +148,7 @@ impl BouncyScrollState {
         self.content_height > self.viewport_height + 1.0 && self.max_offset < -0.5
     }
 
-    /// Update scroll bounds and clamp the current offset so the view never
-    /// stays scrolled past the end of content when the window is resized larger
-    /// or when all items fit inside the viewport.
+    /// Update scroll bounds and clamp the current and target offsets.
     pub fn update_bounds(&mut self, content_height: f32, viewport_height: f32) {
         self.viewport_height = viewport_height;
         self.content_height = content_height;
@@ -138,6 +159,7 @@ impl BouncyScrollState {
         if self.max_offset >= -0.5 {
             self.max_offset = 0.0;
             self.offset = 0.0;
+            self.target_offset = 0.0;
             self.raw_overscroll = 0.0;
             self.velocity = 0.0;
             self.animating = false;
@@ -145,16 +167,26 @@ impl BouncyScrollState {
             self.drag_active = false;
         } else {
             self.offset = self.offset.clamp(self.max_offset, 0.0);
+            if !self.animating {
+                self.target_offset = self.offset;
+            } else {
+                self.target_offset = self.target_offset.clamp(self.max_offset, 0.0);
+            }
         }
     }
 
-    /// Apply a scroll delta (pixels). Strictly clamps to `[self.max_offset, 0.0]`
-    /// and does nothing when all content fits within the viewport (`!can_scroll()`).
+    /// Apply a smooth wheel scroll delta (pixels). Strictly clamps `target_offset` to `[self.max_offset, 0.0]`.
     pub fn apply_scroll_delta(&mut self, delta_y: f32) {
+        self.apply_scroll_delta_with_mode(delta_y, true);
+    }
+
+    /// Apply a scroll delta with explicit smooth vs instant mode.
+    pub fn apply_scroll_delta_with_mode(&mut self, delta_y: f32, smooth: bool) {
         self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
 
         if !self.can_scroll() {
             self.offset = 0.0;
+            self.target_offset = 0.0;
             self.raw_overscroll = 0.0;
             self.velocity = 0.0;
             self.animating = false;
@@ -162,23 +194,35 @@ impl BouncyScrollState {
             return;
         }
 
-        let prev_offset = self.offset;
-        self.offset = (self.offset + delta_y).clamp(self.max_offset, 0.0);
+        if !self.animating {
+            self.target_offset = self.offset.clamp(self.max_offset, 0.0);
+        }
+
+        let prev_target = self.target_offset;
+        self.target_offset = (self.target_offset + delta_y).clamp(self.max_offset, 0.0);
         self.raw_overscroll = 0.0;
 
-        // If already pinned at the boundary and pushing further into it, stop immediately.
-        if (self.offset - prev_offset).abs() < 0.01 {
+        if (self.target_offset - prev_target).abs() < 0.01
+            && (self.target_offset - self.offset).abs() < 0.01
+        {
             self.velocity = 0.0;
             self.animating = false;
             self.is_active = false;
             return;
         }
 
-        self.is_active = true;
-        self.graceful_counter = MOMENTUM_GRACE_TICKS;
-        self.velocity =
-            self.velocity * VELOCITY_BLEND_HISTORY + delta_y * (1.0 - VELOCITY_BLEND_HISTORY);
-        self.velocity = self.velocity.clamp(-3000.0, 3000.0);
+        if smooth {
+            let diff = self.target_offset - self.offset;
+            self.offset = (self.offset + diff * INITIAL_STEP_FRACTION).clamp(self.max_offset, 0.0);
+            self.animating = (self.target_offset - self.offset).abs() > SETTLE_OFFSET;
+            self.is_active = self.animating;
+            self.graceful_counter = 1;
+        } else {
+            self.offset = self.target_offset;
+            self.velocity = 0.0;
+            self.animating = false;
+            self.is_active = false;
+        }
     }
 
     /// Start a mouse drag scroll session.
@@ -190,7 +234,7 @@ impl BouncyScrollState {
         self.drag_active = true;
         self.is_active = true;
         self.drag_last_y = Some(y);
-        self.graceful_counter = MOMENTUM_GRACE_TICKS;
+        self.target_offset = self.offset;
         self.velocity = 0.0;
     }
 
@@ -215,19 +259,21 @@ impl BouncyScrollState {
         self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
         if !self.can_scroll() {
             self.offset = 0.0;
+            self.target_offset = 0.0;
             self.velocity = 0.0;
             self.animating = false;
             return;
         }
         if self.offset > 0.0
             || self.offset < self.max_offset
-            || self.velocity.abs() > SETTLE_VELOCITY
+            || (self.target_offset - self.offset).abs() > SETTLE_OFFSET
         {
             self.animating = true;
         }
     }
 
-    /// Advance physics by `dt` seconds. Returns `true` if still animating.
+    /// Advance smooth interpolation or overscroll spring physics by `dt` seconds.
+    /// Returns `true` if still animating (another frame should be requested).
     pub fn tick_spring(&mut self, dt: f32) -> bool {
         if !self.animating {
             return false;
@@ -235,6 +281,7 @@ impl BouncyScrollState {
 
         if self.max_offset >= -0.5 && self.offset.abs() < 0.01 {
             self.offset = 0.0;
+            self.target_offset = 0.0;
             self.velocity = 0.0;
             self.animating = false;
             self.is_active = false;
@@ -245,65 +292,39 @@ impl BouncyScrollState {
             return true;
         }
 
-        if self.is_active {
-            if self.graceful_counter > 0 {
-                self.graceful_counter -= 1;
-            }
-            if self.graceful_counter == 0 {
-                self.is_active = false;
-                let overscrolled = self.offset > 0.0 || self.offset < self.max_offset;
-                let has_velocity = self.velocity.abs() > SETTLE_VELOCITY;
-                if !overscrolled && !has_velocity {
-                    self.animating = false;
-                    return false;
-                }
-            } else {
-                return true;
-            }
-        }
-
         // ─── Overscrolled: spring back to nearest boundary ───
         if self.offset > 0.0 {
+            self.target_offset = 0.0;
             return self.tick_spring_toward(0.0, dt);
         }
         if self.offset < self.max_offset {
+            self.target_offset = self.max_offset;
             return self.tick_spring_toward(self.max_offset, dt);
         }
 
-        // ─── In bounds: momentum phase ───
-        if self.velocity.abs() > SETTLE_VELOCITY {
-            self.velocity *= MOMENTUM_FRICTION_PER_TICK.powf(dt * 60.0);
-            self.offset += self.velocity * (dt * 60.0);
-
-            if self.offset >= 0.0 {
-                self.offset = 0.0;
+        // ─── In-bounds smooth target interpolation (Files-community / WinUI 3 parity) ───
+        self.target_offset = self.target_offset.clamp(self.max_offset, 0.0);
+        let diff = self.target_offset - self.offset;
+        if diff.abs() > SETTLE_OFFSET {
+            let alpha = (1.0 - (-SMOOTH_SCROLL_SPEED * dt).exp()).clamp(0.14, 0.85);
+            self.offset = (self.offset + diff * alpha).clamp(self.max_offset, 0.0);
+            if (self.target_offset - self.offset).abs() <= SETTLE_OFFSET {
+                self.offset = self.target_offset;
                 self.velocity = 0.0;
                 self.animating = false;
-                self.post_settle_cooldown = 12;
+                self.is_active = false;
+                self.post_settle_cooldown = 4;
                 return false;
             }
-            if self.offset <= self.max_offset {
-                self.offset = self.max_offset;
-                self.velocity = 0.0;
-                self.animating = false;
-                self.post_settle_cooldown = 12;
-                return false;
-            }
-
-            if self.velocity.abs() < SETTLE_VELOCITY {
-                self.velocity = 0.0;
-                self.animating = false;
-                self.post_settle_cooldown = 12;
-                return false;
-            }
+            return true;
         } else {
+            self.offset = self.target_offset;
             self.velocity = 0.0;
             self.animating = false;
-            self.post_settle_cooldown = 12;
+            self.is_active = false;
+            self.post_settle_cooldown = 4;
             return false;
         }
-
-        true
     }
 
     /// Spring integration toward `target` using damped harmonic oscillator.
@@ -325,18 +346,19 @@ impl BouncyScrollState {
             || (dist < SETTLE_OFFSET && self.velocity.abs() < SETTLE_VELOCITY)
         {
             self.offset = target;
+            self.target_offset = target;
             self.velocity = 0.0;
             self.raw_overscroll = 0.0;
             self.animating = false;
-            self.post_settle_cooldown = 12;
+            self.is_active = false;
+            self.post_settle_cooldown = 4;
             return false;
         }
 
         true
     }
 
-    /// The effective display offset, strictly clamped to `[self.max_offset, 0.0]`
-    /// (and `0.0` when all content fits within the viewport).
+    /// The effective display offset, strictly clamped to `[self.max_offset, 0.0]`.
     pub fn display_offset(&self) -> f32 {
         if !self.can_scroll() {
             0.0
@@ -355,7 +377,6 @@ impl BouncyScrollState {
 // Rubber band math
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// iOS-style rubber band function: damped = R × (1 − 1 / (|x|/R + 1)).
 pub fn rubber_band_clamp(overscroll: f32, resistance: f32, max_stretch: f32) -> f32 {
     if overscroll == 0.0 {
         return 0.0;
@@ -369,7 +390,6 @@ pub fn rubber_band_clamp(overscroll: f32, resistance: f32, max_stretch: f32) -> 
 // Container builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Wrap content with relative positioning for the scroll offset.
 pub fn bouncy_scroll_content<'a>(
     state: &'a BouncyScrollState,
     content: impl IntoIterator<Item = impl IntoElement>,
@@ -390,8 +410,6 @@ pub fn bouncy_scroll_content<'a>(
 // Helper to get UniformList scroll bounds in f32 coordinates
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Read the current scroll offset and max bounds from a UniformListScrollHandle.
-/// Returns `(current_y, max_y, viewport_height, content_height)` in f32 pixels.
 pub fn uniformlist_scroll_info(handle: &UniformListScrollHandle) -> (f32, f32, f32, f32) {
     let state = handle.0.borrow();
     let base = &state.base_handle;
@@ -408,9 +426,6 @@ pub fn uniformlist_scroll_info(handle: &UniformListScrollHandle) -> (f32, f32, f
         })
         .unwrap_or((bounds_h, bounds_h + raw_max_y));
     let viewport_h = bounds_h.max(item_vp_h);
-    // Re-derive true max_y from content_h - viewport_h so that if UniformList
-    // shrunk its own box (`ListSizingBehavior::Infer`) when content < viewport,
-    // we never falsely report scrollable overflow.
     let computed_max_y = (content_h - viewport_h).max(0.0);
     let max_y = if content_h <= viewport_h + 1.0 {
         0.0
@@ -420,8 +435,7 @@ pub fn uniformlist_scroll_info(handle: &UniformListScrollHandle) -> (f32, f32, f
     (current_y, max_y, viewport_h, content_h)
 }
 
-/// Plain clamped wheel scroll for a `uniform_list` handle (Miller columns etc.).
-/// Offsets run `[-max_y, 0.0]` like `BouncyScrollState`; no overscroll past the ends.
+/// Smooth clamped wheel scroll for a `uniform_list` handle (Miller columns etc.).
 pub fn wheel_scroll_uniform(
     view: &Entity<crate::app::AppWindow>,
     handle: &UniformListScrollHandle,
@@ -440,6 +454,69 @@ pub fn wheel_scroll_uniform(
             .base_handle
             .set_offset(gpui::point(px(0.0), px(new_y)));
         view.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// Smooth wheel scroll for any standard GPUI `ScrollHandle` backed by a `BouncyScrollState`
+/// (used by SidePane Preview/Details, Peek Modal, Home, Settings, RecycleBin).
+pub fn smooth_scroll_handle_wheel<F, H>(
+    view: Entity<crate::app::AppWindow>,
+    get_state: F,
+    get_handle: H,
+) -> impl Fn(&ScrollWheelEvent, &mut Window, &mut App)
+where
+    F: Fn(&mut crate::app::AppState) -> &mut BouncyScrollState + 'static + Clone,
+    H: Fn(&mut crate::app::AppState) -> &ScrollHandle + 'static + Clone,
+{
+    move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
+        cx.stop_propagation();
+        let delta = event.delta.pixel_delta(px(22.0));
+        let delta_y: f32 = delta.y.into();
+        if delta_y.abs() < 0.25 {
+            return;
+        }
+        let get_state_inner = get_state.clone();
+        let get_handle_inner = get_handle.clone();
+
+        view.update(cx, |this, cx| {
+            let smooth = this
+                .state
+                .settings
+                .read(cx)
+                .config
+                .preferences
+                .enable_smooth_scrolling;
+
+            let (cur_y, max_y, vp_h) = {
+                let h = get_handle_inner(&mut this.state);
+                let cur: f32 = h.offset().y.into();
+                let max_h: f32 = h.max_offset().height.into();
+                let b_h: f32 = h.bounds().size.height.into();
+                (cur, max_h.max(0.0), b_h.max(100.0))
+            };
+
+            if max_y <= 0.5 {
+                let st = get_state_inner(&mut this.state);
+                st.set_immediate_offset(0.0);
+                return;
+            }
+
+            let new_offset = {
+                let st = get_state_inner(&mut this.state);
+                st.update_bounds(vp_h + max_y, vp_h);
+                st.max_offset = -max_y;
+                if !st.animating && (st.offset - cur_y).abs() > 1.0 {
+                    st.offset = cur_y.clamp(-max_y, 0.0);
+                    st.target_offset = st.offset;
+                }
+                st.apply_scroll_delta_with_mode(delta_y, smooth);
+                st.offset
+            };
+
+            let h = get_handle_inner(&mut this.state);
+            h.set_offset(gpui::point(px(0.0), px(new_offset)));
+            cx.notify();
+        });
     }
 }
 
@@ -470,33 +547,39 @@ where
     F: Fn(&mut crate::app::AppState) -> &mut BouncyScrollState + 'static + Clone,
 {
     move |event: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
-        let line_height = px(16.0);
+        cx.stop_propagation();
+        let line_height = px(20.0);
         let delta = event.delta.pixel_delta(line_height);
         let delta_y: f32 = delta.y.into();
+        if delta_y.abs() < 0.25 {
+            return;
+        }
 
         view.update(cx, |this, cx| {
+            let smooth = this
+                .state
+                .settings
+                .read(cx)
+                .config
+                .preferences
+                .enable_smooth_scrolling;
             let state = get_state(&mut this.state);
             if !state.can_scroll() {
-                state.offset = 0.0;
-                state.velocity = 0.0;
-                state.animating = false;
+                state.set_immediate_offset(0.0);
                 return;
             }
-            state.apply_scroll_delta(delta_y);
-            if state.is_active {
-                state.animating = true;
-                cx.notify();
-            }
+            state.apply_scroll_delta_with_mode(delta_y, smooth);
+            cx.notify();
         });
     }
 }
 
 /// Create an `.on_scroll_wheel` handler for `UniformList`-based views.
 ///
-/// Strictly disables scrolling when all items fit inside the viewport
-/// (`content_h <= effective_viewport_h` or `max_y <= 1.0`), and clamps
-/// in-bounds scrolling to `[-max_y, 0.0]` so the view never scrolls into
-/// blank space when no more items are off-screen.
+/// Prevents the double-scroll bug by keeping `BouncyScrollState::target_offset`
+/// as the single source of truth (never re-adding `delta_y` on top of
+/// `uniform_list`'s internal wheel mutation) and smoothly interpolating `offset`
+/// toward `target_offset` across animation frames.
 pub fn bouncy_scroll_handler_with_handle<F, H>(
     view: Entity<crate::app::AppWindow>,
     get_state: F,
@@ -509,21 +592,44 @@ where
     move |event: &ScrollWheelEvent, window: &mut Window, cx: &mut App| {
         cx.stop_propagation();
 
-        let line_height = px(20.0);
+        let line_height = px(22.0);
         let delta = event.delta.pixel_delta(line_height);
         let delta_y: f32 = delta.y.into();
 
-        if delta_y.abs() < 0.5 {
+        if delta_y.abs() < 0.25 {
+            return;
+        }
+
+        // Handle Ctrl + Mouse Wheel (Zoom or Cycle View Modes per Settings > Actions)
+        if event.modifiers.control && !event.modifiers.alt {
+            let v_zoom = view.clone();
+            v_zoom.update(cx, |this, cx| {
+                let ctrl_wheel = this
+                    .state
+                    .settings
+                    .read(cx)
+                    .config
+                    .actions
+                    .ctrl_wheel_action
+                    .clone();
+                match ctrl_wheel.as_str() {
+                    "zoom" => {
+                        let step = if delta_y > 0.0 { 0.08 } else { -0.08 };
+                        let z = (this.state.active_view().zoom_level + step).clamp(0.0, 1.0);
+                        this.set_zoom_level(z, cx);
+                    }
+                    "view_mode" => {
+                        this.cycle_view_mode(cx);
+                    }
+                    _ => {}
+                }
+            });
             return;
         }
 
         let get_state_inner = get_state.clone();
         let get_handle_inner = get_handle.clone();
 
-        // Compute the minimum available content viewport height from the window
-        // so that even if `ListSizingBehavior::Infer` shrunk `base.bounds()` to
-        // match a short item list, we know the real viewport height and refuse
-        // to scroll when all items are already visible on screen.
         let win_h: f32 = {
             let b_h: f32 = window.bounds().size.height.into();
             let vp_h: f32 = window.viewport_size().height.into();
@@ -531,6 +637,14 @@ where
         };
 
         view.update(cx, |this, cx| {
+            let smooth = this
+                .state
+                .settings
+                .read(cx)
+                .config
+                .preferences
+                .enable_smooth_scrolling;
+
             let chrome_h = 40.0 // TabBar
                 + 44.0 // NavBar
                 + 44.0 // Toolbar
@@ -577,23 +691,20 @@ where
             } else {
                 handle_vp_h.max(fallback_vp_h)
             };
-            let max_y = (content_h - effective_vp_h).max(0.0).max(if content_h > effective_vp_h + 1.0 {
-                raw_max_y
-            } else {
-                0.0
-            });
+            let max_y = (content_h - effective_vp_h).max(0.0).max(
+                if content_h > effective_vp_h + 1.0 {
+                    raw_max_y
+                } else {
+                    0.0
+                },
+            );
 
             // If all items fit inside the viewport, do NOT scroll at all.
             if max_y <= 1.0 || content_h <= effective_vp_h + 1.0 {
                 {
                     let state = get_state_inner(&mut this.state);
                     state.update_bounds(content_h, effective_vp_h);
-                    state.max_offset = 0.0;
-                    state.offset = 0.0;
-                    state.raw_overscroll = 0.0;
-                    state.velocity = 0.0;
-                    state.animating = false;
-                    state.is_active = false;
+                    state.set_immediate_offset(0.0);
                 }
                 let handle = get_handle_inner(&mut this.state);
                 if current_y.abs() > 0.5 {
@@ -607,32 +718,18 @@ where
                 return;
             }
 
+            // IMPORTANT: Do NOT copy `current_y` into `state.offset` here because
+            // `uniform_list`'s built-in bubble handler already mutated `current_y`
+            // by `+delta_y` during this exact wheel event! Keeping `state.target_offset`
+            // authoritative and overwriting `base_handle` eliminates the 2x double-scroll.
             let offset = {
                 let state = get_state_inner(&mut this.state);
-                state.update_bounds(content_h, effective_vp_h);
+                state.viewport_height = effective_vp_h;
+                state.content_height = content_h;
                 state.max_offset = -max_y;
-
-                if (state.offset - current_y).abs() > 2.0 && !state.animating {
-                    state.offset = current_y.clamp(-max_y, 0.0);
-                }
-
-                let prev = state.offset;
-                let new_offset = (state.offset + delta_y).clamp(-max_y, 0.0);
-                state.offset = new_offset;
-                state.raw_overscroll = 0.0;
-
-                if (new_offset - prev).abs() < 0.01 {
-                    state.velocity = 0.0;
-                    state.animating = false;
-                    state.is_active = false;
-                } else {
-                    state.velocity = state.velocity * VELOCITY_BLEND_HISTORY
-                        + delta_y * (1.0 - VELOCITY_BLEND_HISTORY);
-                    state.velocity = state.velocity.clamp(-3000.0, 3000.0);
-                    state.is_active = true;
-                    state.graceful_counter = MOMENTUM_GRACE_TICKS;
-                    state.animating = true;
-                }
+                state.offset = state.offset.clamp(-max_y, 0.0);
+                state.target_offset = state.target_offset.clamp(-max_y, 0.0);
+                state.apply_scroll_delta_with_mode(delta_y, smooth);
                 state.offset
             };
 
@@ -648,8 +745,7 @@ where
     }
 }
 
-/// Wrapper for UniformList-backed views (keeps content strictly at 0 overscroll
-/// so headers and items never shift into blank space).
+/// Wrapper for UniformList-backed views (keeps content strictly at 0 overscroll).
 pub fn bouncy_overscroll_content<'a>(
     _state: &'a BouncyScrollState,
     content: impl IntoIterator<Item = impl IntoElement>,
@@ -691,14 +787,9 @@ where
 // Minimal scrollbar rendering
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Scrollbar track + thumb width for minimal scrollbars.
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
-
-/// Minimum thumb height in pixels.
 pub const SCROLLBAR_THUMB_MIN_HEIGHT: f32 = 30.0;
 
-/// Render a minimal scrollbar from a [`BouncyScrollState`].
-/// Automatically hides when the content fits within the viewport.
 pub fn bouncy_scroll_scrollbar(state: &BouncyScrollState) -> impl IntoElement {
     let viewport_h = state.viewport_height;
     let content_h = state.content_height;
@@ -733,8 +824,6 @@ pub fn bouncy_scroll_scrollbar(state: &BouncyScrollState) -> impl IntoElement {
         .into_any_element()
 }
 
-/// Render a minimal scrollbar for a [`UniformList`]-backed view.
-/// Automatically hides when all items fit inside the viewport.
 pub fn uniform_list_scrollbar(
     bouncy: &BouncyScrollState,
     handle: &UniformListScrollHandle,
@@ -808,12 +897,10 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
     sample_y(u)
 }
 
-/// Windows 11 WinUI 3 Direct Enter curve: `cubic-bezier(0.1, 0.9, 0.2, 1.0)`
 pub fn fluent_entrance_ease(t: f32) -> f32 {
     cubic_bezier(0.1, 0.9, 0.2, 1.0, t)
 }
 
-/// Windows 11 WinUI 3 Fast Exit curve: `cubic-bezier(0.7, 0.0, 1.0, 0.5)`
 pub fn fluent_exit_ease(t: f32) -> f32 {
     cubic_bezier(0.7, 0.0, 1.0, 0.5, t)
 }
@@ -834,7 +921,7 @@ mod tests {
     fn test_spring_settles_without_overshoot_explosion() {
         let mut st = BouncyScrollState::new();
         st.update_bounds(2000.0, 500.0);
-        st.offset = 45.0; // Top overscroll
+        st.offset = 45.0;
         st.velocity = 0.0;
         st.is_active = false;
         st.graceful_counter = 0;
@@ -849,6 +936,20 @@ mod tests {
             "Spring must settle back to 0.0 within 2 seconds"
         );
         assert!(frames < 180, "Spring settled in {} frames", frames);
+    }
+
+    #[test]
+    fn test_smooth_target_interpolation_no_double_scroll() {
+        let mut st = BouncyScrollState::new();
+        st.update_bounds(2000.0, 500.0);
+        st.apply_scroll_delta(-100.0);
+        assert_eq!(st.target_offset, -100.0);
+        assert!(st.offset < 0.0 && st.offset > -100.0);
+        let mut frames = 0;
+        while st.tick_spring(1.0 / 60.0) && frames < 120 {
+            frames += 1;
+        }
+        assert!((st.offset - (-100.0)).abs() < 0.5);
     }
 
     #[test]

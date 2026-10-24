@@ -8,6 +8,7 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TerminalType {
     Cmd,
+    CommandPrompt,
     PowerShell,
     PowerShell7Core,
     WindowsTerminal,
@@ -18,7 +19,8 @@ pub enum TerminalType {
 impl std::fmt::Display for TerminalType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TerminalType::Cmd => write!(f, "Command Prompt"),
+            TerminalType::Cmd => write!(f, "Command Prompt (cmd.exe)"),
+            TerminalType::CommandPrompt => write!(f, "Command Prompt"),
             TerminalType::PowerShell => write!(f, "PowerShell"),
             TerminalType::PowerShell7Core => write!(f, "PowerShell 7 Core"),
             TerminalType::WindowsTerminal => write!(f, "Windows Terminal"),
@@ -116,6 +118,10 @@ impl TerminalService {
                 "cmd.exe".to_string(),
                 vec!["/K".to_string(), format!("cd /d {}", path_str)],
             ),
+            TerminalType::CommandPrompt => (
+                "cmd.exe".to_string(),
+                vec!["/K".to_string(), format!("cd /d {}", path_str)],
+            ),
             TerminalType::PowerShell => (
                 "powershell.exe".to_string(),
                 vec![
@@ -159,7 +165,10 @@ impl TerminalService {
         let path_str = path.to_string_lossy().into_owned();
 
         match terminal {
-            TerminalType::Cmd | TerminalType::PowerShell | TerminalType::PowerShell7Core => {
+            TerminalType::Cmd
+            | TerminalType::CommandPrompt
+            | TerminalType::PowerShell
+            | TerminalType::PowerShell7Core => {
                 // On Linux, try x-terminal-emulator, gnome-terminal, or xterm
                 if std::path::Path::new("/usr/bin/x-terminal-emulator").exists() {
                     (

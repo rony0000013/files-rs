@@ -17,26 +17,49 @@
 //!   - `Details / Preview` InfoPane toggle button (`PanelRight`)
 
 use crate::app_state::AppState;
-use crate::config::config::{GroupColumn as GroupBy, SortBy, ViewMode};
+use crate::config::config::{GroupColumn, SortBy, ViewMode};
 use crate::ui::components::clipboard_manager::ClipboardState;
 use crate::ui::constants::UiConstants;
 use crate::ui::views::main_view::{SidePaneMode, ToolbarCustomizationState, ViewTarget};
 use gpui::*;
+use std::sync::LazyLock;
 
 pub struct ToolbarView;
 
 impl ToolbarView {
-    /// Legacy compatibility builder (retained for API stability; prefer `build_card`).
+    /// Legacy compatibility builder.
     pub fn build(
-        _view_mode: &ViewMode,
-        _toolbar_customization: &ToolbarCustomizationState,
-        _has_selection: bool,
-        _single_selection: bool,
-        _has_clipboard: bool,
-        _filter_text: String,
-        _view: Entity<crate::app::AppWindow>,
+        view_mode: &ViewMode,
+        toolbar_customization: &ToolbarCustomizationState,
+        has_selection: bool,
+        single_selection: bool,
+        has_clipboard: bool,
+        filter_text: String,
+        view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        div()
+        static FALLBACK_TARGET: LazyLock<ViewTarget> =
+            LazyLock::new(|| ViewTarget::Directory(crate::core::path_util::FilesPath::new("")));
+        Self::build_card(
+            view_mode,
+            toolbar_customization,
+            &FALLBACK_TARGET,
+            has_selection,
+            single_selection,
+            has_clipboard,
+            filter_text,
+            false,
+            true,
+            &SortBy::Name,
+            true,
+            true,
+            &GroupColumn::None,
+            0.5,
+            &SidePaneMode::None,
+            false,
+            false,
+            0,
+            view,
+        )
     }
 
     /// Full `Files-community` Unibody Command Bar builder driven by `AppState`.
@@ -100,13 +123,13 @@ impl ToolbarView {
         has_selection: bool,
         single_selection: bool,
         has_clipboard: bool,
-        _filter_text: String,
-        _show_filter_bar: bool,
+        filter_text: String,
+        show_filter_bar: bool,
         show_labels: bool,
         sort_col: &SortBy,
         sort_asc: bool,
         _folder_on_top: bool,
-        group_by: &GroupBy,
+        group_by: &GroupColumn,
         _zoom_level: f32,
         side_pane: &SidePaneMode,
         selected_is_archive: bool,
@@ -487,7 +510,37 @@ impl ToolbarView {
         // ═════════════════════════════════════════════════════════════════════
         let mut right_group = div().flex().flex_row().items_center().gap(px(4.0));
 
-        // 1. Selection Options Flyout (`\u{E762} ⌄`)
+        // 1. Filter Toggle Button
+        let filter_active = !filter_text.is_empty() || show_filter_bar;
+        {
+            let v_filter = view.clone();
+            right_group = right_group.child(ToolbarButton::build(
+                "\u{E71C}",
+                if !filter_text.is_empty() {
+                    Some(filter_text.as_str())
+                } else if show_labels {
+                    Some("Filter")
+                } else {
+                    None
+                },
+                true,
+                filter_active,
+                move |_, _, cx| {
+                    v_filter.update(cx, |this, cx| {
+                        this.close_toolbar_flyout(cx);
+                        if !this.state.main_view.filter_text.is_empty() {
+                            this.set_filter_text(String::new(), cx);
+                        } else {
+                            this.state.main_view.show_filter_bar =
+                                !this.state.main_view.show_filter_bar;
+                            cx.notify();
+                        }
+                    });
+                },
+            ));
+        }
+
+        // 2. Selection Options Flyout (`\u{E762} ⌄`)
         {
             let sel_open = active_flyout == Some("selection");
             let v_sel = view.clone();
@@ -516,7 +569,7 @@ impl ToolbarView {
                 SortBy::Tag => "Tag",
             };
             let dir_arrow = if sort_asc { "↑" } else { "↓" };
-            let badge = if *group_by != GroupBy::None {
+            let badge = if *group_by != GroupColumn::None {
                 format!("{} {} • Grouped", sort_label, dir_arrow)
             } else {
                 format!("{} {}", sort_label, dir_arrow)
@@ -540,8 +593,9 @@ impl ToolbarView {
             let layout_open = active_flyout == Some("layout");
             let (layout_icon, layout_label) = match view_mode {
                 ViewMode::Details => ("\u{E8FD}", "Details"),
-                ViewMode::List => ("\u{E8FD}", "List"),
-                ViewMode::Grid => ("\u{E80A}", "Cards"),
+                ViewMode::List => ("\u{E8EF}", "List"),
+                ViewMode::Cards => ("\u{E8A9}", "Cards"),
+                ViewMode::Grid => ("\u{E80A}", "Grid"),
                 ViewMode::Columns => ("\u{E8F1}", "Columns"),
             };
             let v_layout = view.clone();
@@ -576,6 +630,7 @@ impl ToolbarView {
                         this.close_toolbar_flyout(cx);
                         if matches!(this.state.main_view.side_pane, SidePaneMode::None) {
                             this.state.main_view.side_pane = SidePaneMode::Details;
+                            this.load_preview_for_selected_item(cx);
                             cx.notify();
                         } else {
                             this.state.main_view.side_pane = SidePaneMode::None;
@@ -703,7 +758,7 @@ impl ToolbarView {
             .rounded(px(8.0))
             .bg(rgb(0x282828))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -769,10 +824,6 @@ impl ToolbarView {
         let v_clr = view.clone();
         let v_chk = view.clone();
         let has_sel = !state.main_view.selected_indices.is_empty();
-        let checkbox_mode = matches!(
-            state.main_view.selection_mode,
-            crate::ui::views::main_view::SelectionMode::Checkbox
-        );
 
         div()
             .absolute()
@@ -783,7 +834,7 @@ impl ToolbarView {
             .rounded(px(8.0))
             .bg(rgb(0x282828))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -832,11 +883,11 @@ impl ToolbarView {
                 "\u{E73A}",
                 "Toggle Selection Checkboxes",
                 None,
-                checkbox_mode,
+                false,
                 move |_, _, cx| {
                     v_chk.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
-                        this.toggle_selection_checkboxes(cx);
+                        this.toggle_setting("show_checkboxes_when_selecting", cx);
                     });
                 },
             ))
@@ -857,15 +908,18 @@ impl ToolbarView {
             (SortBy::DateCreated, "Date created"),
             (SortBy::Size, "Size"),
             (SortBy::Type, "Type"),
+            (SortBy::Tag, "File tag"),
         ];
 
         let group_options = [
-            (GroupBy::None, "None"),
-            (GroupBy::Name, "Name"),
-            (GroupBy::DateModified, "Date modified"),
-            (GroupBy::Size, "Size"),
-            (GroupBy::FileType, "Type"),
-            (GroupBy::Tag, "File tag"),
+            (GroupColumn::None, "None"),
+            (GroupColumn::Name, "Name"),
+            (GroupColumn::DateModified, "Date modified"),
+            (GroupColumn::DateCreated, "Date created"),
+            (GroupColumn::Size, "Size"),
+            (GroupColumn::FileType, "Type"),
+            (GroupColumn::SyncStatus, "Sync status"),
+            (GroupColumn::Tag, "File tag"),
         ];
 
         let mut col = div()
@@ -877,7 +931,7 @@ impl ToolbarView {
             .rounded(px(8.0))
             .bg(rgb(0x282828))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -974,12 +1028,14 @@ impl ToolbarView {
         let cur_mode = &state.main_view.view_mode;
         let cur_zoom = state.main_view.zoom_level;
         let show_hidden = state.main_view.show_hidden_files;
+        let is_dual = state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
 
         let modes = [
             (ViewMode::Details, "\u{E8FD}", "Details", "Ctrl+Shift+1"),
-            (ViewMode::List, "\u{E8FD}", "List", "Ctrl+Shift+2"),
-            (ViewMode::Grid, "\u{E80A}", "Cards / Grid", "Ctrl+Shift+3"),
-            (ViewMode::Columns, "\u{E8F1}", "Columns", "Ctrl+Shift+4"),
+            (ViewMode::List, "\u{E8EF}", "List", "Ctrl+Shift+2"),
+            (ViewMode::Cards, "\u{E8A9}", "Cards (Tiles)", "Ctrl+Shift+3"),
+            (ViewMode::Grid, "\u{E80A}", "Grid (Icons)", "Ctrl+Shift+4"),
+            (ViewMode::Columns, "\u{E8F1}", "Columns", "Ctrl+Shift+5"),
         ];
 
         let sizes = [
@@ -998,7 +1054,7 @@ impl ToolbarView {
             .rounded(px(8.0))
             .bg(rgb(0x282828))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -1047,6 +1103,7 @@ impl ToolbarView {
 
         let v_hidden = view.clone();
         let v_ext = view.clone();
+        let v_dual = view.clone();
         col = col
             .child(div().h(px(1.0)).my(px(3.0)).bg(rgba(0xFFFFFF14u32)))
             .child(Self::flyout_menu_item(
@@ -1057,7 +1114,7 @@ impl ToolbarView {
                 move |_, _, cx| {
                     v_hidden.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
-                        this.toggle_hidden_files(cx);
+                        this.toggle_setting("show_hidden_files", cx);
                     });
                 },
             ))
@@ -1069,7 +1126,22 @@ impl ToolbarView {
                 move |_, _, cx| {
                     v_ext.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
-                        this.toggle_file_extensions(cx);
+                        this.toggle_setting("show_file_extensions", cx);
+                    });
+                },
+            ))
+            .child(Self::flyout_menu_item(
+                "\u{E140}",
+                "Dual Pane Split View",
+                Some("Ctrl+Shift+S"),
+                is_dual,
+                move |_, _, cx| {
+                    v_dual.update(cx, |this, cx| {
+                        this.close_toolbar_flyout(cx);
+                        this.dispatch_action(
+                            crate::core::action_registry::ActionKind::SplitVertical,
+                            cx,
+                        );
                     });
                 },
             ));

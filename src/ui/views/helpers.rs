@@ -233,36 +233,61 @@ pub(crate) fn get_file_type_icon(extension: &str) -> &'static str {
     }
 }
 
-/// Map a ViewMode to its center zoom level (0.0–1.0).
+/// Get both the MDL2/Fluent icon glyph and semantic color (RGB hex) for a file extension.
+/// Used across Details, List, Cards, Grid, and Columns views for O(1) zero-allocation icon rendering.
+pub fn get_file_type_icon_and_color(extension: &str) -> (&'static str, u32) {
+    match extension {
+        "pdf" => ("\u{EA90}", 0xFF6B6B),
+        "doc" | "docx" | "odt" | "rtf" => ("\u{E8A5}", 0x4B9EFF),
+        "xls" | "xlsx" | "xlsm" | "csv" | "tsv" | "ods" => ("\u{E8A2}", 0x4CCB5E),
+        "ppt" | "pptx" | "odp" => ("\u{E8A1}", 0xFF8C42),
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+        | "avif" | "heic" | "heif" | "raw" | "psd" | "tga" | "hdr" => ("\u{EB9F}", 0xC586C0),
+        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "flv" | "ts" => ("\u{E714}", 0xFF79C6),
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" | "wma" => ("\u{EC4F}", 0x50FA7B),
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" | "iso" => ("\u{F012}", 0xFCCB45),
+        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "h" | "hpp" | "cs" | "go"
+        | "java" | "kt" | "swift" | "rb" | "php" | "sh" | "ps1" | "sql" | "html" | "css"
+        | "json" | "toml" | "yaml" | "yml" | "xml" | "md" => ("\u{E943}", 0x60CDFF),
+        "exe" | "msi" | "dll" | "sys" | "so" | "dylib" | "wasm" | "bat" | "cmd" => ("\u{E756}", 0xFFB86C),
+        _ => ("\u{E8A5}", 0x9AA4B4),
+    }
+}
+
+/// Map a ViewMode to its default zoom level (0.0–1.0).
 pub fn zoom_for_view_mode(mode: &ViewMode) -> f32 {
     match mode {
-        ViewMode::Details => 0.05,
-        ViewMode::List => 0.18,
-        ViewMode::Columns => 0.33,
-        ViewMode::Grid => 0.50,
+        ViewMode::Details => 0.15,
+        ViewMode::List => 0.25,
+        ViewMode::Cards => 0.42,
+        ViewMode::Columns => 0.35,
+        ViewMode::Grid => 0.55,
     }
 }
 
 /// Map a zoom level (0.0–1.0) to the appropriate ViewMode.
 pub fn view_mode_for_zoom(zoom: f32) -> ViewMode {
-    if zoom <= 0.10 {
+    if zoom <= 0.14 {
         ViewMode::Details
-    } else if zoom <= 0.25 {
+    } else if zoom <= 0.26 {
         ViewMode::List
-    } else if zoom <= 0.40 {
+    } else if zoom <= 0.36 {
         ViewMode::Columns
+    } else if zoom <= 0.46 {
+        ViewMode::Cards
     } else {
         ViewMode::Grid
     }
 }
 
-/// Label + icon for the current zoom mode (used in status bar).
+/// Label + icon for the current zoom mode (used in status bar and toolbar).
 pub fn zoom_mode_label(mode: &ViewMode) -> (&'static str, &'static str) {
     match mode {
-        ViewMode::Details => ("\u{E783}", "Details"),
-        ViewMode::List => ("\u{E77B}", "List"),
-        ViewMode::Columns => ("\u{E7A7}", "Columns"),
-        ViewMode::Grid => ("\u{E7A5}", "Grid"),
+        ViewMode::Details => ("\u{E8FD}", "Details"),
+        ViewMode::List => ("\u{E8EF}", "List"),
+        ViewMode::Cards => ("\u{E8A9}", "Cards"),
+        ViewMode::Columns => ("\u{E8F1}", "Columns"),
+        ViewMode::Grid => ("\u{E80A}", "Grid"),
     }
 }
 

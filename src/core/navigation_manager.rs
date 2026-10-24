@@ -613,8 +613,9 @@ pub enum PaneLayout {
     DualVertical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PaneFocus {
+    #[default]
     Primary,
     Secondary,
 }

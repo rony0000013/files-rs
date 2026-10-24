@@ -66,9 +66,9 @@ impl AppWindow {
             self.state.main_view.selection_anchor_index = None;
             self.state.main_view.last_clicked_index = None;
             self.state.main_view.renaming_index = None;
-            self.state.main_view.bouncy_scroll.offset = 0.0;
-            self.state.main_view.bouncy_scroll.velocity = 0.0;
-            self.state.main_view.bouncy_scroll.animating = false;
+            self.state.main_view.bouncy_scroll.set_immediate_offset(0.0);
+            self.state.main_view.side_pane_bouncy_scroll.set_immediate_offset(0.0);
+            self.state.main_view.side_pane_scroll_handle.set_offset(gpui::point(px(0.0), px(0.0)));
             self.state
                 .main_view
                 .uniform_list_scroll_handle
@@ -158,26 +158,7 @@ impl AppWindow {
             target_view.show_hidden_files = app_prefs.show_hidden_files;
             target_view.show_extensions = app_prefs.show_file_extensions;
             target_view.show_system_files = app_prefs.show_system_files;
-            // Restore persisted checkbox mode without clobbering HoverSelect.
-            if app_prefs.show_checkboxes_when_selecting {
-                if matches!(
-                    target_view.selection_mode,
-                    crate::ui::views::main_view::SelectionMode::Normal
-                ) {
-                    target_view.selection_mode =
-                        crate::ui::views::main_view::SelectionMode::Checkbox;
-                }
-            } else if matches!(
-                target_view.selection_mode,
-                crate::ui::views::main_view::SelectionMode::Checkbox
-            ) {
-                target_view.selection_mode =
-                    crate::ui::views::main_view::SelectionMode::Normal;
-            }
         }
-
-        // Keep omnibar path completions in sync with the hidden-files preference.
-        self.state.nav_bar.search_options.include_hidden = app_prefs.show_hidden_files;
 
         tracing::info!(
             "Navigating {:?} pane to {:?}, using view mode: {:?}",
@@ -231,6 +212,7 @@ impl AppWindow {
                                         is_system: false,
                                         modified: None,
                                         created: None,
+                                        tags: Vec::new(),
                                     });
                                 }
                             }

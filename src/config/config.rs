@@ -234,7 +234,7 @@ impl Default for DevToolsConfig {
     fn default() -> Self {
         Self {
             open_in_ide_visibility: "git_only".to_string(),
-            ide_name: "VS Code".to_string(),
+            ide_name: "Visual Studio Code".to_string(),
             ide_path: "code".to_string(),
             github_account: None,
             show_fps_telemetry: false,
@@ -291,18 +291,15 @@ pub struct AppConfig {
     /// Keyboard & mouse shortcut override bindings
     #[serde(default)]
     pub action_bindings: Option<crate::core::action_registry::ActionRegistry>,
-    /// Serialized custom key/mouse bindings (mirrors the action registry).
+    /// Serialized custom key/mouse binding overrides, keyed by action name.
     #[serde(default)]
     pub keybindings: KeyBindings,
     /// Home page widgets visibility and expansion state
     #[serde(default)]
     pub home_widgets: HomeWidgetsConfig,
-    /// Pinned folders shown in Home > Quick Access.
-    #[serde(default)]
-    pub pinned_folders: Vec<String>,
     /// User-defined file tags with colors
-    #[serde(default = "default_tag_definitions", alias = "tag_definitions")]
-    pub file_tags: Vec<TagDefinition>,
+    #[serde(default = "default_tag_definitions")]
+    pub tag_definitions: Vec<TagDefinition>,
     /// DevTools & IDE settings
     #[serde(default)]
     pub devtools: DevToolsConfig,
@@ -666,6 +663,7 @@ impl Default for ViewConfig {
 pub enum ViewMode {
     #[default]
     List,
+    Cards,
     Grid,
     Details,
     Columns,
@@ -708,6 +706,26 @@ pub enum GroupColumn {
     /// Group by first tag alphabetically, untagged items in "Untagged" group
     Tag,
 }
+
+impl GroupColumn {
+    #[allow(non_upper_case_globals)]
+    pub const Type: Self = Self::FileType;
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            GroupColumn::None => "None",
+            GroupColumn::Name => "Name",
+            GroupColumn::DateModified => "Date modified",
+            GroupColumn::DateCreated => "Date created",
+            GroupColumn::Size => "Size",
+            GroupColumn::FileType => "Type",
+            GroupColumn::SyncStatus => "Sync status",
+            GroupColumn::Tag => "File tag",
+        }
+    }
+}
+
+pub type GroupBy = GroupColumn;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FolderPreferences {
@@ -840,14 +858,13 @@ impl Default for AppConfig {
             folder_preferences: HashMap::new(),
             experimental: ExperimentalConfig::default(),
             actions: ActionsConfig::default(),
-            keybindings: KeyBindings::default(),
             session: SessionConfig::default(),
             appearance: AppearanceConfig::default(),
             terminal_app: TerminalType::default(),
             action_bindings: None,
+            keybindings: KeyBindings::default(),
             home_widgets: HomeWidgetsConfig::default(),
-        pinned_folders: Vec::new(),
-            file_tags: default_tag_definitions(),
+            tag_definitions: default_tag_definitions(),
             devtools: DevToolsConfig::default(),
             window_size: Some((1280.0, 800.0)),
             window_maximized: true,

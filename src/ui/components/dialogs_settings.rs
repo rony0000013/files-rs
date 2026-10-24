@@ -343,11 +343,10 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     pub(crate) fn build_compact_btn(
-        label: impl ToString,
+        label: impl Into<String>,
         active: bool,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
-        let label: String = label.to_string();
         let mut btn = div()
             .px(px(10.0))
             .py(px(5.0))
@@ -375,7 +374,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                 .hover(|s| s.bg(rgba(0xFFFFFF20u32)));
         }
-        btn.child(label.to_string())
+        btn.child(label.into())
     }
 
     /// Render WinUI 3 `KeyboardShortcut` keycaps (e.g. `[Ctrl] + [Shift] + [N]` or `[🖱 Mouse 4 (Back)]`).
@@ -422,7 +421,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     rgba(0xFFFFFF14u32)
                 })
                 .border(px(1.0))
-                .border(px(2.0))
+                .border_b(px(2.0))
                 .border_color(if is_last_mouse {
                     rgba(0x60CDFF66u32)
                 } else {
@@ -1685,7 +1684,8 @@ impl crate::ui::components::dialogs::DialogsView {
         let layout_modes = [
             (ViewMode::Details, "Details"),
             (ViewMode::List, "List"),
-            (ViewMode::Grid, "Grid / Cards"),
+            (ViewMode::Cards, "Cards"),
+            (ViewMode::Grid, "Grid"),
             (ViewMode::Columns, "Columns"),
         ];
         let mut mode_pills = div().flex().flex_row().gap(px(4.0)).flex_wrap();
@@ -2826,7 +2826,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 .rounded(px(5.0))
                                 .bg(rgba(0xFFFFFF10u32))
                                 .border(px(1.0))
-                                .border(px(if is_search_focused { 2.0 } else { 1.0 }))
+                                .border_b(px(if is_search_focused { 2.0 } else { 1.0 }))
                                 .border_color(if is_search_focused {
                                     rgb(0x60CDFF)
                                 } else {
@@ -3228,7 +3228,7 @@ impl crate::ui::components::dialogs::DialogsView {
             let c_clone = combo.clone();
             let is_cur = rec.recorded_combo.as_ref().map(|r| r.matches(&c_clone)).unwrap_or(false);
             preset_row = preset_row.child(Self::build_compact_btn(
-                lbl,
+                lbl.to_string(),
                 is_cur,
                 move |_, _, cx| {
                     let cc = c_clone.clone();
@@ -3242,7 +3242,7 @@ impl crate::ui::components::dialogs::DialogsView {
         // Action selector pills when in Add Command mode
         let mut action_selector = div();
         if rec.is_add_mode {
-            let mut pills = div().flex().flex_row().gap(px(4.0)).flex_wrap().max_h(px(110.0)).overflow_hidden();
+            let mut pills = div().flex().flex_row().gap(px(4.0)).flex_wrap().max_h(px(110.0)).id("tag-pills-scroll").overflow_y_scroll();
             for (candidate, _, _) in all_actions.iter().take(24) {
                 let c_act = *candidate;
                 let v = view.clone();
@@ -3663,19 +3663,19 @@ impl crate::ui::components::dialogs::DialogsView {
             );
         }
 
-        for (idx, tag_def) in config.file_tags.iter().enumerate() {
+        for tag_def in config.tag_definitions.iter() {
             let rgb_val = parse_hex_rgb(&tag_def.color);
             let count = data.tag_counts.get(&tag_def.name).copied().unwrap_or(0);
             let tag_name_for_filter = tag_def.name.clone();
-            let tag_name_for_delete = tag_def.name.clone();
             let v_filter = view.clone();
             let v_delete = view.clone();
+            let tag_name_for_ops = tag_def.name.clone();
 
             let mut row_swatches = div().flex().flex_row().items_center().gap(px(4.0));
             for &(hex_str, swatch_rgb) in palette {
                 let v = view.clone();
                 let h = hex_str.to_string();
-                let tag_name_for_color = tag_def.name.clone();
+                let tag_for_swatch = tag_name_for_ops.clone();
                 let is_cur = tag_def.color.eq_ignore_ascii_case(hex_str);
                 row_swatches = row_swatches.child(
                     div()
@@ -3692,7 +3692,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             v.update(cx, |this, cx| {
-                                this.update_tag_color(tag_name_for_color.clone(), h.clone(), cx);
+                                this.update_tag_color(tag_for_swatch.clone(), h.clone(), cx);
                             });
                         }),
                 );
@@ -3767,8 +3767,9 @@ impl crate::ui::components::dialogs::DialogsView {
                                 "Delete",
                                 false,
                                 move |_, _, cx| {
+                                    let tag_for_delete = tag_name_for_ops.clone();
                                     v_delete.update(cx, |this, cx| {
-                                        this.delete_tag_definition(tag_name_for_delete.clone(), cx);
+                                        this.delete_tag_definition(tag_for_delete.clone(), cx);
                                     });
                                 },
                             )),
@@ -3890,11 +3891,11 @@ impl crate::ui::components::dialogs::DialogsView {
         view: Entity<crate::app::AppWindow>,
     ) -> Div {
         let ide_presets = [
-            ("VS Code", "code"),
+            ("Visual Studio Code", "code"),
             ("Zed", "zed"),
             ("Cursor", "cursor"),
             ("RustRover", "rustrover"),
-            ("VS", "devenv"),
+            ("Visual Studio", "devenv"),
             ("Neovim", "nvim"),
         ];
         let mut preset_pills = div().flex().flex_row().gap(px(4.0)).flex_wrap();
@@ -4062,7 +4063,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         "Command Prompt",
                         matches!(
                             config.terminal_app,
-                            crate::core::terminal_service::TerminalType::Cmd
+                            crate::core::terminal_service::TerminalType::CommandPrompt
                         ),
                         {
                             let v = view.clone();
@@ -4070,7 +4071,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 v.update(cx, |this, cx| {
                                     this.state.settings.update(cx, |s, _| {
                                         s.config.terminal_app =
-                                            crate::core::terminal_service::TerminalType::Cmd;
+                                            crate::core::terminal_service::TerminalType::CommandPrompt;
                                         let _ = s.config.save();
                                     });
                                     cx.notify();

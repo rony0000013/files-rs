@@ -2532,10 +2532,11 @@ impl crate::ui::components::dialogs::DialogsView {
     pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>,
         flip: bool) -> gpui::Stateful<Div> {
         let modes = [
-            ("\u{E8A1}", "Details", crate::config::config::ViewMode::Details),
-            ("\u{E8A1}", "List", crate::config::config::ViewMode::List),
-            ("\u{E8A1}", "Grid", crate::config::config::ViewMode::Grid),
-            ("\u{E8A1}", "Columns", crate::config::config::ViewMode::Columns),
+            ("\u{E8FD}", "Details", crate::config::config::ViewMode::Details),
+            ("\u{E8EF}", "List", crate::config::config::ViewMode::List),
+            ("\u{E8A9}", "Cards", crate::config::config::ViewMode::Cards),
+            ("\u{E80A}", "Grid", crate::config::config::ViewMode::Grid),
+            ("\u{E8F1}", "Columns", crate::config::config::ViewMode::Columns),
         ];
         let mut rows = Vec::new();
         for (glyph, label, mode) in modes {

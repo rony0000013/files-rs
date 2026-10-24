@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use crate::core::undo_redo::UndoRedoManager;
+use crate::platform::windows::media_player::MfPlayer;
 use crate::platform::windows::thumbnail_service::{ThumbnailService, ThumbnailSize};
 use crate::ui::components::clipboard_manager::{ClipboardItem, ClipboardOperation, ClipboardState};
 
@@ -117,6 +118,9 @@ pub struct AppState {
     pub session_service: crate::core::session_service::SessionService,
     pub splash_state: SplashState,
     pub thumbnail_service: Arc<ThumbnailService>,
+    /// Active native video playback session (Media Foundation pump).
+    /// `None` = timeline simulation (audio files, ffmpeg-backend fallback).
+    pub video_player: Option<MfPlayer>,
     /// Cache of extracted icon temp file paths, keyed by FilesPath.
     /// LRU-bounded at MAX_ICON_CACHE_ENTRIES so session-long browsing
     /// cannot grow icon RAM without limit.
@@ -202,6 +206,7 @@ impl AppState {
                 crate::core::session_service::SessionService::new(session_path)
             },
             thumbnail_service: Arc::new(ThumbnailService::new()),
+            video_player: None,
             icon_cache: Arc::new(Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
             ))),

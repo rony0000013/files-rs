@@ -72,6 +72,9 @@ pub enum NotificationSeverity {
     Error,
 }
 
+/// Back-compat alias used by newer preview/action call sites.
+pub type ToastSeverity = NotificationSeverity;
+
 /// A persistent notification item in the Notification / Status Center and floating Toast stack.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotificationItem {

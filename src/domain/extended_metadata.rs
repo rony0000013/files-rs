@@ -20,6 +20,18 @@ pub struct ExtendedProperties {
     pub comment: Option<String>,
     #[serde(default)]
     pub page_count: Option<u32>,
+    #[serde(default)]
+    pub exif_date: Option<String>,
+    #[serde(default)]
+    pub iso: Option<String>,
+    #[serde(default)]
+    pub aperture: Option<String>,
+    #[serde(default)]
+    pub exposure_time: Option<String>,
+    #[serde(default)]
+    pub focal_length: Option<String>,
+    #[serde(default)]
+    pub lens_model: Option<String>,
 }
 
 impl ExtendedProperties {
@@ -84,8 +96,45 @@ impl ExtendedMetadataExtractor {
 
         match ext.as_str() {
             "jpg" | "jpeg" | "tiff" | "tif" => Self::extract_exif_and_dimensions(path),
-            "png" | "gif" | "webp" | "bmp" | "ico" => Self::extract_image_dimensions(path),
+            "png" | "gif" | "webp" | "bmp" | "ico" | "tga" | "dds" | "pnm" | "hdr" => {
+                Self::extract_image_dimensions(path)
+            }
             "mp3" => Self::extract_id3(path),
+            "flac" | "wav" | "ogg" | "m4a" | "aac" | "opus" => {
+                if let Ok(info) = crate::storage::preview_service::extract_audio_metadata(path, &ext)
+                {
+                    Ok(ExtendedProperties {
+                        author: info.artist,
+                        title: info.title,
+                        album: info.album,
+                        duration: info
+                            .duration_secs
+                            .map(|s| std::time::Duration::from_secs_f64(s.max(0.0))),
+                        ..Default::default()
+                    })
+                } else {
+                    Ok(ExtendedProperties::default())
+                }
+            }
+            "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" | "wmv" | "flv" => {
+                if let Ok(info) = crate::storage::preview_service::extract_video_metadata(path, &ext)
+                {
+                    let dims = match (info.width, info.height) {
+                        (Some(w), Some(h)) => Some((w, h)),
+                        _ => None,
+                    };
+                    Ok(ExtendedProperties {
+                        dimensions: dims,
+                        duration: info
+                            .duration_secs
+                            .map(|s| std::time::Duration::from_secs_f64(s.max(0.0))),
+                        comment: info.codec,
+                        ..Default::default()
+                    })
+                } else {
+                    Ok(ExtendedProperties::default())
+                }
+            }
             "pdf" => Self::extract_pdf_meta(path),
             _ => Ok(ExtendedProperties::default()),
         }
@@ -106,16 +155,47 @@ impl ExtendedMetadataExtractor {
         let mut camera_model: Option<String> = None;
         let mut comment: Option<String> = None;
         let mut title: Option<String> = None;
+        let mut exif_date: Option<String> = None;
+        let mut iso: Option<String> = None;
+        let mut aperture: Option<String> = None;
+        let mut exposure_time: Option<String> = None;
+        let mut focal_length: Option<String> = None;
+        let mut lens_model: Option<String> = None;
 
         if let Ok(exif) = rexif::parse_file(path_ref) {
             let mut make = String::new();
             let mut model = String::new();
-
+            let mut ex_w: Option<u32> = None;
+            let mut ex_h: Option<u32> = None;
 
             for entry in &exif.entries {
                 let val = entry.value_more_readable.trim();
                 if val.is_empty() {
                     continue;
+                }
+                // Raw-number tags rexif 0.7.6 doesn't enumerate: Artist (0x013B),
+                // ImageWidth (0x0100), ImageHeight (0x0101), PixelXDimension (0xA002),
+                // PixelYDimension (0xA003).
+                match entry.ifd.tag {
+                    0x013B => {
+                        if author.is_none() {
+                            author = Some(val.to_string());
+                        }
+                        continue;
+                    }
+                    0x0100 | 0xA002 => {
+                        if let Ok(v) = val.split_whitespace().next().unwrap_or("").parse::<u32>() {
+                            ex_w = Some(v);
+                        }
+                        continue;
+                    }
+                    0x0101 | 0xA003 => {
+                        if let Ok(v) = val.split_whitespace().next().unwrap_or("").parse::<u32>() {
+                            ex_h = Some(v);
+                        }
+                        continue;
+                    }
+                    _ => {}
                 }
                 match entry.tag {
                     rexif::ExifTag::Copyright => {
@@ -129,6 +209,26 @@ impl ExtendedMetadataExtractor {
                     rexif::ExifTag::Model => {
                         model = val.to_string();
                     }
+                    rexif::ExifTag::LensModel => {
+                        lens_model = Some(val.to_string());
+                    }
+                    rexif::ExifTag::DateTimeOriginal | rexif::ExifTag::DateTime => {
+                        if exif_date.is_none() {
+                            exif_date = Some(val.to_string());
+                        }
+                    }
+                    rexif::ExifTag::ISOSpeedRatings => {
+                        iso = Some(format!("ISO {}", val));
+                    }
+                    rexif::ExifTag::FNumber => {
+                        aperture = Some(val.to_string());
+                    }
+                    rexif::ExifTag::ExposureTime => {
+                        exposure_time = Some(val.to_string());
+                    }
+                    rexif::ExifTag::FocalLength => {
+                        focal_length = Some(val.to_string());
+                    }
                     rexif::ExifTag::ImageDescription => {
                         if title.is_none() {
                             title = Some(val.to_string());
@@ -139,12 +239,15 @@ impl ExtendedMetadataExtractor {
                             comment = Some(val.to_string());
                         }
                     }
-
                     _ => {}
                 }
             }
 
-
+            if dims.is_none() {
+                if let (Some(w), Some(h)) = (ex_w, ex_h) {
+                    dims = Some((w, h));
+                }
+            }
 
             if !model.is_empty() {
                 if !make.is_empty() && !model.to_lowercase().starts_with(&make.to_lowercase()) {
@@ -169,6 +272,12 @@ impl ExtendedMetadataExtractor {
             camera_model,
             comment,
             page_count: None,
+            exif_date,
+            iso,
+            aperture,
+            exposure_time,
+            focal_length,
+            lens_model,
         })
     }
 
@@ -200,6 +309,7 @@ impl ExtendedMetadataExtractor {
             camera_model: None,
             comment: tag.comments().next().map(|c| c.text.clone()),
             page_count: None,
+            ..Default::default()
         })
     }
 

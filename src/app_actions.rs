@@ -178,20 +178,39 @@ impl AppWindow {
 
     pub fn cycle_group_by(&mut self, cx: &mut Context<Self>) {
         use crate::config::config::GroupColumn;
-        let current = &self.state.main_view.group_by;
+        let pane_focus = self.state.active_pane_focus();
+        let current = self.state.pane_view(pane_focus).group_by;
         let next = match current {
             GroupColumn::None => GroupColumn::Name,
             GroupColumn::Name => GroupColumn::FileType,
             GroupColumn::FileType => GroupColumn::Size,
-            GroupColumn::Size => GroupColumn::SyncStatus,
-            GroupColumn::SyncStatus => GroupColumn::DateModified,
+            GroupColumn::Size => GroupColumn::DateModified,
             GroupColumn::DateModified => GroupColumn::DateCreated,
-            GroupColumn::DateCreated => GroupColumn::Tag,
+            GroupColumn::DateCreated => GroupColumn::SyncStatus,
+            GroupColumn::SyncStatus => GroupColumn::Tag,
             GroupColumn::Tag => GroupColumn::None,
         };
-        self.state.main_view.group_by = next;
-        // Clear collapsed groups when changing grouping
-        self.state.main_view.collapsed_groups.clear();
+        self.set_group_by(next, cx);
+    }
+
+    /// Select all items belonging to `group_key` in the active pane (triggered by group header "Select group" pill).
+    pub fn select_all_in_group(&mut self, group_key: &str, additive: bool, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            let visible = view.visible_items_rc();
+            if !additive {
+                view.selected_indices.clear();
+            }
+            for &idx in visible.iter() {
+                if let Some(item) = view.items.get(idx) {
+                    if view.get_group_key(item).as_deref() == Some(group_key) {
+                        view.selected_indices.insert(idx);
+                    }
+                }
+            }
+        }
+        self.sync_pane_selection_model(pane_focus, cx);
         cx.notify();
     }
 
@@ -617,348 +636,988 @@ impl AppWindow {
     // === Preview loading ===
 
     pub(crate) fn load_preview_content(&mut self, path: FilesPath, cx: &mut Context<Self>) {
-        use crate::storage::archive_service::ArchiveService;
         use crate::storage::preview_service;
-        use crate::ui::views::main_view::PreviewContent;
+        use crate::ui::views::main_view::{ImagePreviewInfo, PreviewContent, SvgPreviewInfo};
 
-        // Detect file type from extension
-        let ext = path
+        // Reset scroll positions and active video playback when switching preview item
+        self.state.main_view.side_pane_bouncy_scroll.set_immediate_offset(0.0);
+        self.state
+            .main_view
+            .side_pane_scroll_handle
+            .set_offset(gpui::point(px(0.0), px(0.0)));
+        self.state.main_view.peek_bouncy_scroll.set_immediate_offset(0.0);
+        self.state
+            .main_view
+            .peek_scroll_handle
+            .set_offset(gpui::point(px(0.0), px(0.0)));
+        self.state.main_view.video_playing = false;
+        self.state.main_view.video_progress = 0.0;
+        self.state.main_view.video_frame = None;
+        self.state.video_player = None;
+        self.state.main_view.office_preview.hide();
+
+        // If `path` is a directory, always load rich folder contents preview!
+        if path.as_path().is_dir() {
+            self.load_folder_preview(path, cx);
+            return;
+        }
+
+        self.state.main_view.preview_request_id =
+            self.state.main_view.preview_request_id.wrapping_add(1);
+        let req_id = self.state.main_view.preview_request_id;
+
+        let file_name_lower = path
             .as_path()
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_lowercase())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
 
-        // Determine preview type and load appropriate content
+        // Combine extension + magic-byte sniffing (`infer` + `mime_guess`) for widest compatibility
+        let (mime_type, ext) = preview_service::detect_mime_and_extension(&path);
+        self.state.main_view.details_cache.mime_type = Some(mime_type);
+
+        // Check special extensionless filenames first (Dockerfile, Makefile, .gitignore, etc.)
+        if ext.is_empty() {
+            if matches!(
+                file_name_lower.as_str(),
+                "dockerfile" | "makefile" | "cmakelists.txt" | "justfile" | "vagrantfile" | "procfile" | "gemfile" | "rakefile"
+            ) {
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: file_name_lower,
+                };
+                self.load_text_preview(path, req_id, true, cx);
+                return;
+            }
+        }
+
         match ext.as_str() {
-            // Markdown files
-            "md" | "markdown" | "rst" => {
+            // Markdown & Markup Docs
+            "md" | "markdown" | "mdx" | "rst" | "adoc" => {
                 self.state.main_view.preview_content = PreviewContent::Markdown;
-                self.load_text_preview(path, cx);
+                self.load_text_preview(path, req_id, false, cx);
             }
 
-            // HTML files
-            "html" | "htm" => {
+            // HTML / Web Documents
+            "html" | "htm" | "xhtml" => {
                 self.state.main_view.preview_content = PreviewContent::Html;
-                self.load_text_preview(path, cx);
+                self.load_text_preview(path, req_id, false, cx);
             }
 
-            // RTF files — rich text with plain text extraction
+            // Rich Text Format
             "rtf" => {
                 self.state.main_view.preview_content = PreviewContent::RichText;
-                self.load_text_preview(path, cx);
+                self.load_text_preview(path, req_id, false, cx);
             }
 
-            // Code files with language detection
-            "rs" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "rust".to_string(),
+            // Tabular Data (CSV / TSV) -> Spreadsheet Table Preview
+            "csv" | "tsv" => {
+                let delimiter = if ext == "tsv" { '\t' } else { ',' };
+                let kind_label = if ext == "tsv" { "TSV" } else { "CSV" }.to_string();
+                self.state.main_view.preview_text = Some("Loading table preview...".to_string());
+                self.state.main_view.preview_content = PreviewContent::CsvTable {
+                    headers: Vec::new(),
+                    rows: Vec::new(),
+                    total_rows: 0,
+                    delimiter,
+                    kind: kind_label,
                 };
-                self.load_text_preview(path, cx);
-            }
-            "py" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "python".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "js" | "jsx" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "javascript".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "ts" | "tsx" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "typescript".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "css" | "scss" | "sass" | "less" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "css".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "json" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "json".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "xml" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "xml".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "yaml" | "yml" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "yaml".to_string(),
-                };
-                self.load_text_preview(path, cx);
-            }
-            "toml" | "ini" | "cfg" | "conf" | "config" => {
-                self.state.main_view.preview_content = PreviewContent::Code {
-                    language: "toml".to_string(),
-                };
-                self.load_text_preview(path, cx);
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_csv_preview(&path_clone, delimiter)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok((headers, rows, total_rows)) = res {
+                                    this.state.main_view.preview_text = Some(format!(
+                                        "{} columns × {} rows",
+                                        headers.len(),
+                                        total_rows
+                                    ));
+                                    this.state.main_view.preview_content = PreviewContent::CsvTable {
+                                        headers,
+                                        rows,
+                                        total_rows,
+                                        delimiter,
+                                        kind: if delimiter == '\t' {
+                                            "TSV".to_string()
+                                        } else {
+                                            "CSV".to_string()
+                                        },
+                                    };
+                                } else {
+                                    this.state.main_view.preview_text =
+                                        Some("Unable to parse CSV/TSV file.".to_string());
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
             }
 
-            // Other text-based files (code, config, etc.)
-            "txt" | "log" | "java" | "c" | "cpp" | "h" | "hpp" | "cs" | "go" | "rb" | "php"
-            | "swift" | "kt" | "scala" | "r" | "lua" | "perl" | "sh" | "bash" | "zsh" | "fish"
-            | "ps1" | "bat" | "cmd" | "dockerfile" | "makefile" | "gitignore" | "env"
-            | "properties" | "sql" | "csv" => {
-                self.load_text_preview(path, cx);
-                self.state.main_view.preview_content = PreviewContent::None;
+            // Vector Graphics (.svg / .svgz) -> resvg + tiny-skia rasterizer + XML source
+            "svg" | "svgz" => {
+                self.state.main_view.preview_text = Some("Rendering SVG vector preview...".to_string());
+                self.state.main_view.preview_content = PreviewContent::Svg(SvgPreviewInfo::default());
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_svg_preview(&path_clone)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok(info) = res {
+                                    this.state.main_view.preview_text = Some(info.xml_snippet.clone());
+                                    this.state.main_view.preview_content = PreviewContent::Svg(info);
+                                } else {
+                                    this.state.main_view.preview_text =
+                                        Some("Unable to render SVG vector file.".to_string());
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
             }
 
-            // PDF files - extract metadata using lopdf
+            // Wide Programming Languages & Configs -> Syntax-Highlighted Code Preview
+            "rs" | "py" | "pyw" | "pyi" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts"
+            | "tsx" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "cs" | "go" | "java"
+            | "kt" | "kts" | "swift" | "rb" | "php" | "scala" | "r" | "lua" | "pl" | "pm"
+            | "sh" | "bash" | "zsh" | "fish" | "ps1" | "psm1" | "bat" | "cmd" | "sql"
+            | "graphql" | "gql" | "proto" | "vue" | "svelte" | "astro" | "dart" | "zig" | "nim"
+            | "ex" | "exs" | "erl" | "hs" | "ml" | "mli" | "clj" | "lisp" | "scm" | "vim"
+            | "cmake" | "gradle" | "glsl" | "hlsl" | "wgsl" | "css" | "scss" | "sass" | "less"
+            | "json" | "jsonc" | "json5" | "jsonl" | "ndjson" | "xml" | "plist" | "xaml"
+            | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "config" | "env"
+            | "properties" | "gitignore" | "gitattributes" | "editorconfig" | "npmrc" | "lock" => {
+                let lang = match ext.as_str() {
+                    "rs" => "rust",
+                    "py" | "pyw" | "pyi" => "python",
+                    "js" | "mjs" | "cjs" | "jsx" => "javascript",
+                    "ts" | "mts" | "cts" | "tsx" => "typescript",
+                    "c" | "h" => "c",
+                    "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "c++",
+                    "cs" => "c#",
+                    "go" => "go",
+                    "java" => "java",
+                    "kt" | "kts" => "kotlin",
+                    "swift" => "swift",
+                    "rb" => "ruby",
+                    "php" => "php",
+                    "sh" | "bash" | "zsh" | "fish" => "shell",
+                    "ps1" | "psm1" => "powershell",
+                    "json" | "jsonc" | "json5" | "jsonl" | "ndjson" => "json",
+                    "xml" | "plist" | "xaml" => "xml",
+                    "yaml" | "yml" => "yaml",
+                    "toml" | "ini" | "cfg" | "conf" | "config" | "lock" => "toml",
+                    other => other,
+                };
+                self.state.main_view.preview_content = PreviewContent::Code {
+                    language: lang.to_string(),
+                };
+                self.load_text_preview(path, req_id, true, cx);
+            }
+
+            // Plain text & log files
+            "txt" | "log" | "out" | "err" | "nfo" | "sub" | "srt" | "vtt" | "lic" | "license" => {
+                self.state.main_view.preview_content = PreviewContent::Text(String::new());
+                self.load_text_preview(path, req_id, false, cx);
+            }
+
+            // Excel workbooks: real cell grid (up to 1000 rows), scrollable both ways
+            "xlsx" => {
+                self.state.main_view.preview_text = Some("Loading spreadsheet...".to_string());
+                self.state.main_view.preview_content = PreviewContent::CsvTable {
+                    headers: Vec::new(),
+                    rows: Vec::new(),
+                    total_rows: 0,
+                    delimiter: ',',
+                    kind: "XLSX".to_string(),
+                };
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_xlsx_table_preview(&path_clone)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok((label, _sheets, headers, rows, total)) = res {
+                                    this.state.main_view.preview_text = Some(format!(
+                                        "{} columns × {} rows",
+                                        headers.len(),
+                                        total
+                                    ));
+                                    this.state.main_view.preview_content = PreviewContent::CsvTable {
+                                        headers,
+                                        rows,
+                                        total_rows: total,
+                                        delimiter: ',',
+                                        kind: label,
+                                    };
+                                } else {
+                                    this.state.main_view.preview_text =
+                                        Some("Unable to read worksheet data.".to_string());
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // PowerPoint: real slide images (shapes, images, theme, fonts).
+            "pptx" => {
+                self.state.main_view.preview_text = Some("Rendering slides...".to_string());
+                self.state.main_view.preview_content = PreviewContent::Office {
+                    pages: Vec::new(),
+                    label: "Slide".to_string(),
+                };
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    let cache_dir = crate::app_state::icons_cache_dir();
+                    let key = crate::app_state::disk_cache_key(&path_clone);
+                    preview_service::render_pptx_pages(&path_clone, &cache_dir, &key, 12)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                match res {
+                                    Ok(pages) if !pages.is_empty() => {
+                                        this.state.main_view.preview_text = None;
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Office {
+                                                pages,
+                                                label: "Slide".to_string(),
+                                            };
+                                    }
+                                    _ => {
+                                        this.state.main_view.preview_text = Some(
+                                            "Unable to render this presentation.".to_string(),
+                                        );
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::None;
+                                    }
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // Word / ODF / EPUB: structured Markdown (headings, bold/italic,
+            // lists, tables). DOCX goes through the BetterOffice facade first.
+            "docx" | "odt" | "epub" => {
+                self.state.main_view.preview_text = Some("Loading document preview...".to_string());
+                self.state.main_view.preview_content = PreviewContent::Markdown;
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let ext_clone = ext.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_office_markdown(&path_clone, &ext_clone)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                match res {
+                                    Ok(md) => {
+                                        this.state.main_view.preview_text = Some(md);
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Markdown;
+                                    }
+                                    Err(_) => {
+                                        this.state.main_view.preview_text = Some(
+                                            "Unable to extract document text.".to_string(),
+                                        );
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::Text(String::new());
+                                    }
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // Office containers without a dedicated handler (.xlsm, .xls, .ods, .odp):
+            // visual sheet grid / paginated document preview with rendered page canvas.
+            "xlsm" | "xls" | "ods" | "odp" => {
+                self.state.main_view.preview_text = None;
+                self.state.main_view.preview_content = PreviewContent::OfficeVisual(
+                    crate::ui::views::main_view::OfficePreviewInfo::default(),
+                );
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let ext_clone = ext.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_office_visual_preview(&path_clone, &ext_clone, 0)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok(info) = res {
+                                    this.state.main_view.preview_content =
+                                        PreviewContent::OfficeVisual(info);
+                                } else {
+                                    this.state.main_view.preview_text =
+                                        Some("Unable to render Office document preview.".to_string());
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // SQLite Databases (.sqlite, .sqlite3, .db)
+            "sqlite" | "sqlite3" | "db" => {
+                self.state.main_view.preview_text = Some("Inspecting SQLite schema...".to_string());
+                self.state.main_view.preview_content = PreviewContent::Database {
+                    tables: Vec::new(),
+                    page_size: 4096,
+                };
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_sqlite_preview(&path_clone)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok((tables, page_size)) = res {
+                                    this.state.main_view.preview_text =
+                                        Some(format!("{} tables", tables.len()));
+                                    this.state.main_view.preview_content =
+                                        PreviewContent::Database { tables, page_size };
+                                } else if let Ok((desc, arch, hex_lines)) =
+                                    preview_service::extract_binary_hex_preview(&path)
+                                {
+                                    this.state.main_view.preview_content =
+                                        PreviewContent::BinaryHex {
+                                            format_description: desc,
+                                            arch,
+                                            hex_lines,
+                                        };
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // Typography Fonts (.ttf, .otf, .woff, .woff2)
+            "ttf" | "otf" | "woff" | "woff2" => {
+                let family_name = path
+                    .as_path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Font".to_string());
+                let file_size = std::fs::metadata(path.as_path())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.state.main_view.preview_content = PreviewContent::Font {
+                    family_name,
+                    format: ext.to_uppercase(),
+                    file_size,
+                };
+                self.state.main_view.preview_text = None;
+                cx.notify();
+            }
+
+            // PDF files - render visual PDF page image in background (no raw text dump)
             "pdf" => {
-                self.state.main_view.preview_text = Some("Loading PDF metadata...".to_string());
-                self.state.main_view.preview_content =
-                    PreviewContent::Pdf(crate::ui::views::main_view::PdfPreviewInfo::default());
+                self.state.main_view.preview_text = None;
+                let mut init_pdf = crate::ui::views::main_view::PdfPreviewInfo::default();
+                init_pdf.current_page = 1;
+                init_pdf.page_count = 1;
+                init_pdf.rendered_page_path = self.state.main_view.icon_paths.get(&path).cloned();
+                self.state.main_view.preview_content = PreviewContent::Pdf(init_pdf);
 
                 let mut async_cx = cx.to_async();
                 let this_weak = cx.weak_entity();
                 let path_clone = path.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    let mut info = preview_service::extract_pdf_metadata(&path_clone)?;
+                    // Rasterize the first pages so the pane shows real page
+                    // images instead of raw extracted text.
+                    #[cfg(windows)]
+                    {
+                        let cache_dir = crate::app_state::icons_cache_dir();
+                        let key = crate::app_state::disk_cache_key(&path_clone);
+                        if let Ok(pages) =
+                            preview_service::render_pdf_pages(&path_clone, &cache_dir, &key, 10, 640)
+                        {
+                            info.pages = pages;
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(info)
+                });
                 cx.foreground_executor()
                     .spawn(async move {
-                        match preview_service::extract_pdf_metadata(&path_clone) {
-                            Ok(info) => {
-                                let mut content_lines = vec![
-                                    format!("PDF Document"),
-                                    format!("Pages: {}", info.page_count),
-                                ];
-                                if let Some(ref title) = info.title {
-                                    content_lines.push(format!("Title: {}", title));
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
                                 }
-                                if let Some(ref author) = info.author {
-                                    content_lines.push(format!("Author: {}", author));
-                                }
-                                if let Some(ref subject) = info.subject {
-                                    content_lines.push(format!("Subject: {}", subject));
-                                }
-                                if let Some(ref creator) = info.creator {
-                                    content_lines.push(format!("Creator: {}", creator));
-                                }
-
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
+                                match res {
+                                    Ok(mut info) => {
+                                        let mut content_lines = vec![
+                                            format!("PDF Document (v{})", info.pdf_version.as_deref().unwrap_or("1.7")),
+                                            format!("Pages: {}", info.page_count),
+                                        ];
+                                        if let Some(ref title) = info.title {
+                                            content_lines.push(format!("Title: {}", title));
+                                        }
+                                        if let Some(ref author) = info.author {
+                                            content_lines.push(format!("Author: {}", author));
+                                        }
+                                        if let Some(ref subject) = info.subject {
+                                            content_lines.push(format!("Subject: {}", subject));
+                                        }
+                                        if let Some(ref creator) = info.creator {
+                                            content_lines.push(format!("Creator: {}", creator));
+                                        }
+                                        if let Some(ref txt) = info.extracted_text {
+                                            content_lines.push(format!("\n─── Extracted Page Text ───\n{}", txt));
+                                        }
                                         this.state.main_view.preview_text =
                                             Some(content_lines.join("\n"));
+                                        // Prefer the visual page render when available.
+                                        if info.rendered_page_path.is_none() {
+                                            if let Some(first) = info.pages.first().cloned() {
+                                                info.rendered_page_path = Some(first);
+                                            }
+                                        }
                                         this.state.main_view.preview_content =
                                             PreviewContent::Pdf(info);
                                         cx.notify();
-                                    })
-                                    .ok();
-                            }
-                            Err(e) => {
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
+                                    }
+                                    Err(e) => {
                                         this.state.main_view.preview_text = Some(format!(
                                             "PDF Preview\n\nFailed to read PDF metadata: {}",
                                             e
                                         ));
                                         cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        }
+                                    }
+                                }
+                            })
+                            .ok();
                     })
                     .detach();
             }
 
-            // Image files - no text preview needed (images shown in Details pane)
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
-            | "raw" | "psd" | "ai" | "eps" | "heic" | "heif" => {
-                self.state.main_view.preview_text = None;
-                self.state.main_view.preview_content = PreviewContent::None;
-                cx.notify();
+            // HEIC/HEIF photos (iPhone): OS WIC codec, shell thumbnail fallback
+            "heic" | "heif" => {
+                self.load_rasterized_image_preview(path, req_id, "heic", cx);
             }
 
-            // Audio files - extract metadata using id3
-            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "ape" | "alac" | "aiff" => {
+            // Exotic/proprietary rasters: OS shell thumbnail -> PNG cache
+            "avif" | "tga" | "dds" | "raw" | "cr2" | "nef" | "arw" | "psd" | "ai" | "eps" => {
+                self.load_rasterized_image_preview(path, req_id, "shell", cx);
+            }
+
+            // Raster & Camera Image files -> Bounded <=1024px VRAM-safe preview + EXIF & header metadata
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "tga"
+            | "dds" | "pnm" | "pbm" | "pgm" | "ppm" | "hdr" | "avif" | "raw" | "cr2" | "nef"
+            | "arw" | "psd" | "ai" | "eps" | "heic" | "heif" => {
+                let mut init_img = ImagePreviewInfo::default();
+                init_img.display_path = self
+                    .state
+                    .main_view
+                    .icon_paths
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| path.as_path().to_path_buf());
+                init_img.format = ext.to_uppercase();
+                self.state.main_view.preview_text = None;
+                self.state.main_view.preview_content = PreviewContent::Image(init_img);
+
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let ext_clone = ext.clone();
+                let thumb_svc = self.state.thumbnail_service.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    match preview_service::extract_image_preview(&path_clone, &ext_clone) {
+                        Ok(mut info) => {
+                            // If dimensions are still 0 (e.g. RAW/HEIC/PSD not decoded by `image` crate),
+                            // try OS shell thumbnail fallback (`IShellItemImageFactory` on Windows)
+                            if info.width == 0 && info.height == 0 {
+                                if let Some(poster) = thumb_svc.extract_and_save_poster_png(
+                                    &path_clone,
+                                    crate::platform::windows::thumbnail_service::ThumbnailSize::ExtraLarge,
+                                ) {
+                                    info.display_path = poster;
+                                }
+                            }
+                            Ok(info)
+                        }
+                        Err(e) => Err(e),
+                    }
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                if let Ok(info) = res {
+                                    this.state.main_view.preview_content =
+                                        PreviewContent::Image(info);
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // SVG vectors: resvg raster to PNG cache on background executor
+            "svg" => {
+                self.state.main_view.preview_text = Some("Rendering vector preview...".to_string());
+                self.state.main_view.preview_content =
+                    PreviewContent::Image(ImagePreviewInfo {
+                        display_path: path.as_path().to_path_buf(),
+                        ..Default::default()
+                    });
+                let mut async_cx = cx.to_async();
+                let this_weak = cx.weak_entity();
+                let path_clone = path.clone();
+                let fallback_display = path.as_path().to_path_buf();
+                let bg = cx.background_executor().spawn(async move {
+                    let cache_dir = crate::app_state::icons_cache_dir();
+                    let out_path = cache_dir.join(format!(
+                        "{}_svg.png",
+                        crate::app_state::disk_cache_key(&path_clone)
+                    ));
+                    if !(out_path.exists()
+                        || preview_service::rasterize_svg_preview(&path_clone, &out_path, 1024)
+                            .is_ok())
+                    {
+                        return None;
+                    }
+                    Some(out_path)
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let png = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                this.state.main_view.preview_text = None;
+                                this.state.main_view.preview_content =
+                                    PreviewContent::Image(ImagePreviewInfo {
+                                        display_path: png.unwrap_or(fallback_display),
+                                        ..Default::default()
+                                    });
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+            }
+
+            // Audio files - extract metadata & embedded ID3 APIC cover art on background executor
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" | "wma" | "ape" | "alac"
+            | "aiff" => {
                 self.state.main_view.preview_text = Some("Loading audio metadata...".to_string());
                 self.state.main_view.preview_content =
                     PreviewContent::Audio(crate::ui::views::main_view::MediaPreviewInfo::default());
-
                 let mut async_cx = cx.to_async();
                 let this_weak = cx.weak_entity();
                 let path_clone = path.clone();
                 let ext_clone = ext.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    preview_service::extract_audio_metadata(&path_clone, &ext_clone)
+                });
                 cx.foreground_executor()
                     .spawn(async move {
-                        match preview_service::extract_audio_metadata(&path_clone, &ext_clone) {
-                            Ok(info) => {
-                                let mut content_lines = vec![format!("Audio File")];
-                                if let Some(ref format) = info.format {
-                                    content_lines.push(format!("Format: {}", format));
+                        let res = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
                                 }
-                                if let Some(duration) = info.duration_secs {
-                                    let mins = (duration / 60.0) as u64;
-                                    let secs = (duration % 60.0) as u64;
-                                    content_lines.push(format!("Duration: {}:{:02}", mins, secs));
+                                if let Ok(info) = res {
+                                    let mut content_lines = Vec::new();
+                                    if let Some(ref title) = info.title {
+                                        content_lines.push(format!("Title: {}", title));
+                                    }
+                                    if let Some(ref artist) = info.artist {
+                                        content_lines.push(format!("Artist: {}", artist));
+                                    }
+                                    if let Some(ref album) = info.album {
+                                        content_lines.push(format!("Album: {}", album));
+                                    }
+                                    this.state.main_view.preview_text = if content_lines.is_empty() {
+                                        None
+                                    } else {
+                                        Some(content_lines.join("\n"))
+                                    };
+                                    this.state.main_view.preview_content =
+                                        PreviewContent::Audio(info);
+                                    cx.notify();
                                 }
-                                if let Some(bitrate) = info.bitrate_kbps {
-                                    content_lines.push(format!("Bitrate: {} kbps", bitrate));
-                                }
-                                if let Some(ref codec) = info.codec {
-                                    content_lines.push(format!("Artist: {}", codec));
-                                }
-
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
-                                        this.state.main_view.preview_text =
-                                            Some(content_lines.join("\n"));
-                                        this.state.main_view.preview_content =
-                                            PreviewContent::Audio(info);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                            Err(e) => {
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
-                                        this.state.main_view.preview_text = Some(format!(
-                                            "Audio Preview\n\nFailed to read metadata: {}",
-                                            e
-                                        ));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        }
+                            })
+                            .ok();
                     })
                     .detach();
             }
 
-            // Video files - extract metadata
+            // Video files - native MF playback (+ metadata & poster on background executor)
             "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "mpg" | "mpeg" | "3gp"
-            | "flv" | "vob" | "ogv" => {
-                self.state.main_view.preview_text = Some("Loading video metadata...".to_string());
-                self.state.main_view.preview_content =
-                    PreviewContent::Video(crate::ui::views::main_view::MediaPreviewInfo::default());
+            | "flv" | "vob" | "ogv" | "ts" | "m2ts" => {
+                self.state.main_view.preview_text = Some("Loading video stream...".to_string());
+                let cached_poster = self.state.main_view.icon_paths.get(&path).cloned();
+                let mut init_info = crate::ui::views::main_view::MediaPreviewInfo::default();
+                init_info.poster_path = cached_poster.clone();
+                self.state.main_view.preview_content = PreviewContent::Video(init_info);
+                // Native playback session (dropped on next selection change).
+                {
+                    use crate::platform::windows::media_player::{MfPlayer, VideoBackend};
+                    let muted = self.state.main_view.video_muted;
+                    match VideoBackend::selected() {
+                        VideoBackend::MediaFoundation => {
+                            match MfPlayer::open(path.as_path().to_path_buf(), None) {
+                                Ok(p) => {
+                                    p.set_muted(muted);
+                                    self.state.video_player = Some(p);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("MF player unavailable: {}", e);
+                                    self.state.video_player = None;
+                                }
+                            }
+                        }
+                        VideoBackend::Ffmpeg => {
+                            // Reserved hook: ffmpeg-sidecar pump plugs in here.
+                            tracing::warn!(
+                                "FFmpeg backend not bundled yet — timeline simulation active"
+                            );
+                            self.state.video_player = None;
+                        }
+                    }
+                }
 
                 let mut async_cx = cx.to_async();
                 let this_weak = cx.weak_entity();
                 let path_clone = path.clone();
                 let ext_clone = ext.clone();
+                let thumb_svc = self.state.thumbnail_service.clone();
+                let bg_path = path_clone.clone();
+                let bg = cx.background_executor().spawn(async move {
+                    let mut info = preview_service::extract_video_metadata(&bg_path, &ext_clone)
+                        .unwrap_or_default();
+                    if info.poster_path.is_none() {
+                        info.poster_path = cached_poster.or_else(|| {
+                            thumb_svc.extract_and_save_poster_png(
+                                &bg_path,
+                                crate::platform::windows::thumbnail_service::ThumbnailSize::Large,
+                            )
+                        });
+                    }
+                    info
+                });
                 cx.foreground_executor()
                     .spawn(async move {
-                        match preview_service::extract_video_metadata(&path_clone, &ext_clone) {
-                            Ok(info) => {
-                                let mut content_lines = vec![format!("Video File")];
-                                if let Some(ref format) = info.format {
-                                    content_lines.push(format!("Format: {}", format));
+                        let info = bg.await;
+                        this_weak
+                            .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
                                 }
-                                if let Some(duration) = info.duration_secs {
-                                    let mins = (duration / 60.0) as u64;
-                                    let secs = (duration % 60.0) as u64;
-                                    content_lines.push(format!("Duration: {}:{:02}", mins, secs));
+                                if let Some(ref poster) = info.poster_path {
+                                    this.state
+                                        .main_view
+                                        .icon_paths
+                                        .insert(path_clone.clone(), poster.clone());
                                 }
-                                if let Some(bitrate) = info.bitrate_kbps {
-                                    content_lines
-                                        .push(format!("Bitrate: {} kbps (estimated)", bitrate));
-                                }
-                                if let (Some(w), Some(h)) = (info.width, info.height) {
-                                    content_lines.push(format!("Resolution: {}x{}", w, h));
-                                }
-
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
-                                        this.state.main_view.preview_text =
-                                            Some(content_lines.join("\n"));
-                                        this.state.main_view.preview_content =
-                                            PreviewContent::Video(info);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                            Err(e) => {
-                                this_weak
-                                    .update(&mut async_cx, |this, cx| {
-                                        this.state.main_view.preview_text = Some(format!(
-                                            "Video Preview\n\nFailed to read metadata: {}",
-                                            e
-                                        ));
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        }
+                                this.state.main_view.preview_text = info.container_info.clone();
+                                this.state.main_view.preview_content = PreviewContent::Video(info);
+                                cx.notify();
+                            })
+                            .ok();
                     })
                     .detach();
             }
 
-            // Archive files - list contents
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" => {
-                self.load_archive_preview(path, cx);
+            // Archive files - list contents & compression ratio on background executor
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "zst" | "jar"
+            | "apk" | "whl" | "nupkg" | "vsix" => {
+                self.load_archive_preview(path, req_id, cx);
             }
 
-            // Shortcut files - show target info (basic stub)
-            "lnk" => {
-                self.state.main_view.preview_text = Some(
-                "Shortcut Preview\n\nTarget: (requires shell integration)\nArguments: (requires shell integration)".to_string()
-            );
-                self.state.main_view.preview_content = PreviewContent::None;
-                cx.notify();
+            // Known Binary / Executable / System files -> PE/ELF/WASM Header + Hex Inspector
+            // Windows PE binaries: show the real icon/thumbnail, never hex.
+            "exe" | "dll" | "sys" | "msi" | "cpl" | "scr" | "com" | "ocx" => {
+                self.load_rasterized_image_preview(path, req_id, "shell", cx);
+            }
+            "so" | "dylib" | "wasm" | "bin" | "iso" | "img"
+            | "class" | "pyc" | "pyd" | "o" | "obj" | "lib" | "a" | "pak" | "dat" => {
+                self.load_binary_hex_preview(path, req_id, cx);
             }
 
-            // Unknown or unsupported - no preview
+            // Shortcut files (.lnk / .url)
+            "lnk" | "url" => {
+                self.load_text_preview(path, req_id, false, cx);
+            }
+
+            // Any other file extension: auto-detect bounded text vs binary Hex Inspector!
             _ => {
-                self.state.main_view.preview_text = None;
-                self.state.main_view.preview_content = PreviewContent::None;
-                cx.notify();
+                self.load_text_preview(path, req_id, false, cx);
             }
         }
     }
-    fn load_text_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+
+    fn load_binary_hex_preview(&mut self, path: FilesPath, req_id: u64, cx: &mut Context<Self>) {
+        use crate::storage::preview_service;
+        use crate::ui::views::main_view::PreviewContent;
+
+        self.state.main_view.preview_text = Some("Inspecting binary header...".to_string());
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let path_clone = path.clone();
+        let bg = cx.background_executor().spawn(async move {
+            preview_service::extract_binary_hex_preview(&path_clone)
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                let res = bg.await;
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        if this.state.main_view.preview_request_id != req_id {
+                            return;
+                        }
+                        if let Ok((format_description, arch, hex_lines)) = res {
+                            this.state.main_view.preview_text = Some(format_description.clone());
+                            this.state.main_view.preview_content = PreviewContent::BinaryHex {
+                                format_description,
+                                arch,
+                                hex_lines,
+                            };
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    /// Rasterize HEIC/SVG/exotic images to a PNG cache file on the background
+    /// executor, then show it via `PreviewContent::Image`.
+    fn load_rasterized_image_preview(
+        &mut self,
+        path: FilesPath,
+        req_id: u64,
+        kind: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::storage::preview_service;
+        use crate::ui::views::main_view::{ImagePreviewInfo, PreviewContent};
+        self.state.main_view.preview_text = Some("Rendering image preview...".to_string());
+        self.state.main_view.preview_content =
+            PreviewContent::Image(ImagePreviewInfo {
+                display_path: path.as_path().to_path_buf(),
+                ..Default::default()
+            });
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let path_clone = path.clone();
+        let kind_owned = kind.to_string();
+        let thumb_svc = self.state.thumbnail_service.clone();
+        let bg = cx.background_executor().spawn(async move {
+            let cache_dir = crate::app_state::icons_cache_dir();
+            let out_path = cache_dir.join(format!(
+                "{}_{}.png",
+                crate::app_state::disk_cache_key(&path_clone),
+                kind_owned
+            ));
+            if out_path.exists() {
+                return Some(out_path);
+            }
+            let rasterized = if kind_owned == "heic" {
+                #[cfg(windows)]
+                {
+                    preview_service::decode_heic_wic_preview(&path_clone, &out_path).is_ok()
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            } else {
+                false
+            };
+            if rasterized || out_path.exists() {
+                return Some(out_path);
+            }
+            // Universal fallback: OS shell thumbnail -> PNG cache.
+            if let Ok(res) = thumb_svc.extract_thumbnail(
+                &path_clone,
+                crate::platform::windows::thumbnail_service::ThumbnailSize::Large,
+            ) {
+                if !res.data.is_empty()
+                    && preview_service::save_bgra_png(&res.data, res.width, res.height, &out_path)
+                {
+                    return Some(out_path);
+                }
+            }
+            None
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                let png = bg.await;
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        if this.state.main_view.preview_request_id != req_id {
+                            return;
+                        }
+                        this.state.main_view.preview_text = None;
+                        this.state.main_view.preview_content = match png {
+                            Some(cached) => PreviewContent::Image(ImagePreviewInfo {
+                                display_path: cached,
+                                ..Default::default()
+                            }),
+                            // Total failure: generic file card instead of a blank canvas.
+                            None => PreviewContent::None,
+                        };
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    fn load_text_preview(
+        &mut self,
+        path: FilesPath,
+        req_id: u64,
+        prehighlight_code: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::storage::preview_service;
+        use crate::ui::views::main_view::{MainView, PreviewContent};
+
         self.state.main_view.preview_text = Some("Loading preview...".to_string());
 
         let mut async_cx = cx.to_async();
         let this_weak = cx.weak_entity();
         let path_clone = path.clone();
+        let bg = cx.background_executor().spawn(async move {
+            let loaded = preview_service::read_bounded_text_or_detect_binary(&path_clone)?;
+            match loaded {
+                Ok(text) => {
+                    let highlighted = if prehighlight_code {
+                        // Cap syntax highlighting to first 300 lines & max 200 chars/line for instant 120 FPS rendering
+                        let capped: String = text
+                            .lines()
+                            .take(300)
+                            .map(|l| {
+                                if l.len() > 200 {
+                                    let cut = l.char_indices().nth(200).map(|(i, _)| i).unwrap_or(l.len());
+                                    format!("{} …", &l[..cut])
+                                } else {
+                                    l.to_string()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        std::sync::Arc::new(MainView::highlight_code(&capped))
+                    } else {
+                        std::sync::Arc::new(Vec::new())
+                    };
+                    Ok::<_, anyhow::Error>(Ok((text, highlighted)))
+                }
+                Err(binary_sample) => {
+                    let (desc, arch) = preview_service::extract_binary_hex_preview(&path_clone)
+                        .map(|(d, a, _)| (d, a))
+                        .unwrap_or_else(|_| ("Binary File".to_string(), None));
+                    let hex_lines = preview_service::format_hex_lines(&binary_sample);
+                    Ok(Err((desc, arch, hex_lines)))
+                }
+            }
+        });
+
         cx.foreground_executor()
             .spawn(async move {
-                let result = std::fs::read_to_string(path_clone.as_path());
+                let result = bg.await;
                 this_weak
                     .update(&mut async_cx, |this, cx| {
+                        if this.state.main_view.preview_request_id != req_id {
+                            return;
+                        }
                         match result {
-                            Ok(text) => {
-                                // Limit to 10k chars as per TODO
-                                let preview = if text.len() > 10000 {
-                                    // Safe UTF-8 truncation: find the char boundary at or before byte 10000
-                                    let truncate_at = text
-                                        .char_indices()
-                                        .nth(10000)
-                                        .map(|(i, _)| i)
-                                        .unwrap_or(text.len());
-                                    format!(
-                                        "{}\n\n[Preview truncated at 10,000 characters]",
-                                        &text[..truncate_at]
-                                    )
-                                } else {
-                                    text
+                            Ok(Ok((text, highlighted))) => {
+                                this.state.main_view.preview_highlighted_lines = highlighted;
+                                this.state.main_view.preview_text = Some(text);
+                            }
+                            Ok(Err((format_description, arch, hex_lines))) => {
+                                this.state.main_view.preview_text =
+                                    Some(format_description.clone());
+                                this.state.main_view.preview_content = PreviewContent::BinaryHex {
+                                    format_description,
+                                    arch,
+                                    hex_lines,
                                 };
-                                // Highlight once here (UI thread, once per file) so
-                                // every render — including resize drags — reuses
-                                // the cached tokens instead of re-tokenizing.
-                                let highlighted =
-                                    crate::ui::views::main_view::MainView::highlight_code(
-                                        &preview,
-                                    );
-                                this.state.main_view.preview_highlighted_src =
-                                    preview.clone();
-                                this.state.main_view.preview_highlighted = highlighted;
-                                this.state.main_view.preview_text = Some(preview);
                             }
                             Err(_) => {
                                 this.state.main_view.preview_text =
-                                    Some("Unable to load preview.".to_string());
-                                this.state.main_view.preview_highlighted_src.clear();
-                                this.state.main_view.preview_highlighted.clear();
+                                    Some("Unable to load file preview.".to_string());
                             }
                         }
                         cx.notify();
@@ -967,50 +1626,66 @@ impl AppWindow {
             })
             .detach();
     }
-    fn load_archive_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+
+    fn load_archive_preview(&mut self, path: FilesPath, req_id: u64, cx: &mut Context<Self>) {
         use crate::storage::archive_service::ArchiveService;
+        use crate::storage::preview_service;
         use crate::ui::views::main_view::{ArchivePreviewInfo, PreviewContent};
 
         self.state.main_view.preview_content =
             PreviewContent::Archive(ArchivePreviewInfo::default());
         self.state.main_view.preview_text = Some("Loading archive contents...".to_string());
 
+        let ext = path
+            .as_path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
         let mut async_cx = cx.to_async();
         let this_weak = cx.weak_entity();
         let path_clone = path.clone();
+        let bg = cx.background_executor().spawn(async move {
+            if let Ok(info) = preview_service::extract_archive_preview(&path_clone, &ext) {
+                return Ok(info);
+            }
+            let entries = ArchiveService::list_contents(&path_clone)?;
+            let entry_count = entries.len();
+            let display_entries: Vec<String> = entries.into_iter().take(120).collect();
+            Ok::<ArchivePreviewInfo, anyhow::Error>(ArchivePreviewInfo {
+                entry_count,
+                entries: display_entries,
+                uncompressed_size: None,
+                compression_ratio: None,
+            })
+        });
         cx.foreground_executor()
             .spawn(async move {
-                // Try to list archive contents
-                match ArchiveService::list_contents(&path_clone) {
-                    Ok(entries) => {
-                        let entry_count = entries.len();
-                        let display_entries: Vec<String> = entries.into_iter().take(100).collect();
-                        let has_more = entry_count > 100;
-
+                match bg.await {
+                    Ok(info) => {
                         this_weak
                             .update(&mut async_cx, |this, cx| {
-                                let content = if has_more {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                let content = if info.entry_count > info.entries.len() {
                                     format!(
                                         "Archive Contents ({})\n\n{}\n\n... and {} more entries",
-                                        entry_count,
-                                        display_entries.join("\n"),
-                                        entry_count - 100
+                                        info.entry_count,
+                                        info.entries.join("\n"),
+                                        info.entry_count - info.entries.len()
                                     )
                                 } else {
                                     format!(
                                         "Archive Contents ({})\n\n{}",
-                                        entry_count,
-                                        display_entries.join("\n")
+                                        info.entry_count,
+                                        info.entries.join("\n")
                                     )
                                 };
                                 this.state.main_view.preview_text = Some(content);
                                 this.state.main_view.preview_content =
-                                    PreviewContent::Archive(ArchivePreviewInfo {
-                                        entry_count,
-                                        entries: display_entries,
-                                        uncompressed_size: None,
-                                        compression_ratio: None,
-                                    });
+                                    PreviewContent::Archive(info);
                                 cx.notify();
                             })
                             .ok();
@@ -1018,6 +1693,9 @@ impl AppWindow {
                     Err(e) => {
                         this_weak
                             .update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
                                 this.state.main_view.preview_text = Some(format!(
                                     "Archive Preview\n\nUnable to list archive contents:\n{}",
                                     e
@@ -1222,6 +1900,9 @@ impl AppWindow {
             SidePaneMode::Preview => SidePaneMode::None,
             _ => SidePaneMode::Preview,
         };
+        if !matches!(self.state.main_view.side_pane, SidePaneMode::None) {
+            self.load_preview_for_selected_item(cx);
+        }
         cx.notify();
     }
 
@@ -1232,6 +1913,9 @@ impl AppWindow {
             SidePaneMode::Info => SidePaneMode::None,
             _ => SidePaneMode::Info,
         };
+        if !matches!(self.state.main_view.side_pane, SidePaneMode::None) {
+            self.load_preview_for_selected_item(cx);
+        }
         cx.notify();
     }
 
@@ -1246,7 +1930,6 @@ impl AppWindow {
             }
         });
         self.state.main_view.show_hidden_files = !current;
-        self.state.nav_bar.search_options.include_hidden = !current;
         cx.notify();
     }
 
@@ -1287,6 +1970,9 @@ impl AppWindow {
             SidePaneMode::Details => SidePaneMode::None,
             _ => SidePaneMode::Details,
         };
+        if !matches!(self.state.main_view.side_pane, SidePaneMode::None) {
+            self.load_preview_for_selected_item(cx);
+        }
         cx.notify();
     }
 
@@ -1620,7 +2306,7 @@ impl AppWindow {
         });
 
         // Sync column visibility flags with MainViewState
-        let (show_hidden, show_dot, show_sys, folder_on_top, sort_asc, show_date, show_type, show_size, show_ext) = {
+        let (show_hidden, show_dot, show_sys, folder_on_top, sort_asc, show_date, show_type, show_size) = {
             let cfg = &self.state.settings.read(cx).config;
             (
                 cfg.preferences.show_hidden_files,
@@ -1631,19 +2317,21 @@ impl AppWindow {
                 cfg.view.show_date_column,
                 cfg.view.show_type_column,
                 cfg.view.show_size_column,
-                cfg.preferences.show_file_extensions,
             )
         };
         self.state.main_view.show_hidden_files = show_hidden;
         self.state.main_view.show_dot_files = show_dot;
         self.state.main_view.show_system_files = show_sys;
-        self.state.main_view.show_extensions = show_ext;
         self.state.main_view.sort.folders_first = folder_on_top;
         self.state.main_view.sort.ascending = sort_asc;
         self.state.main_view.column_visibility.date = show_date;
         self.state.main_view.column_visibility.type_col = show_type;
         self.state.main_view.column_visibility.size = show_size;
-        self.state.nav_bar.search_options.include_hidden = show_hidden;
+        self.state.secondary_view.show_hidden_files = show_hidden;
+        self.state.secondary_view.show_dot_files = show_dot;
+        self.state.secondary_view.show_system_files = show_sys;
+        self.state.secondary_view.sort.folders_first = folder_on_top;
+        self.state.secondary_view.sort.ascending = sort_asc;
 
         if needs_refresh {
             self.refresh(cx);
@@ -1656,42 +2344,98 @@ impl AppWindow {
     pub(crate) fn load_folder_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
         use crate::ui::views::main_view::{FolderPreviewItem, PreviewContent};
 
+        self.state.main_view.preview_request_id =
+            self.state.main_view.preview_request_id.wrapping_add(1);
+        let req_id = self.state.main_view.preview_request_id;
+        self.state.main_view.side_pane_bouncy_scroll.set_immediate_offset(0.0);
+        self.state
+            .main_view
+            .side_pane_scroll_handle
+            .set_offset(gpui::point(px(0.0), px(0.0)));
+        self.state.main_view.peek_bouncy_scroll.set_immediate_offset(0.0);
+        self.state
+            .main_view
+            .peek_scroll_handle
+            .set_offset(gpui::point(px(0.0), px(0.0)));
+
         let mut async_cx = cx.to_async();
         let this_weak = cx.weak_entity();
         let path_clone = path.clone();
 
-        cx.foreground_executor()
-            .spawn(async move {
-                let mut items = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(path_clone.as_path()) {
-                    for (count, entry) in entries.filter_map(|e| e.ok()).enumerate() {
-                        if count >= 12 {
-                            break;
-                        }
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                        // Glimpse: count direct children for subfolders (bounded scan).
-                        let child_count = if is_dir {
-                            std::fs::read_dir(entry.path())
-                                .map(|it| it.take(101).filter_map(|e| e.ok()).count())
-                                .ok()
+        let bg = cx.background_executor().spawn(async move {
+            let mut items = Vec::new();
+            let mut subfolders = 0usize;
+            let mut files = 0usize;
+            let mut total_size = 0u64;
+
+            if let Ok(entries) = std::fs::read_dir(path_clone.as_path()) {
+                for entry in entries.filter_map(|e| e.ok()).take(200) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let meta = entry.metadata().ok();
+                    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = if is_dir {
+                        0
+                    } else {
+                        meta.as_ref().map(|m| m.len()).unwrap_or(0)
+                    };
+                    if is_dir {
+                        subfolders += 1;
+                    } else {
+                        files += 1;
+                        total_size += size;
+                    }
+                    if items.len() < 64 {
+                        let modified = meta
+                            .and_then(|m| m.modified().ok())
+                            .map(|st| {
+                                let dt: chrono::DateTime<chrono::Local> = st.into();
+                                dt.format("%Y-%m-%d %H:%M").to_string()
+                            });
+                        let ext = if is_dir {
+                            "Folder".to_string()
                         } else {
-                            None
+                            entry
+                                .path()
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_uppercase())
+                                .unwrap_or_else(|| "File".to_string())
                         };
                         items.push(FolderPreviewItem {
                             name,
                             is_dir,
-                            child_count,
+                            path: FilesPath::from(entry.path()),
+                            size,
+                            modified,
+                            ext,
                         });
                     }
                 }
+            }
+            items.sort_by(|a, b| {
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+            });
+            (items, subfolders, files, total_size)
+        });
 
+        cx.foreground_executor()
+            .spawn(async move {
+                let (items, subfolders, files, total_size) = bg.await;
                 this_weak
                     .update(&mut async_cx, |this, cx| {
-                        let display_count = items.len();
+                        if this.state.main_view.preview_request_id != req_id {
+                            return;
+                        }
+                        this.state.main_view.details_cache.folder_subfolders = subfolders;
+                        this.state.main_view.details_cache.folder_files = files;
+                        this.state.main_view.details_cache.folder_total_size = total_size;
                         this.state.main_view.preview_content = PreviewContent::Folder(items);
-                        this.state.main_view.preview_text =
-                            Some(format!("Folder contents: {} items shown", display_count));
+                        this.state.main_view.preview_text = Some(format!(
+                            "{} folders, {} files",
+                            subfolders, files
+                        ));
                         cx.notify();
                     })
                     .ok();
@@ -2622,27 +3366,12 @@ impl AppWindow {
         use crate::config::config::ViewMode as VM;
         let next = match self.state.main_view.view_mode {
             VM::Details => VM::List,
-            VM::List => VM::Grid,
+            VM::List => VM::Cards,
+            VM::Cards => VM::Grid,
             VM::Grid => VM::Columns,
             VM::Columns => VM::Details,
-            _ => VM::Details,
         };
         self.set_view_mode(next, cx);
-    }
-
-    /// Cycle Name -> DateModified -> Size -> Type (toolbar Sort button).
-    /// Same column twice flips direction via toggle_sort.
-    pub fn cycle_sort_column(&mut self, cx: &mut Context<Self>) {
-        use crate::config::config::SortBy as SB;
-        let next = match self.state.main_view.sort.column {
-            SB::Name => SB::DateModified,
-            SB::DateModified => SB::Size,
-            SB::Size => SB::Type,
-            _ => SB::Name,
-        };
-        self.state.main_view.toggle_sort(next);
-        self.state.main_view.bump_items_revision();
-        cx.notify();
     }
 
     pub fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
@@ -2892,7 +3621,7 @@ impl AppWindow {
                 "date_format" => s.config.preferences.date_format = value,
                 "size_unit_format" => s.config.preferences.size_unit_format = value,
                 "status_center_visibility" => {
-                    s.config.appearance.status_center_visibility = value
+                s.config.appearance.status_center_visibility = value
                 }
                 "delete_confirmation_policy" => {
                     s.config.preferences.confirm_delete = value != "never";
@@ -2949,9 +3678,15 @@ impl AppWindow {
         }
 
         if let Some(prio) = new_sort_priority {
-            self.state.main_view.sort.folders_first = prio == "folders_first";
+            let ff = prio == "folders_first";
+            self.state.main_view.sort.folders_first = ff;
             self.state.main_view.apply_sort();
             self.state.main_view.bump_items_revision();
+            self.state.secondary_view.sort.folders_first = ff;
+            self.state.secondary_view.apply_sort();
+            self.state.secondary_view.bump_items_revision();
+            self.sync_pane_selection_model(crate::core::navigation_manager::PaneFocus::Primary, cx);
+            self.sync_pane_selection_model(crate::core::navigation_manager::PaneFocus::Secondary, cx);
         }
 
         cx.notify();
@@ -3063,7 +3798,7 @@ impl AppWindow {
     }
 
     pub fn reset_all_action_bindings(&mut self, cx: &mut Context<Self>) {
-        self.state.action_registry.reset_all_defaults();
+        self.state.action_registry = crate::core::action_registry::ActionRegistry::new();
         self.state.settings_ui.recorder = None;
         self.persist_action_bindings(cx);
         cx.notify();
@@ -3099,7 +3834,7 @@ impl AppWindow {
     }
 
     pub fn refresh_home_tags_cache(&mut self, cx: &mut Context<Self>) {
-        let defined_tags = self.state.settings.read(cx).config.file_tags.clone();
+        let defined_tags = self.state.settings.read(cx).config.tag_definitions.clone();
         let db_counts: std::collections::HashMap<String, i64> = self
             .state
             .tag_service
@@ -3131,12 +3866,12 @@ impl AppWindow {
         settings.update(cx, move |s, _cx| {
             if !s
                 .config
-                .file_tags
+                .tag_definitions
                 .iter()
                 .any(|t| t.name.eq_ignore_ascii_case(&name))
             {
-                s.config.file_tags.push(crate::config::config::TagDefinition {
-                    id: format!("tag_{}", s.config.file_tags.len() + 1),
+                s.config.tag_definitions.push(crate::config::config::TagDefinition {
+                    id: format!("tag_{}", s.config.tag_definitions.len() + 1),
                     name,
                     color,
                 });
@@ -3154,7 +3889,7 @@ impl AppWindow {
         settings.update(cx, move |s, _cx| {
             if let Some(t) = s
                 .config
-                .file_tags
+                .tag_definitions
                 .iter_mut()
                 .find(|t| t.name.eq_ignore_ascii_case(&tag_name))
             {
@@ -3171,7 +3906,7 @@ impl AppWindow {
         let settings = self.state.settings.clone();
         settings.update(cx, move |s, _cx| {
             s.config
-                .file_tags
+                .tag_definitions
                 .retain(|t| !t.name.eq_ignore_ascii_case(&tag_name));
             let _ = s.config.save();
         });
@@ -3191,7 +3926,7 @@ impl AppWindow {
         self.state.status_center.push_notification(
             "Thumbnail Cache Cleared".to_string(),
             "All cached thumbnails and icons have been removed.".to_string(),
-            crate::ui::components::status_center::NotificationSeverity::Success,
+            crate::ui::components::status_center::ToastSeverity::Success,
             None,
         );
         cx.notify();
@@ -3208,7 +3943,7 @@ impl AppWindow {
                 self.state.status_center.push_notification(
                     "Settings Exported".to_string(),
                     format!("Saved backup to {}", backup_path.display()),
-                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    crate::ui::components::status_center::ToastSeverity::Success,
                     None,
                 );
             }
@@ -3232,7 +3967,7 @@ impl AppWindow {
                 self.state.status_center.push_notification(
                     "Settings Imported".to_string(),
                     format!("Restored configuration from {}", backup_path.display()),
-                    crate::ui::components::status_center::NotificationSeverity::Success,
+                    crate::ui::components::status_center::ToastSeverity::Success,
                     None,
                 );
             }
@@ -3270,9 +4005,19 @@ impl AppWindow {
     }
 
     pub fn set_sort_column(&mut self, col: crate::config::config::SortBy, cx: &mut Context<Self>) {
-        self.state.main_view.toggle_sort(col.clone());
-        self.state.main_view.bump_items_revision();
-        let asc = self.state.main_view.sort.ascending;
+        let pane_focus = self.state.active_pane_focus();
+        let asc = {
+            let view = self.state.pane_view_mut(pane_focus);
+            view.toggle_sort(col.clone());
+            view.bump_items_revision();
+            view.sort.ascending
+        };
+        // Keep main_view synced if primary
+        if pane_focus != crate::core::navigation_manager::PaneFocus::Primary {
+            self.state.main_view.sort = self.state.secondary_view.sort.clone();
+            self.state.main_view.bump_items_revision();
+        }
+        self.sync_pane_selection_model(pane_focus, cx);
         let settings = self.state.settings.clone();
         settings.update(cx, move |s, _cx| {
             s.config.view.sort_by = col;
@@ -3282,10 +4027,41 @@ impl AppWindow {
         cx.notify();
     }
 
+    pub fn cycle_sort_column(&mut self, cx: &mut Context<Self>) {
+        use crate::config::config::SortBy;
+        let pane_focus = self.state.active_pane_focus();
+        let next = match self.state.pane_view(pane_focus).sort.column {
+            SortBy::Name => SortBy::DateModified,
+            SortBy::DateModified => SortBy::Size,
+            SortBy::Size => SortBy::Type,
+            SortBy::Type => SortBy::DateCreated,
+            SortBy::DateCreated => SortBy::Tag,
+            SortBy::Tag => SortBy::Name,
+        };
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            view.sort.column = next.clone();
+            view.bump_items_revision();
+        }
+        self.sync_pane_selection_model(pane_focus, cx);
+        let settings = self.state.settings.clone();
+        settings.update(cx, move |s, _cx| {
+            s.config.view.sort_by = next;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
     pub fn set_sort_ascending(&mut self, ascending: bool, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            view.sort.ascending = ascending;
+            view.bump_items_revision();
+        }
         self.state.main_view.sort.ascending = ascending;
-        self.state.main_view.apply_sort();
         self.state.main_view.bump_items_revision();
+        self.sync_pane_selection_model(pane_focus, cx);
         let settings = self.state.settings.clone();
         settings.update(cx, move |s, _cx| {
             s.config.view.sort_ascending = ascending;
@@ -3294,14 +4070,23 @@ impl AppWindow {
         cx.notify();
     }
 
-    pub fn set_group_by(
-        &mut self,
-        group: crate::config::config::GroupColumn,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_group_by(&mut self, group: crate::config::config::GroupColumn, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            if view.group_by == group && group != crate::config::config::GroupColumn::None {
+                view.group_ascending = !view.group_ascending;
+            } else {
+                view.group_by = group;
+                view.group_ascending = true;
+            }
+            view.collapsed_groups.clear();
+            view.bump_items_revision();
+        }
         self.state.main_view.group_by = group;
         self.state.main_view.collapsed_groups.clear();
         self.state.main_view.bump_items_revision();
+        self.sync_pane_selection_model(pane_focus, cx);
         let settings = self.state.settings.clone();
         settings.update(cx, move |s, _cx| {
             s.config.view.group_by = group;
@@ -3370,6 +4155,384 @@ impl AppWindow {
                 cx.notify();
             }
         }
+    }
+
+    /// Load preview content & details cache for the currently selected item in the active pane.
+    pub fn load_preview_for_selected_item(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        let selected_path = {
+            let v = self.state.pane_view(pane_focus);
+            v.selected_indices
+                .iter()
+                .next()
+                .and_then(|&idx| v.items.get(idx))
+                .map(|it| it.path.clone())
+        };
+        if let Some(p) = selected_path {
+            self.load_preview_content(p.clone(), cx);
+            self.update_details_cache_from_path(&p, cx);
+        }
+    }
+
+    /// Toggle the Spacebar Peek Preview Modal (`QuickLook` / Finder Spacebar parity).
+    pub fn toggle_peek_modal(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.show_peek_modal {
+            self.close_peek_modal(cx);
+            return;
+        }
+        let pane_focus = self.state.active_pane_focus();
+        let has_items = !self.state.pane_view(pane_focus).items.is_empty();
+        if !has_items {
+            return;
+        }
+        // If no item is currently selected, select the focused or first visible item
+        if self.state.pane_view(pane_focus).selected_indices.is_empty() {
+            let visible = self.state.pane_view(pane_focus).visible_items_rc();
+            let target_idx = self
+                .state
+                .pane_view(pane_focus)
+                .last_clicked_index
+                .or_else(|| visible.first().copied())
+                .unwrap_or(0);
+            self.select_item_in_pane(pane_focus, target_idx, false, false, cx);
+        }
+        self.state.main_view.show_peek_modal = true;
+        self.load_preview_for_selected_item(cx);
+        cx.notify();
+    }
+
+    pub fn close_peek_modal(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.show_peek_modal {
+            self.state.main_view.show_peek_modal = false;
+            self.state.main_view.video_playing = false;
+            cx.notify();
+        }
+    }
+
+    pub fn peek_navigate_prev(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        let visible = self.state.pane_view(pane_focus).visible_items_rc();
+        if visible.is_empty() {
+            return;
+        }
+        let cur_idx = self
+            .state
+            .pane_view(pane_focus)
+            .selected_indices
+            .iter()
+            .next()
+            .copied()
+            .unwrap_or(visible[0]);
+        let pos = visible.iter().position(|&i| i == cur_idx).unwrap_or(0);
+        let prev_pos = if pos > 0 { pos - 1 } else { visible.len() - 1 };
+        let next_idx = visible[prev_pos];
+        self.select_item_in_pane(pane_focus, next_idx, false, false, cx);
+        self.scroll_item_into_view(pane_focus, next_idx);
+    }
+
+    pub fn peek_navigate_next(&mut self, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        let visible = self.state.pane_view(pane_focus).visible_items_rc();
+        if visible.is_empty() {
+            return;
+        }
+        let cur_idx = self
+            .state
+            .pane_view(pane_focus)
+            .selected_indices
+            .iter()
+            .next()
+            .copied()
+            .unwrap_or(visible[0]);
+        let pos = visible.iter().position(|&i| i == cur_idx).unwrap_or(0);
+        let next_pos = (pos + 1) % visible.len();
+        let next_idx = visible[next_pos];
+        self.select_item_in_pane(pane_focus, next_idx, false, false, cx);
+        self.scroll_item_into_view(pane_focus, next_idx);
+    }
+
+    pub fn toggle_video_playback(&mut self, cx: &mut Context<Self>) {
+        if let Some(player) = &self.state.video_player {
+            if player.is_playing() || self.state.main_view.video_playing {
+                player.pause();
+                self.state.main_view.video_playing = false;
+            } else {
+                player.play();
+                self.state.main_view.video_playing = true;
+            }
+        } else {
+            self.state.main_view.video_playing = !self.state.main_view.video_playing;
+        }
+        cx.notify();
+        if self.state.video_player.is_none() && self.state.main_view.video_playing {
+            self.start_video_playback_loop(cx);
+        }
+    }
+
+    fn start_video_playback_loop(&mut self, cx: &mut Context<Self>) {
+        let req_id = self.state.main_view.preview_request_id;
+        let selected_path = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.clone());
+        let Some(video_path) = selected_path else {
+            self.state.main_view.video_playing = false;
+            return;
+        };
+
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let bg_exec = cx.background_executor().clone();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                loop {
+                    bg_exec.timer(std::time::Duration::from_millis(320)).await;
+                    let mut should_continue = false;
+                    let mut next_prog = 0.0f32;
+                    let mut duration_secs = 120.0f64;
+                    let mut base_poster = None;
+
+                    let _ = this_weak.update(&mut async_cx, |this, cx| {
+                        if !this.state.main_view.video_playing
+                            || this.state.main_view.preview_request_id != req_id
+                        {
+                            this.state.main_view.video_playing = false;
+                            return;
+                        }
+                        if let crate::ui::views::main_view::PreviewContent::Video(ref info) =
+                            this.state.main_view.preview_content
+                        {
+                            duration_secs = info.duration_secs.unwrap_or(120.0).max(5.0);
+                            base_poster = info.poster_path.clone();
+                        } else {
+                            this.state.main_view.video_playing = false;
+                            return;
+                        }
+                        let step = (1.5 / duration_secs as f32).clamp(0.015, 0.08);
+                        next_prog = this.state.main_view.video_progress + step;
+                        if next_prog >= 1.0 {
+                            next_prog = 0.0;
+                        }
+                        this.state.main_view.video_progress = next_prog;
+                        should_continue = true;
+                        cx.notify();
+                    });
+
+                    if !should_continue {
+                        break;
+                    }
+
+                    let v_path = video_path.clone();
+                    let target_ts = duration_secs * (next_prog as f64);
+                    let frame_task = bg_exec.spawn(async move {
+                        crate::storage::preview_service::extract_video_frame_at_timestamp(
+                            &v_path,
+                            target_ts,
+                            duration_secs,
+                            base_poster.as_deref(),
+                        )
+                    });
+                    if let Some(new_frame) = frame_task.await {
+                        let _ = this_weak.update(&mut async_cx, |this, cx| {
+                            if this.state.main_view.preview_request_id == req_id {
+                                if let crate::ui::views::main_view::PreviewContent::Video(
+                                    ref mut info,
+                                ) = this.state.main_view.preview_content
+                                {
+                                    info.poster_path = Some(new_frame);
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    }
+                }
+            })
+            .detach();
+    }
+
+    pub fn set_video_progress(&mut self, progress: f32, cx: &mut Context<Self>) {
+        let clamped = progress.clamp(0.0, 1.0);
+        self.state.main_view.video_progress = clamped;
+        if let Some(player) = &self.state.video_player {
+            player.seek(clamped);
+        }
+        cx.notify();
+
+        let req_id = self.state.main_view.preview_request_id;
+        let selected_path = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.clone());
+        let (duration_secs, base_poster) =
+            if let crate::ui::views::main_view::PreviewContent::Video(ref info) =
+                self.state.main_view.preview_content
+            {
+                (
+                    info.duration_secs.unwrap_or(120.0).max(1.0),
+                    info.poster_path.clone(),
+                )
+            } else {
+                return;
+            };
+        let Some(video_path) = selected_path else {
+            return;
+        };
+
+        let target_ts = duration_secs * (clamped as f64);
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let bg = cx.background_executor().spawn(async move {
+            crate::storage::preview_service::extract_video_frame_at_timestamp(
+                &video_path,
+                target_ts,
+                duration_secs,
+                base_poster.as_deref(),
+            )
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                if let Some(frame_path) = bg.await {
+                    this_weak
+                        .update(&mut async_cx, |this, cx| {
+                            if this.state.main_view.preview_request_id == req_id {
+                                if let crate::ui::views::main_view::PreviewContent::Video(
+                                    ref mut info,
+                                ) = this.state.main_view.preview_content
+                                {
+                                    info.poster_path = Some(frame_path);
+                                    cx.notify();
+                                }
+                            }
+                        })
+                        .ok();
+                }
+            })
+            .detach();
+    }
+
+    pub fn step_video_time(&mut self, delta_secs: f64, cx: &mut Context<Self>) {
+        let total = if let crate::ui::views::main_view::PreviewContent::Video(ref info) =
+            self.state.main_view.preview_content
+        {
+            info.duration_secs.unwrap_or(120.0).max(5.0)
+        } else {
+            120.0
+        };
+        let delta_prog = (delta_secs / total) as f32;
+        let next = (self.state.main_view.video_progress + delta_prog).clamp(0.0, 1.0);
+        self.set_video_progress(next, cx);
+    }
+
+    pub fn toggle_video_mute(&mut self, cx: &mut Context<Self>) {
+        self.state.main_view.video_muted = !self.state.main_view.video_muted;
+        if let Some(player) = &self.state.video_player {
+            player.set_muted(self.state.main_view.video_muted);
+        }
+        cx.notify();
+    }
+
+    /// Navigate to a specific 1-based page in the visual PDF previewer.
+    pub fn pdf_select_page(&mut self, page_num: u32, cx: &mut Context<Self>) {
+        let req_id = self.state.main_view.preview_request_id;
+        let selected_path = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.clone());
+        let Some(path) = selected_path else {
+            return;
+        };
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let bg = cx.background_executor().spawn(async move {
+            crate::storage::preview_service::extract_pdf_page_preview(&path, page_num)
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                if let Ok(info) = bg.await {
+                    this_weak
+                        .update(&mut async_cx, |this, cx| {
+                            if this.state.main_view.preview_request_id == req_id {
+                                this.state.main_view.preview_content =
+                                    crate::ui::views::main_view::PreviewContent::Pdf(info);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                }
+            })
+            .detach();
+    }
+
+    pub fn pdf_prev_page(&mut self, cx: &mut Context<Self>) {
+        if let crate::ui::views::main_view::PreviewContent::Pdf(ref info) =
+            self.state.main_view.preview_content
+        {
+            if info.current_page > 1 {
+                let target = info.current_page - 1;
+                self.pdf_select_page(target, cx);
+            }
+        }
+    }
+
+    pub fn pdf_next_page(&mut self, cx: &mut Context<Self>) {
+        if let crate::ui::views::main_view::PreviewContent::Pdf(ref info) =
+            self.state.main_view.preview_content
+        {
+            if info.current_page < info.page_count {
+                let target = info.current_page + 1;
+                self.pdf_select_page(target, cx);
+            }
+        }
+    }
+
+    /// Switch the active sheet tab (`.xlsx`/`.ods`), slide (`.pptx`/`.odp`), or page (`.docx`/`.odt`/`.epub`).
+    pub fn office_select_index(&mut self, target_idx: usize, cx: &mut Context<Self>) {
+        let req_id = self.state.main_view.preview_request_id;
+        let selected_path = self
+            .state
+            .main_view
+            .selected_indices
+            .iter()
+            .next()
+            .and_then(|&idx| self.state.main_view.items.get(idx))
+            .map(|it| it.path.clone());
+        let Some(path) = selected_path else {
+            return;
+        };
+        let (_, ext) = crate::storage::preview_service::detect_mime_and_extension(&path);
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let bg = cx.background_executor().spawn(async move {
+            crate::storage::preview_service::extract_office_visual_preview(&path, &ext, target_idx)
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                if let Ok(info) = bg.await {
+                    this_weak
+                        .update(&mut async_cx, |this, cx| {
+                            if this.state.main_view.preview_request_id == req_id {
+                                this.state.main_view.preview_content =
+                                    crate::ui::views::main_view::PreviewContent::OfficeVisual(info);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                }
+            })
+            .detach();
     }
 }
 

@@ -168,6 +168,34 @@ impl Render for AppWindow {
         self.state.main_view.refresh_columns_caches();
         self.state.secondary_view.refresh_columns_caches();
 
+        // Opportunistic icon refresh check: if the viewport shows items
+        // without cached icons (e.g. after scrolling), schedule a load.
+        // This runs outside the render element tree and is idempotent.
+        if !self.state.main_view.items.is_empty()
+            && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
+        {
+            // Only check every ~500ms max to avoid hammering the executor
+            let now = std::time::Instant::now();
+            let last_check = self.state.main_view.icon_refresh_last_check.get();
+            let elapsed = last_check
+                .map(|t| now - t)
+                .unwrap_or(std::time::Duration::MAX);
+            if elapsed > std::time::Duration::from_millis(500) {
+                self.state.main_view.icon_refresh_last_check.set(Some(now));
+                let mut trigger = cx.to_async();
+                let weak = cx.weak_entity();
+                // Defer to next tick to avoid side-effects inside render
+                cx.foreground_executor()
+                    .spawn(async move {
+                        weak.update(&mut trigger, |this, cx| {
+                            this.refresh_icons_for_viewport(cx);
+                        })
+                        .ok();
+                    })
+                    .detach();
+            }
+        }
+
         let state = &self.state;
         let _nav = state.navigation.read(cx);
 
@@ -399,18 +427,10 @@ impl Render for AppWindow {
                                                             let win_width: f32 = if b_w > 1.0 { b_w } else { vp_w_raw };
                                                             let min_width = 150.0;
                                                             let max_width = win_width * 0.65;
-                                                            let new_width = (start_width - delta).max(min_width).min(max_width);
-                                                            // Coalesce sub-pixel jitter: only re-render on a real
-                                                            // >=1px change so a drag produces one layout per frame
-                                                            // at most instead of one per mouse event.
-                                                            let old_width = this
-                                                                .state
-                                                                .main_view
-                                                                .side_pane_width
-                                                                .unwrap_or(300.0);
-                                                            if (new_width - old_width).abs() >= 1.0 {
-                                                                this.state.main_view.side_pane_width =
-                                                                    Some(new_width);
+                                                            let new_width = (start_width - delta).max(min_width).min(max_width).round();
+                                                            let cur_width = this.state.main_view.side_pane_width.unwrap_or(300.0);
+                                                            if (new_width - cur_width).abs() >= 0.5 {
+                                                                this.state.main_view.side_pane_width = Some(new_width);
                                                                 cx.notify();
                                                             }
                                                         }
@@ -441,13 +461,32 @@ impl Render for AppWindow {
                                                             this.update_column_resize(x);
                                                             cx.notify();
                                                         }
+                                                        // Track file drag movement & out-of-window OS drag handoff
+                                                        if this.state.main_view.drag_state.is_dragging
+                                                            || this.state.main_view.drag_state.pending_candidate.is_some()
+                                                        {
+                                                            let pos = gpui::point(
+                                                                event.position.x.into(),
+                                                                event.position.y.into(),
+                                                            );
+                                                            this.update_file_drag_move(pos, event.modifiers, None, cx);
+                                                        }
                                                     });
                                                 }
                                             })
                                             .on_mouse_up(MouseButton::Left, {
                                                 let view = view.clone();
-                                                move |_event, _win, cx| {
+                                                move |event, _win, cx| {
+                                                    let pos = gpui::point(
+                                                        event.position.x.into(),
+                                                        event.position.y.into(),
+                                                    );
                                                     view.update(cx, |this, cx| {
+                                                        if this.state.main_view.drag_state.is_dragging
+                                                            || this.state.main_view.drag_state.pending_candidate.is_some()
+                                                        {
+                                                            this.end_drag(pos.x, pos.y, cx);
+                                                        }
                                                         if this.state.tab_drag.is_dragging {
                                                             this.end_tab_drag(None, cx);
                                                         }
@@ -620,6 +659,13 @@ impl Render for AppWindow {
             && state.sidebar.anim_start_time.unwrap().elapsed()
                 < std::time::Duration::from_millis(200))
             || state.tab_drag.is_dragging
+            || state.sidebar.bouncy_scroll.animating
+            || state.main_view.bouncy_scroll.animating
+            || state.secondary_view.bouncy_scroll.animating
+            || state.main_view.side_pane_bouncy_scroll.animating
+            || state.main_view.peek_bouncy_scroll.animating
+            || state.main_view.video_playing
+            || state.main_view.side_pane_resize_start_x.is_some()
         {
             window.request_animation_frame();
         }
@@ -641,11 +687,23 @@ impl Render for AppWindow {
         tab_floating_overlays.extend(toast_overlays);
 
         let mut base = {
-            let _view = cx.entity();
+            let view_drop = cx.entity();
             div()
+                .id("app-root-drop-surface")
                 .relative()
                 .w(live_size.width)
                 .h(live_size.height)
+                .on_drop(move |paths: &gpui::ExternalPaths, _win, cx| {
+                    let dropped: Vec<std::path::PathBuf> = paths.paths().to_vec();
+                    view_drop.update(cx, |this, cx| {
+                        this.handle_external_paths_drop(
+                            &dropped,
+                            None,
+                            gpui::Modifiers::default(),
+                            cx,
+                        );
+                    });
+                })
         };
         if let Some(dialog) = &state.active_dialog {
             let settings_data = None;
@@ -1090,6 +1148,12 @@ impl Render for AppWindow {
                 |elem, delta| elem.opacity(delta),
             ));
         }
+        if let Some(peek_modal) =
+            MainView::render_peek_modal(&state.main_view, cx.entity())
+        {
+            base = base.child(peek_modal);
+        }
+
         if state.show_shortcut_overlay {
             base = base.child(self.build_shortcut_overlay(cx));
         }
@@ -1101,40 +1165,41 @@ impl Render for AppWindow {
             ));
         }
 
-        // Opportunistic icon refresh check: computed up-front (no borrow held)
-        // so the later `let state = &self.state` shared borrow is not violated.
-        let needs_icon_refresh_check = {
+        // Opportunistic icon refresh check: if the viewport shows items
+        // without cached icons (e.g. after scrolling), schedule a load.
+        // This runs outside the render element tree and is idempotent.
+        if !self.state.main_view.items.is_empty()
+            && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
+        {
+            // Only check every ~500ms max to avoid hammering the executor
             let now = std::time::Instant::now();
-            let last_check = self.state.main_view.icon_refresh_last_check;
+            let last_check = self.state.main_view.icon_refresh_last_check.get();
             let elapsed = last_check
                 .map(|t| now - t)
                 .unwrap_or(std::time::Duration::MAX);
-            !self.state.main_view.items.is_empty()
-                && self.state.main_view.items.len() > self.state.main_view.icon_paths.len()
-                && elapsed > std::time::Duration::from_millis(500)
-        };
-        if needs_icon_refresh_check {
-            let mut trigger = cx.to_async();
-            let weak = cx.weak_entity();
-            // Defer to next tick to avoid side-effects inside render
-            // (also performs the timestamp write there, keeping this
-            // function's shared `state` borrow unviolated).
-            cx.foreground_executor()
-                .spawn(async move {
-                    weak.update(&mut trigger, |this, cx| {
-                        this.state.main_view.icon_refresh_last_check =
-                            Some(std::time::Instant::now());
-                        this.refresh_icons_for_viewport(cx);
+            if elapsed > std::time::Duration::from_millis(500) {
+                self.state.main_view.icon_refresh_last_check.set(Some(now));
+                let mut trigger = cx.to_async();
+                let weak = cx.weak_entity();
+                // Defer to next tick to avoid side-effects inside render
+                cx.foreground_executor()
+                    .spawn(async move {
+                        weak.update(&mut trigger, |this, cx| {
+                            this.refresh_icons_for_viewport(cx);
+                        })
+                        .ok();
                     })
-                    .ok();
-                })
-                .detach();
+                    .detach();
+            }
         }
-
         // FPS counter overlay (debug only: opt-in via FILES_RS_FPS=1 so the
         // chrome matches Files-community by default).
         if let Some(flyout_overlay) = ToolbarView::build_flyout_overlay(state, cx.entity()) {
             base = base.child(flyout_overlay);
+        }
+
+        if let Some(drag_badge) = MainView::render_floating_file_drag_badge(&state.main_view) {
+            base = base.child(drag_badge);
         }
 
         let show_fps = std::env::var("FILES_RS_FPS").is_ok() || show_fps_cfg;

@@ -741,8 +741,16 @@ impl MainView {
                         div()
                             .id("recycle-bin-table-scroll")
                             .flex_1()
+                            .min_h(px(0.0))
+                            .h_full()
                             .w_full()
                             .overflow_y_scroll()
+                            .track_scroll(&state.scroll_handle)
+                            .on_scroll_wheel(crate::ui::components::bouncy_scroll::smooth_scroll_handle_wheel(
+                                view.clone(),
+                                |app_state| &mut app_state.main_view.bouncy_scroll,
+                                |app_state| &app_state.main_view.scroll_handle,
+                            ))
                             .flex()
                             .flex_col()
                             .children(rows),

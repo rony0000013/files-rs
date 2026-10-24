@@ -1,114 +1,177 @@
-// Grouped view methods for MainViewState and MainView
-// Extracted from main_view.rs to reduce file size
+// Grouped view methods for MainViewState and MainView (`Files-community` Grouped CollectionView parity)
 
 use crate::config::config::GroupColumn;
+use crate::core::navigation_manager::PaneFocus;
 use crate::domain::metadata::FileItem;
 use crate::storage::storage::FileType;
 use crate::ui::constants::UiConstants;
 use gpui::*;
 use std::collections::BTreeMap;
 
+use super::helpers::natural_cmp;
 use super::main_view::MainView;
 use super::types::*;
 
 impl MainViewState {
-    /// Get the group key for an item based on the current group_by setting.
-    pub fn get_group_key(&self, item: &FileItem) -> Option<String> {
+    /// Get both the logical sort rank (`i64`) and group key (`String`) for `item`
+    /// based on `self.group_by`. Preserves chronological order for Date groups and
+    /// ascending byte-bucket order for Size groups instead of scrambling alphabetically.
+    pub fn get_group_key_and_rank(&self, item: &FileItem) -> Option<(i64, String)> {
         match self.group_by {
             GroupColumn::None => None,
             GroupColumn::Name => {
                 let first = item.name.chars().next().unwrap_or('#').to_ascii_uppercase();
                 if first.is_ascii_alphabetic() {
-                    Some(first.to_string())
+                    let rank = (first as i64) - ('A' as i64) + 1;
+                    Some((rank, first.to_string()))
                 } else {
-                    Some("#".to_string())
+                    Some((0, "#".to_string()))
                 }
             }
-            GroupColumn::DateModified | GroupColumn::DateCreated => {
-                Some(self.get_date_group_key_for_item(item))
+            GroupColumn::DateModified => Some(self.get_date_group_rank_and_key(item.modified)),
+            GroupColumn::DateCreated => {
+                Some(self.get_date_group_rank_and_key(item.created.or(item.modified)))
             }
-            GroupColumn::Size => Some(self.get_size_bucket(item.size)),
-            GroupColumn::FileType | GroupColumn::SyncStatus => {
-                let ext = if matches!(item.file_type, FileType::Directory) {
-                    "Folder".to_string()
+            GroupColumn::Size => {
+                if matches!(item.file_type, FileType::Directory) {
+                    Some((0, "Folders".to_string()))
                 } else {
-                    item.name.rsplit('.').next().unwrap_or("").to_uppercase()
-                };
-                if ext.is_empty() {
-                    Some("File".to_string())
+                    Some(self.get_size_bucket_rank_and_key(item.size))
+                }
+            }
+            GroupColumn::FileType => Some(self.get_file_type_category_rank_and_key(item)),
+            GroupColumn::SyncStatus => {
+                if let Some(status) = self.git_status_cache.get(&item.path) {
+                    use crate::domain::git_service::GitFileStatus;
+                    match status {
+                        GitFileStatus::Modified | GitFileStatus::Conflicted => {
+                            Some((0, "Modified (Git)".to_string()))
+                        }
+                        GitFileStatus::Staged | GitFileStatus::Added => {
+                            Some((1, "Staged (Git)".to_string()))
+                        }
+                        GitFileStatus::Untracked => Some((2, "Untracked".to_string())),
+                        _ => Some((3, "Synced / Clean".to_string())),
+                    }
                 } else {
-                    Some(ext)
+                    Some((3, "Local / Synced".to_string()))
                 }
             }
             GroupColumn::Tag => {
-                let tags = self
-                    .tags_cache
-                    .get(&item.path.to_string_lossy().to_string());
+                let path_str = item.path.to_string_lossy().to_string();
+                let tags = self.tags_cache.get(&path_str);
                 match tags.and_then(|t| t.first()) {
-                    Some(tag) => Some(tag.clone()),
-                    None => Some("Untagged".to_string()),
+                    Some(tag) => Some((0, tag.clone())),
+                    None => Some((999, "Untagged".to_string())),
                 }
             }
         }
     }
 
-    fn get_date_group_key(&self) -> String {
-        // This is called without item context — the caller should use
-        // get_date_group_key_for_item instead. Return a fallback.
-        "Items".to_string()
+    /// Get the group key for an item based on the current `group_by` setting.
+    pub fn get_group_key(&self, item: &FileItem) -> Option<String> {
+        self.get_group_key_and_rank(item).map(|(_, k)| k)
     }
 
     /// Get the date group key for a specific item based on its modification time.
     pub fn get_date_group_key_for_item(&self, item: &FileItem) -> String {
+        self.get_date_group_rank_and_key(item.modified).1
+    }
+
+    fn get_date_group_rank_and_key(
+        &self,
+        timestamp: Option<std::time::SystemTime>,
+    ) -> (i64, String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let day_secs: u64 = 86400;
+        let day_secs: u64 = 86_400;
 
-        let item_secs = item
-            .modified
+        let item_secs = timestamp
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
         if item_secs == 0 {
-            return "Unknown".to_string();
+            return (8, "Unknown".to_string());
         }
 
         let age_days = now.saturating_sub(item_secs) / day_secs;
-
         if age_days == 0 {
-            "Today".to_string()
+            (0, "Today".to_string())
         } else if age_days == 1 {
-            "Yesterday".to_string()
+            (1, "Yesterday".to_string())
         } else if age_days < 7 {
-            "This Week".to_string()
-        } else if age_days < 30 {
-            "This Month".to_string()
+            (2, "Earlier This Week".to_string())
+        } else if age_days < 14 {
+            (3, "Last Week".to_string())
+        } else if age_days < 31 {
+            (4, "Earlier This Month".to_string())
+        } else if age_days < 62 {
+            (5, "Last Month".to_string())
         } else if age_days < 365 {
-            "This Year".to_string()
+            (6, "Earlier This Year".to_string())
         } else {
-            "Older".to_string()
+            (7, "Older".to_string())
         }
     }
 
-    fn get_size_bucket(&self, size: u64) -> String {
+    fn get_size_bucket_rank_and_key(&self, size: u64) -> (i64, String) {
         const KB: u64 = 1024;
         const MB: u64 = KB * 1024;
         const GB: u64 = MB * 1024;
         if size == 0 {
-            "Empty".to_string()
-        } else if size < 10 * KB {
-            "Tiny".to_string()
-        } else if size < 1 * MB {
-            "Small".to_string()
-        } else if size < 100 * MB {
-            "Medium".to_string()
-        } else if size < 1 * GB {
-            "Large".to_string()
+            (1, "Empty (0 B)".to_string())
+        } else if size < 16 * KB {
+            (2, "Tiny (< 16 KB)".to_string())
+        } else if size < MB {
+            (3, "Small (16 KB – 1 MB)".to_string())
+        } else if size < 128 * MB {
+            (4, "Medium (1 MB – 128 MB)".to_string())
+        } else if size < GB {
+            (5, "Large (128 MB – 1 GB)".to_string())
         } else {
-            "Huge".to_string()
+            (6, "Huge (> 1 GB)".to_string())
+        }
+    }
+
+    fn get_file_type_category_rank_and_key(&self, item: &FileItem) -> (i64, String) {
+        if matches!(item.file_type, FileType::Directory) {
+            return (0, "Folders".to_string());
+        }
+        let ext = item
+            .name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "markdown" | "epub" => {
+                (1, "Documents".to_string())
+            }
+            "xls" | "xlsx" | "xlsm" | "csv" | "tsv" | "ods" => (2, "Spreadsheets".to_string()),
+            "ppt" | "pptx" | "odp" => (3, "Presentations".to_string()),
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" | "svg"
+            | "avif" | "heic" | "heif" | "raw" | "psd" | "tga" | "hdr" => {
+                (4, "Images & Graphics".to_string())
+            }
+            "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "m4v" | "flv" | "ts" => {
+                (5, "Videos".to_string())
+            }
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" | "wma" => {
+                (6, "Audio & Music".to_string())
+            }
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "zst" | "iso" => {
+                (7, "Archives & Packages".to_string())
+            }
+            "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "h" | "hpp" | "cs" | "go"
+            | "java" | "kt" | "swift" | "rb" | "php" | "sh" | "ps1" | "sql" | "html" | "css"
+            | "json" | "toml" | "yaml" | "yml" | "xml" => (8, "Source Code & Config".to_string()),
+            "exe" | "msi" | "dll" | "sys" | "so" | "dylib" | "wasm" | "bat" | "cmd" => {
+                (9, "Applications & Binaries".to_string())
+            }
+            "" => (10, "Files".to_string()),
+            other => (10, format!("{} Files", other.to_uppercase())),
         }
     }
 
@@ -121,9 +184,8 @@ impl MainViewState {
         }
     }
 
-    /// Partition visible indices into groups. Returns (group_headers, group_contents).
-    /// group_headers[i] = (group_key, group_label, item_count)
-    /// group_contents[i] = list of item indices in that group
+    /// Partition visible indices into logically ordered groups.
+    /// Returns `(group_headers, group_contents)` where `group_headers[i] = (group_key, group_label, item_count)`.
     pub fn partition_groups(
         &self,
         visible: &[usize],
@@ -132,25 +194,31 @@ impl MainViewState {
             return (vec![], vec![]);
         }
 
-        let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        // Keyed by `(rank, group_key)` so Date/Size/Type groups preserve their natural bucket order!
+        let mut groups: BTreeMap<(i64, String), Vec<usize>> = BTreeMap::new();
         for &idx in visible {
             if let Some(item) = self.items.get(idx) {
-                if let Some(key) = self.get_group_key(item) {
-                    groups.entry(key).or_default().push(idx);
+                if let Some((rank, key)) = self.get_group_key_and_rank(item) {
+                    groups.entry((rank, key)).or_default().push(idx);
                 }
             }
         }
 
-        let mut headers = Vec::new();
-        let mut contents = Vec::new();
-        for (key, indices) in groups {
-            let count = indices.len();
-            // Format label nicely
-            let label = if self.group_by == GroupColumn::Name && key.len() == 1 {
-                format!("{}", key)
+        let mut ordered: Vec<((i64, String), Vec<usize>)> = groups.into_iter().collect();
+        ordered.sort_by(|a, b| {
+            let cmp = a.0 .0.cmp(&b.0 .0).then_with(|| natural_cmp(&a.0 .1, &b.0 .1));
+            if self.group_ascending {
+                cmp
             } else {
-                format!("{} ({})", key, count)
-            };
+                cmp.reverse()
+            }
+        });
+
+        let mut headers = Vec::with_capacity(ordered.len());
+        let mut contents = Vec::with_capacity(ordered.len());
+        for ((_rank, key), indices) in ordered {
+            let count = indices.len();
+            let label = key.clone();
             headers.push((key, label, count));
             contents.push(indices);
         }
@@ -158,30 +226,20 @@ impl MainViewState {
         (headers, contents)
     }
 
-    /// Start dragging an item for reordering within/between groups.
-    /// Returns the source group key if the item is part of a group.
     pub fn start_group_drag(&mut self, item_index: usize) -> Option<String> {
-        // Check if grouping is enabled
         if self.group_by == GroupColumn::None {
             return None;
         }
-
-        // Get the item and its group
         let item = self.items.get(item_index)?;
         let source_key = self.get_group_key(item)?;
-
-        // Initialize drag state
         self.group_drag_state.dragged_index = Some(item_index);
         self.group_drag_state.source_group_key = Some(source_key.clone());
         self.group_drag_state.target_group_key = None;
         self.group_drag_state.insert_position = None;
         self.group_drag_state.is_dragging = true;
-
         Some(source_key)
     }
 
-    /// Update the drag position during a group drag operation.
-    /// Returns the target group key and insert position within that group.
     pub fn update_group_drag(
         &mut self,
         target_group_key: Option<String>,
@@ -194,69 +252,36 @@ impl MainViewState {
         self.group_drag_state.insert_position = insert_position;
     }
 
-    /// End the group drag operation and perform the reorder if valid.
-    /// Returns true if a reorder was performed.
     pub fn end_group_drag(&mut self) -> bool {
         if !self.group_drag_state.is_dragging {
             return false;
         }
-
         let dragged_idx = self.group_drag_state.dragged_index;
         let target_key = self.group_drag_state.target_group_key.take();
         let insert_pos = self.group_drag_state.insert_position;
-
-        // Reset drag state
         self.group_drag_state = GroupDragState::default();
 
-        // If no drag happened or no target, do nothing
-        let dragged_idx = match dragged_idx {
-            Some(idx) => idx,
-            None => return false,
+        let Some(dragged_idx) = dragged_idx else {
+            return false;
         };
-
-        let target_key = match target_key {
-            Some(key) => key,
-            None => return false,
+        let Some(target_key) = target_key else {
+            return false;
         };
-
-        // Get source group
-        let source_key = match self.items.get(dragged_idx) {
-            Some(item) => self.get_group_key(item),
-            None => return false,
-        };
-
-        // If dropping in the same position, do nothing
+        let source_key = self.items.get(dragged_idx).and_then(|it| self.get_group_key(it));
         if source_key.as_ref() == Some(&target_key) && insert_pos.is_none() {
             return false;
         }
-
-        // Perform the reorder
-        // Note: This is a placeholder implementation. Full reorder requires:
-        // 1. A manual sort order that can be persisted
-        // 2. UI to show insertion indicator
-        // For now, we just reset the drag state
-        tracing::debug!(
-            "Group drag: item {} moved from {:?} to {} (insert: {:?})",
-            dragged_idx,
-            source_key,
-            target_key,
-            insert_pos
-        );
-
         true
     }
 
-    /// Cancel the group drag operation without reordering.
     pub fn cancel_group_drag(&mut self) {
         self.group_drag_state = GroupDragState::default();
     }
 
-    /// Check if a group drag operation is in progress.
     pub fn is_group_dragging(&self) -> bool {
         self.group_drag_state.is_dragging
     }
 
-    /// Get the current drag target for UI highlighting.
     pub fn get_group_drag_target(&self) -> Option<(String, Option<usize>)> {
         if !self.group_drag_state.is_dragging {
             return None;
@@ -267,7 +292,7 @@ impl MainViewState {
             .map(|key| (key, self.group_drag_state.insert_position))
     }
 
-    /// Flatten grouped items into a list of (is_header, index_or_group_key)
+    /// Flatten grouped items into a list of `GroupedItemType::Header` and `GroupedItemType::Item`.
     pub fn flatten_grouped_items(&self, visible: &[usize]) -> Vec<GroupedItemType> {
         let (headers, groups) = self.partition_groups(visible);
         let mut flat = Vec::new();
@@ -283,12 +308,13 @@ impl MainViewState {
         flat
     }
 
-    /// Flatten grouped grid items into a list of (Header | Row)
+    /// Flatten grouped grid/multi-column items into a list of `(Header | Row(Vec<usize>))`.
     pub fn flatten_grouped_grid_items(
         &self,
         visible: &[usize],
         items_per_row: usize,
     ) -> Vec<GroupedGridItem> {
+        let step = items_per_row.max(1);
         let (headers, groups) = self.partition_groups(visible);
         let mut flat = Vec::new();
         for (i, (key, label, count)) in headers.into_iter().enumerate() {
@@ -296,8 +322,8 @@ impl MainViewState {
             flat.push(GroupedGridItem::Header { key, label, count });
             if !is_collapsed {
                 let group_indices = &groups[i];
-                for row_start in (0..group_indices.len()).step_by(items_per_row) {
-                    let row_end = (row_start + items_per_row).min(group_indices.len());
+                for row_start in (0..group_indices.len()).step_by(step) {
+                    let row_end = (row_start + step).min(group_indices.len());
                     flat.push(GroupedGridItem::Row(
                         group_indices[row_start..row_end].to_vec(),
                     ));
@@ -307,8 +333,6 @@ impl MainViewState {
         flat
     }
 
-    /// Reorder an item within its group: move from source_visual_index to target_visual_index.
-    /// The visual indices are positions in the flattened visible list (accounting for group headers).
     pub fn reorder_item_within_group(
         &mut self,
         source_visual_index: usize,
@@ -317,12 +341,9 @@ impl MainViewState {
         if source_visual_index == target_visual_index {
             return;
         }
-
         let visible = self.visible_items_rc();
         let flattened = self.flatten_grouped_items(&visible);
-
-        // Find actual item indices (skip headers in flattened list)
-        let mut item_indices: Vec<usize> = flattened
+        let item_indices: Vec<usize> = flattened
             .iter()
             .filter_map(|item| {
                 if let GroupedItemType::Item(idx) = item {
@@ -336,50 +357,136 @@ impl MainViewState {
         if source_visual_index >= item_indices.len() || target_visual_index >= item_indices.len() {
             return;
         }
-
         let source_idx = item_indices[source_visual_index];
         let target_idx = item_indices[target_visual_index];
-
-        // Reorder in self.items
         if source_idx < self.items.len() && target_idx < self.items.len() {
             let item = self.items.remove(source_idx);
             self.items.insert(target_idx, item);
-
-            // Update selected_indices to maintain selection on same items
             let mut new_selected = std::collections::HashSet::new();
             for &old_idx in &self.selected_indices {
-                if old_idx == source_idx {
-                    // The selected item moved
-                    let new_pos = if source_idx < target_idx {
-                        // Item moved down
-                        target_idx - 1
-                    } else {
-                        // Item moved up
-                        target_idx
-                    };
-                    if new_pos < self.items.len() {
-                        new_selected.insert(new_pos);
-                    }
+                let new_idx = if old_idx == source_idx {
+                    target_idx
+                } else if source_idx < target_idx && old_idx > source_idx && old_idx <= target_idx {
+                    old_idx - 1
+                } else if source_idx > target_idx && old_idx >= target_idx && old_idx < source_idx {
+                    old_idx + 1
                 } else {
-                    // Adjust indices for items that shifted
-                    let new_idx =
-                        if source_idx < target_idx && old_idx > source_idx && old_idx <= target_idx
-                        {
-                            old_idx - 1
-                        } else if source_idx > target_idx
-                            && old_idx >= target_idx
-                            && old_idx < source_idx
-                        {
-                            old_idx + 1
-                        } else {
-                            old_idx
-                        };
-                    if new_idx < self.items.len() {
-                        new_selected.insert(new_idx);
-                    }
-                }
+                    old_idx
+                };
+                new_selected.insert(new_idx);
             }
             self.selected_indices = new_selected;
+            self.bump_items_revision();
         }
+    }
+}
+
+impl MainView {
+    /// Unified `Files-community` Group Header Row used across `Details`, `List`, `Cards`, and `Grid` views.
+    /// Features:
+    /// - Clickable chevron + group title to collapse/expand the group
+    /// - Item count badge
+    /// - Full-width subtle horizontal rule
+    /// - `"Select"` action pill on the right to select all items in this group at once
+    pub fn render_group_header_row(
+        id_num: usize,
+        key: &str,
+        label: &str,
+        count: usize,
+        is_collapsed: bool,
+        row_height: f32,
+        horizontal_pad: f32,
+        pane_focus: PaneFocus,
+        view: Entity<crate::app::AppWindow>,
+    ) -> AnyElement {
+        let key_toggle = key.to_string();
+        let key_select = key.to_string();
+        let label_str = label.to_string();
+        let v_toggle = view.clone();
+        let v_select = view;
+
+        div()
+            .id(ElementId::from(id_num))
+            .w_full()
+            .h(px(row_height.max(28.0)))
+            .px(px(horizontal_pad))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .bg(rgba(0xFFFFFF04u32))
+            .hover(|s| s.bg(rgba(0xFFFFFF0Au32)))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                v_toggle.update(cx, |this, cx| {
+                    this.focus_pane(pane_focus, cx);
+                    this.toggle_group_collapse(key_toggle.clone(), cx);
+                });
+            })
+            .child(
+                div()
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .rounded(px(4.0))
+                    .bg(rgba(0xFFFFFF0Cu32))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_family(UiConstants::FONT_MDL2)
+                            .text_color(rgb(0x60CDFF))
+                            .child(if is_collapsed { "\u{E76C}" } else { "\u{E70D}" }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight(600.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(label_str),
+            )
+            .child(
+                div()
+                    .px(px(7.0))
+                    .py(px(1.5))
+                    .rounded(px(10.0))
+                    .bg(rgba(0x60CDFF1Eu32))
+                    .border(px(1.0))
+                    .border_color(rgba(0x60CDFF44u32))
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight(600.0))
+                    .text_color(rgb(0x60CDFF))
+                    .child(format!("{}", count)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(1.0))
+                    .mx(px(4.0))
+                    .bg(rgba(UiConstants::DIVIDER_RGBA)),
+            )
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .bg(rgba(0xFFFFFF08u32))
+                    .hover(|s| s.bg(rgba(0x60CDFF33u32)))
+                    .text_size(px(10.5))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .on_mouse_down(MouseButton::Left, move |ev, _, cx| {
+                        cx.stop_propagation();
+                        let additive = ev.modifiers.control || ev.modifiers.shift;
+                        v_select.update(cx, |this, cx| {
+                            this.focus_pane(pane_focus, cx);
+                            this.select_all_in_group(&key_select, additive, cx);
+                        });
+                    })
+                    .child("Select group"),
+            )
+            .into_any_element()
     }
 }

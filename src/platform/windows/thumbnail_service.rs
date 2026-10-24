@@ -917,12 +917,71 @@ impl ThumbnailService {
         pixels.copy_from_slice(&result);
     }
 
-    #[cfg(not(windows))]
-    fn extract_thumbnail(&self, path: &FilesPath, size: ThumbnailSize) -> Result<ThumbnailResult> {
-        Err(anyhow!(
-            "Thumbnails are only available on Windows: {:?}",
-            path
-        ))
+    /// Extract a high-resolution poster thumbnail (for videos, PDFs, Office docs, or images)
+    /// and save it as a cached PNG file on disk so GPUI can render it with minimal VRAM.
+    pub fn extract_and_save_poster_png(
+        &self,
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Option<std::path::PathBuf> {
+        let cache_dir = crate::app_state::icons_cache_dir();
+        let out_path = cache_dir.join(format!(
+            "{}_poster_{}.png",
+            crate::app_state::disk_cache_key(path),
+            size.dimensions().0
+        ));
+        if out_path.exists() {
+            return Some(out_path);
+        }
+
+        // 1. Try native ThumbnailService extraction (Windows IShellItemImageFactory WIC / Media Foundation, or image crate)
+        if let Ok(res) = self.extract_thumbnail(path, size) {
+            if res.width > 0
+                && res.height > 0
+                && res.data.len() >= (res.width * res.height * 4) as usize
+            {
+                let mut rgba = res.data;
+                for px in rgba.chunks_exact_mut(4) {
+                    px.swap(0, 2); // BGRA -> RGBA
+                }
+                if let Some(buf) =
+                    image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(res.width, res.height, rgba)
+                {
+                    if buf.save(&out_path).is_ok() {
+                        return Some(out_path);
+                    }
+                }
+            }
+        }
+
+        // 2. Cross-platform video/document poster fallback on macOS / Linux
+        #[cfg(not(windows))]
+        {
+            let ext = path
+                .as_path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                ext.as_str(),
+                "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "mpg" | "mpeg"
+            ) {
+                let _ = std::process::Command::new("ffmpegthumbnailer")
+                    .arg("-i")
+                    .arg(path.as_path())
+                    .arg("-o")
+                    .arg(&out_path)
+                    .arg("-s")
+                    .arg("512")
+                    .output();
+                if out_path.exists() {
+                    return Some(out_path);
+                }
+            }
+        }
+
+        None
     }
 
     fn get_color_for_extension(&self, path: &FilesPath) -> Color {

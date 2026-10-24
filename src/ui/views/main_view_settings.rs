@@ -7,11 +7,12 @@ use crate::ui::components::dialogs::{SettingsPreReadData, SettingsTab};
 use crate::ui::constants::UiConstants;
 use gpui::*;
 
-use super::main_view::MainView;
+use super::main_view::{MainView, MainViewState};
 
 impl MainView {
     /// Render the settings page as a full tab content area (`SettingsPage.xaml` parity).
     pub fn render_settings_view(
+        state: &MainViewState,
         data: &SettingsPreReadData,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -37,8 +38,15 @@ impl MainView {
                     .flex()
                     .flex_col()
                     .flex_grow()
+                    .min_h(px(0.0))
                     .h_full()
                     .overflow_y_scroll()
+                    .track_scroll(&state.scroll_handle)
+                    .on_scroll_wheel(crate::ui::components::bouncy_scroll::smooth_scroll_handle_wheel(
+                        view.clone(),
+                        |app_state| &mut app_state.main_view.bouncy_scroll,
+                        |app_state| &app_state.main_view.scroll_handle,
+                    ))
                     .px(px(28.0))
                     .py(px(20.0))
                     .child(
@@ -116,7 +124,7 @@ impl MainView {
                             .rounded(px(5.0))
                             .bg(rgba(0xFFFFFF0Eu32))
                             .border(px(1.0))
-                            .border(px(if search_focused { 2.0 } else { 1.0 }))
+                            .border_b(px(if search_focused { 2.0 } else { 1.0 }))
                             .border_color(if search_focused {
                                 rgb(0x60CDFF)
                             } else {

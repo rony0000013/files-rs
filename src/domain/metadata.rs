@@ -14,6 +14,9 @@ pub struct FileItem {
     pub is_system: bool,
     pub modified: Option<std::time::SystemTime>,
     pub created: Option<std::time::SystemTime>,
+    /// File tags (matched by name via tag service cache; empty = untagged).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 pub struct MetadataExtractor;

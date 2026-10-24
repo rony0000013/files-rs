@@ -193,102 +193,9 @@ impl ContextMenuHost {
     /// `is_move=true` for cut, `is_move=false` for copy.
     #[cfg(windows)]
     fn do_clipboard_drop_files(&self, paths: &[FilesPath], is_move: bool) -> Result<()> {
-        use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Foundation::{GlobalFree, HANDLE};
-        use windows::core::BOOL;
-        use windows::Win32::System::DataExchange::{
-            CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
-            SetClipboardData,
-        };
-        use windows::Win32::System::Memory::{
-            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-        };
-        use windows::Win32::UI::Shell::DROPFILES;
-
-        // CF_HDROP clipboard format = 15
-        const CF_HDROP: u32 = 15;
-
-        unsafe {
-            let wide_paths: Vec<Vec<u16>> = paths
-                .iter()
-                .map(|p| {
-                    p.as_path()
-                        .as_os_str()
-                        .to_os_string()
-                        .encode_wide()
-                        .chain(std::iter::once(0))
-                        .collect()
-                })
-                .collect();
-
-            let mut total_size = std::mem::size_of::<DROPFILES>();
-            for wp in &wide_paths {
-                total_size += wp.len() * 2;
-            }
-            total_size += 4; // double null terminator (u16)
-
-            let hmem = GlobalAlloc(GMEM_MOVEABLE, total_size)?;
-            let ptr = GlobalLock(hmem);
-
-            let dropfiles = ptr as *mut DROPFILES;
-            (*dropfiles).pFiles = std::mem::size_of::<DROPFILES>() as u32;
-            (*dropfiles).fWide = BOOL::from(true);
-
-            let mut offset = std::mem::size_of::<DROPFILES>();
-            for wp in &wide_paths {
-                let src = wp.as_slice();
-                std::ptr::copy_nonoverlapping(
-                    src.as_ptr(),
-                    (ptr as *mut u8).add(offset) as *mut u16,
-                    src.len(),
-                );
-                offset += src.len() * 2;
-            }
-            *(ptr as *mut u16).add(offset / 2) = 0;
-            *(ptr as *mut u16).add(offset / 2 + 1) = 0;
-
-            GlobalUnlock(hmem);
-
-            // Open clipboard — if this fails, free the allocated memory to avoid leak.
-            if OpenClipboard(None).is_err() {
-                let _ = GlobalFree(Some(hmem));
-                anyhow::bail!("Failed to open clipboard");
-            }
-            EmptyClipboard()?;
-
-            // Set CF_HDROP data — Windows takes ownership of hmem on success
-            let hdrop = HANDLE(hmem.0);
-            let set_result = SetClipboardData(CF_HDROP, Some(hdrop));
-
-            // Set preferred drop effect so paste handler knows whether to delete source
-            if set_result.is_ok() {
-                let format_name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
-                let cf_drop_effect =
-                    RegisterClipboardFormatW(windows::core::PCWSTR(format_name.as_ptr()));
-                if cf_drop_effect != 0 {
-                    let effect_hmem = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>())?;
-                    let effect_ptr = GlobalLock(effect_hmem) as *mut u32;
-                    // DROPEFFECT_MOVE = 2, DROPEFFECT_COPY = 1
-                    *effect_ptr = if is_move { 2 } else { 1 };
-                    GlobalUnlock(effect_hmem);
-                    let _ = SetClipboardData(cf_drop_effect, Some(HANDLE(effect_hmem.0)));
-                }
-            } else {
-                // SetClipboardData failed — Windows didn't take ownership.
-                // Free the memory to avoid leaking it until process exit.
-                let _ = GlobalFree(Some(hmem));
-                tracing::warn!("SetClipboardData failed — HDROP memory freed");
-            }
-
-            CloseClipboard()?;
-        }
-        tracing::info!(
-            "{} {} items to clipboard",
-            if is_move { "Cut" } else { "Copied" },
-            paths.len()
-        );
-        Ok(())
+        stage_hdrop_clipboard_files(paths, is_move)
     }
+
 
     #[cfg(windows)]
     fn do_delete(&self, path: &FilesPath, permanent: bool) -> Result<()> {
@@ -404,8 +311,109 @@ impl ContextMenuHost {
     }
 }
 
+/// Shared CF_HDROP clipboard staging for cut/copy and native OS drag.
+#[cfg(windows)]
+fn stage_hdrop_clipboard_files(paths: &[FilesPath], is_move: bool) -> Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Foundation::{GlobalFree, HANDLE};
+        use windows::core::BOOL;
+        use windows::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
+            SetClipboardData,
+        };
+        use windows::Win32::System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+        };
+        use windows::Win32::UI::Shell::DROPFILES;
+
+        // CF_HDROP clipboard format = 15
+        const CF_HDROP: u32 = 15;
+
+        unsafe {
+            let wide_paths: Vec<Vec<u16>> = paths
+                .iter()
+                .map(|p| {
+                    p.as_path()
+                        .as_os_str()
+                        .to_os_string()
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect()
+                })
+                .collect();
+
+            let mut total_size = std::mem::size_of::<DROPFILES>();
+            for wp in &wide_paths {
+                total_size += wp.len() * 2;
+            }
+            total_size += 4; // double null terminator (u16)
+
+            let hmem = GlobalAlloc(GMEM_MOVEABLE, total_size)?;
+            let ptr = GlobalLock(hmem);
+
+            let dropfiles = ptr as *mut DROPFILES;
+            (*dropfiles).pFiles = std::mem::size_of::<DROPFILES>() as u32;
+            (*dropfiles).fWide = BOOL::from(true);
+
+            let mut offset = std::mem::size_of::<DROPFILES>();
+            for wp in &wide_paths {
+                let src = wp.as_slice();
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    (ptr as *mut u8).add(offset) as *mut u16,
+                    src.len(),
+                );
+                offset += src.len() * 2;
+            }
+            *(ptr as *mut u16).add(offset / 2) = 0;
+            *(ptr as *mut u16).add(offset / 2 + 1) = 0;
+
+            GlobalUnlock(hmem);
+
+            // Open clipboard — if this fails, free the allocated memory to avoid leak.
+            if OpenClipboard(None).is_err() {
+                let _ = GlobalFree(Some(hmem));
+                anyhow::bail!("Failed to open clipboard");
+            }
+            EmptyClipboard()?;
+
+            // Set CF_HDROP data — Windows takes ownership of hmem on success
+            let hdrop = HANDLE(hmem.0);
+            let set_result = SetClipboardData(CF_HDROP, Some(hdrop));
+
+            // Set preferred drop effect so paste handler knows whether to delete source
+            if set_result.is_ok() {
+                let format_name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
+                let cf_drop_effect =
+                    RegisterClipboardFormatW(windows::core::PCWSTR(format_name.as_ptr()));
+                if cf_drop_effect != 0 {
+                    let effect_hmem = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>())?;
+                    let effect_ptr = GlobalLock(effect_hmem) as *mut u32;
+                    // DROPEFFECT_MOVE = 2, DROPEFFECT_COPY = 1
+                    *effect_ptr = if is_move { 2 } else { 1 };
+                    GlobalUnlock(effect_hmem);
+                    let _ = SetClipboardData(cf_drop_effect, Some(HANDLE(effect_hmem.0)));
+                }
+            } else {
+                // SetClipboardData failed — Windows didn't take ownership.
+                // Free the memory to avoid leaking it until process exit.
+                let _ = GlobalFree(Some(hmem));
+                tracing::warn!("SetClipboardData failed — HDROP memory freed");
+            }
+
+            CloseClipboard()?;
+        }
+        tracing::info!(
+            "{} {} items to clipboard",
+            if is_move { "Cut" } else { "Copied" },
+            paths.len()
+        );
+        Ok(())
+    }
+
 /// Cascading submenu support
 #[derive(Debug, Clone)]
+
 pub struct CascadingMenu {
     pub id: String,
     pub items: Vec<MenuItem>,
@@ -915,6 +923,196 @@ impl ShellProperties {
 
     pub fn get_summary(_path: &std::path::Path, _ext: &str) -> ShellPropertySummary {
         ShellPropertySummary::default()
+    }
+}
+
+
+/// Initiate a cross-platform native OS Drag-and-Drop operation when the user drags files
+/// out of the `files-rs` window toward another application (Explorer, Desktop, Discord, Browser, VS Code, etc.).
+/// - On Windows: Stages `CF_HDROP` (`DROPFILES`) and invokes `shell32.dll!SHDoDragDrop` with a real
+///   Shell `IDataObject` (`GetUIObjectOf`) supporting `DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK`.
+/// - On Linux / macOS: Launches `dragon-drop` / `ripdrag` if installed and stages `text/uri-list` (`file:///...`).
+pub fn start_native_os_file_drag(paths: &[FilesPath], is_copy: bool) {
+    if paths.is_empty() {
+        return;
+    }
+    let paths_owned: Vec<std::path::PathBuf> =
+        paths.iter().map(|p| p.as_path().to_path_buf()).collect();
+
+    #[cfg(windows)]
+    {
+        let files_paths: Vec<FilesPath> = paths.to_vec();
+        let _ = stage_hdrop_clipboard_files(&files_paths, !is_copy);
+
+        std::thread::spawn(move || {
+            use std::os::windows::ffi::OsStrExt;
+            use windows::core::{Interface, PCWSTR};
+            use windows::Win32::System::Com::{
+                CoInitializeEx, CoTaskMemFree, CoUninitialize, IDataObject,
+                COINIT_APARTMENTTHREADED,
+            };
+            use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+            use windows::Win32::UI::Shell::{
+                ILClone, ILFindLastID, IShellFolder, SHBindToParent, SHParseDisplayName,
+            };
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+            #[link(name = "shell32")]
+            unsafe extern "system" {
+                fn SHDoDragDrop(
+                    hwnd: isize,
+                    pdata: *mut core::ffi::c_void,
+                    pdsrc: *const core::ffi::c_void,
+                    dweffect: u32,
+                    pdweffect: *mut u32,
+                ) -> i32;
+            }
+
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                if let Some(first) = paths_owned.first() {
+                    if let Some(parent_dir) = first.parent() {
+                        let dir_w: Vec<u16> = parent_dir
+                            .as_os_str()
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let mut dir_pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+                        if SHParseDisplayName(PCWSTR(dir_w.as_ptr()), None, &mut dir_pidl, 0, None)
+                            .is_ok()
+                            && !dir_pidl.is_null()
+                        {
+                            let mut last_rel: *mut ITEMIDLIST = std::ptr::null_mut();
+                            if let Ok(parent_sf) =
+                                SHBindToParent::<IShellFolder>(dir_pidl, Some(&mut last_rel))
+                            {
+                                if let Ok(folder) = parent_sf
+                                    .BindToObject::<_, IShellFolder>(last_rel, None)
+                                {
+                                    let mut child_pidls: Vec<*const ITEMIDLIST> = Vec::new();
+                                    for p in &paths_owned {
+                                        if p.parent() != Some(parent_dir) {
+                                            continue;
+                                        }
+                                        let pw: Vec<u16> = p
+                                            .as_os_str()
+                                            .encode_wide()
+                                            .chain(std::iter::once(0))
+                                            .collect();
+                                        let mut full: *mut ITEMIDLIST = std::ptr::null_mut();
+                                        if SHParseDisplayName(
+                                            PCWSTR(pw.as_ptr()),
+                                            None,
+                                            &mut full,
+                                            0,
+                                            None,
+                                        )
+                                        .is_ok()
+                                            && !full.is_null()
+                                        {
+                                            let rel = ILFindLastID(full);
+                                            if !rel.is_null() {
+                                                let owned = ILClone(rel);
+                                                if !owned.is_null() {
+                                                    child_pidls.push(owned);
+                                                }
+                                            }
+                                            CoTaskMemFree(Some(full as *const _ as _));
+                                        }
+                                    }
+                                    if !child_pidls.is_empty() {
+                                        let hwnd = GetForegroundWindow();
+                                        if let Ok(data_obj) = folder
+                                            .GetUIObjectOf::<IDataObject>(hwnd, &child_pidls, None)
+                                        {
+                                            // DROPEFFECT_COPY (1) | DROPEFFECT_MOVE (2) | DROPEFFECT_LINK (4)
+                                            let allowed_effects: u32 = 1 | 2 | 4;
+                                            let mut performed_effect: u32 = 0;
+                                            let _ = SHDoDragDrop(
+                                                hwnd.0 as isize,
+                                                data_obj.as_raw(),
+                                                std::ptr::null(),
+                                                allowed_effects,
+                                                &mut performed_effect,
+                                            );
+                                        }
+                                    }
+                                    for pidl in child_pidls {
+                                        CoTaskMemFree(Some(pidl as *const _ as _));
+                                    }
+                                }
+                            }
+                            CoTaskMemFree(Some(dir_pidl as *const _ as _));
+                        }
+                    }
+                }
+                CoUninitialize();
+            }
+        });
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = is_copy;
+        std::thread::spawn(move || {
+            use std::io::Write;
+            use std::process::{Command, Stdio};
+
+            // 1. Try native X11/Wayland external drag helper (`dragon-drop` or `ripdrag`) if installed
+            let args: Vec<String> = paths_owned
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            if Command::new("dragon-drop")
+                .arg("--and-exit")
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+            if Command::new("ripdrag")
+                .arg("-x")
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+
+            // 2. Stage RFC 2483 `text/uri-list` (`file:///...`) on Wayland / X11 / macOS clipboard
+            let uri_list: String = paths_owned
+                .iter()
+                .map(|p| format!("file://{}\r\n", p.to_string_lossy()))
+                .collect();
+            if let Ok(mut child) = Command::new("wl-copy")
+                .args(["--type", "text/uri-list"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(ref mut stdin) = child.stdin {
+                    let _ = stdin.write_all(uri_list.as_bytes());
+                }
+                let _ = child.wait();
+            } else if let Ok(mut child) = Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "text/uri-list"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(ref mut stdin) = child.stdin {
+                    let _ = stdin.write_all(uri_list.as_bytes());
+                }
+                let _ = child.wait();
+            }
+        });
     }
 }
 

@@ -90,6 +90,8 @@ impl UiConstants {
 
     /// Subtle 1px card border stroke (#FFFFFF0F on dark mode)
     pub const CARD_STROKE_RGBA: u32 = 0xFFFFFF0F;
+    /// Flyout/menu surface border stroke (slightly stronger than card stroke)
+    pub const SURFACE_STROKE_FLYOUT_RGBA: u32 = 0xFFFFFF1F;
     /// ~8% white divider (DividerStrokeColorDefault)
     pub const DIVIDER_RGBA: u32 = 0xFFFFFF15;
     pub const DIVIDER_RGB: u32 = 0x333333;

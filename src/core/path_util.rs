@@ -10,6 +10,12 @@ use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FilesPath(PathBuf);
 
+impl Default for FilesPath {
+    fn default() -> Self {
+        Self(PathBuf::new())
+    }
+}
+
 // GUIDs for known folders (Windows API)
 #[cfg(windows)]
 pub mod known_folders {
