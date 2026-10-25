@@ -1,6 +1,6 @@
 // Grouped view methods for MainViewState and MainView (`Files-community` Grouped CollectionView parity)
 
-use crate::config::config::GroupColumn;
+use crate::config::config::{GroupColumn, ViewMode};
 use crate::core::navigation_manager::PaneFocus;
 use crate::domain::metadata::FileItem;
 use crate::storage::storage::FileType;
@@ -58,11 +58,10 @@ impl MainViewState {
                 }
             }
             GroupColumn::Tag => {
-                let path_str = item.path.to_string_lossy().to_string();
-                let tags = self.tags_cache.get(&path_str);
-                match tags.and_then(|t| t.first()) {
-                    Some(tag) => Some((0, tag.clone())),
-                    None => Some((999, "Untagged".to_string())),
+                let tag_opt = self.item_tags(item).and_then(|t| t.first());
+                match tag_opt {
+                    Some(tag) if !tag.is_empty() => Some((0, tag.clone())),
+                    _ => Some((999, "Untagged".to_string())),
                 }
             }
         }
@@ -333,6 +332,183 @@ impl MainViewState {
         flat
     }
 
+    /// Return all visible item indices in their exact visual display order
+    /// (respecting `group_by` bucket ordering and excluding items inside collapsed groups).
+    pub fn visual_order_items(&self) -> Vec<usize> {
+        let visible = self.visible_items_rc();
+        if self.group_by == GroupColumn::None {
+            return visible.as_ref().clone();
+        }
+        self.flatten_grouped_items(&visible)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                GroupedItemType::Item(idx) => Some(idx),
+                GroupedItemType::Header { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Return visual 2D rows of item indices for keyboard navigation (`Up`/`Down`/`PageUp`/`PageDown`),
+    /// accounting for view mode column counts, group row breaks, and collapsed groups.
+    pub fn visual_rows(&self, pane_w: f32) -> Vec<Vec<usize>> {
+        let visible = self.visible_items_rc();
+        let cols = match self.view_mode {
+            ViewMode::Grid => Self::grid_columns_for_width(pane_w, self.zoom_level).max(1),
+            ViewMode::Cards => {
+                Self::cards_layout_metrics(pane_w, self.zoom_level, self.compact_mode)
+                    .0
+                    .max(1)
+            }
+            ViewMode::List => {
+                Self::list_layout_metrics(pane_w, self.zoom_level, self.compact_mode)
+                    .0
+                    .max(1)
+            }
+            ViewMode::Details | ViewMode::Columns => 1,
+        };
+
+        if self.group_by == GroupColumn::None {
+            return visible.chunks(cols).map(|c| c.to_vec()).collect();
+        }
+
+        self.flatten_grouped_grid_items(&visible, cols)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                GroupedGridItem::Row(row) if !row.is_empty() => Some(row),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Compute exact `(item_index, (x0, y0, x1, y1))` bounds in scroll-content coordinates
+    /// for all non-collapsed items when `group_by != GroupColumn::None`.
+    /// Used by both rubber-band lasso selection (`apply_rect_selection_for_view`) and
+    /// `scroll_item_into_view`.
+    pub fn grouped_item_bounds_for_view(&self, pane_w: f32) -> Vec<(usize, (f32, f32, f32, f32))> {
+        let visible = self.visible_items_rc();
+        let zoom = self.zoom_level;
+        let compact = self.compact_mode;
+        let mut bounds = Vec::with_capacity(visible.len());
+
+        match self.view_mode {
+            ViewMode::Grid => {
+                let cols = Self::grid_columns_for_width(pane_w, zoom);
+                let params = Self::grid_layout_params_for_width_pub(pane_w, zoom, cols);
+                let header_h = if compact { 28.0 } else { 32.0 };
+                let flattened =
+                    self.flatten_grouped_grid_items(&visible, params.items_per_row.max(1));
+                let mut y = 0.0_f32;
+                for entry in flattened {
+                    match entry {
+                        GroupedGridItem::Header { .. } => {
+                            y += header_h;
+                        }
+                        GroupedGridItem::Row(indices) => {
+                            for (col, &idx) in indices.iter().enumerate() {
+                                let x0 = params.padding
+                                    + col as f32 * (params.item_width + params.gap);
+                                let y0 = y;
+                                let x1 = x0 + params.item_width;
+                                let y1 = y0 + params.item_height;
+                                bounds.push((idx, (x0, y0, x1, y1)));
+                            }
+                            y += params.row_height;
+                        }
+                    }
+                }
+            }
+            ViewMode::Cards => {
+                let (cols, card_w, row_h, gap, pad) =
+                    Self::cards_layout_metrics(pane_w, zoom, compact);
+                let header_h = if compact { 28.0 } else { 32.0 };
+                let flattened = self.flatten_grouped_grid_items(&visible, cols.max(1));
+                let mut y = 0.0_f32;
+                for entry in flattened {
+                    match entry {
+                        GroupedGridItem::Header { .. } => {
+                            y += header_h;
+                        }
+                        GroupedGridItem::Row(indices) => {
+                            for (col, &idx) in indices.iter().enumerate() {
+                                let x0 = pad + col as f32 * (card_w + gap);
+                                let y0 = y;
+                                let x1 = x0 + card_w;
+                                let y1 = y0 + row_h - 4.0;
+                                bounds.push((idx, (x0, y0, x1, y1)));
+                            }
+                            y += row_h;
+                        }
+                    }
+                }
+            }
+            ViewMode::List => {
+                let (cols, col_w, row_h, gap, pad) =
+                    Self::list_layout_metrics(pane_w, zoom, compact);
+                let header_h = row_h.max(30.0);
+                let flattened = self.flatten_grouped_grid_items(&visible, cols.max(1));
+                let mut y = 0.0_f32;
+                for entry in flattened {
+                    match entry {
+                        GroupedGridItem::Header { .. } => {
+                            y += header_h;
+                        }
+                        GroupedGridItem::Row(indices) => {
+                            for (col, &idx) in indices.iter().enumerate() {
+                                let x0 = pad + col as f32 * (col_w + gap);
+                                let y0 = y;
+                                let x1 = x0 + col_w;
+                                let y1 = y0 + row_h - 2.0;
+                                bounds.push((idx, (x0, y0, x1, y1)));
+                            }
+                            y += row_h;
+                        }
+                    }
+                }
+            }
+            ViewMode::Details => {
+                let base_row_h = if compact { 22.0 } else { 26.0 };
+                let row_h = (base_row_h + zoom * 22.0).round();
+                let header_h = row_h.max(30.0);
+                let flattened = self.flatten_grouped_items(&visible);
+                let mut y = 0.0_f32;
+                for entry in flattened {
+                    match entry {
+                        GroupedItemType::Header { .. } => {
+                            y += header_h;
+                        }
+                        GroupedItemType::Item(idx) => {
+                            bounds.push((idx, (8.0, y, (pane_w - 8.0).max(80.0), y + row_h)));
+                            y += row_h;
+                        }
+                    }
+                }
+            }
+            ViewMode::Columns => {
+                let base_row_h = if compact { 20.0 } else { 22.0 };
+                let row_h = (base_row_h + zoom * 22.0).round();
+                let header_h = row_h.max(30.0);
+                let zoom_scale = 0.80 + zoom.clamp(0.0, 1.0) * 0.55;
+                let col2_w = (self.column_widths.miller_col2 * zoom_scale)
+                    .clamp(160.0, (pane_w * 0.55).max(240.0));
+                let flattened = self.flatten_grouped_items(&visible);
+                let mut y = 0.0_f32;
+                for entry in flattened {
+                    match entry {
+                        GroupedItemType::Header { .. } => {
+                            y += header_h;
+                        }
+                        GroupedItemType::Item(idx) => {
+                            bounds.push((idx, (4.0, y, (col2_w - 4.0).max(80.0), y + row_h)));
+                            y += row_h;
+                        }
+                    }
+                }
+            }
+        }
+
+        bounds
+    }
+
     pub fn reorder_item_within_group(
         &mut self,
         source_visual_index: usize,
@@ -382,12 +558,143 @@ impl MainViewState {
 }
 
 impl MainView {
+    /// Variable-height virtualized vertical scroll container for grouped views
+    /// (`Grid`, `Cards`, `List`, `Details`).
+    ///
+    /// Replaces GPUI's `uniform_list` when `group_by != GroupColumn::None` because
+    /// `uniform_list` measures only item `0` (which in grouped views is always a `28px..32px`
+    /// `Header`) and forces every subsequent grid/card/list row to that `32px` height—causing
+    /// grid tiles and cards to stack `32px` apart vertically and overlap across the viewport.
+    pub fn render_virtualized_grouped_list<F>(
+        id: impl Into<ElementId>,
+        scroll_handle: &UniformListScrollHandle,
+        pane_w: f32,
+        item_heights: &[f32],
+        mut render_item: F,
+    ) -> AnyElement
+    where
+        F: FnMut(usize) -> AnyElement,
+    {
+        let count = item_heights.len();
+        let mut y_offsets = Vec::with_capacity(count + 1);
+        let mut total_h = 0.0_f32;
+        for &h in item_heights {
+            y_offsets.push(total_h);
+            total_h += h.max(1.0);
+        }
+        y_offsets.push(total_h);
+
+        let (scroll_top, vp_h, base_handle) = {
+            let mut st = scroll_handle.0.borrow_mut();
+            let base = st.base_handle.clone();
+            let raw_off_y: f32 = base.offset().y.into();
+            let b_h: f32 = base.bounds().size.height.into();
+            let prev_vp_h: f32 = st
+                .last_item_size
+                .map(|s| s.item.height.into())
+                .unwrap_or(0.0);
+            let effective_vp_h = if b_h > 20.0 {
+                b_h
+            } else if prev_vp_h > 20.0 {
+                prev_vp_h
+            } else {
+                720.0
+            };
+            let max_scroll = (total_h - effective_vp_h).max(0.0);
+            let clamped_scroll_top = (-raw_off_y).clamp(0.0, max_scroll);
+            if (-raw_off_y) > max_scroll + 1.0 {
+                base.set_offset(point(px(0.0), px(-clamped_scroll_top)));
+            }
+            st.last_item_size = Some(ItemSize {
+                item: size(px(pane_w.max(100.0)), px(effective_vp_h)),
+                contents: size(px(pane_w.max(100.0)), px(total_h)),
+            });
+            (clamped_scroll_top, effective_vp_h, base)
+        };
+
+        let overscan_px = (vp_h * 0.65).max(320.0);
+        let vis_top = (scroll_top - overscan_px).max(0.0);
+        let vis_bottom = (scroll_top + vp_h + overscan_px).min(total_h);
+
+        let first_idx = if count == 0 {
+            0
+        } else {
+            match y_offsets[..count].binary_search_by(|y| {
+                y.partial_cmp(&vis_top).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            }
+        };
+
+        let last_idx = if count == 0 {
+            0
+        } else {
+            match y_offsets[..count].binary_search_by(|y| {
+                y.partial_cmp(&vis_bottom).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                Ok(i) => (i + 1).min(count),
+                Err(i) => i.min(count),
+            }
+        };
+
+        let top_spacer_h = y_offsets.get(first_idx).copied().unwrap_or(0.0);
+        let rendered_end_y = y_offsets.get(last_idx).copied().unwrap_or(total_h);
+        let bottom_spacer_h = (total_h - rendered_end_y).max(0.0);
+
+        let mut children: Vec<AnyElement> =
+            Vec::with_capacity((last_idx.saturating_sub(first_idx)) + 2);
+
+        if top_spacer_h > 0.0 {
+            children.push(
+                div()
+                    .w_full()
+                    .h(px(top_spacer_h))
+                    .flex_shrink_0()
+                    .into_any_element(),
+            );
+        }
+
+        for i in first_idx..last_idx {
+            let h = item_heights[i].max(1.0);
+            children.push(
+                div()
+                    .w_full()
+                    .h(px(h))
+                    .flex_shrink_0()
+                    .child(render_item(i))
+                    .into_any_element(),
+            );
+        }
+
+        if bottom_spacer_h > 0.0 {
+            children.push(
+                div()
+                    .w_full()
+                    .h(px(bottom_spacer_h))
+                    .flex_shrink_0()
+                    .into_any_element(),
+            );
+        }
+
+        div()
+            .id(id)
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .track_scroll(&base_handle)
+            .children(children)
+            .into_any_element()
+    }
+
     /// Unified `Files-community` Group Header Row used across `Details`, `List`, `Cards`, and `Grid` views.
     /// Features:
     /// - Clickable chevron + group title to collapse/expand the group
     /// - Item count badge
     /// - Full-width subtle horizontal rule
-    /// - `"Select"` action pill on the right to select all items in this group at once
+    /// - `"Select group"` action pill on the right to select all items in this group at once
     pub fn render_group_header_row(
         id_num: usize,
         key: &str,
@@ -404,11 +711,17 @@ impl MainView {
         let label_str = label.to_string();
         let v_toggle = view.clone();
         let v_select = view;
+        let elem_id = id_num
+            + match pane_focus {
+                PaneFocus::Primary => 900_000,
+                PaneFocus::Secondary => 950_000,
+            };
 
         div()
-            .id(ElementId::from(id_num))
+            .id(ElementId::from(elem_id))
             .w_full()
             .h(px(row_height.max(28.0)))
+            .flex_shrink_0()
             .px(px(horizontal_pad))
             .flex()
             .flex_row()
@@ -428,6 +741,7 @@ impl MainView {
                 div()
                     .w(px(18.0))
                     .h(px(18.0))
+                    .flex_shrink_0()
                     .rounded(px(4.0))
                     .bg(rgba(0xFFFFFF0Cu32))
                     .flex()
@@ -443,6 +757,7 @@ impl MainView {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .text_size(px(12.5))
                     .font_weight(FontWeight(600.0))
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
@@ -450,6 +765,7 @@ impl MainView {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .px(px(7.0))
                     .py(px(1.5))
                     .rounded(px(10.0))
@@ -470,6 +786,7 @@ impl MainView {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .px(px(8.0))
                     .py(px(2.0))
                     .rounded(px(4.0))

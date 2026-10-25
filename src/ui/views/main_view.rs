@@ -128,6 +128,33 @@ impl MainViewState {
         self.visible_cache.borrow_mut().take();
     }
 
+    /// Look up tags for `item` from `tags_cache` (by full path or `primary_path/name`)
+    /// or fallback to `item.tags`.
+    pub fn item_tags<'a>(&'a self, item: &'a FileItem) -> Option<&'a [String]> {
+        let path_str = item.path.to_string_lossy();
+        if let Some(tags) = self.tags_cache.get(path_str.as_ref()) {
+            if !tags.is_empty() {
+                return Some(tags.as_slice());
+            }
+        }
+        let joined = format!(
+            "{}/{}",
+            self.primary_path
+                .to_string_lossy()
+                .trim_end_matches(['/', '\\']),
+            item.name
+        );
+        if let Some(tags) = self.tags_cache.get(&joined) {
+            if !tags.is_empty() {
+                return Some(tags.as_slice());
+            }
+        }
+        if !item.tags.is_empty() {
+            return Some(item.tags.as_slice());
+        }
+        None
+    }
+
     /// Return a reference-counted sorted+filtered index vector, computing and caching it
     /// only when the underlying items, sort state, or filter parameters have changed.
     /// Guarantees O(1) zero-sort execution during 120-144 FPS scroll and hover frames.
@@ -169,6 +196,7 @@ impl MainViewState {
             is_searching: self.search_state.is_searching,
             search_query: self.search_state.query.clone(),
             search_results_len: self.search_state.results.len(),
+            tags_cache_len: self.tags_cache.len(),
         };
 
         if let Some((cached_key, cached_rc)) = self.visible_cache.borrow().as_ref() {
@@ -239,14 +267,18 @@ impl MainViewState {
                     }
                 }
                 SortBy::Tag => {
-                    let tags_a = self.tags_cache.get(&*ia.path.to_string_lossy());
-                    let tags_b = self.tags_cache.get(&*ib.path.to_string_lossy());
-                    let first_tag_a = tags_a.and_then(|t| t.first()).map(|s| s.as_str());
-                    let first_tag_b = tags_b.and_then(|t| t.first()).map(|s| s.as_str());
+                    let first_tag_a = self
+                        .item_tags(ia)
+                        .and_then(|t| t.first())
+                        .map(|s| s.as_str());
+                    let first_tag_b = self
+                        .item_tags(ib)
+                        .and_then(|t| t.first())
+                        .map(|s| s.as_str());
                     match (first_tag_a, first_tag_b) {
                         (Some(a), Some(b)) => natural_cmp(a, b),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (Some(_), None) => return std::cmp::Ordering::Less,
+                        (None, Some(_)) => return std::cmp::Ordering::Greater,
                         (None, None) => natural_cmp(&ia.name, &ib.name),
                     }
                 }
@@ -1280,7 +1312,7 @@ impl MainView {
             ));
         }
 
-        outer = outer.child(Self::filter_header(state, view.clone()));
+        outer = outer.child(Self::filter_header(state, pane_focus, view.clone()));
 
         if visible.is_empty() && !state.loading && !is_home && !is_settings && !is_recycle_bin {
             return outer
@@ -1301,7 +1333,7 @@ impl MainView {
                     {
                         let list_origin = point(
                             base_origin.x,
-                            base_origin.y + filter_offset_y + 28.0,
+                            base_origin.y + filter_offset_y + 30.0,
                         );
                         Self::details_view_for_pane(
                             state,
@@ -1352,9 +1384,15 @@ impl MainView {
                     )
                 }
                 ViewMode::Columns => {
+                    let z = state.zoom_level.clamp(0.0, 1.0);
+                    let zoom_scale = 0.80 + z * 0.55;
+                    let col1_w = (state.column_widths.miller_col1 * zoom_scale)
+                        .clamp(130.0, (pane_w * 0.45).max(200.0))
+                        .round();
+                    let header_h = (28.0 + z * 8.0).round();
                     let col2_origin = point(
-                        base_origin.x + 210.0,
-                        base_origin.y + filter_offset_y + 32.0,
+                        base_origin.x + col1_w + 6.0,
+                        base_origin.y + filter_offset_y + header_h,
                     );
                     state.render_columns_view_for_pane(
                         file_items,
@@ -1411,6 +1449,7 @@ impl MainView {
 
     fn filter_header(
         state: &MainViewState,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let is_filtering = state.show_filter_bar || !state.filter_text.is_empty();
@@ -1429,6 +1468,7 @@ impl MainView {
             (GroupColumn::Size, "Size"),
             (GroupColumn::DateModified, "Date Modified"),
             (GroupColumn::DateCreated, "Date Created"),
+            (GroupColumn::SyncStatus, "Sync Status"),
             (GroupColumn::Tag, "Tag"),
         ];
 
@@ -1468,6 +1508,7 @@ impl MainView {
                         })
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             v_pill.update(cx, |this, cx| {
+                                this.focus_pane(pane_focus, cx);
                                 this.set_group_by(g_col, cx);
                             });
                         })
@@ -1496,6 +1537,7 @@ impl MainView {
                     .text_color(rgb(0xFF8080))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         v_clear_group.update(cx, |this, cx| {
+                            this.focus_pane(pane_focus, cx);
                             this.set_group_by(GroupColumn::None, cx);
                         });
                     })
@@ -1559,6 +1601,8 @@ impl MainView {
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         v_clear_filter.update(cx, |this, cx| {
+                                            this.focus_pane(pane_focus, cx);
+                                            this.state.pane_view_mut(pane_focus).show_filter_bar = false;
                                             this.state.main_view.show_filter_bar = false;
                                             this.set_filter_text(String::new(), cx);
                                         });

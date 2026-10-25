@@ -321,6 +321,24 @@ impl AppWindow {
                 .detach();
         }
 
+        // Load persistent folder-size index on a background thread and optionally index all fixed drives once
+        if is_primary_launch_window {
+            let should_index_drives = window_view
+                .state
+                .settings
+                .read(cx)
+                .config
+                .view
+                .index_all_drives_folder_sizes;
+            if should_index_drives {
+                window_view.trigger_index_all_drives(false, cx);
+            } else {
+                std::thread::spawn(|| {
+                    crate::storage::folder_size::ensure_persistent_cache_loaded();
+                });
+            }
+        }
+
         window_view
     }
 
@@ -1462,36 +1480,28 @@ impl AppWindow {
         }
         let viewport_h = (win_h - 170.0).max(160.0);
 
-        let visible = self.state.pane_view(pane_focus).visible_items_rc();
-        let vis_len = visible.len();
+        let visual_items = self.state.pane_view(pane_focus).visual_order_items();
+        let vis_len = visual_items.len();
         if vis_len == 0 {
             return false;
         }
 
+        let rows = self.state.pane_view(pane_focus).visual_rows(pane_w);
         let grid_cols = {
             let cols = MainViewState::grid_columns_for_width(pane_w, zoom_level);
             MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, cols)
                 .items_per_row
                 .max(1)
         };
-        let (list_cols, _list_col_w, _list_row_h, _list_gap, _list_pad) =
-            MainViewState::list_layout_metrics(
-                pane_w,
-                zoom_level,
-                self.state.pane_view(pane_focus).compact_mode,
-            );
-        let (cards_cols, _card_w, _card_rh, _card_gap, _card_pad) =
-            MainViewState::cards_layout_metrics(
-                pane_w,
-                zoom_level,
-                self.state.pane_view(pane_focus).compact_mode,
-            );
-        let details_page_rows = ((viewport_h / 32.0).floor() as usize).max(1);
-        let grid_page_items = {
-            let params =
-                MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, grid_cols);
-            let rows = ((viewport_h / params.row_height).floor() as usize).max(1);
-            (rows * grid_cols).max(grid_cols)
+        let page_row_step = match view_mode {
+            ViewMode::Grid => {
+                let params =
+                    MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, grid_cols);
+                ((viewport_h / params.row_height).floor() as usize).max(1)
+            }
+            ViewMode::Cards => 6,
+            ViewMode::List => 10,
+            _ => ((viewport_h / 32.0).floor() as usize).max(1),
         };
 
         let had_selection = !self.state.pane_view(pane_focus).selected_indices.is_empty();
@@ -1500,78 +1510,78 @@ impl AppWindow {
             .pane_view(pane_focus)
             .last_clicked_index
             .or_else(|| self.state.pane_view(pane_focus).selected_indices.iter().next().copied())
-            .unwrap_or(visible[0]);
-        let cur_vis_pos = visible
+            .unwrap_or(visual_items[0]);
+        let cur_vis_pos = visual_items
             .iter()
             .position(|&i| i == current_item_idx)
             .unwrap_or(0);
+        let (cur_row, cur_col) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(r_idx, r)| {
+                r.iter()
+                    .position(|&i| i == current_item_idx)
+                    .map(|c_idx| (r_idx, c_idx))
+            })
+            .unwrap_or((0, 0));
 
-        let target_vis_pos: Option<usize> = match key.to_ascii_lowercase().as_str() {
+        let target_idx: Option<usize> = match key.to_ascii_lowercase().as_str() {
             "down" | "arrowdown" => {
-                if !had_selection {
-                    Some(0)
+                if !had_selection || rows.is_empty() {
+                    Some(visual_items[0])
                 } else {
-                    let step = match view_mode {
-                        ViewMode::Grid => grid_cols.max(1),
-                        ViewMode::Cards => cards_cols.max(1),
-                        ViewMode::List => list_cols.max(1),
-                        _ => 1,
-                    };
-                    Some((cur_vis_pos + step).min(vis_len - 1))
+                    let next_r = (cur_row + 1).min(rows.len() - 1);
+                    let row = &rows[next_r];
+                    Some(row[cur_col.min(row.len().saturating_sub(1))])
                 }
             }
             "up" | "arrowup" => {
-                if !had_selection {
-                    Some(0)
+                if !had_selection || rows.is_empty() {
+                    Some(visual_items[0])
                 } else {
-                    let step = match view_mode {
-                        ViewMode::Grid => grid_cols.max(1),
-                        ViewMode::Cards => cards_cols.max(1),
-                        ViewMode::List => list_cols.max(1),
-                        _ => 1,
-                    };
-                    Some(cur_vis_pos.saturating_sub(step))
+                    let prev_r = cur_row.saturating_sub(1);
+                    let row = &rows[prev_r];
+                    Some(row[cur_col.min(row.len().saturating_sub(1))])
                 }
             }
             "right" | "arrowright" => {
                 if !had_selection {
-                    Some(0)
+                    Some(visual_items[0])
                 } else {
-                    Some((cur_vis_pos + 1).min(vis_len - 1))
+                    Some(visual_items[(cur_vis_pos + 1).min(vis_len - 1)])
                 }
             }
             "left" | "arrowleft" => {
                 if !had_selection {
-                    Some(0)
+                    Some(visual_items[0])
                 } else {
-                    Some(cur_vis_pos.saturating_sub(1))
+                    Some(visual_items[cur_vis_pos.saturating_sub(1)])
                 }
             }
-            "home" => Some(0),
-            "end" => Some(vis_len - 1),
+            "home" => Some(visual_items[0]),
+            "end" => Some(visual_items[vis_len - 1]),
             "pagedown" => {
-                let step = match view_mode {
-                    ViewMode::Grid => grid_page_items,
-                    ViewMode::Cards => cards_cols.max(1) * 6,
-                    ViewMode::List => list_cols.max(1) * 10,
-                    _ => details_page_rows,
-                };
-                Some((cur_vis_pos + step).min(vis_len - 1))
+                if rows.is_empty() {
+                    Some(visual_items[vis_len - 1])
+                } else {
+                    let next_r = (cur_row + page_row_step).min(rows.len() - 1);
+                    let row = &rows[next_r];
+                    Some(row[cur_col.min(row.len().saturating_sub(1))])
+                }
             }
             "pageup" => {
-                let step = match view_mode {
-                    ViewMode::Grid => grid_page_items,
-                    ViewMode::Cards => cards_cols.max(1) * 6,
-                    ViewMode::List => list_cols.max(1) * 10,
-                    _ => details_page_rows,
-                };
-                Some(cur_vis_pos.saturating_sub(step))
+                if rows.is_empty() {
+                    Some(visual_items[0])
+                } else {
+                    let prev_r = cur_row.saturating_sub(page_row_step);
+                    let row = &rows[prev_r];
+                    Some(row[cur_col.min(row.len().saturating_sub(1))])
+                }
             }
             _ => None,
         };
 
-        if let Some(vis_pos) = target_vis_pos {
-            let idx = visible[vis_pos];
+        if let Some(idx) = target_idx {
             self.select_item_in_pane(pane_focus, idx, shift, false, cx);
             self.scroll_item_into_view(pane_focus, idx);
             return true;
@@ -2254,6 +2264,9 @@ impl AppWindow {
             crate::core::navigation_manager::PaneFocus::Primary
         };
         let changed = self.state.main_view.active_pane != effective;
+        if !changed {
+            return;
+        }
         self.state.main_view.active_pane = effective;
         self.state.secondary_view.active_pane = effective;
         self.state.navigation.update(cx, |nav, _cx| {
@@ -2272,24 +2285,31 @@ impl AppWindow {
             .filter(|i| matches!(i.file_type, FileType::Directory))
             .count();
         let files = total - folders;
-        let sel_count = view_ref.selected_indices.len();
-        let sel_bytes: u64 = view_ref
-            .selected_indices
-            .iter()
-            .filter_map(|&i| view_ref.items.get(i))
-            .map(|item| item.size)
-            .sum();
         self.state.status_bar.sync(total, folders, files);
-        self.state.status_bar.selected_count = sel_count;
-        self.state.status_bar.selected_size_bytes = sel_bytes;
-        let branch = GitService::get_branch(&pane_path);
-        self.state.status_bar.show_git_actions = branch.is_some();
-        self.state.status_bar.git_branch = branch;
+        self.sync_pane_selection_model(effective, cx);
 
-        if changed {
-            self.save_session(cx);
-            cx.notify();
-        }
+        let git_path = pane_path.clone();
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx.background_executor().spawn(async move {
+            GitService::get_branch(&git_path)
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                let branch = bg.await;
+                weak.update(&mut async_cx, |this, cx| {
+                    if this.state.active_pane_focus() == effective {
+                        this.state.status_bar.show_git_actions = branch.is_some();
+                        this.state.status_bar.git_branch = branch;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+
+        self.save_session(cx);
+        cx.notify();
     }
 
     /// Switch focus between Primary and Secondary panes (Tab / F6).
@@ -3304,39 +3324,82 @@ impl AppWindow {
     }
 
     /// Stop file watcher. `secondary` determines which watcher to stop.
+    /// Drops the OS watcher on a background thread so joining the notify worker never blocks the UI thread.
     pub fn stop_file_watcher(&mut self, secondary: bool) {
         if secondary {
-            self.file_watcher_secondary = None;
+            if let Some(w) = self.file_watcher_secondary.take() {
+                std::thread::spawn(move || drop(w));
+            }
             self.file_event_rx_secondary = None;
         } else {
-            self.file_watcher = None;
+            if let Some(w) = self.file_watcher.take() {
+                std::thread::spawn(move || drop(w));
+            }
             self.file_event_rx = None;
         }
     }
 
     /// Stop all file watchers
     pub fn stop_all_file_watchers(&mut self) {
-        self.file_watcher = None;
-        self.file_event_rx = None;
-        self.file_watcher_secondary = None;
-        self.file_event_rx_secondary = None;
+        self.stop_file_watcher(false);
+        self.stop_file_watcher(true);
     }
 
-    /// Poll for file system events and refresh if any are received.
+    /// Poll for file system events, incrementally invalidate changed folder-size cache branches,
+    /// and coalesce burst events into a single refresh per frame.
     pub fn poll_file_events(&mut self, cx: &mut Context<Self>) {
-        // Poll primary pane
+        let mut refresh_primary = false;
         if let Some(rx) = &mut self.file_event_rx {
-            while let Ok(_event) = rx.try_recv() {
-                self.refresh(cx);
-                break;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    crate::storage::storage::FileEvent::Created(p)
+                    | crate::storage::storage::FileEvent::Modified(p)
+                    | crate::storage::storage::FileEvent::Removed(p) => {
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            p.as_path().to_path_buf(),
+                        );
+                    }
+                    crate::storage::storage::FileEvent::Renamed(from, to) => {
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            from.as_path().to_path_buf(),
+                        );
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            to.as_path().to_path_buf(),
+                        );
+                    }
+                }
+                refresh_primary = true;
             }
         }
-        // Poll secondary pane
+        if refresh_primary {
+            self.refresh(cx);
+        }
+
+        let mut refresh_secondary = false;
         if let Some(rx) = &mut self.file_event_rx_secondary {
-            while let Ok(_event) = rx.try_recv() {
-                self.refresh_secondary_pane(cx);
-                break;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    crate::storage::storage::FileEvent::Created(p)
+                    | crate::storage::storage::FileEvent::Modified(p)
+                    | crate::storage::storage::FileEvent::Removed(p) => {
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            p.as_path().to_path_buf(),
+                        );
+                    }
+                    crate::storage::storage::FileEvent::Renamed(from, to) => {
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            from.as_path().to_path_buf(),
+                        );
+                        crate::storage::folder_size::refresh_changed_branch_background(
+                            to.as_path().to_path_buf(),
+                        );
+                    }
+                }
+                refresh_secondary = true;
             }
+        }
+        if refresh_secondary {
+            self.refresh_secondary_pane(cx);
         }
     }
 
@@ -3708,6 +3771,7 @@ impl AppWindow {
                 let job = engine
                     .start_job(format!("Delete ({} items)", n), OpKind::Delete)
                     .await;
+                let parent_to_inv = bufs.first().and_then(|p| p.parent().map(|d| d.to_path_buf()));
                 match run_delete_job_rt(engine.clone(), job, bufs, true).await {
                     TransferOutcome::Done => {
                         engine.complete_job(job).await;
@@ -3725,6 +3789,9 @@ impl AppWindow {
                     TransferOutcome::Failed(reason) => {
                         engine.fail_job(job, reason).await;
                     }
+                }
+                if let Some(parent_dir) = parent_to_inv {
+                    crate::storage::folder_size::refresh_changed_branch_background(parent_dir);
                 }
                 weak.update(&mut async_cx, |this, cx| {
                     this.clear_selection(cx);
@@ -3767,6 +3834,7 @@ impl AppWindow {
                 let job = engine
                     .start_job(format!("Delete ({} items)", n), OpKind::Delete)
                     .await;
+                let parent_to_inv = bufs.first().and_then(|p| p.parent().map(|d| d.to_path_buf()));
                 match run_delete_job_rt(engine.clone(), job, bufs, false).await {
                     TransferOutcome::Done => {
                         engine.complete_job(job).await;
@@ -3890,7 +3958,7 @@ impl AppWindow {
                 }
                 view.selection_anchor_index = Some(index);
             } else if shift {
-                let visible = view.visible_items_rc();
+                let visual = view.visual_order_items();
                 let anchor = view
                     .selection_anchor_index
                     .or(view.last_clicked_index)
@@ -3900,12 +3968,12 @@ impl AppWindow {
                 view.selection_anchor_index = Some(anchor);
                 view.selected_indices.clear();
 
-                let pos_a = visible.iter().position(|&i| i == anchor);
-                let pos_b = visible.iter().position(|&i| i == index);
+                let pos_a = visual.iter().position(|&i| i == anchor);
+                let pos_b = visual.iter().position(|&i| i == index);
                 if let (Some(pa), Some(pb)) = (pos_a, pos_b) {
                     let start = pa.min(pb);
                     let end = pa.max(pb);
-                    for &vi in &visible[start..=end] {
+                    for &vi in &visual[start..=end] {
                         view.selected_indices.insert(vi);
                     }
                 } else {
@@ -3995,43 +4063,64 @@ impl AppWindow {
             return;
         }
 
-        let visible = view.visible_items_rc();
-        let vis_pos = visible
-            .iter()
-            .position(|&i| i == item_index)
-            .unwrap_or(item_index);
-        let (row_idx, row_h) = match view.view_mode {
-            ViewMode::Grid => {
-                let cols = MainViewState::grid_columns_for_width(pane_w, view.zoom_level);
-                let params =
-                    MainViewState::grid_layout_params_for_width_pub(pane_w, view.zoom_level, cols);
-                (vis_pos / params.items_per_row.max(1), params.row_height)
+        let (item_top, item_bottom, row_h) = if view.group_by
+            != crate::config::config::GroupColumn::None
+            && !matches!(view.view_mode, ViewMode::Columns)
+        {
+            let grouped_bounds = view.grouped_item_bounds_for_view(pane_w);
+            if let Some((_, (_x0, y0, _x1, y1))) =
+                grouped_bounds.into_iter().find(|(idx, _)| *idx == item_index)
+            {
+                let rh = (y1 - y0).max(24.0);
+                (y0, y1, rh)
+            } else {
+                return;
             }
-            ViewMode::Cards => {
-                let (cols, _card_w, rh, _gap, _pad) = MainViewState::cards_layout_metrics(
-                    pane_w,
-                    view.zoom_level,
-                    view.compact_mode,
-                );
-                (vis_pos / cols.max(1), rh)
-            }
-            ViewMode::List => {
-                let (cols, _col_w, rh, _gap, _pad) = MainViewState::list_layout_metrics(
-                    pane_w,
-                    view.zoom_level,
-                    view.compact_mode,
-                );
-                (vis_pos / cols.max(1), rh)
-            }
-            ViewMode::Columns => (vis_pos, 30.0),
-            ViewMode::Details => {
-                let rh = 20.0 + view.zoom_level * 28.0;
-                (vis_pos, rh)
-            }
+        } else {
+            let visible = view.visible_items_rc();
+            let vis_pos = visible
+                .iter()
+                .position(|&i| i == item_index)
+                .unwrap_or(item_index);
+            let (row_idx, rh) = match view.view_mode {
+                ViewMode::Grid => {
+                    let cols = MainViewState::grid_columns_for_width(pane_w, view.zoom_level);
+                    let params = MainViewState::grid_layout_params_for_width_pub(
+                        pane_w,
+                        view.zoom_level,
+                        cols,
+                    );
+                    (vis_pos / params.items_per_row.max(1), params.row_height)
+                }
+                ViewMode::Cards => {
+                    let (cols, _card_w, rh, _gap, _pad) = MainViewState::cards_layout_metrics(
+                        pane_w,
+                        view.zoom_level,
+                        view.compact_mode,
+                    );
+                    (vis_pos / cols.max(1), rh)
+                }
+                ViewMode::List => {
+                    let (cols, _col_w, rh, _gap, _pad) = MainViewState::list_layout_metrics(
+                        pane_w,
+                        view.zoom_level,
+                        view.compact_mode,
+                    );
+                    (vis_pos / cols.max(1), rh)
+                }
+                ViewMode::Columns => {
+                    let rh = (22.0 + view.zoom_level * 22.0).round();
+                    (vis_pos, rh)
+                }
+                ViewMode::Details => {
+                    let base_row_h = if view.compact_mode { 22.0 } else { 26.0 };
+                    let rh = (base_row_h + view.zoom_level * 22.0).round();
+                    (vis_pos, rh)
+                }
+            };
+            let top = row_idx as f32 * rh;
+            (top, top + rh, rh)
         };
-
-        let item_top = row_idx as f32 * row_h;
-        let item_bottom = item_top + row_h;
         let cur_scroll = (-view.bouncy_scroll.offset).max(0.0);
 
         let new_scroll = if item_top < cur_scroll {
@@ -4052,91 +4141,160 @@ impl AppWindow {
         }
     }
 
-    /// Show real recursive folder sizes for a single selected folder in the
-    /// status bar. Hits the content-signature cache when possible; otherwise
-    /// computes on a background thread (dust-style parallel walk) while the
-    /// status bar shows an animated "Calculating size..." indicator.
+    /// Compute and display accurate total size for all selected items (files + folders)
+    /// in the status bar. Uses non-blocking `folder_size::peek_cached_size` on the UI thread
+    /// (zero syscalls) and computes any uncached selected folders on the background executor.
     fn refresh_folder_size_status(
         &mut self,
         pane_focus: crate::core::navigation_manager::PaneFocus,
         cx: &mut Context<Self>,
     ) {
-        let single_folder: Option<crate::core::path_util::FilesPath> = {
-            let view = self.state.pane_view(pane_focus);
-            if view.selected_indices.len() == 1 {
-                view.selected_indices
-                    .iter()
-                    .next()
-                    .and_then(|&i| view.items.get(i))
-                    .filter(|it| {
-                        matches!(it.file_type, crate::storage::storage::FileType::Directory)
-                    })
-                    .map(|it| it.path.clone())
-            } else {
-                None
-            }
-        };
-        match single_folder {
-            None => {
-                self.state.status_bar.folder_size_pending = false;
-                self.state.status_bar.folder_size_for = None;
-            }
-            Some(path) => {
-                if let Some(sz) = crate::storage::folder_size::cached_size(path.as_path()) {
-                    self.state.status_bar.selected_size_bytes = sz;
-                    self.state.status_bar.folder_size_pending = false;
-                    self.state.status_bar.folder_size_for = Some(path);
-                } else {
-                    self.state.status_bar.folder_size_pending = true;
-                    self.state.status_bar.folder_size_for = Some(path.clone());
-                    self.state.status_bar.spinner_frame = 0;
-                    let mut trigger = cx.to_async();
-                    let weak = cx.weak_entity();
-                    let p = path.clone();
-                    let pc = path.clone();
-                    let bg = cx.background_executor().spawn(async move {
-                        crate::storage::folder_size::compute_and_store(pc.as_path())
-                    });
-                    cx.foreground_executor()
-                        .spawn(async move {
-                            let size = bg.await;
-                            weak.update(&mut trigger, move |this, cx| {
-                                if this.state.status_bar.folder_size_for.as_ref() == Some(&p) {
-                                    this.state.status_bar.selected_size_bytes = size;
-                                    this.state.status_bar.folder_size_pending = false;
-                                    cx.notify();
-                                }
-                            })
-                            .ok();
-                        })
-                        .detach();
-                    // Spinner ticker: advance the ellipsis while the walk runs.
-                    cx.spawn(
-                        async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                            loop {
-                                cx.background_executor()
-                                    .timer(std::time::Duration::from_millis(220))
-                                    .await;
-                                let cont = weak
-                                    .update(cx, |this, cx| {
-                                        if !this.state.status_bar.folder_size_pending {
-                                            return false;
-                                        }
-                                        this.state.status_bar.spinner_frame =
-                                            (this.state.status_bar.spinner_frame + 1) % 4;
-                                        cx.notify();
-                                        true
-                                    })
-                                    .unwrap_or(false);
-                                if !cont {
-                                    break;
-                                }
-                            }
-                        },
-                    )
-                    .detach();
+        self.state.status_bar.folder_size_request_id =
+            self.state.status_bar.folder_size_request_id.wrapping_add(1);
+        let req_id = self.state.status_bar.folder_size_request_id;
+
+        let (file_bytes, cached_folder_bytes, uncached_folders, single_folder_opt) = {
+            let view = self.state.pane_view_mut(pane_focus);
+            let mut file_sum = 0u64;
+            let mut folder_sum = 0u64;
+            let mut uncached = Vec::new();
+            let mut single_folder = None;
+            let is_single = view.selected_indices.len() == 1;
+
+            let selected_vec: Vec<usize> = view.selected_indices.iter().copied().collect();
+            for idx in selected_vec {
+                if let Some(item) = view.items.get_mut(idx) {
+                    if matches!(item.file_type, crate::storage::storage::FileType::Directory) {
+                        if is_single {
+                            single_folder = Some(item.path.clone());
+                        }
+                        if let Some(sz) =
+                            crate::storage::folder_size::peek_cached_size(item.path.as_path())
+                        {
+                            item.size = sz;
+                            folder_sum = folder_sum.saturating_add(sz);
+                        } else if item.size > 0 {
+                            folder_sum = folder_sum.saturating_add(item.size);
+                        } else {
+                            uncached.push(item.path.clone());
+                        }
+                    } else {
+                        file_sum = file_sum.saturating_add(item.size);
+                    }
                 }
             }
+            (file_sum, folder_sum, uncached, single_folder)
+        };
+
+        let immediate_total = file_bytes.saturating_add(cached_folder_bytes);
+        self.state.status_bar.selected_size_bytes = immediate_total;
+        if single_folder_opt.is_some() && uncached_folders.is_empty() {
+            self.state.main_view.details_cache.folder_total_size = cached_folder_bytes;
+        }
+
+        if uncached_folders.is_empty() {
+            self.state.status_bar.folder_size_pending = false;
+            self.state.status_bar.folder_size_for = single_folder_opt;
+            return;
+        }
+
+        let was_already_pending = self.state.status_bar.folder_size_pending;
+        let sentinel_path = single_folder_opt
+            .clone()
+            .unwrap_or_else(|| uncached_folders[0].clone());
+        self.state.status_bar.folder_size_pending = true;
+        self.state.status_bar.folder_size_for = Some(sentinel_path.clone());
+        if !was_already_pending {
+            self.state.status_bar.spinner_frame = 0;
+        }
+
+        let mut trigger = cx.to_async();
+        let weak = cx.weak_entity();
+        let folders_to_calc = uncached_folders;
+        let bg = cx.background_executor().spawn(async move {
+            let mut computed: Vec<(crate::core::path_util::FilesPath, u64)> =
+                Vec::with_capacity(folders_to_calc.len());
+            for fp in folders_to_calc {
+                let sz = crate::storage::folder_size::compute_and_store(fp.as_path());
+                computed.push((fp, sz));
+            }
+            computed
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                let computed = bg.await;
+                weak.update(&mut trigger, move |this, cx| {
+                    {
+                        let view = this.state.pane_view_mut(pane_focus);
+                        for (fp, sz) in &computed {
+                            if let Some(it) = view.items.iter_mut().find(|i| &i.path == fp) {
+                                it.size = *sz;
+                            }
+                        }
+                        view.bump_items_revision();
+                    }
+                    if this.state.active_pane_focus() == pane_focus
+                        && this.state.status_bar.folder_size_request_id == req_id
+                    {
+                        let (total, single) = {
+                            let view = this.state.pane_view(pane_focus);
+                            let mut total = 0u64;
+                            for &idx in &view.selected_indices {
+                                if let Some(it) = view.items.get(idx) {
+                                    if matches!(
+                                        it.file_type,
+                                        crate::storage::storage::FileType::Directory
+                                    ) {
+                                        let sz = crate::storage::folder_size::peek_cached_size(
+                                            it.path.as_path(),
+                                        )
+                                        .unwrap_or(it.size);
+                                        total = total.saturating_add(sz);
+                                    } else {
+                                        total = total.saturating_add(it.size);
+                                    }
+                                }
+                            }
+                            (total, view.selected_indices.len() == 1)
+                        };
+                        this.state.status_bar.selected_size_bytes = total;
+                        this.state.status_bar.folder_size_pending = false;
+                        if single {
+                            this.state.main_view.details_cache.folder_total_size = total;
+                        }
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+
+        // Only spawn a single spinner ticker while folder_size_pending is true.
+        if !was_already_pending {
+            cx.spawn(
+                async move |weak: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(220))
+                            .await;
+                        let cont = weak
+                            .update(cx, |this, cx| {
+                                if !this.state.status_bar.folder_size_pending {
+                                    return false;
+                                }
+                                this.state.status_bar.spinner_frame =
+                                    (this.state.status_bar.spinner_frame + 1) % 4;
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !cont {
+                            break;
+                        }
+                    }
+                },
+            )
+            .detach();
         }
     }
 
@@ -4146,26 +4304,16 @@ impl AppWindow {
         pane_focus: crate::core::navigation_manager::PaneFocus,
         cx: &mut Context<Self>,
     ) {
-        let (items_len, sel_clone, sel_size) = {
+        let (items_len, sel_clone) = {
             let view = self.state.pane_view(pane_focus);
-            let sel_size: u64 = view
-                .selected_indices
-                .iter()
-                .filter_map(|&i| view.items.get(i))
-                .map(|item| item.size)
-                .sum();
-            (
-                view.items.len(),
-                view.selected_indices.clone(),
-                sel_size,
-            )
+            (view.items.len(), view.selected_indices.clone())
         };
         if self.state.active_pane_focus() == pane_focus {
             self.state.status_bar.selected_count = sel_clone.len();
-            self.state.status_bar.selected_size_bytes = sel_size;
             self.refresh_folder_size_status(pane_focus, cx);
         }
-        let need_items_sync = self.state.pane_file_items(pane_focus).read(cx).items.len() != items_len;
+        let need_items_sync =
+            self.state.pane_file_items(pane_focus).read(cx).items.len() != items_len;
         let items_opt = if need_items_sync {
             Some(self.state.pane_view(pane_focus).items.clone())
         } else {
@@ -4175,6 +4323,46 @@ impl AppWindow {
             if let Some(items) = items_opt {
                 m.items = items;
             }
+            m.selected_indices = sel_clone;
+        });
+    }
+
+    /// Zero-syscall, zero-task-spawn selection model update used during live rubber-band (lasso)
+    /// mouse-move frames. Sums file sizes and cached folder sizes in O(1) memory without launching
+    /// background directory walks mid-drag; `end_lasso_in_pane` triggers the full background walk
+    /// once for any uncached folders when the drag finishes.
+    fn sync_pane_selection_model_during_lasso(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        cx: &mut Context<Self>,
+    ) {
+        let (sel_clone, immediate_total) = {
+            let view = self.state.pane_view_mut(pane_focus);
+            let mut sum = 0u64;
+            let sel = view.selected_indices.clone();
+            for &idx in &sel {
+                if let Some(item) = view.items.get_mut(idx) {
+                    if matches!(item.file_type, crate::storage::storage::FileType::Directory) {
+                        if let Some(sz) =
+                            crate::storage::folder_size::peek_cached_size(item.path.as_path())
+                        {
+                            item.size = sz;
+                            sum = sum.saturating_add(sz);
+                        } else {
+                            sum = sum.saturating_add(item.size);
+                        }
+                    } else {
+                        sum = sum.saturating_add(item.size);
+                    }
+                }
+            }
+            (sel, sum)
+        };
+        if self.state.active_pane_focus() == pane_focus {
+            self.state.status_bar.selected_count = sel_clone.len();
+            self.state.status_bar.selected_size_bytes = immediate_total;
+        }
+        self.state.pane_file_items(pane_focus).update(cx, |m, _| {
             m.selected_indices = sel_clone;
         });
     }
@@ -4209,7 +4397,7 @@ impl AppWindow {
         self.state
             .pane_view_mut(pane_focus)
             .lasso_start_at_window_pos(pos, list_origin, additive);
-        self.sync_pane_selection_model(pane_focus, cx);
+        self.sync_pane_selection_model_during_lasso(pane_focus, cx);
         cx.notify();
     }
 
@@ -4224,10 +4412,13 @@ impl AppWindow {
         if !self.state.pane_view(pane_focus).is_lasso_active() {
             return;
         }
-        self.state
+        let selection_changed = self
+            .state
             .pane_view_mut(pane_focus)
             .lasso_update_at_window_pos(pos, pane_w);
-        self.sync_pane_selection_model(pane_focus, cx);
+        if selection_changed {
+            self.sync_pane_selection_model_during_lasso(pane_focus, cx);
+        }
         cx.notify();
     }
 
@@ -4244,12 +4435,14 @@ impl AppWindow {
         }
     }
 
-    /// Select all items in the active pane.
+    /// Select all visible items in the active pane.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
         {
             let view = self.state.pane_view_mut(pane_focus);
-            for i in 0..view.items.len() {
+            let visible = view.visual_order_items();
+            view.selected_indices.clear();
+            for i in visible {
                 view.selected_indices.insert(i);
             }
         }
@@ -4270,15 +4463,16 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Invert selection in the active pane.
+    /// Invert selection among visible items in the active pane.
     pub fn invert_selection(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
         {
             let view = self.state.pane_view_mut(pane_focus);
-            for i in 0..view.items.len() {
-                if view.selected_indices.contains(&i) {
-                    view.selected_indices.remove(&i);
-                } else {
+            let visible = view.visual_order_items();
+            let prev = view.selected_indices.clone();
+            view.selected_indices.clear();
+            for i in visible {
+                if !prev.contains(&i) {
                     view.selected_indices.insert(i);
                 }
             }
@@ -4292,13 +4486,17 @@ impl AppWindow {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Start a column resize operation. Called from resize handle on_mouse_down.
-    pub fn start_column_resize(&mut self, column: String, start_x: f32, cx: &mut Context<Self>) {
-        let widths = self.state.main_view.column_widths;
+    pub fn start_column_resize(&mut self, column: String, start_x: f32, _cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
+        let widths = self.state.pane_view(pane_focus).column_widths;
         let initial_width = match column.as_str() {
             "name" => widths.name,
             "date" => widths.date,
             "type" => widths.type_col,
             "size" => widths.size,
+            "miller_col1" => widths.miller_col1,
+            "miller_col2" => widths.miller_col2,
+            "miller_col3" => widths.miller_col3,
             _ => return,
         };
         self.column_resize = Some(ColumnResizeState {
@@ -4312,14 +4510,31 @@ impl AppWindow {
     /// Update column width during a resize drag. Called from on_mouse_move.
     pub fn update_column_resize(&mut self, current_x: f32) {
         if let Some(ref resize) = self.column_resize.clone() {
+            let pane_focus = self.state.active_pane_focus();
+            let zoom = self.state.pane_view(pane_focus).zoom_level.clamp(0.0, 1.0);
+            let zoom_scale = 0.80 + zoom * 0.55;
             let delta = current_x - resize.start_x;
-            let new_width = (resize.initial_width + delta).max(40.0); // min 40px
-            match resize.column.as_str() {
-                "name" => self.state.main_view.column_widths.name = new_width,
-                "date" => self.state.main_view.column_widths.date = new_width,
-                "type" => self.state.main_view.column_widths.type_col = new_width,
-                "size" => self.state.main_view.column_widths.size = new_width,
-                _ => {}
+            let is_miller = resize.column.starts_with("miller_");
+            let scaled_delta = if is_miller { delta / zoom_scale } else { delta };
+            let min_w = if is_miller { 120.0 } else { 40.0 };
+            let new_width = (resize.initial_width + scaled_delta).max(min_w);
+
+            for is_sec in [false, true] {
+                let cw = if is_sec {
+                    &mut self.state.secondary_view.column_widths
+                } else {
+                    &mut self.state.main_view.column_widths
+                };
+                match resize.column.as_str() {
+                    "name" => cw.name = new_width,
+                    "date" => cw.date = new_width,
+                    "type" => cw.type_col = new_width,
+                    "size" => cw.size = new_width,
+                    "miller_col1" => cw.miller_col1 = new_width.clamp(120.0, 640.0),
+                    "miller_col2" => cw.miller_col2 = new_width.clamp(150.0, 800.0),
+                    "miller_col3" => cw.miller_col3 = new_width.clamp(160.0, 900.0),
+                    _ => {}
+                }
             }
         }
     }
@@ -4423,11 +4638,33 @@ impl AppWindow {
                             is_link: modifiers.alt,
                             is_dragging: true,
                             pending_candidate: None,
+                            pending_path_candidate: None,
                             hovered_target_folder: None,
                             hovered_target_label: None,
                             os_drag_dispatched: false,
                         };
                     }
+                }
+            } else if let Some((src_pane, cand_path, start_pos)) =
+                self.state.main_view.drag_state.pending_path_candidate.clone()
+            {
+                let dist = (pos.x - start_pos.x).hypot(pos.y - start_pos.y);
+                if dist >= crate::ui::views::main_view_selection::FILE_DRAG_THRESHOLD_PX {
+                    self.state.main_view.drag_state = crate::ui::views::types::DragState {
+                        indices: Vec::new(),
+                        paths: vec![cand_path],
+                        source_pane: src_pane,
+                        start: start_pos,
+                        current: pos,
+                        is_copy: modifiers.control,
+                        is_link: modifiers.alt,
+                        is_dragging: true,
+                        pending_candidate: None,
+                        pending_path_candidate: None,
+                        hovered_target_folder: None,
+                        hovered_target_label: None,
+                        os_drag_dispatched: false,
+                    };
                 }
             }
         }
@@ -4465,9 +4702,18 @@ impl AppWindow {
             self.state.main_view.drag_state.hovered_target_folder = Some(target_path.clone());
             self.state.main_view.drag_state.hovered_target_label = Some(target_label.clone());
         } else if hovered_folder.is_none() {
-            // Keep existing hovered target only if updated from item, otherwise clear when over background
-            self.state.main_view.drag_state.hovered_target_folder = None;
-            self.state.main_view.drag_state.hovered_target_label = None;
+            // Keep existing hovered target if updated from item, only clear when
+            // over the file-view background. Moves bubbling up from sidebar rows
+            // must never wipe a target a row just set (same-event ordering).
+            let content_left = if self.state.sidebar_visible {
+                self.state.sidebar.width
+            } else {
+                0.0
+            };
+            if self.state.main_view.drag_state.current.x >= content_left {
+                self.state.main_view.drag_state.hovered_target_folder = None;
+                self.state.main_view.drag_state.hovered_target_label = None;
+            }
         }
         self.state.main_view.drag_state.is_copy = is_copy;
 
@@ -4620,10 +4866,23 @@ impl AppWindow {
         cx.notify();
     }
 
-    pub fn end_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+    pub fn end_drag(
+        &mut self,
+        x: f32,
+        y: f32,
+        explicit_target: Option<(FilesPath, String)>,
+        cx: &mut Context<Self>,
+    ) {
         use gpui::Point;
+        tracing::info!(
+            "drop: end_drag x={} explicit={:?} hovered={:?}",
+            x,
+            explicit_target.as_ref().map(|(p, _)| p.to_string_lossy().to_string()),
+            self.state.main_view.drag_state.hovered_target_folder.as_ref().map(|p| p.to_string_lossy().to_string())
+        );
         let point = Point::new(x, y);
         self.state.main_view.drag_state.pending_candidate = None;
+        self.state.main_view.drag_state.pending_path_candidate = None;
 
         if !self.state.main_view.drag_state.is_dragging {
             return;
@@ -4642,20 +4901,36 @@ impl AppWindow {
             .collect();
 
         // 1. Check if hovering a specific target folder (in any view, sidebar, or breadcrumb)
-        let mut target_dir: Option<std::path::PathBuf> = self
-            .state
-            .main_view
-            .drag_state
-            .hovered_target_folder
+        // An explicit target (e.g. the sidebar row under the cursor at release)
+        // wins over hover history, which may never have been set.
+        let mut target_dir: Option<std::path::PathBuf> = explicit_target
             .as_ref()
-            .map(|p| p.as_path().to_path_buf());
+            .map(|(p, _)| p.as_path().to_path_buf())
+            .or_else(|| {
+                self.state
+                    .main_view
+                    .drag_state
+                    .hovered_target_folder
+                    .as_ref()
+                    .map(|p| p.as_path().to_path_buf())
+            });
 
-        // 2. Fallback to geometric drop target check
+        // 2. Fallback to geometric drop target check — only inside the file-view
+        // content area. A release over the sidebar (or any other chrome) with no
+        // explicitly hovered folder must NEVER resolve to a guessed folder;
+        // that misfire moves files to unexpected locations.
         if target_dir.is_none() {
-            let visible = self.state.main_view.visible_items_rc();
-            if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
-                if let Some(target_item) = self.state.main_view.items.get(target_idx) {
-                    target_dir = Some(target_item.path.as_path().to_path_buf());
+            let content_left = if self.state.sidebar_visible {
+                self.state.sidebar.width
+            } else {
+                0.0
+            };
+            if x >= content_left {
+                let visible = self.state.main_view.visible_items_rc();
+                if let Some(target_idx) = self.state.main_view.get_drop_target(point, &visible) {
+                    if let Some(target_item) = self.state.main_view.items.get(target_idx) {
+                        target_dir = Some(target_item.path.as_path().to_path_buf());
+                    }
                 }
             }
         }
@@ -4713,7 +4988,16 @@ impl AppWindow {
         self.state.main_view.drag_end();
 
         if let Some(dest_dir) = target_dir {
+            tracing::info!(
+                "drag-drop: {} item(s) -> {} (copy={}, link={})",
+                sources.len(),
+                dest_dir.display(),
+                is_copy,
+                is_link
+            );
             self.execute_drag_drop_transfer(sources, dest_dir, is_copy, is_link, cx);
+        } else {
+            tracing::info!("drag-drop: no target, drop cancelled");
         }
         cx.notify();
     }
@@ -4791,43 +5075,34 @@ impl AppWindow {
 
     /// Handle item hover for hover selection mode
     pub fn handle_item_hover(&mut self, index: usize, cx: &mut Context<Self>) {
+        let pane_focus = self.state.active_pane_focus();
         if matches!(
-            self.state.main_view.selection_mode,
+            self.state.pane_view(pane_focus).selection_mode,
             crate::ui::views::main_view::SelectionMode::HoverSelect
         ) {
-            self.state.main_view.selected_indices.clear();
-            self.state.main_view.selected_indices.insert(index);
-            self.state.status_bar.selected_count = 1;
-            if let Some(item) = self.state.main_view.items.get(index) {
-                self.state.status_bar.selected_size_bytes = item.size;
+            {
+                let view = self.state.pane_view_mut(pane_focus);
+                view.selected_indices.clear();
+                view.selected_indices.insert(index);
             }
+            self.sync_pane_selection_model(pane_focus, cx);
             cx.notify();
         }
     }
 
     /// Toggle checkbox selection for an item
     pub fn toggle_checkbox_selection(&mut self, index: usize, cx: &mut Context<Self>) {
-        if matches!(
-            self.state.main_view.selection_mode,
-            crate::ui::views::main_view::SelectionMode::Checkbox
-        ) {
-            if self.state.main_view.selected_indices.contains(&index) {
-                self.state.main_view.selected_indices.remove(&index);
+        let pane_focus = self.state.active_pane_focus();
+        {
+            let view = self.state.pane_view_mut(pane_focus);
+            if view.selected_indices.contains(&index) {
+                view.selected_indices.remove(&index);
             } else {
-                self.state.main_view.selected_indices.insert(index);
+                view.selected_indices.insert(index);
             }
-            self.state.status_bar.selected_count = self.state.main_view.selected_indices.len();
-            let selected_size: u64 = self
-                .state
-                .main_view
-                .selected_indices
-                .iter()
-                .filter_map(|&i| self.state.main_view.items.get(i))
-                .map(|item| item.size)
-                .sum();
-            self.state.status_bar.selected_size_bytes = selected_size;
-            cx.notify();
         }
+        self.sync_pane_selection_model(pane_focus, cx);
+        cx.notify();
     }
 
     /// Select item by index, respecting current selection mode
@@ -4883,7 +5158,13 @@ impl AppWindow {
     /// Update the details pane cache asynchronously on the background executor (zero UI thread blocking).
     pub(crate) fn update_details_cache_from_path(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
         let mut cache = DetailsPaneCache::default();
-        cache.tags = self.get_file_tags(path);
+        cache.tags = self
+            .state
+            .main_view
+            .tags_cache
+            .get(&path.to_string_lossy().to_string())
+            .cloned()
+            .unwrap_or_default();
         cache.folder_subfolders = self.state.main_view.details_cache.folder_subfolders;
         cache.folder_files = self.state.main_view.details_cache.folder_files;
         cache.folder_total_size = self.state.main_view.details_cache.folder_total_size;

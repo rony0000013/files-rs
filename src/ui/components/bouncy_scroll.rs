@@ -649,10 +649,11 @@ where
                 + 44.0 // NavBar
                 + 44.0 // Toolbar
                 + 28.0 // StatusBar
-                + if !this.state.main_view.filter_text.is_empty()
+                + if this.state.main_view.show_filter_bar
+                    || !this.state.main_view.filter_text.is_empty()
                     || this.state.main_view.group_by != crate::config::config::GroupColumn::None
                 {
-                    32.0
+                    34.0
                 } else {
                     0.0
                 }

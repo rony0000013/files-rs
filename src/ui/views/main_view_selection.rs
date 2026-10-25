@@ -2,14 +2,14 @@
 //!
 //! Provides:
 //! - View-mode-aware Lasso (rubber-band) selection across `Details`, `List`, `Cards`, `Grid`, and `Columns` views
-//! - Live selection updates during mouse drag (accounting for scroll offset and additive Ctrl/Shift)
+//! - Live selection updates during mouse drag (accounting for scroll offset, grouped layouts, and additive Ctrl/Shift)
 //! - Internal + Out-of-Window Drag-and-Drop state management (`DragState`)
 //! - Shared layout metrics for `List` and `Cards` (Tiles) views
 
 use gpui::*;
 use std::collections::HashSet;
 
-use crate::config::config::ViewMode;
+use crate::config::config::{GroupColumn, ViewMode};
 use crate::core::navigation_manager::PaneFocus;
 use crate::core::path_util::FilesPath;
 use crate::storage::storage::FileType;
@@ -106,20 +106,20 @@ impl MainViewState {
             point(rect.1.x, rect.1.y + scroll_y),
         );
 
-        self.apply_rect_selection_for_view(content_rect, pane_w, additive, &initial);
-        true
+        self.apply_rect_selection_for_view(content_rect, pane_w, additive, &initial)
     }
 
     /// Compute intersecting items for the current `view_mode` given a rectangle
-    /// in scroll-content coordinates.
+    /// in scroll-content coordinates. Respects grouped header offsets and row breaks
+    /// when `self.group_by != GroupColumn::None`.
+    /// Returns `true` if `self.selected_indices` changed.
     pub fn apply_rect_selection_for_view(
         &mut self,
         content_rect: (Point<f32>, Point<f32>),
         pane_w: f32,
         additive: bool,
         initial_selection: &HashSet<usize>,
-    ) {
-        let visible = self.visible_items_rc();
+    ) -> bool {
         let mut next_selected = if additive {
             initial_selection.clone()
         } else {
@@ -128,78 +128,92 @@ impl MainViewState {
 
         let effective_w = if pane_w > 50.0 { pane_w } else { 1000.0 };
 
-        match self.view_mode {
-            ViewMode::Details => {
-                let row_h = 20.0 + self.zoom_level * 28.0;
-                for (i, &vi) in visible.iter().enumerate() {
-                    let y0 = i as f32 * row_h;
-                    let item_rect = (point(0.0, y0), point(effective_w, y0 + row_h));
-                    if rects_intersect(item_rect, content_rect) {
-                        next_selected.insert(vi);
-                    }
+        if self.group_by != GroupColumn::None {
+            for (idx, (x0, y0, x1, y1)) in self.grouped_item_bounds_for_view(effective_w) {
+                let item_rect = (point(x0, y0), point(x1, y1));
+                if rects_intersect(item_rect, content_rect) {
+                    next_selected.insert(idx);
                 }
             }
-            ViewMode::Columns => {
-                let row_h = 20.0 + self.zoom_level * 28.0;
-                let col2_w = (effective_w * 0.38).clamp(220.0, 420.0);
-                for (i, &vi) in visible.iter().enumerate() {
-                    let y0 = i as f32 * row_h;
-                    let item_rect = (point(0.0, y0), point(col2_w, y0 + row_h));
-                    if rects_intersect(item_rect, content_rect) {
-                        next_selected.insert(vi);
+        } else {
+            let visible = self.visible_items_rc();
+            match self.view_mode {
+                ViewMode::Details => {
+                    let base_row_h = if self.compact_mode { 22.0 } else { 26.0 };
+                    let row_h = (base_row_h + self.zoom_level * 22.0).round();
+                    for (i, &vi) in visible.iter().enumerate() {
+                        let y0 = i as f32 * row_h;
+                        let item_rect = (point(0.0, y0), point(effective_w, y0 + row_h));
+                        if rects_intersect(item_rect, content_rect) {
+                            next_selected.insert(vi);
+                        }
                     }
                 }
-            }
-            ViewMode::List => {
-                let (cols, col_w, row_h, gap, padding) =
-                    Self::list_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
-                let cols_safe = cols.max(1);
-                for (i, &vi) in visible.iter().enumerate() {
-                    let row = i / cols_safe;
-                    let col = i % cols_safe;
-                    let x0 = padding + col as f32 * (col_w + gap);
-                    let y0 = row as f32 * row_h;
-                    let item_rect = (point(x0, y0), point(x0 + col_w, y0 + row_h));
-                    if rects_intersect(item_rect, content_rect) {
-                        next_selected.insert(vi);
+                ViewMode::Columns => {
+                    let base_r_h = if self.compact_mode { 20.0 } else { 22.0 };
+                    let row_h = (base_r_h + self.zoom_level * 22.0).round();
+                    let zoom_scale = 0.80 + self.zoom_level * 0.55;
+                    let col2_w = (self.column_widths.miller_col2 * zoom_scale)
+                        .clamp(160.0, (effective_w * 0.55).max(240.0));
+                    for (i, &vi) in visible.iter().enumerate() {
+                        let y0 = i as f32 * row_h;
+                        let item_rect = (point(0.0, y0), point(col2_w, y0 + row_h));
+                        if rects_intersect(item_rect, content_rect) {
+                            next_selected.insert(vi);
+                        }
                     }
                 }
-            }
-            ViewMode::Cards => {
-                let (cols, card_w, row_h, gap, padding) =
-                    Self::cards_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
-                let cols_safe = cols.max(1);
-                for (i, &vi) in visible.iter().enumerate() {
-                    let row = i / cols_safe;
-                    let col = i % cols_safe;
-                    let x0 = padding + col as f32 * (card_w + gap);
-                    let y0 = row as f32 * row_h;
-                    let item_rect = (point(x0, y0), point(x0 + card_w, y0 + row_h));
-                    if rects_intersect(item_rect, content_rect) {
-                        next_selected.insert(vi);
+                ViewMode::List => {
+                    let (cols, col_w, row_h, gap, padding) =
+                        Self::list_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
+                    let cols_safe = cols.max(1);
+                    for (i, &vi) in visible.iter().enumerate() {
+                        let row = i / cols_safe;
+                        let col = i % cols_safe;
+                        let x0 = padding + col as f32 * (col_w + gap);
+                        let y0 = row as f32 * row_h;
+                        let item_rect = (point(x0, y0), point(x0 + col_w, y0 + row_h));
+                        if rects_intersect(item_rect, content_rect) {
+                            next_selected.insert(vi);
+                        }
                     }
                 }
-            }
-            ViewMode::Grid => {
-                let cols = Self::grid_columns_for_width(effective_w, self.zoom_level);
-                let params =
-                    Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
-                let item_h = if self.compact_mode {
-                    params.item_height - 8.0
-                } else {
-                    params.item_height
-                };
-                for (i, &vi) in visible.iter().enumerate() {
-                    let row = i / params.items_per_row.max(1);
-                    let col = i % params.items_per_row.max(1);
-                    let x0 = params.padding + col as f32 * (params.item_width + params.gap);
-                    let y0 = row as f32 * params.row_height;
-                    let item_rect = (
-                        point(x0, y0),
-                        point(x0 + params.item_width, y0 + item_h),
-                    );
-                    if rects_intersect(item_rect, content_rect) {
-                        next_selected.insert(vi);
+                ViewMode::Cards => {
+                    let (cols, card_w, row_h, gap, padding) =
+                        Self::cards_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
+                    let cols_safe = cols.max(1);
+                    for (i, &vi) in visible.iter().enumerate() {
+                        let row = i / cols_safe;
+                        let col = i % cols_safe;
+                        let x0 = padding + col as f32 * (card_w + gap);
+                        let y0 = row as f32 * row_h;
+                        let item_rect = (point(x0, y0), point(x0 + card_w, y0 + row_h));
+                        if rects_intersect(item_rect, content_rect) {
+                            next_selected.insert(vi);
+                        }
+                    }
+                }
+                ViewMode::Grid => {
+                    let cols = Self::grid_columns_for_width(effective_w, self.zoom_level);
+                    let params =
+                        Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
+                    let item_h = if self.compact_mode && self.zoom_level >= 0.22 {
+                        params.item_height - 4.0
+                    } else {
+                        params.item_height
+                    };
+                    for (i, &vi) in visible.iter().enumerate() {
+                        let row = i / params.items_per_row.max(1);
+                        let col = i % params.items_per_row.max(1);
+                        let x0 = params.padding + col as f32 * (params.item_width + params.gap);
+                        let y0 = row as f32 * params.row_height;
+                        let item_rect = (
+                            point(x0, y0),
+                            point(x0 + params.item_width, y0 + item_h),
+                        );
+                        if rects_intersect(item_rect, content_rect) {
+                            next_selected.insert(vi);
+                        }
                     }
                 }
             }
@@ -210,53 +224,56 @@ impl MainViewState {
                 self.last_clicked_index = Some(first);
             }
         }
-        self.selected_indices = next_selected;
+        let changed = self.selected_indices != next_selected;
+        if changed {
+            self.selected_indices = next_selected;
+        }
+        changed
     }
 
-    /// Multi-column / compact list layout metrics shared between `ListView` rendering,
+    /// Multi-column list layout metrics shared between `ListView` rendering,
     /// rubber-band lasso hit-testing, and 2D keyboard navigation.
+    /// Reserves vertical height for up to 3 wrapped lines of filename text so cells never overlap.
     /// Returns `(cols, col_width, row_height, gap, horizontal_padding)`.
     pub fn list_layout_metrics(
         pane_w: f32,
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
-        let row_h = if compact {
-            20.0 + zoom * 14.0
-        } else {
-            24.0 + zoom * 20.0
-        };
+        let text_size = (11.0 + zoom * 2.5).clamp(11.0, 13.5);
+        let line_h = (text_size * 1.24).ceil();
+        let row_h = (line_h * 3.0 + if compact { 8.0 } else { 12.0 }).round();
         let padding = 10.0;
         let gap = 6.0;
-        let min_col_w = (165.0 + zoom * 110.0).clamp(155.0, 290.0);
+        let min_col_w = (180.0 + zoom * 110.0).clamp(170.0, 300.0);
         let avail = (pane_w - padding * 2.0).max(min_col_w);
         let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 8);
         let col_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .floor()
-            .max(140.0);
+            .max(150.0);
         (cols, col_w, row_h, gap, padding)
     }
 
     /// `Files-community` Cards (Tiles) view layout metrics.
+    /// Reserves height for up to 3 lines of title + 1 line of subtitle without overlapping.
     /// Returns `(cols, card_width, row_height, gap, horizontal_padding)`.
     pub fn cards_layout_metrics(
         pane_w: f32,
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
-        let row_h = if compact {
-            54.0 + zoom * 22.0
-        } else {
-            62.0 + zoom * 26.0
-        };
+        let title_size = (11.5 + zoom * 2.0).clamp(11.5, 13.5);
+        let title_line_h = (title_size * 1.24).ceil();
+        let sub_line_h = 15.0;
+        let row_h = (title_line_h * 3.0 + sub_line_h + if compact { 16.0 } else { 22.0 }).round();
         let padding = 12.0;
         let gap = 8.0;
-        let min_card_w = (220.0 + zoom * 80.0).clamp(210.0, 320.0);
+        let min_card_w = (230.0 + zoom * 85.0).clamp(220.0, 330.0);
         let avail = (pane_w - padding * 2.0).max(min_card_w);
         let cols = (((avail + gap) / (min_card_w + gap)).floor() as usize).clamp(1, 6);
         let card_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .floor()
-            .max(190.0);
+            .max(200.0);
         (cols, card_w, row_h, gap, padding)
     }
 
@@ -349,6 +366,19 @@ impl MainViewState {
         window_pos: Point<f32>,
     ) {
         self.drag_state.pending_candidate = Some((pane_focus, item_idx, window_pos));
+        self.drag_state.pending_path_candidate = None;
+    }
+
+    /// Record a mouse-down on an arbitrary `FilesPath` (such as Miller Column 1 or Column 3 items)
+    /// so moving >= 6px initiates a file/folder drag operation.
+    pub fn record_path_drag_candidate(
+        &mut self,
+        pane_focus: PaneFocus,
+        path: FilesPath,
+        window_pos: Point<f32>,
+    ) {
+        self.drag_state.pending_path_candidate = Some((pane_focus, path, window_pos));
+        self.drag_state.pending_candidate = None;
     }
 
     /// Start a drag operation with the given items and mouse position.
@@ -368,6 +398,7 @@ impl MainViewState {
             is_link: false,
             is_dragging: true,
             pending_candidate: None,
+            pending_path_candidate: None,
             hovered_target_folder: None,
             hovered_target_label: None,
             os_drag_dispatched: false,

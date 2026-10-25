@@ -48,12 +48,12 @@ impl SidebarItemId {
         match self {
             Self::Pinned(path) => Some(path.clone()),
             Self::Library(name) => match name.as_str() {
-                "Desktop" => Some(FilesPath::from(dirs::desktop_dir()?)),
-                "Documents" => Some(FilesPath::from(dirs::document_dir()?)),
-                "Downloads" => Some(FilesPath::from(dirs::download_dir()?)),
-                "Pictures" => Some(FilesPath::from(dirs::picture_dir()?)),
-                "Music" => Some(FilesPath::from(dirs::audio_dir()?)),
-                "Videos" => Some(FilesPath::from(dirs::video_dir()?)),
+                "Desktop" => Self::library_path(dirs::desktop_dir(), "Desktop"),
+                "Documents" => Self::library_path(dirs::document_dir(), "Documents"),
+                "Downloads" => Self::library_path(dirs::download_dir(), "Downloads"),
+                "Pictures" => Self::library_path(dirs::picture_dir(), "Pictures"),
+                "Music" => Self::library_path(dirs::audio_dir(), "Music"),
+                "Videos" => Self::library_path(dirs::video_dir(), "Videos"),
                 _ => None,
             },
             #[cfg(windows)]
@@ -70,6 +70,29 @@ impl SidebarItemId {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a shell library folder, tolerating broken known-folder
+    /// registration (e.g. OneDrive desync): prefer the OS-reported path when it
+    /// exists, else fall back to `%USERPROFILE%\OneDrive\<name>` or
+    /// `%USERPROFILE%\<name>`.
+    fn library_path(primary: Option<std::path::PathBuf>, name: &str) -> Option<FilesPath> {
+        if let Some(p) = primary {
+            if p.is_dir() {
+                return Some(FilesPath::from(p));
+            }
+        }
+        if let Some(home) = dirs::home_dir() {
+            for candidate in [
+                home.join("OneDrive").join(name),
+                home.join(name),
+            ] {
+                if candidate.is_dir() {
+                    return Some(FilesPath::from(candidate));
+                }
+            }
+        }
+        None
     }
 }
 

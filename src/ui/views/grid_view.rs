@@ -1,5 +1,6 @@
 //! Grid View — Files-community Icon/Grid view with ultra-smooth dynamic zoom (66px micro-tiles
 //! up to 246px XL thumbnails), >120 FPS Level-of-Detail (LOD) fast-path for 500+ visible items,
+//! 3-line adaptive filename wrapping (without redundant "Folder"/size subtitle),
 //! live rubber-band selection, Shift/Ctrl multi-selection, and full Drag & Drop support.
 
 use crate::config::config::GroupColumn;
@@ -7,9 +8,9 @@ use crate::core::navigation_manager::PaneFocus;
 use crate::storage::storage::FileType;
 use crate::ui::components::icon_renderer::is_thumbnail_image;
 use crate::ui::constants::UiConstants;
-use crate::ui::views::helpers::get_file_type_icon_and_color;
+use crate::ui::views::helpers::{adaptive_three_line_label, get_file_type_icon_and_color};
 use crate::ui::views::main_view::{
-    format_size, get_extension, FileItems, GroupedGridItem, MainView, MainViewState, SelectionMode,
+    get_extension, FileItems, GroupedGridItem, MainView, MainViewState, SelectionMode,
 };
 use gpui::*;
 
@@ -70,34 +71,34 @@ impl MainViewState {
     }
 
     /// Compute grid layout parameters from `zoom_level` (`0.0..=1.0`).
-    /// At `zoom < 0.20`, tiles compact down to `66px` wide with `4px` gap so 500+ items fit
-    /// on screen simultaneously at >120 FPS.
+    /// Reserves space for 3 full lines of filename text (`label_lines = 3.0`) without
+    /// redundant "Folder" or file-size text under the filename.
     pub fn grid_layout_params(zoom: f32) -> GridLayoutParams {
         let z = zoom.clamp(0.0, 1.0);
         let items_per_row = if z < 0.15 {
-            16
+            12
         } else if z < 0.30 {
-            11
+            9
         } else if z < 0.50 {
-            8
+            7
         } else if z < 0.75 {
-            6
+            5
         } else {
             4
         };
 
-        let item_width = (66.0 + z * 180.0).min(246.0);
+        let item_width = (78.0 + z * 168.0).min(246.0);
         let thumb_height = if z < 0.22 {
-            (item_width * 0.58).max(34.0)
+            (item_width * 0.54).max(34.0)
         } else {
-            item_width * 0.70
+            item_width * 0.66
         };
-        let text_size = (9.5 + z * 3.5).clamp(9.5, 13.0);
-        let label_lines = if z < 0.22 { 1.0 } else { 2.0 };
-        let subtitle_h = if z < 0.22 { 0.0 } else { 15.0 };
-        let item_height = thumb_height + 10.0 + text_size * 1.28 * label_lines + subtitle_h;
+        let text_size = (10.5 + z * 2.8).clamp(10.5, 13.5);
+        let line_h = (text_size * 1.24).ceil();
+        let label_box_h = line_h * 3.0 + 6.0;
+        let item_height = thumb_height + 14.0 + label_box_h;
         let gap = if z < 0.22 {
-            4.0
+            6.0
         } else if z < 0.50 {
             8.0
         } else if z < 0.75 {
@@ -163,14 +164,14 @@ impl MainViewState {
             .clamp(base.item_width, base.item_width * 1.32);
         let z = zoom.clamp(0.0, 1.0);
         let thumb_height = if z < 0.22 {
-            (stretched_w * 0.58).max(34.0)
+            (stretched_w * 0.54).max(34.0)
         } else {
-            stretched_w * 0.70
+            stretched_w * 0.66
         };
-        let fit_text = (9.5 + z * 3.5).clamp(9.5, 13.0);
-        let label_lines = if z < 0.22 { 1.0 } else { 2.0 };
-        let subtitle_h = if z < 0.22 { 0.0 } else { 15.0 };
-        let item_height = thumb_height + 10.0 + fit_text * 1.28 * label_lines + subtitle_h;
+        let fit_text = (10.5 + z * 2.8).clamp(10.5, 13.5);
+        let line_h = (fit_text * 1.24).ceil();
+        let label_box_h = line_h * 3.0 + 6.0;
+        let item_height = thumb_height + 14.0 + label_box_h;
         GridLayoutParams {
             items_per_row: cols,
             item_width: stretched_w,
@@ -230,11 +231,17 @@ impl MainViewState {
             })
             .on_mouse_move({
                 let v = view.clone();
-                move |event, win, cx| {
+                move |event, _win, cx| {
                     let pos = point(event.position.x.into(), event.position.y.into());
                     v.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
                             let pane_target =
                                 if this.state.main_view.drag_state.source_pane != pane_focus {
@@ -262,8 +269,14 @@ impl MainViewState {
                     v.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
-                            this.end_drag(pos.x, pos.y, cx);
+                            this.end_drag(pos.x, pos.y, None, cx);
                         }
                         this.end_lasso_in_pane(pane_focus, cx);
                     });
@@ -276,8 +289,14 @@ impl MainViewState {
                     v.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
-                            this.end_drag(pos.x, pos.y, cx);
+                            this.end_drag(pos.x, pos.y, None, cx);
                         }
                         this.end_lasso_in_pane(pane_focus, cx);
                     });
@@ -370,6 +389,7 @@ impl MainViewState {
                                         .w_full()
                                         .flex()
                                         .flex_row()
+                                        .flex_shrink_0()
                                         .h(px(params.row_height))
                                         .gap(px(params.gap))
                                         .px(px(params.padding))
@@ -391,7 +411,7 @@ impl MainViewState {
     fn render_grid_view_grouped_for_pane(
         &self,
         visible: &[usize],
-        file_items: Entity<FileItems>,
+        _file_items: Entity<FileItems>,
         view: Entity<crate::app::AppWindow>,
         cols: usize,
         pane_w: f32,
@@ -399,17 +419,129 @@ impl MainViewState {
         list_origin: Point<f32>,
     ) -> impl IntoElement {
         let zoom = self.zoom_level;
-        let params = Self::grid_layout_params_for_width(pane_w, zoom, cols);
+        let live_cols = Self::grid_columns_for_width(pane_w, zoom).max(cols.min(1));
+        let params = Self::grid_layout_params_for_width(pane_w, zoom, live_cols);
         let items_per_row = params.items_per_row.max(1);
-        let flattened_init = self.flatten_grouped_grid_items(visible, items_per_row);
-        let item_count = flattened_init.len();
+        let flattened = self.flatten_grouped_grid_items(visible, items_per_row);
+        let compact = self.compact_mode;
+        let header_h = if compact { 28.0 } else { 32.0 };
+        let row_h = params.row_height;
+
+        let item_heights: Vec<f32> = flattened
+            .iter()
+            .map(|entry| match entry {
+                GroupedGridItem::Header { .. } => header_h,
+                GroupedGridItem::Row(_) => row_h,
+            })
+            .collect();
+
+        let sel_mode = self.selection_mode.clone();
+        let show_extensions = self.show_extensions;
+        let hovered_drop_folder = self.drag_state.hovered_target_folder.clone();
+        let is_dragging_any = self.drag_state.is_dragging;
+        let lod_fast = zoom < 0.22;
+
+        let scroll_list = MainView::render_virtualized_grouped_list(
+            match pane_focus {
+                PaneFocus::Primary => "grid-grouped-scroll-primary",
+                PaneFocus::Secondary => "grid-grouped-scroll-secondary",
+            },
+            &self.uniform_list_scroll_handle,
+            pane_w,
+            &item_heights,
+            |i| match &flattened[i] {
+                GroupedGridItem::Header { key, label, count } => {
+                    let is_collapsed = self.collapsed_groups.contains(key);
+                    MainView::render_group_header_row(
+                        i,
+                        key,
+                        label,
+                        *count,
+                        is_collapsed,
+                        header_h,
+                        params.padding,
+                        pane_focus,
+                        view.clone(),
+                    )
+                }
+                GroupedGridItem::Row(indices) => {
+                    let items_in_row = indices.len();
+                    let mut row_children: Vec<AnyElement> = indices
+                        .iter()
+                        .filter_map(|&idx| {
+                            let item = self.items.get(idx)?;
+                            let selected = self.selected_indices.contains(&idx);
+                            let is_dir = matches!(item.file_type, FileType::Directory);
+                            let is_drop_target = is_dragging_any
+                                && is_dir
+                                && hovered_drop_folder.as_ref() == Some(&item.path);
+                            Some(
+                                Self::grid_item_for_pane(
+                                    item,
+                                    idx,
+                                    selected,
+                                    is_drop_target,
+                                    lod_fast,
+                                    sel_mode.clone(),
+                                    view.clone(),
+                                    &self.icon_paths,
+                                    &params,
+                                    compact,
+                                    show_extensions,
+                                    self.renaming_index,
+                                    &self.rename_text,
+                                    pane_focus,
+                                    pane_w,
+                                )
+                                .into_any_element(),
+                            )
+                        })
+                        .collect();
+
+                    for _ in items_in_row..params.items_per_row {
+                        row_children.push(
+                            div()
+                                .w(px(params.item_width))
+                                .flex_shrink_0()
+                                .invisible()
+                                .into_any_element(),
+                        );
+                    }
+
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .h(px(params.row_height))
+                        .gap(px(params.gap))
+                        .px(px(params.padding))
+                        .children(row_children)
+                        .into_any_element()
+                }
+            },
+        );
 
         div()
+            .id(SharedString::from(match pane_focus {
+                PaneFocus::Primary => "grid-grouped-container-primary",
+                PaneFocus::Secondary => "grid-grouped-container-secondary",
+            }))
             .relative()
             .flex_col()
             .w_full()
             .flex_1()
             .h_full()
+            .on_mouse_down(MouseButton::Right, {
+                let v = view.clone();
+                move |event, window, cx| {
+                    v.update(cx, |this, cx| {
+                        this.focus_pane(pane_focus, cx);
+                        this.clear_selection(cx);
+                        this.show_context_menu(None, event.position, window, cx);
+                    });
+                }
+            })
             .on_mouse_down(MouseButton::Left, {
                 let v = view.clone();
                 move |event, _win, cx| {
@@ -423,13 +555,31 @@ impl MainViewState {
             })
             .on_mouse_move({
                 let v = view.clone();
-                move |event, win, cx| {
+                move |event, _win, cx| {
                     let pos = point(event.position.x.into(), event.position.y.into());
                     v.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
-                            this.update_file_drag_move(pos, event.modifiers, None, cx);
+                            let pane_target =
+                                if this.state.main_view.drag_state.source_pane != pane_focus {
+                                    let dest =
+                                        this.state.pane_view(pane_focus).primary_path.clone();
+                                    let lbl = dest
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| dest.to_string_lossy().into_owned());
+                                    Some((dest, lbl))
+                                } else {
+                                    None
+                                };
+                            this.update_file_drag_move(pos, event.modifiers, pane_target, cx);
                         } else {
                             this.update_lasso_in_pane(pane_focus, pos, pane_w, cx);
                         }
@@ -443,140 +593,40 @@ impl MainViewState {
                     v.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
-                            this.end_drag(pos.x, pos.y, cx);
+                            this.end_drag(pos.x, pos.y, None, cx);
                         }
                         this.end_lasso_in_pane(pane_focus, cx);
                     });
                 }
             })
-            .child(
-                uniform_list(
-                    match pane_focus {
-                        PaneFocus::Primary => "grid-grouped-scroll-primary",
-                        PaneFocus::Secondary => "grid-grouped-scroll-secondary",
-                    },
-                    item_count,
-                    {
-                        let view = view.clone();
-                        move |range, _win, cx| {
-                            let fi = file_items.read(cx);
-                            let app_state = view.read(cx);
-                            let main_state = app_state.state.pane_view(pane_focus);
-                            let icon_paths = &app_state.state.main_view.icon_paths;
-                            let zoom = main_state.zoom_level;
-                            let live_cols = Self::grid_columns_for_width(pane_w, zoom);
-                            let params =
-                                Self::grid_layout_params_for_width(pane_w, zoom, live_cols);
-                            let visible_rc = main_state.visible_items_rc();
-                            let flattened = main_state.flatten_grouped_grid_items(
-                                &visible_rc,
-                                params.items_per_row.max(1),
-                            );
-                            let sel_mode = main_state.selection_mode.clone();
-                            let compact = main_state.compact_mode;
-                            let show_extensions = main_state.show_extensions;
-                            let hovered_drop_folder = app_state
+            .on_mouse_up_out(MouseButton::Left, {
+                let v = view.clone();
+                move |event, _win, cx| {
+                    let pos = point(event.position.x.into(), event.position.y.into());
+                    v.update(cx, |this, cx| {
+                        if this.state.main_view.drag_state.is_dragging
+                            || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
                                 .state
                                 .main_view
                                 .drag_state
-                                .hovered_target_folder
-                                .clone();
-                            let is_dragging_any = app_state.state.main_view.drag_state.is_dragging;
-                            let lod_fast = zoom < 0.22;
-
-                            range
-                                .map(|i| {
-                                    if i >= flattened.len() {
-                                        return div().into_any_element();
-                                    }
-                                    match &flattened[i] {
-                                        GroupedGridItem::Header { key, label, count } => {
-                                            let is_collapsed =
-                                                main_state.collapsed_groups.contains(key);
-                                            MainView::render_group_header_row(
-                                                i,
-                                                key,
-                                                label,
-                                                *count,
-                                                is_collapsed,
-                                                if compact { 28.0 } else { 32.0 },
-                                                params.padding,
-                                                pane_focus,
-                                                view.clone(),
-                                            )
-                                        }
-                                        GroupedGridItem::Row(indices) => {
-                                            let items_in_row = indices.len();
-
-                                            let mut row_children: Vec<AnyElement> = indices
-                                                .iter()
-                                                .filter_map(|&idx| {
-                                                    let item = fi.items.get(idx)?;
-                                                    let selected =
-                                                        main_state.selected_indices.contains(&idx);
-                                                    let is_dir = matches!(
-                                                        item.file_type,
-                                                        FileType::Directory
-                                                    );
-                                                    let is_drop_target = is_dragging_any
-                                                        && is_dir
-                                                        && hovered_drop_folder.as_ref()
-                                                            == Some(&item.path);
-                                                    Some(
-                                                        Self::grid_item_for_pane(
-                                                            item,
-                                                            idx,
-                                                            selected,
-                                                            is_drop_target,
-                                                            lod_fast,
-                                                            sel_mode.clone(),
-                                                            view.clone(),
-                                                            icon_paths,
-                                                            &params,
-                                                            compact,
-                                                            show_extensions,
-                                                            main_state.renaming_index,
-                                                            &main_state.rename_text,
-                                                            pane_focus,
-                                                            pane_w,
-                                                        )
-                                                        .into_any_element(),
-                                                    )
-                                                })
-                                                .collect();
-
-                                            for _ in items_in_row..params.items_per_row {
-                                                row_children.push(
-                                                    div()
-                                                        .w(px(params.item_width))
-                                                        .flex_shrink_0()
-                                                        .invisible()
-                                                        .into_any_element(),
-                                                );
-                                            }
-
-                                            div()
-                                                .w_full()
-                                                .flex()
-                                                .flex_row()
-                                                .h(px(params.row_height))
-                                                .gap(px(params.gap))
-                                                .px(px(params.padding))
-                                                .children(row_children)
-                                                .into_any_element()
-                                        }
-                                    }
-                                })
-                                .collect::<Vec<_>>()
+                                .pending_path_candidate
+                                .is_some()
+                        {
+                            this.end_drag(pos.x, pos.y, None, cx);
                         }
-                    },
-                )
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .w_full()
-                .h_full()
-                .track_scroll(self.uniform_list_scroll_handle.clone()),
-            )
+                        this.end_lasso_in_pane(pane_focus, cx);
+                    });
+                }
+            })
+            .child(scroll_list)
             .child(MainView::render_lasso_box(self))
     }
 
@@ -622,26 +672,35 @@ impl MainViewState {
 
         let item_width = params.item_width;
         let thumb_height = if lod_fast {
-            (item_width * 0.58).max(34.0)
+            (item_width * 0.54).max(34.0)
         } else {
-            item_width * 0.70
+            item_width * 0.66
         };
         let item_height = if compact && !lod_fast {
-            params.item_height - 6.0
+            params.item_height - 4.0
         } else {
             params.item_height
         };
         let icon_size_val = params.icon_size;
         let rounded = params.rounded;
         let text_size = params.text_size;
+        let base_line_h = (text_size * 1.24).ceil();
+        let label_box_h = base_line_h * 3.0 + 4.0;
+        let (display_label, effective_font_size, effective_line_h) = adaptive_three_line_label(
+            &raw_name,
+            item_width - 12.0,
+            text_size,
+            (text_size - 2.2).max(8.5),
+        );
 
-        // ── High-Density >120 FPS LOD Fast-Path (when zoom < 0.22 and 500+ items visible) ──
+        // ── High-Density >120 FPS LOD Fast-Path (when zoom < 0.22) ──
         if lod_fast {
             let v_click = view.clone();
             let v_move = view.clone();
             let v_right = view;
             let p_click = item_path.clone();
             let p_move = item_path;
+            let is_hover_select = selection_mode == SelectionMode::HoverSelect;
 
             return div()
                 .id(ElementId::from(
@@ -655,9 +714,10 @@ impl MainViewState {
                 .flex_shrink_0()
                 .flex_col()
                 .items_center()
-                .justify_center()
+                .justify_start()
                 .overflow_hidden()
-                .p(px(3.0))
+                .py(px(4.0))
+                .px(px(3.0))
                 .rounded(px(rounded))
                 .cursor_pointer()
                 .border(px(1.0))
@@ -679,23 +739,47 @@ impl MainViewState {
                     cx.stop_propagation();
                     let pos = point(event.position.x.into(), event.position.y.into());
                     v_click.update(cx, |this, cx| {
-                        this.handle_item_mouse_down(pane_focus, index, p_click.clone(), is_dir, event.click_count, pos, event.modifiers, cx);
+                        this.handle_item_mouse_down(
+                            pane_focus,
+                            index,
+                            p_click.clone(),
+                            is_dir,
+                            event.click_count,
+                            pos,
+                            event.modifiers,
+                            cx,
+                        );
                     });
                 })
-                .on_mouse_move(move |ev, win, cx| {
+                .on_mouse_move(move |ev, _win, cx| {
                     let pos = point(ev.position.x.into(), ev.position.y.into());
                     v_move.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
                             let folder_target = if is_dir {
                                 Some((p_move.clone(), item_name_for_drag.clone()))
+                            } else if this.state.main_view.drag_state.source_pane != pane_focus {
+                                let dest = this.state.pane_view(pane_focus).primary_path.clone();
+                                let lbl = dest
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| dest.to_string_lossy().into_owned());
+                                Some((dest, lbl))
                             } else {
                                 None
                             };
                             this.update_file_drag_move(pos, ev.modifiers, folder_target, cx);
                         } else if this.state.pane_view(pane_focus).lasso_state.is_some() {
                             this.update_lasso_in_pane(pane_focus, pos, pane_w, cx);
+                        } else if is_hover_select {
+                            this.handle_item_hover(index, cx);
                         }
                     });
                 })
@@ -716,21 +800,34 @@ impl MainViewState {
                 })
                 .child(
                     div()
-                        .text_size(px(icon_size_val * 0.78))
-                        .font_family(UiConstants::FONT_MDL2)
-                        .text_color(rgb(fallback_color))
-                        .child(fallback_glyph),
+                        .w_full()
+                        .h(px(thumb_height))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_size(px(icon_size_val * 0.78))
+                                .font_family(UiConstants::FONT_MDL2)
+                                .text_color(rgb(fallback_color))
+                                .child(fallback_glyph),
+                        ),
                 )
                 .child(
                     div()
                         .w_full()
+                        .h(px(label_box_h))
                         .px(px(2.0))
-                        .mt(px(2.0))
+                        .mt(px(3.0))
                         .text_center()
                         .overflow_hidden()
-                        .text_size(px(text_size))
+                        .text_size(px(effective_font_size))
+                        .line_height(px(effective_line_h))
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .child(shorten_filename_middle(&raw_name, 12)),
+                        .line_clamp(3)
+                        .text_ellipsis()
+                        .child(display_label),
                 );
         }
 
@@ -742,11 +839,6 @@ impl MainViewState {
         let show_checkbox = selection_mode == SelectionMode::Checkbox;
         let is_hover_select = selection_mode == SelectionMode::HoverSelect;
         let cached_icon_path: Option<std::path::PathBuf> = icon_paths.get(&item_path).cloned();
-        let subtitle = if is_dir {
-            "Folder".to_string()
-        } else {
-            format_size(item.size)
-        };
 
         let mut item_div = div()
             .id(ElementId::from(
@@ -760,6 +852,7 @@ impl MainViewState {
             .h(px(item_height))
             .flex_col()
             .items_center()
+            .justify_start()
             .overflow_hidden()
             .py(px(6.0))
             .rounded(px(rounded))
@@ -884,7 +977,16 @@ impl MainViewState {
                 cx.stop_propagation();
                 let pos = point(event.position.x.into(), event.position.y.into());
                 v_click.update(cx, |this, cx| {
-                    this.handle_item_mouse_down(pane_focus, index, path_clone.clone(), is_dir, event.click_count, pos, event.modifiers, cx);
+                    this.handle_item_mouse_down(
+                        pane_focus,
+                        index,
+                        path_clone.clone(),
+                        is_dir,
+                        event.click_count,
+                        pos,
+                        event.modifiers,
+                        cx,
+                    );
                 });
             })
             .on_mouse_down(MouseButton::Right, {
@@ -907,11 +1009,17 @@ impl MainViewState {
             })
             .on_mouse_move({
                 let v_hover = v_hover.clone();
-                move |ev, win, cx| {
+                move |ev, _win, cx| {
                     let pos = point(ev.position.x.into(), ev.position.y.into());
                     v_hover.update(cx, |this, cx| {
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this
+                                .state
+                                .main_view
+                                .drag_state
+                                .pending_path_candidate
+                                .is_some()
                         {
                             let folder_target = if is_dir {
                                 Some((path_for_move.clone(), item_name_for_drag.clone()))
@@ -937,6 +1045,7 @@ impl MainViewState {
             .child(
                 div()
                     .w_full()
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -946,14 +1055,17 @@ impl MainViewState {
             .child(
                 div()
                     .w_full()
+                    .h(px(label_box_h))
                     .px(px(6.0))
-                    .mt(px(3.0))
+                    .mt(px(4.0))
                     .text_center()
-                    .line_clamp(2)
                     .overflow_hidden()
-                    .text_size(px(text_size))
+                    .text_size(px(effective_font_size))
+                    .line_height(px(effective_line_h))
                     .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .line_clamp(3)
+                    .text_ellipsis()
                     .child(if renaming_index == Some(index) {
                         div()
                             .bg(rgba(0xFFFFFF20u32))
@@ -964,19 +1076,8 @@ impl MainViewState {
                             .child(rename_str)
                             .into_any_element()
                     } else {
-                        div()
-                            .child(shorten_filename_middle(&raw_name, 36))
-                            .into_any_element()
+                        display_label.into_any_element()
                     }),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .px(px(6.0))
-                    .text_center()
-                    .text_size(px((text_size - 2.0).max(9.5)))
-                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child(subtitle),
             )
     }
 }

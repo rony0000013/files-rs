@@ -979,11 +979,21 @@ impl SidebarView {
                 })
                 .on_mouse_up(MouseButton::Left, {
                     let v_up = view.clone();
+                    let item_id_up = item_id.clone();
+                    let label_up = label.to_string();
                     move |ev, _win, cx| {
                         let pos = gpui::point(ev.position.x.into(), ev.position.y.into());
                         v_up.update(cx, |this, cx| {
                             if this.state.main_view.drag_state.is_dragging {
-                                this.end_drag(pos.x, pos.y, cx);
+                                // The row under the cursor at release is the
+                                // target — don't rely on hover history.
+                                let explicit = item_id_up.get_path().map(|p| (p, label_up.clone()));
+                                tracing::info!(
+                                    "drop: sidebar-up row={} target={:?}",
+                                    label_up,
+                                    explicit.as_ref().map(|(p, _)| p.to_string_lossy().to_string())
+                                );
+                                this.end_drag(pos.x, pos.y, explicit, cx);
                             }
                         });
                     }

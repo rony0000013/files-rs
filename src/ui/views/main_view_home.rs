@@ -100,7 +100,10 @@ impl MainView {
 
         if show_drives {
             let expanded = expanded_sections.contains("home_drives");
-            widgets.push(Self::build_drives_widget(expanded, view.clone()).into_any_element());
+            widgets.push(
+                Self::build_drives_widget(expanded, &state.cached_drives, view.clone())
+                    .into_any_element(),
+            );
         }
 
         if show_tags {
@@ -506,8 +509,13 @@ impl MainView {
     }
 
     /// 2. Drives Widget (`DrivesWidget.xaml` parity) with live capacity bars & Storage Sense button.
-    fn build_drives_widget(expanded: bool, view: Entity<crate::app::AppWindow>) -> Div {
-        let mut drives = enumerate_drives();
+    /// Uses `state.cached_drives` so `render()` never blocks on synchronous Win32 drive enumeration.
+    fn build_drives_widget(
+        expanded: bool,
+        cached_drives: &[DriveInfo],
+        view: Entity<crate::app::AppWindow>,
+    ) -> Div {
+        let mut drives = cached_drives.to_vec();
         if drives.is_empty() {
             drives = vec![
                 DriveInfo {
@@ -982,15 +990,10 @@ impl MainView {
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| p_str.clone());
-            let is_dir = pb.is_dir() || pb.extension().is_none();
-            let modified = std::fs::metadata(&pb)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|st| {
-                    let dt: chrono::DateTime<chrono::Local> = st.into();
-                    Some(dt.format("%Y-%m-%d %H:%M").to_string())
-                })
-                .unwrap_or_else(|| "Recently accessed".to_string());
+            let is_dir = p_str.ends_with('\\')
+                || p_str.ends_with('/')
+                || pb.extension().is_none();
+            let modified = "Recently accessed".to_string();
             entries.push((name, parent, p_str.clone(), modified, is_dir));
         }
 

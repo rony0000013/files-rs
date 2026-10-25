@@ -6,6 +6,55 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
 
+/// Compute an adaptive 3-line filename label, effective font size, and line height.
+///
+/// Behavior:
+/// 1. Keeps the full filename at `base_font_size` as long as it fits within **3 lines**
+///    at `avail_width_px`.
+/// 2. Only when the filename exceeds 3 lines at `base_font_size` does it reduce the font
+///    size toward `min_font_size` so more characters fit across the 3 lines.
+/// 3. If the filename still exceeds 3 lines at `min_font_size`, applies middle-ellipsis
+///    shortening (`shorten_filename_middle`) at the 3-line capacity so the prefix and
+///    file extension remain visible without overflowing the 3-line box.
+pub fn adaptive_three_line_label(
+    name: &str,
+    avail_width_px: f32,
+    base_font_size: f32,
+    min_font_size: f32,
+) -> (String, f32, f32) {
+    let safe_w = avail_width_px.max(48.0);
+    let char_count = name.chars().count();
+
+    let base_cpl = ((safe_w / (base_font_size * 0.56)).floor() as usize).max(8);
+    let base_cap = base_cpl * 3;
+    if char_count <= base_cap {
+        let line_h = (base_font_size * 1.24).ceil();
+        return (name.to_string(), base_font_size, line_h);
+    }
+
+    let mid_font = ((base_font_size + min_font_size) * 0.5).max(min_font_size);
+    let mid_cpl = ((safe_w / (mid_font * 0.55)).floor() as usize).max(9);
+    let mid_cap = mid_cpl * 3;
+    if char_count <= mid_cap {
+        let line_h = (mid_font * 1.22).ceil();
+        return (name.to_string(), mid_font, line_h);
+    }
+
+    let small_font = min_font_size.max(8.5);
+    let small_cpl = ((safe_w / (small_font * 0.54)).floor() as usize).max(10);
+    let small_cap = small_cpl * 3;
+    let line_h = (small_font * 1.22).ceil();
+    if char_count <= small_cap {
+        (name.to_string(), small_font, line_h)
+    } else {
+        (
+            crate::ui::views::grid_view::shorten_filename_middle(name, small_cap),
+            small_font,
+            line_h,
+        )
+    }
+}
+
 /// Format a `SystemTime` into `YYYY-MM-DD HH:MM` using O(1) civil-from-days arithmetic
 /// (zero loops, zero intermediate heap allocations). Returns `"—"` if `None`.
 pub fn format_system_time(time: Option<SystemTime>) -> String {

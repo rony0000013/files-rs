@@ -12,12 +12,43 @@ use crate::platform::windows::recycle_bin_service::RecycleBinService;
 
 impl AppWindow {
     pub fn toggle_group_collapse(&mut self, key: String, cx: &mut Context<Self>) {
-        if self.state.main_view.collapsed_groups.contains(&key) {
-            self.state.main_view.collapsed_groups.remove(&key);
+        let pane_focus = self.state.active_pane_focus();
+        let view = self.state.pane_view_mut(pane_focus);
+        if view.collapsed_groups.contains(&key) {
+            view.collapsed_groups.remove(&key);
         } else {
-            self.state.main_view.collapsed_groups.insert(key);
+            view.collapsed_groups.insert(key);
         }
         cx.notify();
+    }
+
+    /// Synchronize `tags_cache` and `item.tags` across both panes from `tag_service`.
+    pub fn sync_directory_tags(&mut self, cx: &mut Context<Self>) {
+        let all_map = self
+            .state
+            .tag_service
+            .get_all_file_tags_map()
+            .unwrap_or_default();
+
+        for is_secondary in [false, true] {
+            let view = if is_secondary {
+                &mut self.state.secondary_view
+            } else {
+                &mut self.state.main_view
+            };
+            view.tags_cache = all_map.clone();
+            for item in &mut view.items {
+                let key = item.path.to_string_lossy().to_string();
+                item.tags = all_map.get(&key).cloned().unwrap_or_default();
+            }
+            view.bump_items_revision();
+        }
+        self.state.file_items.update(cx, |m, _| {
+            m.items = self.state.main_view.items.clone();
+        });
+        self.state.secondary_file_items.update(cx, |m, _| {
+            m.items = self.state.secondary_view.items.clone();
+        });
     }
 
     // === Tag operations ===
@@ -78,39 +109,51 @@ impl AppWindow {
     }
 
     /// Add a tag to selected items
-    pub fn add_tag_to_selected(&self, tag: String, cx: &mut Context<Self>) {
-        for &idx in &self.state.main_view.selected_indices {
-            if let Some(item) = self.state.main_view.items.get(idx) {
-                if let Err(e) = self
-                    .state
-                    .tag_service
-                    .add_tag(item.path.as_path().to_string_lossy().as_ref(), &tag)
-                {
-                    tracing::error!("Failed to add tag {} to {:?}: {}", tag, item.path, e);
-                }
+    pub fn add_tag_to_selected(&mut self, tag: String, cx: &mut Context<Self>) {
+        let active_view = self.state.active_view();
+        let paths: Vec<FilesPath> = active_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| active_view.items.get(idx).map(|it| it.path.clone()))
+            .collect();
+        for path in paths {
+            if let Err(e) = self
+                .state
+                .tag_service
+                .add_tag(path.as_path().to_string_lossy().as_ref(), &tag)
+            {
+                tracing::error!("Failed to add tag {} to {:?}: {}", tag, path, e);
             }
         }
+        self.sync_directory_tags(cx);
+        self.refresh_home_tags_cache(cx);
         cx.notify();
     }
 
     /// Remove a tag from selected items
-    pub fn remove_tag_from_selected(&self, tag: &str, cx: &mut Context<Self>) {
-        for &idx in &self.state.main_view.selected_indices {
-            if let Some(item) = self.state.main_view.items.get(idx) {
-                if let Err(e) = self
-                    .state
-                    .tag_service
-                    .remove_tag(item.path.as_path().to_string_lossy().as_ref(), tag)
-                {
-                    tracing::error!("Failed to remove tag {} from {:?}: {}", tag, item.path, e);
-                }
+    pub fn remove_tag_from_selected(&mut self, tag: &str, cx: &mut Context<Self>) {
+        let active_view = self.state.active_view();
+        let paths: Vec<FilesPath> = active_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| active_view.items.get(idx).map(|it| it.path.clone()))
+            .collect();
+        for path in paths {
+            if let Err(e) = self
+                .state
+                .tag_service
+                .remove_tag(path.as_path().to_string_lossy().as_ref(), tag)
+            {
+                tracing::error!("Failed to remove tag {} from {:?}: {}", tag, path, e);
             }
         }
+        self.sync_directory_tags(cx);
+        self.refresh_home_tags_cache(cx);
         cx.notify();
     }
 
     /// Add a tag to a specific file
-    pub fn add_tag_to_file(&self, path: &FilesPath, tag: String, cx: &mut Context<Self>) {
+    pub fn add_tag_to_file(&mut self, path: &FilesPath, tag: String, cx: &mut Context<Self>) {
         if let Err(e) = self
             .state
             .tag_service
@@ -118,6 +161,8 @@ impl AppWindow {
         {
             tracing::error!("Failed to add tag {} to {:?}: {}", tag, path, e);
         }
+        self.sync_directory_tags(cx);
+        self.refresh_home_tags_cache(cx);
         cx.notify();
     }
 
@@ -598,11 +643,23 @@ impl AppWindow {
                     .iter()
                     .map(|item| item.path.as_path().to_path_buf())
                     .collect();
+                let invalidation_sources = sources.clone();
+                let invalidation_target = target_path.clone();
                 let outcome = if is_cut {
                     run_move_job_rt(progress_engine.clone(), job_id, sources, target_path).await
                 } else {
                     run_copy_job_rt(progress_engine.clone(), job_id, sources, target_path).await
                 };
+                crate::storage::folder_size::refresh_changed_branch_background(invalidation_target);
+                if is_cut {
+                    for src in invalidation_sources {
+                        if let Some(parent) = src.parent() {
+                            crate::storage::folder_size::refresh_changed_branch_background(
+                                parent.to_path_buf(),
+                            );
+                        }
+                    }
+                }
                 match outcome {
                     TransferOutcome::Done => {
                         progress_engine.complete_job(job_id).await;
@@ -1713,23 +1770,23 @@ impl AppWindow {
     ) -> crate::ui::views::main_view::ThirdPartyHandler {
         use crate::ui::views::main_view::ThirdPartyHandler;
         use std::process::Command;
+        use std::sync::OnceLock;
 
-        // Check for PowerToys Peek (peek.exe)
-        if Command::new("peek.exe").arg("--version").output().is_ok() {
-            return ThirdPartyHandler::Peek;
-        }
-
-        // Check for QuickLook (quicklook.exe or qlmanage on macOS)
-        if Command::new("quicklook.exe").arg("-v").output().is_ok() {
-            return ThirdPartyHandler::QuickLook;
-        }
-
-        // Check for Seer (seer.exe)
-        if Command::new("seer.exe").arg("--version").output().is_ok() {
-            return ThirdPartyHandler::SeerPro;
-        }
-
-        ThirdPartyHandler::None
+        static CACHED_HANDLER: OnceLock<ThirdPartyHandler> = OnceLock::new();
+        CACHED_HANDLER
+            .get_or_init(|| {
+                if Command::new("peek.exe").arg("--version").output().is_ok() {
+                    return ThirdPartyHandler::Peek;
+                }
+                if Command::new("quicklook.exe").arg("-v").output().is_ok() {
+                    return ThirdPartyHandler::QuickLook;
+                }
+                if Command::new("seer.exe").arg("--version").output().is_ok() {
+                    return ThirdPartyHandler::SeerPro;
+                }
+                ThirdPartyHandler::None
+            })
+            .clone()
     }
 
     /// Invoke third-party preview for the currently selected file.
@@ -2241,6 +2298,10 @@ impl AppWindow {
                 "calculate_folder_sizes" => {
                     s.config.view.calculate_folder_sizes = !s.config.view.calculate_folder_sizes
                 }
+                "index_all_drives_folder_sizes" => {
+                    s.config.view.index_all_drives_folder_sizes =
+                        !s.config.view.index_all_drives_folder_sizes
+                }
                 "open_files_with_single_click" => {
                     s.config.actions.open_files_with_single_click =
                         !s.config.actions.open_files_with_single_click
@@ -2333,12 +2394,53 @@ impl AppWindow {
         self.state.secondary_view.sort.folders_first = folder_on_top;
         self.state.secondary_view.sort.ascending = sort_asc;
 
+        if key == "index_all_drives_folder_sizes"
+            && self.state.settings.read(cx).config.view.index_all_drives_folder_sizes
+        {
+            self.trigger_index_all_drives(false, cx);
+        }
+
         if needs_refresh {
             self.refresh(cx);
         } else if needs_resort {
             self.state.main_view.apply_sort();
             self.state.main_view.bump_items_revision();
         }
+        cx.notify();
+    }
+
+    /// Trigger a background pass that indexes folder sizes across all local fixed drives once
+    /// and stores them in the persistent mtime-hashed cache.
+    pub fn trigger_index_all_drives(&mut self, force_full: bool, cx: &mut Context<Self>) {
+        use crate::platform::windows::drive_service::DriveType;
+        let mut roots: Vec<std::path::PathBuf> = self
+            .state
+            .main_view
+            .cached_drives
+            .iter()
+            .filter(|d| d.is_ready && matches!(d.drive_type, DriveType::Fixed))
+            .map(|d| d.root.as_path().to_path_buf())
+            .collect();
+        if roots.is_empty() {
+            for d in crate::platform::windows::drive_service::enumerate_drives() {
+                if d.is_ready && matches!(d.drive_type, DriveType::Fixed) {
+                    roots.push(d.root.as_path().to_path_buf());
+                }
+            }
+        }
+        crate::storage::folder_size::index_all_drives_background(roots, force_full);
+        cx.notify();
+    }
+
+    /// Clear the persistent & in-memory folder size cache.
+    pub fn clear_folder_size_cache(&mut self, cx: &mut Context<Self>) {
+        crate::storage::folder_size::clear_cache();
+        self.state.status_center.push_notification(
+            "Folder Size Cache Cleared".to_string(),
+            "Cleared persistent folder size index.".to_string(),
+            crate::ui::components::status_center::ToastSeverity::Info,
+            None,
+        );
         cx.notify();
     }
     pub(crate) fn load_folder_preview(&mut self, path: FilesPath, cx: &mut Context<Self>) {
@@ -2415,9 +2517,13 @@ impl AppWindow {
             items.sort_by(|a, b| {
                 b.is_dir
                     .cmp(&a.is_dir)
-                    .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+                    .then_with(|| crate::ui::views::helpers::natural_cmp(&a.name, &b.name))
             });
-            (items, subfolders, files, total_size)
+            let recursive_total = crate::storage::folder_size::cached_size(path_clone.as_path())
+                .unwrap_or_else(|| {
+                    crate::storage::folder_size::compute_and_store(path_clone.as_path())
+                });
+            (items, subfolders, files, recursive_total.max(total_size))
         });
 
         cx.foreground_executor()
@@ -3910,6 +4016,7 @@ impl AppWindow {
                 .retain(|t| !t.name.eq_ignore_ascii_case(&tag_name));
             let _ = s.config.save();
         });
+        self.sync_directory_tags(cx);
         self.refresh_home_tags_cache(cx);
         cx.notify();
     }
@@ -4071,6 +4178,9 @@ impl AppWindow {
     }
 
     pub fn set_group_by(&mut self, group: crate::config::config::GroupColumn, cx: &mut Context<Self>) {
+        if group == crate::config::config::GroupColumn::Tag {
+            self.sync_directory_tags(cx);
+        }
         let pane_focus = self.state.active_pane_focus();
         {
             let view = self.state.pane_view_mut(pane_focus);
@@ -4079,13 +4189,16 @@ impl AppWindow {
             } else {
                 view.group_by = group;
                 view.group_ascending = true;
+                view.collapsed_groups.clear();
+                view.bouncy_scroll.set_immediate_offset(0.0);
+                view.uniform_list_scroll_handle
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(gpui::point(px(0.0), px(0.0)));
             }
-            view.collapsed_groups.clear();
             view.bump_items_revision();
         }
-        self.state.main_view.group_by = group;
-        self.state.main_view.collapsed_groups.clear();
-        self.state.main_view.bump_items_revision();
         self.sync_pane_selection_model(pane_focus, cx);
         let settings = self.state.settings.clone();
         settings.update(cx, move |s, _cx| {
@@ -4211,8 +4324,8 @@ impl AppWindow {
 
     pub fn peek_navigate_prev(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
-        let visible = self.state.pane_view(pane_focus).visible_items_rc();
-        if visible.is_empty() {
+        let visual = self.state.pane_view(pane_focus).visual_order_items();
+        if visual.is_empty() {
             return;
         }
         let cur_idx = self
@@ -4222,18 +4335,18 @@ impl AppWindow {
             .iter()
             .next()
             .copied()
-            .unwrap_or(visible[0]);
-        let pos = visible.iter().position(|&i| i == cur_idx).unwrap_or(0);
-        let prev_pos = if pos > 0 { pos - 1 } else { visible.len() - 1 };
-        let next_idx = visible[prev_pos];
+            .unwrap_or(visual[0]);
+        let pos = visual.iter().position(|&i| i == cur_idx).unwrap_or(0);
+        let prev_pos = if pos > 0 { pos - 1 } else { visual.len() - 1 };
+        let next_idx = visual[prev_pos];
         self.select_item_in_pane(pane_focus, next_idx, false, false, cx);
         self.scroll_item_into_view(pane_focus, next_idx);
     }
 
     pub fn peek_navigate_next(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
-        let visible = self.state.pane_view(pane_focus).visible_items_rc();
-        if visible.is_empty() {
+        let visual = self.state.pane_view(pane_focus).visual_order_items();
+        if visual.is_empty() {
             return;
         }
         let cur_idx = self
@@ -4243,10 +4356,10 @@ impl AppWindow {
             .iter()
             .next()
             .copied()
-            .unwrap_or(visible[0]);
-        let pos = visible.iter().position(|&i| i == cur_idx).unwrap_or(0);
-        let next_pos = (pos + 1) % visible.len();
-        let next_idx = visible[next_pos];
+            .unwrap_or(visual[0]);
+        let pos = visual.iter().position(|&i| i == cur_idx).unwrap_or(0);
+        let next_pos = (pos + 1) % visual.len();
+        let next_idx = visual[next_pos];
         self.select_item_in_pane(pane_focus, next_idx, false, false, cx);
         self.scroll_item_into_view(pane_focus, next_idx);
     }

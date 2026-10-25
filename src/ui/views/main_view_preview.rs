@@ -246,9 +246,12 @@ impl MainView {
             if let Some(it) = state.items.get(idx) {
                 if matches!(it.file_type, FileType::Directory) {
                     folders += 1;
+                    let dir_sz = crate::storage::folder_size::peek_cached_size(it.path.as_path())
+                        .unwrap_or(it.size);
+                    total_size = total_size.saturating_add(dir_sz);
                 } else {
                     files += 1;
-                    total_size += it.size;
+                    total_size = total_size.saturating_add(it.size);
                 }
             }
         }

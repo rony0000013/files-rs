@@ -1,5 +1,6 @@
 use crate::core::database::Database;
 use rusqlite::params;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct TagService {
@@ -47,6 +48,22 @@ impl TagService {
         Ok(tags)
     }
 
+    pub fn get_all_file_tags_map(&self) -> anyhow::Result<HashMap<String, Vec<String>>> {
+        let conn = self.db.get_conn();
+        let conn = conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT path, tag FROM file_tags ORDER BY path ASC, tag ASC")?;
+        let mut rows = stmt.query([])?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let tag: String = row.get(1)?;
+            map.entry(path).or_default().push(tag);
+        }
+        Ok(map)
+    }
+
     pub fn get_files_with_tag(&self, tag: &str) -> anyhow::Result<Vec<String>> {
         let conn = self.db.get_conn();
         let conn = conn
@@ -86,7 +103,7 @@ impl TagService {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT tag, COUNT(*) as count FROM file_tags GROUP BY tag ORDER BY count DESC, tag ASC"
+            "SELECT tag, COUNT(*) as count FROM file_tags GROUP BY tag ORDER BY count DESC, tag ASC",
         )?;
         let tags = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

@@ -43,6 +43,8 @@ pub struct StatusBarState {
     pub folder_size_for: Option<crate::core::path_util::FilesPath>,
     /// Spinner animation frame (0..3) for the pending folder size.
     pub spinner_frame: u32,
+    /// Monotonic request ID to discard stale async folder-size walks.
+    pub folder_size_request_id: u64,
 }
 
 impl StatusBarState {

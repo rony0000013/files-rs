@@ -2133,31 +2133,69 @@ impl crate::ui::components::dialogs::DialogsView {
             .into_any_element(),
         ];
 
-        let calc_size_items: Vec<AnyElement> = vec![div()
-            .w_full()
-            .px(px(16.0))
-            .py(px(10.0))
-            .bg(rgba(0xFFB90018u32))
-            .border_t(px(1.0))
-            .border_color(rgba(0xFFB90040u32))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .font_family(UiConstants::FONT_ICONS)
-                    .text_color(rgb(0xFFB900))
-                    .child("\u{E7BA}"),
+        let cached_folders = crate::storage::folder_size::cached_folder_count();
+        let is_indexing_drives = crate::storage::folder_size::is_drive_indexing();
+        let cache_status_desc = if is_indexing_drives {
+            format!(
+                "Indexing local drives in background... ({} folders cached so far)",
+                cached_folders
             )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .child("Calculating folder sizes is resource intensive and may increase CPU and disk usage on large drives."),
+        } else {
+            format!(
+                "{} folders stored in persistent mtime-hashed index (unchanged folders are never recomputed)",
+                cached_folders
             )
-            .into_any_element()];
+        };
+
+        let calc_size_items: Vec<AnyElement> = vec![
+            Self::settings_expander_row(
+                "Index all drives once & update incrementally",
+                Some("Pre-index folder sizes across all local drives in the background and only recompute folders when their contents change"),
+                Self::settings_toggle_switch(
+                    config.view.index_all_drives_folder_sizes,
+                    "index_all_drives_folder_sizes",
+                    view.clone(),
+                ),
+            )
+            .into_any_element(),
+            Self::settings_expander_row(
+                "Persistent Folder Size Cache",
+                Some(&cache_status_desc),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(6.0))
+                    .child(Self::build_compact_btn(
+                        if is_indexing_drives {
+                            "Indexing Drives..."
+                        } else {
+                            "Index All Drives Now"
+                        },
+                        is_indexing_drives,
+                        {
+                            let v = view.clone();
+                            move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    this.trigger_index_all_drives(true, cx);
+                                });
+                            }
+                        },
+                    ))
+                    .child(Self::build_compact_btn(
+                        "Clear Cache",
+                        false,
+                        {
+                            let v = view.clone();
+                            move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    this.clear_folder_size_cache(cx);
+                                });
+                            }
+                        },
+                    )),
+            )
+            .into_any_element(),
+        ];
 
         div()
             .flex()

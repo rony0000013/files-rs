@@ -206,6 +206,9 @@ pub struct DragState {
     pub is_dragging: bool,
     /// Pending mouse-down candidate before crossing the 6px drag threshold: `(pane, item_idx, start_pos)`
     pub pending_candidate: Option<(crate::core::navigation_manager::PaneFocus, usize, Point<f32>)>,
+    /// Pending mouse-down candidate for path-based items (Miller Column 1 & Column 3): `(pane, path, start_pos)`
+    pub pending_path_candidate:
+        Option<(crate::core::navigation_manager::PaneFocus, FilesPath, Point<f32>)>,
     /// Hovered destination folder path (if hovering a folder row/tile, tab, breadcrumb, or sidebar item)
     pub hovered_target_folder: Option<FilesPath>,
     /// Hovered destination display name for the floating Files-community drag badge
@@ -536,13 +539,29 @@ pub enum ThirdPartyHandler {
 // Main view state
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Column widths configuration for Details view
+fn default_miller_col1_width() -> f32 {
+    220.0
+}
+fn default_miller_col2_width() -> f32 {
+    340.0
+}
+fn default_miller_col3_width() -> f32 {
+    380.0
+}
+
+/// Column widths configuration for Details view and Miller Columns view
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ColumnWidths {
     pub name: f32,
     pub date: f32,
     pub type_col: f32,
     pub size: f32,
+    #[serde(default = "default_miller_col1_width")]
+    pub miller_col1: f32,
+    #[serde(default = "default_miller_col2_width")]
+    pub miller_col2: f32,
+    #[serde(default = "default_miller_col3_width")]
+    pub miller_col3: f32,
 }
 
 impl Default for ColumnWidths {
@@ -552,6 +571,9 @@ impl Default for ColumnWidths {
             date: 180.0,
             type_col: 120.0,
             size: 80.0,
+            miller_col1: 220.0,
+            miller_col2: 340.0,
+            miller_col3: 380.0,
         }
     }
 }
@@ -965,45 +987,11 @@ pub struct MainViewState {
 }
 
 impl MainViewState {
-    /// Re-sort `items` in place from the current `sort` settings.
+    /// Invalidate the cached sorted view index mapping when sort settings change.
+    /// (`visible_items_rc()` performs non-destructive natural sorting so `self.items`,
+    /// `self.selected_indices`, and `FileItems` stay index-aligned at all times.)
     pub fn apply_sort(&mut self) {
-        let asc = self.sort.ascending;
-        let folders_first = self.sort.folders_first;
-        let col = self.sort.column.clone();
-        self.items.sort_by(|a, b| {
-            if folders_first {
-                let ad = a.file_type == FileType::Directory;
-                let bd = b.file_type == FileType::Directory;
-                if ad != bd {
-                    return if ad {
-                        std::cmp::Ordering::Less
-                    } else {
-                        std::cmp::Ordering::Greater
-                    };
-                }
-            }
-            let ord = match col {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                SortBy::DateModified => a.modified.cmp(&b.modified),
-                SortBy::DateCreated => a.created.cmp(&b.created),
-                SortBy::Size => a.size.cmp(&b.size),
-                SortBy::Type => a
-                    .name
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .cmp(
-                        &b.name
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or("")
-                            .to_lowercase(),
-                    ),
-                SortBy::Tag => std::cmp::Ordering::Equal,
-            };
-            if asc { ord } else { ord.reverse() }
-        });
+        self.bump_items_revision();
     }
 }
 
@@ -1057,6 +1045,7 @@ pub struct VisibleCacheKey {
     pub is_searching: bool,
     pub search_query: String,
     pub search_results_len: usize,
+    pub tags_cache_len: usize,
 }
 
 fn default_dual_pane_ratio() -> f32 {

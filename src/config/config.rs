@@ -616,7 +616,11 @@ pub struct ViewConfig {
     #[serde(default = "default_true")]
     pub auto_size_columns: bool,
     /// Calculate folder sizes in background
+    #[serde(default = "default_true")]
     pub calculate_folder_sizes: bool,
+    /// Index folder sizes across all local drives once into a persistent hashed cache and update incrementally
+    #[serde(default = "default_true")]
+    pub index_all_drives_folder_sizes: bool,
     /// Default column visibility in Details view
     #[serde(default = "default_true")]
     pub show_date_column: bool,
@@ -646,7 +650,8 @@ impl Default for ViewConfig {
             sync_folder_preferences: false,
             adaptive_layout_enabled: false,
             auto_size_columns: true,
-            calculate_folder_sizes: false,
+            calculate_folder_sizes: true,
+            index_all_drives_folder_sizes: true,
             show_date_column: true,
             show_date_created_column: false,
             show_type_column: true,

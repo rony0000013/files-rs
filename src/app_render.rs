@@ -464,6 +464,7 @@ impl Render for AppWindow {
                                                         // Track file drag movement & out-of-window OS drag handoff
                                                         if this.state.main_view.drag_state.is_dragging
                                                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                                                            || this.state.main_view.drag_state.pending_path_candidate.is_some()
                                                         {
                                                             let pos = gpui::point(
                                                                 event.position.x.into(),
@@ -484,8 +485,9 @@ impl Render for AppWindow {
                                                     view.update(cx, |this, cx| {
                                                         if this.state.main_view.drag_state.is_dragging
                                                             || this.state.main_view.drag_state.pending_candidate.is_some()
+                                                            || this.state.main_view.drag_state.pending_path_candidate.is_some()
                                                         {
-                                                            this.end_drag(pos.x, pos.y, cx);
+                                                            this.end_drag(pos.x, pos.y, None, cx);
                                                         }
                                                         if this.state.tab_drag.is_dragging {
                                                             this.end_tab_drag(None, cx);

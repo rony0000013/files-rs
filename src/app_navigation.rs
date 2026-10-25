@@ -47,9 +47,7 @@ impl AppWindow {
                 self.state.secondary_view.selection_anchor_index = None;
                 self.state.secondary_view.last_clicked_index = None;
                 self.state.secondary_view.renaming_index = None;
-                self.state.secondary_view.bouncy_scroll.offset = 0.0;
-                self.state.secondary_view.bouncy_scroll.velocity = 0.0;
-                self.state.secondary_view.bouncy_scroll.animating = false;
+                self.state.secondary_view.bouncy_scroll.set_immediate_offset(0.0);
                 self.state
                     .secondary_view
                     .uniform_list_scroll_handle
@@ -103,18 +101,19 @@ impl AppWindow {
             self.state.sidebar.set_active(&path);
             if !same_path_refresh {
                 self.state.status_bar.sync(0, 0, 0);
+                self.state.status_bar.show_git_actions = false;
+                self.state.status_bar.git_branch = None;
             }
-            let branch = GitService::get_branch(&path);
-            self.state.status_bar.show_git_actions = branch.is_some();
-            self.state.status_bar.git_branch = branch;
         }
         cx.notify();
 
-        // Start watching this folder for changes
+        // Start watching this folder for changes (only recreate watcher if path changed or not yet watching)
         if is_secondary {
-            self.stop_file_watcher(true);
-            self.start_file_watcher_secondary(path.clone());
-        } else {
+            if !same_path_refresh || self.file_watcher_secondary.is_none() {
+                self.stop_file_watcher(true);
+                self.start_file_watcher_secondary(path.clone());
+            }
+        } else if !same_path_refresh || self.file_watcher.is_none() {
             self.stop_file_watcher(false);
             self.start_file_watcher(path.clone());
         }
@@ -123,6 +122,7 @@ impl AppWindow {
         let settings_model = self.state.settings.read(cx);
         let prefs = settings_model.config().get_folder_preferences(&path);
         let app_prefs = settings_model.config().preferences.clone();
+        let calc_folder_sizes = settings_model.config().view.calculate_folder_sizes;
         drop(settings_model);
 
         {
@@ -141,15 +141,7 @@ impl AppWindow {
                     active_tab.get_zoom_for_view(active_tab.view_mode.clone());
             }
 
-            if let Some(desktop_ini) = crate::storage::desktop_ini::DesktopIni::load(path.as_path())
-            {
-                target_view.folder_background.image_path = desktop_ini
-                    .background_image
-                    .map(|s| crate::core::path_util::FilesPath::new(s));
-                if let Some(opacity) = desktop_ini.background_opacity {
-                    target_view.folder_background.opacity = opacity;
-                }
-            } else {
+            if !same_path_refresh {
                 target_view.folder_background =
                     crate::ui::views::main_view::FolderBackground::default();
             }
@@ -179,7 +171,10 @@ impl AppWindow {
                 // PHASE 1: Fast initial listing (uses entry.file_type() — no stat)
                 // =================================================================
                 let token_p1 = cancel_token.clone();
-                let fast_items: Vec<crate::domain::metadata::FileItem> = async_cx
+                let (fast_items, desktop_ini_opt): (
+                    Vec<crate::domain::metadata::FileItem>,
+                    Option<crate::storage::desktop_ini::DesktopIni>,
+                ) = async_cx
                     .background_executor()
                     .spawn({
                         let p = path_clone.clone();
@@ -202,12 +197,18 @@ impl AppWindow {
                                             }
                                         })
                                         .unwrap_or(FileType::File);
+                                    let size = if matches!(file_type, FileType::Directory) {
+                                        crate::storage::folder_size::peek_cached_size(path.as_path())
+                                            .unwrap_or(0)
+                                    } else {
+                                        0
+                                    };
                                     let is_hidden = name.starts_with('.');
                                     items.push(crate::domain::metadata::FileItem {
                                         name,
                                         path,
                                         file_type,
-                                        size: 0,
+                                        size,
                                         is_hidden,
                                         is_system: false,
                                         modified: None,
@@ -216,7 +217,8 @@ impl AppWindow {
                                     });
                                 }
                             }
-                            items
+                            let ini = crate::storage::desktop_ini::DesktopIni::load(p.as_path());
+                            (items, ini)
                         }
                     })
                     .await;
@@ -257,6 +259,25 @@ impl AppWindow {
                                 this.state.main_view.primary_path = p1.clone();
                             }
 
+                            {
+                                let tv = if is_secondary {
+                                    &mut this.state.secondary_view
+                                } else {
+                                    &mut this.state.main_view
+                                };
+                                if let Some(desktop_ini) = desktop_ini_opt {
+                                    tv.folder_background.image_path = desktop_ini
+                                        .background_image
+                                        .map(crate::core::path_util::FilesPath::new);
+                                    if let Some(opacity) = desktop_ini.background_opacity {
+                                        tv.folder_background.opacity = opacity;
+                                    }
+                                } else {
+                                    tv.folder_background =
+                                        crate::ui::views::main_view::FolderBackground::default();
+                                }
+                            }
+
                             if this.state.active_pane_focus() == pane_focus {
                                 this.state.nav_bar.update_path(p1.clone());
                                 this.state.sidebar.set_active(&p1);
@@ -269,11 +290,9 @@ impl AppWindow {
                                 this.state
                                     .status_bar
                                     .sync(items_ref.len(), folder_count, file_count);
-                                let branch = GitService::get_branch(&p1);
-                                this.state.status_bar.show_git_actions = branch.is_some();
-                                this.state.status_bar.git_branch = branch;
                             }
 
+                            this.sync_directory_tags(cx);
                             this.sync_pane_icon_paths();
                             cx.notify();
                         })
@@ -307,7 +326,12 @@ impl AppWindow {
                                         break;
                                     }
                                     if let Ok(meta) = std::fs::metadata(path.as_path()) {
-                                        let size = meta.len();
+                                        let size = if meta.is_dir() {
+                                            crate::storage::folder_size::cached_size(path.as_path())
+                                                .unwrap_or(0)
+                                        } else {
+                                            meta.len()
+                                        };
                                         let modified = meta.modified().ok();
                                         let created = meta.created().ok();
                                         let mut is_hidden = path
@@ -400,7 +424,7 @@ impl AppWindow {
                 }
 
                 // =================================================================
-                // PHASE 2.5: Single-pass Git status scan in background
+                // PHASE 2.5: Background Git branch + single-pass status scan
                 // =================================================================
                 if !cancel_token.is_cancelled() {
                     let git_path = path_clone.clone();
@@ -411,32 +435,124 @@ impl AppWindow {
                     let fg = git_cx.foreground_executor().clone();
                     let bg = git_cx.background_executor().clone();
                     fg.spawn(async move {
-                        let git_statuses = bg
+                        let (branch, git_statuses) = bg
                             .spawn(async move {
                                 if token_git.is_cancelled() {
-                                    return std::collections::HashMap::new();
+                                    return (None, std::collections::HashMap::new());
                                 }
-                                GitService::get_directory_statuses(&git_path)
+                                let b = GitService::get_branch(&git_path);
+                                let statuses = if b.is_some() {
+                                    GitService::get_directory_statuses(&git_path)
+                                } else {
+                                    std::collections::HashMap::new()
+                                };
+                                (b, statuses)
                             })
                             .await;
-                        if token_outer.is_cancelled() || git_statuses.is_empty() {
+                        if token_outer.is_cancelled() {
                             return;
                         }
                         git_weak
                             .update(&mut git_cx, |this, cx| {
-                                this.state
-                                    .main_view
-                                    .git_status_cache
-                                    .extend(git_statuses.clone());
-                                this.state
-                                    .secondary_view
-                                    .git_status_cache
-                                    .extend(git_statuses);
+                                if this.state.active_pane_focus() == pane_focus {
+                                    this.state.status_bar.show_git_actions = branch.is_some();
+                                    this.state.status_bar.git_branch = branch;
+                                }
+                                if !git_statuses.is_empty() {
+                                    this.state
+                                        .main_view
+                                        .git_status_cache
+                                        .extend(git_statuses.clone());
+                                    this.state
+                                        .secondary_view
+                                        .git_status_cache
+                                        .extend(git_statuses);
+                                }
                                 cx.notify();
                             })
                             .ok();
                     })
                     .detach();
+                }
+
+                // =================================================================
+                // PHASE 2.6: Background subfolder size pre-index for current directory
+                // =================================================================
+                if calc_folder_sizes && !cancel_token.is_cancelled() {
+                    let dir_target = path_clone.clone();
+                    let sz_weak = this_weak.clone();
+                    let mut sz_cx = async_cx.clone();
+                    let token_sz = cancel_token.clone();
+                    let token_sz_outer = cancel_token.clone();
+                    let fg = sz_cx.foreground_executor().clone();
+                    let bg = sz_cx.background_executor().clone();
+                    let uncached_dirs: Vec<(usize, FilesPath)> = sz_weak
+                        .update(&mut sz_cx, |this, _| {
+                            let items_ref = if is_secondary {
+                                &this.state.secondary_view.items
+                            } else {
+                                &this.state.main_view.items
+                            };
+                            items_ref
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, it)| {
+                                    matches!(it.file_type, FileType::Directory)
+                                        && crate::storage::folder_size::peek_cached_size(
+                                            it.path.as_path(),
+                                        )
+                                        .is_none()
+                                })
+                                .take(64)
+                                .map(|(idx, it)| (idx, it.path.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if !uncached_dirs.is_empty() {
+                        fg.spawn(async move {
+                            let computed = bg
+                                .spawn(async move {
+                                    let mut out = Vec::with_capacity(uncached_dirs.len());
+                                    for (idx, fp) in uncached_dirs {
+                                        if token_sz.is_cancelled() {
+                                            break;
+                                        }
+                                        let sz = crate::storage::folder_size::compute_and_store(
+                                            fp.as_path(),
+                                        );
+                                        out.push((idx, fp, sz));
+                                    }
+                                    out
+                                })
+                                .await;
+                            if token_sz_outer.is_cancelled() || computed.is_empty() {
+                                return;
+                            }
+                            sz_weak
+                                .update(&mut sz_cx, |this, cx| {
+                                    let view = if is_secondary {
+                                        &mut this.state.secondary_view
+                                    } else {
+                                        &mut this.state.main_view
+                                    };
+                                    if view.primary_path != dir_target {
+                                        return;
+                                    }
+                                    for (idx, fp, sz) in computed {
+                                        if let Some(it) = view.items.get_mut(idx) {
+                                            if it.path == fp {
+                                                it.size = sz;
+                                            }
+                                        }
+                                    }
+                                    view.bump_items_revision();
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .detach();
+                    }
                 }
 
                 // =================================================================
@@ -463,12 +579,23 @@ impl AppWindow {
             } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
                 self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
                 self.state.main_view.selected_indices.clear();
-                let service = RecycleBinService::new();
-                if let Ok(items) = service.list_contents_sync() {
-                    self.state.main_view.recycle_bin_items = items;
-                } else {
-                    self.state.main_view.recycle_bin_items = Vec::new();
-                }
+                let rb_weak = cx.weak_entity();
+                let mut rb_cx = cx.to_async();
+                let bg = cx.background_executor().spawn(async move {
+                    let service = RecycleBinService::new();
+                    service.list_contents_sync().unwrap_or_default()
+                });
+                cx.foreground_executor()
+                    .spawn(async move {
+                        let items = bg.await;
+                        rb_weak
+                            .update(&mut rb_cx, |this, cx| {
+                                this.state.main_view.recycle_bin_items = items;
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
             } else {
                 self.state.main_view.target =
                     crate::ui::views::main_view::ViewTarget::Directory(path.clone());
