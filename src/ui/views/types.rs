@@ -833,6 +833,9 @@ pub struct MainViewState {
     /// Cursor character index inside rename_text
     #[serde(skip)]
     pub rename_cursor_pos: usize,
+    /// Effective characters per line used for multiline rename wrapping in Grid view
+    #[serde(skip)]
+    pub rename_chars_per_line: usize,
     /// Paths of files currently cut to the clipboard (rendered with opacity + dashed border)
     #[serde(skip)]
     pub cut_paths: HashSet<std::path::PathBuf>,

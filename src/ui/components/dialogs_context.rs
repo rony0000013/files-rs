@@ -11,6 +11,67 @@ pub(crate) enum MenuTrailing {
     Chevron,
 }
 
+/// Builds a flyout card shell with authentic Windows 11 Fluent Acrylic / Mica
+/// Builds a flyout card shell with authentic Windows 11 Fluent Acrylic / Mica
+/// Gaussian wallpaper blur backing, translucent dark acrylic tint, 1px surface stroke,
+/// explicit height bounds, and complete pointer event isolation so underlying items never bleed through.
+pub(crate) fn flyout_card_shell(
+    abs_x: f32,
+    abs_y: f32,
+    w: f32,
+    h: f32,
+    mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+) -> Div {
+    let mut shell = div()
+        .relative()
+        .w(px(w))
+        .h(px(h))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_move(|_, _, cx| cx.stop_propagation());
+
+    let mut bg_card = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .w(px(w))
+        .h(px(h))
+        .rounded(px(8.0))
+        .overflow_hidden()
+        .border(px(1.0))
+        .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
+        .shadow_lg()
+        // Solid dark Fluent acrylic base (100% opaque) so underlying menus never bleed through
+        .bg(rgb(UiConstants::BG_FLYOUT_MICA_RGB));
+
+    if let Some(geo) = mica_geo {
+        bg_card = bg_card.child(
+            div()
+                .absolute()
+                .inset_0()
+                .overflow_hidden()
+                .child(
+                    img(geo.path.clone())
+                        .absolute()
+                        .left(px(geo.left - abs_x))
+                        .top(px(geo.top - abs_y))
+                        .w(px(geo.w))
+                        .h(px(geo.h)),
+                ),
+        );
+        // Fluent acrylic dark tint (87.8% opacity) over the blurred wallpaper
+        bg_card = bg_card.child(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x202020D8)),
+        );
+    }
+
+    shell = shell.child(bg_card);
+    shell
+}
+
 impl crate::ui::components::dialogs::DialogsView {
     pub(crate) fn build_context_menu_dialog(
         item_index: Option<usize>,
@@ -32,6 +93,7 @@ impl crate::ui::components::dialogs::DialogsView {
         win_h: f32,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
+        mica_geo: Option<crate::wallpaper_mica::MicaGeo>,
     ) -> impl IntoElement {
         // Files shows different menus for file / folder / multi-select.
         let is_multi = selected_count > 1;
@@ -47,32 +109,24 @@ impl crate::ui::components::dialogs::DialogsView {
         let v_props = view.clone();
         let v_copypath = view.clone();
 
-        // Context menu container with proper sizing per DESIGN_SPEC.md:
-        // - max width 250px
-        // - max height 480px
+        #[allow(unused_mut)]
+        let mut showmore_off = 0.0f32;
+        let menu_top: f32 = position.y.into();
+        let menu_left: f32 = position.x.into();
+        let win_w = if win_w > 100.0 { win_w } else { 1280.0 };
+        let win_h = if win_h > 100.0 { win_h } else { 800.0 };
+
         let mut menu = div()
+            .relative()
             .flex_col()
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .rounded(px(8.0))
-            .shadow_lg()
-            .py(px(4.0))
-            .w(px(284.0));
+            .w_full()
+            .py(px(4.0));
         // Running content height + the ShowMore row offset (for flyout
         // geometry: bottom-anchored tall panels + on-screen caps). Starts
         // with chrome: py(4) top + toolbar(~34 incl. separator) on item
         // menus, py(4) top on background menus — so the viewport cap below
         // compares against the true height, not just the rows.
         let mut menu_h = if has_selection { 47.0 } else { 4.0 }; // +4 bottom py at cap time
-        #[allow(unused_mut)]
-        let mut showmore_off = 0.0f32;
-        #[allow(unused_variables)]
-        let menu_top: f32 = position.y.into();
-        #[allow(unused_variables)]
-        let menu_left: f32 = position.x.into();
-        let win_w = if win_w > 100.0 { win_w } else { 1280.0 };
-        let win_h = if win_h > 100.0 { win_h } else { 800.0 };
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -248,7 +302,18 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Open With",
                     SubmenuKind::OpenWith,
                     ow_open,
-                    Self::submenu_panel(ow_rows, SubmenuKind::OpenWith, v_sub.clone(), flip),
+                    Self::submenu_panel(
+                        ow_rows,
+                        SubmenuKind::OpenWith,
+                        v_sub.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         if let Some(ref p) = path {
@@ -350,7 +415,18 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Compress",
                     SubmenuKind::Compress,
                     c_open,
-                    Self::compress_submenu(view.clone(), flip, is_archive, selected_path.clone()),
+                    Self::compress_submenu(
+                        view.clone(),
+                        flip,
+                        is_archive,
+                        selected_path.clone(),
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -370,7 +446,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Send to",
                     SubmenuKind::SendTo,
                     s_open,
-                    Self::sendto_submenu(view.clone(), flip),
+                    Self::sendto_submenu(
+                        view.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -488,6 +573,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         showmore_off,
                         win_w,
                         win_h,
+                        mica_geo.as_ref(),
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -522,6 +608,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 win_w,
                                 win_h,
                                 flip,
+                                mica_geo.as_ref(),
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -567,7 +654,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Layout",
                     SubmenuKind::Layout,
                     l_open,
-                    Self::layout_submenu(view.clone(), flip),
+                    Self::layout_submenu(
+                        view.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -587,7 +683,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Sort by",
                     SubmenuKind::SortBy,
                     s_open,
-                    Self::sort_submenu(view.clone(), flip),
+                    Self::sort_submenu(
+                        view.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -607,7 +712,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     "Group by",
                     SubmenuKind::GroupBy,
                     g_open,
-                    Self::group_submenu(view.clone(), flip),
+                    Self::group_submenu(
+                        view.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -642,7 +756,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     "New",
                     SubmenuKind::New,
                     n_open,
-                    Self::new_submenu(view.clone(), flip),
+                    Self::new_submenu(
+                        view.clone(),
+                        flip,
+                        menu_top,
+                        menu_left,
+                        menu_h,
+                        win_w,
+                        win_h,
+                        mica_geo.as_ref(),
+                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
@@ -717,6 +840,7 @@ impl crate::ui::components::dialogs::DialogsView {
                         showmore_off,
                         win_w,
                         win_h,
+                        mica_geo.as_ref(),
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -751,6 +875,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 win_w,
                                 win_h,
                                 flip,
+                                mica_geo.as_ref(),
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -781,17 +906,18 @@ impl crate::ui::components::dialogs::DialogsView {
                 }
             }
         }
-        // Viewport cap (matters for Expanded style with 25+ inlined rows,
-        // or a compressed window): the menu scrolls internally instead of
-        // spilling past the main view. Stateful id first: overflow_scroll
-        // only exists on stateful elements.
+        // Viewport cap: clamp menu inside window bounds (above status bar win_h - 36px)
+        let bottom_limit = (win_h - 36.0).max(100.0);
+        let available_h = (bottom_limit - menu_top).max(160.0);
+        let card_h = if menu_h > available_h { available_h } else { menu_h };
+        let mut card = flyout_card_shell(menu_left, menu_top, 284.0, card_h, mica_geo.as_ref());
         let menu = menu.id(("ctx-menu", 0_usize));
-        let menu = if menu_h > max_h {
-            menu.max_h(px(max_h)).overflow_scroll()
+        let menu = if menu_h > available_h {
+            menu.max_h(px(available_h)).overflow_scroll()
         } else {
-            menu
+            menu.h(px(card_h))
         };
-        menu.with_animation(
+        card.child(menu).with_animation(
             "ctx-menu-entrance",
             Animation::new(std::time::Duration::from_millis(120)),
             |elem, delta| elem.opacity(delta),
@@ -2016,34 +2142,63 @@ impl crate::ui::components::dialogs::DialogsView {
         wrapper
     }
 
-    /// Flyout panel anchored to the right of its parent row.
+    /// Flyout panel anchored to the right of its parent row (or left if flipped).
     pub(crate) fn submenu_panel(
         rows: Vec<Div>,
         kind: SubmenuKind,
         view: Entity<crate::app::AppWindow>,
         flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
-        // 8px overlap into parent menu on right; 6px overlap on left
-        let left = if flip { -214.0 } else { 276.0 };
-        let mut panel = div()
-            .id(("ctx-panel", kind as usize))
-            .absolute()
-            .top(px(-4.0))
-            .left(px(left))
-            .w(px(220.0))
-            .max_h(px(520.0))
-            .overflow_scroll()
+        let panel_w = 220.0f32;
+        let fits_right = menu_left + 284.0 + panel_w <= win_w - 16.0;
+        let (rel_left, panel_abs_x) = if fits_right && !flip {
+            (276.0f32, menu_left + 276.0)
+        } else {
+            (-214.0f32, menu_left - 214.0)
+        };
+
+        let row_abs_y = menu_top + row_off;
+        let bottom_limit = (win_h - 36.0).max(100.0);
+        let fly_h = rows.len() as f32 * 29.0 + 8.0;
+        let mut adjusted_top = -4.0f32;
+        if row_abs_y - 4.0 + fly_h > bottom_limit {
+            let overflow = (row_abs_y - 4.0 + fly_h) - bottom_limit;
+            adjusted_top = (-4.0 - overflow).max(40.0 - row_abs_y);
+        }
+        let panel_abs_top = row_abs_y + adjusted_top;
+        let available_h = (bottom_limit - panel_abs_top).max(120.0);
+        let scroll = fly_h > available_h;
+        let card_h = if scroll { available_h } else { fly_h };
+
+        let mut card = flyout_card_shell(panel_abs_x, panel_abs_top, panel_w, card_h, mica_geo);
+        card = card.absolute().top(px(adjusted_top)).left(px(rel_left));
+
+        let mut content = div()
+            .relative()
             .flex_col()
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .rounded(px(8.0))
-            .shadow_lg()
-            .py(px(4.0))
+            .w_full()
+            .py(px(4.0));
+        for row in rows {
+            content = content.child(row);
+        }
+        let content = content.id(("sub-content", kind as usize));
+        let content = if scroll {
+            content.max_h(px(available_h)).overflow_scroll()
+        } else {
+            content.h(px(card_h))
+        };
+        card = card.child(content);
+
+        let mut panel = card.id(("ctx-panel", kind as usize));
+        panel = panel
             .on_hover(move |hovering: &bool, _, cx| {
-                // Re-assert while the cursor travels the panel; grace-close
-                // once it truly leaves, so diagonal entry never kills it.
                 if *hovering {
                     v.update(cx, |this, cx| {
                         this.submenu_panel_hovered = true;
@@ -2063,9 +2218,6 @@ impl crate::ui::components::dialogs::DialogsView {
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
-        for row in rows {
-            panel = panel.child(row);
-        }
         panel
     }
 
@@ -2084,6 +2236,7 @@ impl crate::ui::components::dialogs::DialogsView {
         row_off: f32,
         win_w: f32,
         win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let row_abs_y = menu_top + row_off;
         let mut fly_h = 8.0f32;
@@ -2101,16 +2254,17 @@ impl crate::ui::components::dialogs::DialogsView {
         };
 
         // Natural WinUI 3 placement: align top with invoking row (-4px),
-        // smoothly shift up if extending below window bottom.
+        // smoothly shift up if extending below window bottom (above status bar).
+        let bottom_limit = (win_h - 36.0).max(100.0);
         let mut adjusted_top = -4.0f32;
-        let max_h = (win_h - 32.0).max(120.0);
-        let scroll = fly_h > max_h;
-
-        if row_abs_y - 4.0 + fly_h > win_h - 16.0 {
-            let overflow = (row_abs_y - 4.0 + fly_h) - (win_h - 16.0);
-            adjusted_top = (-4.0 - overflow).max(16.0 - row_abs_y);
+        if row_abs_y - 4.0 + fly_h > bottom_limit {
+            let overflow = (row_abs_y - 4.0 + fly_h) - bottom_limit;
+            adjusted_top = (-4.0 - overflow).max(40.0 - row_abs_y);
         }
         let panel_abs_top = row_abs_y + adjusted_top;
+        let available_h = (bottom_limit - panel_abs_top).max(120.0);
+        let scroll = fly_h > available_h;
+        let card_h = if scroll { available_h } else { fly_h };
 
         let (rows, child_panel): (Vec<gpui::Stateful<Div>>, Option<gpui::Stateful<Div>>) = match classic {
             Some(entries) if !entries.is_empty() => {
@@ -2129,6 +2283,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     win_w,
                     win_h,
                     flipped_left,
+                    mica_geo,
                 )
             }
             Some(_) => {
@@ -2138,22 +2293,29 @@ impl crate::ui::components::dialogs::DialogsView {
             None => (vec![Self::classic_note_row("(Unavailable)", &mut 0usize)], None),
         };
 
-        let mut panel = div()
-            .absolute()
-            .top(px(adjusted_top))
-            .left(px(rel_left))
-            .w(px(panel_w))
+        let mut card = flyout_card_shell(panel_abs_x, panel_abs_top, panel_w, card_h, mica_geo);
+        card = card.absolute().top(px(adjusted_top)).left(px(rel_left));
+
+        let mut content = div()
+            .relative()
             .flex_col()
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .rounded(px(8.0))
-            .shadow_lg()
-            .py(px(4.0))
-            .id(("ctx-panel", SubmenuKind::ShowMore as usize));
-        if scroll {
-            panel = panel.max_h(px(max_h)).overflow_scroll();
+            .w_full()
+            .py(px(4.0));
+        for row in rows {
+            content = content.child(row);
         }
+        let content = content.id(("sub-content", SubmenuKind::ShowMore as usize));
+        let content = if scroll {
+            content.max_h(px(available_h)).overflow_scroll()
+        } else {
+            content.h(px(card_h))
+        };
+        card = card.child(content);
+        if let Some(child) = child_panel {
+            card = card.child(child);
+        }
+
+        let mut panel = card.id(("ctx-panel", SubmenuKind::ShowMore as usize));
         panel = panel
             .on_hover({
                 let v = view.clone();
@@ -2178,12 +2340,6 @@ impl crate::ui::components::dialogs::DialogsView {
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
-        for row in rows {
-            panel = panel.child(row);
-        }
-        if let Some(child) = child_panel {
-            panel = panel.child(child);
-        }
         panel
     }
 
@@ -2301,6 +2457,7 @@ impl crate::ui::components::dialogs::DialogsView {
         win_w: f32,
         win_h: f32,
         flipped_left: bool,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> (Vec<gpui::Stateful<Div>>, Option<gpui::Stateful<Div>>) {
         let mut rows = Vec::new();
         let mut active_child_panel: Option<gpui::Stateful<Div>> = None;
@@ -2460,15 +2617,16 @@ impl crate::ui::components::dialogs::DialogsView {
                 for e in entry.children.iter() {
                     nested_h += if e.separator { 9.0 } else { 29.0 };
                 }
+                let bottom_limit = (win_h - 36.0).max(100.0);
                 let mut adjusted_top = -4.0f32;
-                let max_h = (win_h - 32.0).max(120.0);
-                let nested_scroll = nested_h > max_h;
-
-                if row_abs_y - 4.0 + nested_h > win_h - 16.0 {
-                    let overflow = (row_abs_y - 4.0 + nested_h) - (win_h - 16.0);
-                    adjusted_top = (-4.0 - overflow).max(16.0 - row_abs_y);
+                if row_abs_y - 4.0 + nested_h > bottom_limit {
+                    let overflow = (row_abs_y - 4.0 + nested_h) - bottom_limit;
+                    adjusted_top = (-4.0 - overflow).max(40.0 - row_abs_y);
                 }
                 let child_abs_top = row_abs_y + adjusted_top;
+                let available_h = (bottom_limit - child_abs_top).max(120.0);
+                let nested_scroll = nested_h > available_h;
+                let card_h = if nested_scroll { available_h } else { nested_h };
 
                 let mut nid = *next_id;
                 let (kids, grandchild_panel) = Self::classic_rows(
@@ -2485,24 +2643,34 @@ impl crate::ui::components::dialogs::DialogsView {
                     win_w,
                     win_h,
                     child_flipped_left,
+                    mica_geo,
                 );
                 *next_id = nid;
-                let mut nested = div()
+                let mut card = flyout_card_shell(child_abs_x, child_abs_top, child_w, card_h, mica_geo);
+                card = card
                     .absolute()
                     .top(px(row_off + adjusted_top))
-                    .left(px(child_rel_left))
-                    .w(px(child_w))
+                    .left(px(child_rel_left));
+
+                let mut content = div()
+                    .relative()
                     .flex_col()
-                    .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-                    .border(px(1.0))
-                    .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-                    .rounded(px(8.0))
-                    .shadow_lg()
-                    .py(px(4.0))
-                    .id(("ctx-nested", id));
-                if nested_scroll {
-                    nested = nested.max_h(px(max_h)).overflow_scroll();
+                    .w_full()
+                    .py(px(4.0));
+                for row in kids {
+                    content = content.child(row);
                 }
+                let content = content.id(("nested-content", id));
+                let content = if nested_scroll {
+                    content.max_h(px(available_h)).overflow_scroll()
+                } else {
+                    content.h(px(card_h))
+                };
+                card = card.child(content);
+                if let Some(grandchild) = grandchild_panel {
+                    card = card.child(grandchild);
+                }
+                let mut nested = card.id(("ctx-nested", id));
                 nested = nested
                     .on_hover({
                         let v = view.clone();
@@ -2533,12 +2701,6 @@ impl crate::ui::components::dialogs::DialogsView {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
-                for row in kids {
-                    nested = nested.child(row);
-                }
-                if let Some(grandchild) = grandchild_panel {
-                    nested = nested.child(grandchild);
-                }
                 active_child_panel = Some(nested);
             }
         }
@@ -2546,8 +2708,16 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     /// Layout › flyout (Details / List / Grid / Columns).
-    pub(crate) fn layout_submenu(view: Entity<crate::app::AppWindow>,
-        flip: bool) -> gpui::Stateful<Div> {
+    pub(crate) fn layout_submenu(
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
         let modes = [
             ("\u{E8FD}", "Details", crate::config::config::ViewMode::Details),
             ("\u{E8EF}", "List", crate::config::config::ViewMode::List),
@@ -2569,12 +2739,31 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::Layout, view.clone(), flip)
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::Layout,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
+        )
     }
 
     /// Sort by › flyout.
-    pub(crate) fn sort_submenu(view: Entity<crate::app::AppWindow>,
-        flip: bool) -> gpui::Stateful<Div> {
+    pub(crate) fn sort_submenu(
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
         let cols = [
             ("\u{E2C7}", "Name", crate::config::config::SortBy::Name),
             ("\u{E2C7}", "Date modified", crate::config::config::SortBy::DateModified),
@@ -2596,12 +2785,31 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::SortBy, view.clone(), flip)
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::SortBy,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
+        )
     }
 
     /// Group by › flyout.
-    pub(crate) fn group_submenu(view: Entity<crate::app::AppWindow>,
-        flip: bool) -> gpui::Stateful<Div> {
+    pub(crate) fn group_submenu(
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
         let groups = [
             ("\u{E2C7}", "None", crate::config::config::GroupColumn::None),
             ("\u{E2C7}", "Name", crate::config::config::GroupColumn::Name),
@@ -2626,12 +2834,31 @@ impl crate::ui::components::dialogs::DialogsView {
                 },
             ));
         }
-        Self::submenu_panel(rows, SubmenuKind::GroupBy, view.clone(), flip)
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::GroupBy,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
+        )
     }
 
     /// New › flyout.
-    pub(crate) fn new_submenu(view: Entity<crate::app::AppWindow>,
-        flip: bool) -> gpui::Stateful<Div> {
+    pub(crate) fn new_submenu(
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
         let v1 = view.clone();
         let v2 = view.clone();
         Self::submenu_panel(
@@ -2646,6 +2873,12 @@ impl crate::ui::components::dialogs::DialogsView {
             SubmenuKind::New,
             view.clone(),
             flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
         )
     }
 
@@ -2655,6 +2888,12 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         is_archive: bool,
         archive_path: Option<crate::core::path_util::FilesPath>,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
         let mut rows = vec![Self::context_menu_item(
@@ -2716,13 +2955,32 @@ impl crate::ui::components::dialogs::DialogsView {
                 ));
             }
         }
-        Self::submenu_panel(rows, SubmenuKind::Compress, view.clone(), flip)
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::Compress,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
+        )
     }
 
     /// Send to › flyout, populated live from the Windows SendTo folder.
     /// Non-Windows builds show a single disabled row (native provider hook).
-    pub(crate) fn sendto_submenu(view: Entity<crate::app::AppWindow>,
-        flip: bool) -> gpui::Stateful<Div> {
+    pub(crate) fn sendto_submenu(
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_off: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
         let mut rows = Vec::new();
         #[cfg(windows)]
         {
@@ -2760,6 +3018,17 @@ impl crate::ui::components::dialogs::DialogsView {
         if rows.is_empty() {
             rows.push(Self::context_menu_item("\u{E8A5}", "(No targets)", |_, _, _| {}));
         }
-        Self::submenu_panel(rows, SubmenuKind::SendTo, view.clone(), flip)
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::SendTo,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_off,
+            win_w,
+            win_h,
+            mica_geo,
+        )
     }
 }

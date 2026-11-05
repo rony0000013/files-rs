@@ -380,6 +380,7 @@ impl DialogsView {
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
         settings_data: Option<SettingsPreReadData>,
+        mica_geo: Option<crate::wallpaper_mica::MicaGeo>,
     ) -> impl IntoElement {
         let content = match dialog {
             DialogType::Rename {
@@ -466,6 +467,7 @@ impl DialogsView {
                 *win_h,
                 view.clone(),
                 cx,
+                mica_geo.clone(),
             )
             .into_any_element(),
             DialogType::SidebarContextMenu {
@@ -638,12 +640,42 @@ impl DialogsView {
                     // and SURFACE_STROKE_FLYOUT_RGBA to avoid duplicate borders or opaque backplates
                 }
                 _ => {
+                    let (abs_x, abs_y) = match dialog {
+                        DialogType::TabContextMenu { position, .. }
+                        | DialogType::TabActionsDropdown { position, .. }
+                        | DialogType::ColumnVisibilityMenu { position } => {
+                            (f32::from(position.x), f32::from(position.y))
+                        }
+                        DialogType::SidebarContextMenu { position, bottom_y, .. } => {
+                            let y = if *bottom_y > 0.0 { f32::from(position.y) - *bottom_y } else { f32::from(position.y) };
+                            (f32::from(position.x), y)
+                        }
+                        _ => (0.0, 0.0),
+                    };
                     container = container
-                        .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
+                        .rounded(px(8.0))
+                        .overflow_hidden()
                         .border(px(1.0))
                         .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-                        .rounded(px(8.0))
                         .shadow_lg();
+                    if let Some(ref geo) = mica_geo {
+                        container = container
+                            .child(
+                                div().absolute().inset_0().overflow_hidden().child(
+                                    img(geo.path.clone())
+                                        .absolute()
+                                        .left(px(geo.left - abs_x))
+                                        .top(px(geo.top - abs_y))
+                                        .w(px(geo.w))
+                                        .h(px(geo.h)),
+                                ),
+                            )
+                            .child(
+                                div().absolute().inset_0().bg(rgba(0x202020E0)),
+                            );
+                    } else {
+                        container = container.bg(rgb(UiConstants::BG_FLYOUT_MICA_RGB));
+                    }
                 }
             }
         } else {

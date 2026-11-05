@@ -2820,6 +2820,16 @@ impl AppWindow {
             view.rename_text = item.name.clone();
             view.rename_selected_all = true;
             view.rename_cursor_pos = view.rename_text.chars().count();
+            let cpl = match view.view_mode {
+                crate::config::config::ViewMode::Grid => {
+                    let metrics = crate::ui::views::main_view::MainViewState::grid_layout_params(view.zoom_level);
+                    let font_size = 11.5 + (view.zoom_level - 1.0).clamp(-0.4, 0.6) * 2.0;
+                    let avail_w = metrics.item_width - 12.0;
+                    ((avail_w.max(60.0) / (font_size * 0.58)).floor() as usize).max(8)
+                }
+                _ => 18,
+            };
+            view.rename_chars_per_line = cpl;
             cx.notify();
         }
     }
@@ -2916,22 +2926,24 @@ impl AppWindow {
         let est_h: f32 = if expanded {
             max_h
         } else if item_index.is_some() {
-            620.0
+            720.0
         } else {
             380.0
         };
         let mut x: f32 = position.x.into();
         let mut y: f32 = position.y.into();
-        if x + 300.0 > vp.width.into() {
-            x = (f32::from(vp.width) - 300.0).max(8.0);
+        let vpw: f32 = vp.width.into();
+        let vph: f32 = vp.height.into();
+        let top_limit = 40.0f32; // Below ribbon
+        let bottom_limit = (vph - 36.0).max(top_limit + 120.0); // Above status bar
+        if x + 300.0 > vpw {
+            x = (vpw - 300.0).max(8.0);
         }
-        if y + est_h > vp.height.into() {
-            y = (f32::from(vp.height) - est_h).max(8.0);
+        if y + est_h > bottom_limit {
+            y = (bottom_limit - est_h).max(top_limit);
         }
         let position = Point { x: px(x), y: px(y) };
         // Flyouts open left when there is no room on the right.
-        let vpw: f32 = vp.width.into();
-        let vph: f32 = vp.height.into();
         let flip = x + 292.0 + 268.0 > vpw;
         // Pre-read selection data to avoid view.read(cx) crash during dialog render
         let selected_indices = &self.state.main_view.selected_indices;

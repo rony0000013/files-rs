@@ -1500,10 +1500,12 @@ impl AppWindow {
                         view.rename_selected_all = false;
                         view.rename_cursor_pos = 0;
                     } else {
+                        let cpl = view.rename_chars_per_line;
                         view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
                             &view.rename_text,
                             view.rename_cursor_pos,
                             true,
+                            cpl,
                         );
                     }
                     cx.notify();
@@ -1514,10 +1516,12 @@ impl AppWindow {
                         view.rename_selected_all = false;
                         view.rename_cursor_pos = view.rename_text.chars().count();
                     } else {
+                        let cpl = view.rename_chars_per_line;
                         view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
                             &view.rename_text,
                             view.rename_cursor_pos,
                             false,
+                            cpl,
                         );
                     }
                     cx.notify();

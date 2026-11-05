@@ -411,14 +411,18 @@ pub fn render_inline_rename_grid(
 }
 
 /// Move cursor vertically up or down across wrapped multiline rename text.
-pub fn rename_cursor_move_vertical(text: &str, cur_pos: usize, move_up: bool) -> usize {
+pub fn rename_cursor_move_vertical(
+    text: &str,
+    cur_pos: usize,
+    move_up: bool,
+    chars_per_line: usize,
+) -> usize {
     let total_len = text.chars().count();
     if total_len == 0 {
         return 0;
     }
-    // Match grid tile wrapped width (~18 characters per line)
-    let chars_per_line = 18;
-    let lines = wrap_rename_text(text, chars_per_line, 3);
+    let cpl = if chars_per_line >= 6 { chars_per_line } else { 18 };
+    let lines = wrap_rename_text(text, cpl, 3);
     if lines.is_empty() {
         return if move_up { 0 } else { total_len };
     }
@@ -426,7 +430,7 @@ pub fn rename_cursor_move_vertical(text: &str, cur_pos: usize, move_up: bool) ->
     let clamped_pos = cur_pos.min(total_len);
     let num_lines = lines.len();
 
-    // Find current line index
+    // Map clamped_pos to (line_idx, col) matching render_inline_rename_grid
     let mut cur_line_idx = 0;
     for (i, line) in lines.iter().enumerate() {
         let is_last = i == num_lines - 1;
@@ -878,14 +882,14 @@ mod tests {
     fn test_rename_cursor_move_vertical() {
         let text = "Verity.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv";
         // From start, up arrow stays at 0
-        assert_eq!(rename_cursor_move_vertical(text, 0, true), 0);
+        assert_eq!(rename_cursor_move_vertical(text, 0, true, 18), 0);
         // Down arrow from start moves down to next line
-        let down1 = rename_cursor_move_vertical(text, 0, false);
+        let down1 = rename_cursor_move_vertical(text, 0, false, 18);
         assert!(down1 > 0);
         // Up arrow from next line moves back up to 0
-        assert_eq!(rename_cursor_move_vertical(text, down1, true), 0);
+        assert_eq!(rename_cursor_move_vertical(text, down1, true, 18), 0);
         // Down arrow from end of text stays at end of text
         let total = text.chars().count();
-        assert_eq!(rename_cursor_move_vertical(text, total, false), total);
+        assert_eq!(rename_cursor_move_vertical(text, total, false, 18), total);
     }
 }

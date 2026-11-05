@@ -244,7 +244,7 @@ impl Render for AppWindow {
             &state.main_view.folder_background,
             mica_enabled,
             mica_alt,
-            mica_geo,
+            mica_geo.clone(),
             vec![
                 // Main content area
                 div()
@@ -725,6 +725,7 @@ impl Render for AppWindow {
                     cx.entity(),
                     cx,
                     settings_data,
+                    mica_geo.clone(),
                 ));
         } else {
             base = base.child(main_content).children(tab_floating_overlays);
@@ -1266,7 +1267,8 @@ impl Render for AppWindow {
         }
         // FPS counter overlay (debug only: opt-in via FILES_RS_FPS=1 so the
         // chrome matches Files-community by default).
-        if let Some(flyout_overlay) = ToolbarView::build_flyout_overlay(state, cx.entity()) {
+        let win_w = f32::from(window.viewport_size().width);
+        if let Some(flyout_overlay) = ToolbarView::build_flyout_overlay(state, cx.entity(), mica_geo.clone(), win_w) {
             base = base.child(flyout_overlay);
         }
 

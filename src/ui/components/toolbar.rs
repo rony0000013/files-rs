@@ -890,6 +890,8 @@ impl ToolbarView {
     pub fn build_flyout_overlay(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<crate::wallpaper_mica::MicaGeo>,
+        win_w: f32,
     ) -> Option<AnyElement> {
         let flyout_id = state.main_view.toolbar_customization.active_flyout.as_deref()?;
         let sidebar_w = if state.sidebar_visible {
@@ -899,11 +901,11 @@ impl ToolbarView {
         };
 
         let menu_card: AnyElement = match flyout_id {
-            "new" => Self::build_new_item_flyout(sidebar_w, view.clone()).into_any_element(),
-            "selection" => Self::build_selection_flyout(state, view.clone()).into_any_element(),
-            "sort" => Self::build_sort_flyout(state, view.clone()).into_any_element(),
-            "group" => Self::build_group_flyout(state, view.clone()).into_any_element(),
-            "layout" => Self::build_layout_flyout(state, view.clone()).into_any_element(),
+            "new" => Self::build_new_item_flyout(sidebar_w, view.clone(), mica_geo.as_ref()).into_any_element(),
+            "selection" => Self::build_selection_flyout(state, view.clone(), mica_geo.as_ref(), win_w).into_any_element(),
+            "sort" => Self::build_sort_flyout(state, view.clone(), mica_geo.as_ref(), win_w).into_any_element(),
+            "group" => Self::build_group_flyout(state, view.clone(), mica_geo.as_ref(), win_w).into_any_element(),
+            "layout" => Self::build_layout_flyout(state, view.clone(), mica_geo.as_ref(), win_w).into_any_element(),
             _ => return None,
         };
 
@@ -929,27 +931,23 @@ impl ToolbarView {
     fn build_new_item_flyout(
         sidebar_w: f32,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> impl IntoElement {
         let v_folder = view.clone();
         let v_file = view.clone();
         let v_shortcut = view.clone();
         let v_zip = view.clone();
 
-        div()
-            .absolute()
-            .top(px(124.0))
-            .left(px(sidebar_w + 12.0))
-            .w(px(230.0))
+        let abs_x = sidebar_w + 12.0;
+        let abs_y = 124.0;
+        let card = crate::ui::components::dialogs_context::flyout_card_shell(abs_x, abs_y, 230.0, 248.0, mica_geo);
+        card.absolute()
+            .top(px(abs_y))
+            .left(px(abs_x))
             .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .shadow_lg()
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_menu_item(
                 "\u{E8B7}",
                 "Folder",
@@ -1004,6 +1002,8 @@ impl ToolbarView {
     fn build_selection_flyout(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+        win_w: f32,
     ) -> impl IntoElement {
         let v_all = view.clone();
         let v_inv = view.clone();
@@ -1012,21 +1012,16 @@ impl ToolbarView {
         let has_sel = !state.main_view.selected_indices.is_empty();
         let is_chk_active = state.main_view.selection_mode == crate::ui::views::main_view::SelectionMode::Checkbox;
 
-        div()
-            .absolute()
-            .top(px(124.0))
+        let abs_x = (win_w - 240.0 - 240.0).max(10.0);
+        let abs_y = 124.0;
+        let card = crate::ui::components::dialogs_context::flyout_card_shell(abs_x, abs_y, 240.0, 152.0, mica_geo);
+        card.absolute()
+            .top(px(abs_y))
             .right(px(240.0))
-            .w(px(240.0))
             .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .shadow_lg()
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_menu_item(
                 "\u{E8B3}",
                 "Select All",
@@ -1083,6 +1078,8 @@ impl ToolbarView {
     fn build_sort_flyout(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+        win_w: f32,
     ) -> impl IntoElement {
         let cur_sort = &state.main_view.sort.column;
         let cur_asc = state.main_view.sort.ascending;
@@ -1097,21 +1094,17 @@ impl ToolbarView {
             (SortBy::Tag, "File tag"),
         ];
 
-        let mut col = div()
+        let abs_x = (win_w - 150.0 - 236.0).max(10.0);
+        let abs_y = 124.0;
+        let card = crate::ui::components::dialogs_context::flyout_card_shell(abs_x, abs_y, 236.0, 360.0, mica_geo);
+        let mut col = card
             .absolute()
-            .top(px(124.0))
+            .top(px(abs_y))
             .right(px(150.0))
-            .w(px(236.0))
             .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .shadow_lg()
             .flex()
             .flex_col()
             .gap(px(1.5))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_section_header("Sort by"));
 
         for (s_col, label) in sort_options {
@@ -1180,6 +1173,8 @@ impl ToolbarView {
     fn build_group_flyout(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+        win_w: f32,
     ) -> impl IntoElement {
         let cur_group = &state.main_view.group_by;
 
@@ -1194,21 +1189,17 @@ impl ToolbarView {
             (GroupColumn::Tag, "File tag"),
         ];
 
-        let mut col = div()
+        let abs_x = (win_w - 70.0 - 236.0).max(10.0);
+        let abs_y = 124.0;
+        let card = crate::ui::components::dialogs_context::flyout_card_shell(abs_x, abs_y, 236.0, 360.0, mica_geo);
+        let mut col = card
             .absolute()
-            .top(px(124.0))
+            .top(px(abs_y))
             .right(px(70.0))
-            .w(px(236.0))
             .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .shadow_lg()
             .flex()
             .flex_col()
             .gap(px(1.5))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_section_header("Group by"));
 
         for (g_col, label) in group_options {
@@ -1234,6 +1225,8 @@ impl ToolbarView {
     fn build_layout_flyout(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+        win_w: f32,
     ) -> impl IntoElement {
         let cur_mode = &state.main_view.view_mode;
         let cur_zoom = state.main_view.zoom_level;
@@ -1255,21 +1248,17 @@ impl ToolbarView {
             (1.0f32, "Extra Large"),
         ];
 
-        let mut col = div()
+        let abs_x = (win_w - 48.0 - 248.0).max(10.0);
+        let abs_y = 124.0;
+        let card = crate::ui::components::dialogs_context::flyout_card_shell(abs_x, abs_y, 248.0, 480.0, mica_geo);
+        let mut col = card
             .absolute()
-            .top(px(124.0))
+            .top(px(abs_y))
             .right(px(48.0))
-            .w(px(248.0))
             .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
-            .shadow_lg()
             .flex()
             .flex_col()
             .gap(px(1.5))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_section_header("Layout mode"));
 
         for (m, icon, label, shortcut) in modes {

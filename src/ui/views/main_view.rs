@@ -51,6 +51,7 @@ impl MainViewState {
             rename_text: String::new(),
             rename_selected_all: false,
             rename_cursor_pos: 0,
+            rename_chars_per_line: 18,
             cut_paths: HashSet::new(),
             compact_mode: false,
             preview_text: None,
