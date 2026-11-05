@@ -93,6 +93,7 @@ impl MainViewState {
         view_row: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
         let is_dir = matches!(item.file_type, FileType::Directory);
+        let is_cut = main_state.cut_paths.contains(item.path.as_path());
         let path = item.path.clone();
         let item_name_for_drag = item.name.clone();
         let display_name = main_state.display_name(item).into_owned();
@@ -244,6 +245,14 @@ impl MainViewState {
             );
         }
 
+        if is_cut {
+            cell = cell
+                .opacity(0.55)
+                .border(px(1.0))
+                .border_dashed()
+                .border_color(rgba(0x60CDFFCCu32));
+        }
+
         if is_checkbox && !lod_fast {
             let v_cb = view_row;
             cell = cell.child(
@@ -263,15 +272,35 @@ impl MainViewState {
                     })
                     .child(
                         div()
-                            .w(px(13.0))
-                            .h(px(13.0))
+                            .w(px(15.0))
+                            .h(px(15.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .border(px(1.5))
-                            .border_color(rgba(UiConstants::ACCENT_RGBA))
+                            .border_color(if is_selected {
+                                rgba(UiConstants::ACCENT_RGBA)
+                            } else {
+                                rgba(0xFFFFFF80u32)
+                            })
                             .rounded(px(3.0))
                             .bg(if is_selected {
                                 rgba(UiConstants::ACCENT_RGBA)
                             } else {
                                 rgba(0x00000000)
+                            })
+                            .child(if is_selected {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(10.0))
+                                    .line_height(px(10.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("\u{E73E}")
+                            } else {
+                                div()
                             }),
                     ),
             );
@@ -321,14 +350,11 @@ impl MainViewState {
                     .line_clamp(3)
                     .text_ellipsis()
                     .child(if main_state.renaming_index == Some(idx) {
-                        div()
-                            .bg(rgba(0xFFFFFF20u32))
-                            .border(px(1.0))
-                            .border_color(rgba(UiConstants::ACCENT_RGBA))
-                            .rounded(px(2.0))
-                            .px(px(4.0))
-                            .child(main_state.rename_text.clone())
-                            .into_any_element()
+                        crate::ui::views::helpers::render_inline_rename_element(
+                            &main_state.rename_text,
+                            main_state.rename_selected_all,
+                            main_state.rename_cursor_pos,
+                        )
                     } else {
                         display_label.into_any_element()
                     }),
@@ -1214,6 +1240,7 @@ impl MainViewState {
         view: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
         let is_dir = matches!(item.file_type, FileType::Directory);
+        let is_cut = main_state.cut_paths.contains(item.path.as_path());
         let path = item.path.clone();
         let item_name_for_drag = item.name.clone();
         let display_name = main_state.display_name(item).into_owned();
@@ -1416,6 +1443,14 @@ impl MainViewState {
             );
         }
 
+        if is_cut {
+            card = card
+                .opacity(0.55)
+                .border(px(1.0))
+                .border_dashed()
+                .border_color(rgba(0x60CDFFCCu32));
+        }
+
         if is_checkbox {
             card = card.child(
                 div()
@@ -1434,15 +1469,35 @@ impl MainViewState {
                     })
                     .child(
                         div()
-                            .w(px(13.0))
-                            .h(px(13.0))
+                            .w(px(15.0))
+                            .h(px(15.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .border(px(1.5))
-                            .border_color(rgba(UiConstants::ACCENT_RGBA))
+                            .border_color(if is_selected {
+                                rgba(UiConstants::ACCENT_RGBA)
+                            } else {
+                                rgba(0xFFFFFF80u32)
+                            })
                             .rounded(px(3.0))
                             .bg(if is_selected {
                                 rgba(UiConstants::ACCENT_RGBA)
                             } else {
                                 rgba(0x00000000)
+                            })
+                            .child(if is_selected {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(10.0))
+                                    .line_height(px(10.0))
+                                    .font_family(UiConstants::FONT_MDL2)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("\u{E73E}")
+                            } else {
+                                div()
                             }),
                     ),
             );
@@ -1478,16 +1533,11 @@ impl MainViewState {
                         .gap(px(6.0))
                         .overflow_hidden()
                         .child(if main_state.renaming_index == Some(idx) {
-                            div()
-                                .bg(rgba(0xFFFFFF20u32))
-                                .border(px(1.0))
-                                .border_color(rgba(UiConstants::ACCENT_RGBA))
-                                .rounded(px(3.0))
-                                .px(px(4.0))
-                                .text_size(px(title_size))
-                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                .child(main_state.rename_text.clone())
-                                .into_any_element()
+                            crate::ui::views::helpers::render_inline_rename_element(
+                                &main_state.rename_text,
+                                main_state.rename_selected_all,
+                                main_state.rename_cursor_pos,
+                            )
                         } else {
                             div()
                                 .flex_1()

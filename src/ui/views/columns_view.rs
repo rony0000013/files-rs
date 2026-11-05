@@ -129,6 +129,7 @@ impl MainViewState {
         view: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
         let is_dir = matches!(item.file_type, FileType::Directory);
+        let is_cut = main_state.cut_paths.contains(item.path.as_path());
         let display_name = main_state.display_name(item).into_owned();
         let ext = get_extension(&item.name);
         let (fallback_glyph, fallback_color) = if is_dir {
@@ -145,7 +146,7 @@ impl MainViewState {
             .unwrap_or_else(|| cur_dir_path.to_string_lossy().into_owned());
         let v = view;
 
-        div()
+        let mut row = div()
             .id(ElementId::from(
                 idx + match pane_focus {
                     PaneFocus::Primary => 50000,
@@ -182,7 +183,17 @@ impl MainViewState {
                     s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
                 }
             })
-            .cursor_pointer()
+            .cursor_pointer();
+
+        if is_cut {
+            row = row
+                .opacity(0.55)
+                .border(px(1.0))
+                .border_dashed()
+                .border_color(rgba(0x60CDFFCCu32));
+        }
+
+        row
             .on_mouse_down(MouseButton::Left, {
                 let v = v.clone();
                 let path = path.clone();
@@ -295,17 +306,11 @@ impl MainViewState {
                     }),
             )
             .child(if main_state.renaming_index == Some(idx) {
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .bg(rgba(0xFFFFFF20u32))
-                    .border(px(1.0))
-                    .border_color(rgba(UiConstants::ACCENT_RGBA))
-                    .rounded(px(2.0))
-                    .px(px(4.0))
-                    .text_size(px(t_size))
-                    .child(main_state.rename_text.clone())
-                    .into_any_element()
+                crate::ui::views::helpers::render_inline_rename_element(
+                    &main_state.rename_text,
+                    main_state.rename_selected_all,
+                    main_state.rename_cursor_pos,
+                )
             } else {
                 div()
                     .flex_1()

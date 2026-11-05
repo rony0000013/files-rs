@@ -39,6 +39,7 @@ pub enum DialogType {
     AddItem {
         is_folder: bool,
         name: String,
+        selected_all: bool,
     },
     Dynamic {
         title: String,
@@ -382,9 +383,12 @@ impl DialogsView {
                 current_name,
             } => Self::build_rename_dialog(*item_index, current_name, view.clone())
                 .into_any_element(),
-            DialogType::AddItem { is_folder, name } => {
-                Self::build_add_item_dialog(*is_folder, name, view.clone()).into_any_element()
-            }
+            DialogType::AddItem {
+                is_folder,
+                name,
+                selected_all,
+            } => Self::build_add_item_dialog(*is_folder, name, *selected_all, view.clone())
+                .into_any_element(),
             DialogType::SiblingDropdown {
                 parent_path,
                 siblings,
@@ -589,6 +593,19 @@ impl DialogsView {
                     });
                 });
         } else {
+            let is_popup_menu = matches!(
+                dialog,
+                DialogType::ContextMenu { .. }
+                    | DialogType::TabContextMenu { .. }
+                    | DialogType::TabActionsDropdown { .. }
+                    | DialogType::SidebarContextMenu { .. }
+                    | DialogType::ColumnVisibilityMenu { .. }
+                    | DialogType::SiblingDropdown { .. }
+            );
+            if !is_popup_menu {
+                // WinUI 3 ContentDialog Smoke backdrop
+                overlay = overlay.bg(rgba(0x00000075u32));
+            }
             overlay = overlay
                 .on_mouse_down(MouseButton::Left, {
                     let v = v_overlay_close.clone();
@@ -696,51 +713,86 @@ impl DialogsView {
 
         div()
             .flex_col()
-            .gap(px(16.0))
+            .gap(px(18.0))
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(18.0)))
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .font_weight(FontWeight(600.0))
-                    .child("Rename Item"),
-            )
-            .child(
-                div()
-                    .text_size(AbsoluteLength::Pixels(px(14.0)))
-                    .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                    .child("Enter a new name:"),
-            )
-            // Mock input box
-            .child(
-                div()
-                    .w_full()
-                    .h(px(32.0))
-                    .bg(rgba(0xFFFFFF10u32))
-                    .border(px(1.0))
-                    .border_color(rgba(UiConstants::STROKE_RGBA))
-                    .rounded(px(4.0))
-                    .px(px(8.0))
                     .flex()
+                    .flex_row()
                     .items_center()
+                    .gap(px(10.0))
                     .child(
                         div()
+                            .text_size(px(18.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(0x60CDFF))
+                            .child("\u{E8AC}"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.0))
                             .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .child(current_name.to_string()),
+                            .font_weight(FontWeight(600.0))
+                            .child("Rename"),
                     ),
             )
-            // Buttons
+            .child(
+                div()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child("Enter a new name:"),
+                    )
+                    // WinUI 3 Fluent TextBox
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(36.0))
+                            .bg(rgba(0x1E1E1EFF))
+                            .border(px(1.0))
+                            .border_color(rgba(UiConstants::STROKE_RGBA))
+                            .border_b(px(2.0))
+                            .border_color(rgb(0x60CDFF))
+                            .rounded(px(4.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                                    .child(current_name.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .w(px(1.5))
+                                    .h(px(16.0))
+                                    .bg(rgb(0xFFFFFF))
+                                    .with_animation(
+                                        "add-cursor-blink",
+                                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                    ),
+                            ),
+                    ),
+            )
+            // WinUI 3 ContentDialog Footer
             .child(
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.0))
-                    .mt(px(8.0))
+                    .gap(px(10.0))
+                    .pt(px(14.0))
+                    .border_t(px(1.0))
+                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                    .child(Self::build_button("Rename", true, move |_, _, cx| {
+                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
+                    }))
                     .child(Self::build_button("Cancel", false, move |_, _, cx| {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
-                    }))
-                    .child(Self::build_button("Rename", true, move |_, _, cx| {
-                        // Normally we would get text from input and call rename service
-                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
                     })),
             )
     }
@@ -748,61 +800,139 @@ impl DialogsView {
     fn build_add_item_dialog(
         is_folder: bool,
         name: &str,
+        selected_all: bool,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v_cancel = view.clone();
         let v_ok = view.clone();
-        let title = if is_folder { "New Folder" } else { "New File" };
-        let name_display = if name.is_empty() {
-            "Name...".to_string()
-        } else {
-            name.to_string()
-        };
+        let title = if is_folder { "Create new Folder" } else { "Create new File" };
+        let default_placeholder = if is_folder { "New folder" } else { "New Text Document.txt" };
+        let icon_glyph = if is_folder { "\u{E8B7}" } else { "\u{E8A5}" };
+        let icon_color = if is_folder { 0xFFE680u32 } else { 0x60CDFFu32 };
 
         div()
             .flex_col()
-            .gap(px(16.0))
+            .gap(px(18.0))
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(18.0)))
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .font_weight(FontWeight(600.0))
-                    .child(title),
-            )
-            .child(
-                div()
-                    .text_size(AbsoluteLength::Pixels(px(14.0)))
-                    .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                    .child("Enter a name for the new item:"),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .h(px(32.0))
-                    .bg(rgba(0xFFFFFF10u32))
-                    .border(px(1.0))
-                    .border_color(rgba(UiConstants::STROKE_RGBA))
-                    .rounded(px(4.0))
-                    .px(px(8.0))
                     .flex()
+                    .flex_row()
                     .items_center()
+                    .gap(px(10.0))
                     .child(
                         div()
-                            .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                            .child(name_display),
+                            .text_size(px(20.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(icon_color))
+                            .child(icon_glyph),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .font_weight(FontWeight(600.0))
+                            .child(title),
                     ),
             )
             .child(
                 div()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child("Enter an item name:"),
+                    )
+                    // WinUI 3 Fluent TextBox
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(36.0))
+                            .bg(rgba(0x1E1E1EFF))
+                            .border(px(1.0))
+                            .border_color(rgba(UiConstants::STROKE_RGBA))
+                            .border_b(px(2.0))
+                            .border_color(rgb(0x60CDFF))
+                            .rounded(px(4.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(1.0))
+                            .children(if name.is_empty() {
+                                vec![
+                                    div()
+                                        .text_size(px(13.5))
+                                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                                        .child(default_placeholder.to_string())
+                                        .into_any_element(),
+                                    div()
+                                        .w(px(1.5))
+                                        .h(px(16.0))
+                                        .bg(rgb(0xFFFFFF))
+                                        .with_animation(
+                                            "add-item-cursor-blink",
+                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        )
+                                        .into_any_element(),
+                                ]
+                            } else if selected_all {
+                                vec![
+                                    div()
+                                        .bg(rgb(0x0078D4))
+                                        .text_color(rgb(0xFFFFFF))
+                                        .rounded(px(2.0))
+                                        .px(px(2.0))
+                                        .text_size(px(13.5))
+                                        .child(name.to_string())
+                                        .into_any_element(),
+                                    div()
+                                        .w(px(1.5))
+                                        .h(px(16.0))
+                                        .bg(rgb(0xFFFFFF))
+                                        .with_animation(
+                                            "add-item-cursor-blink",
+                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        )
+                                        .into_any_element(),
+                                ]
+                            } else {
+                                vec![
+                                    div()
+                                        .text_size(px(13.5))
+                                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                                        .child(name.to_string())
+                                        .into_any_element(),
+                                    div()
+                                        .w(px(1.5))
+                                        .h(px(16.0))
+                                        .bg(rgb(0xFFFFFF))
+                                        .with_animation(
+                                            "add-item-cursor-blink",
+                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        )
+                                        .into_any_element(),
+                                ]
+                            }),
+                    ),
+            )
+            // WinUI 3 ContentDialog Footer
+            .child(
+                div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.0))
-                    .mt(px(8.0))
-                    .child(Self::build_button("Cancel", false, move |_, _, cx| {
-                        v_cancel.update(cx, |this, cx| this.close_dialog(cx));
-                    }))
+                    .gap(px(10.0))
+                    .pt(px(14.0))
+                    .border_t(px(1.0))
+                    .border_color(rgba(UiConstants::DIVIDER_RGBA))
                     .child(Self::build_button("Create", true, move |_, _, cx| {
                         v_ok.update(cx, |this, cx| this.confirm_add_item(cx));
+                    }))
+                    .child(Self::build_button("Cancel", false, move |_, _, cx| {
+                        v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     })),
             )
     }
@@ -2465,25 +2595,30 @@ impl DialogsView {
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         let mut btn = div()
+            .min_w(px(84.0))
+            .h(px(32.0))
             .px(px(16.0))
-            .py(px(6.0))
             .rounded(px(4.0))
             .cursor_pointer()
             .flex()
             .items_center()
             .justify_center()
+            .text_size(px(13.0))
+            .font_weight(FontWeight(500.0))
             .on_mouse_down(MouseButton::Left, on_click);
 
         if primary {
             btn = btn
-                .bg(rgba(UiConstants::ACCENT_RGBA))
-                .hover(|s| s.bg(rgba(0xFF0088FFu32)));
+                .bg(rgb(0x0078D4))
+                .text_color(rgb(0xFFFFFF))
+                .hover(|s| s.bg(rgb(0x1084E3)));
         } else {
             btn = btn
-                .bg(rgba(0xFFFFFF20u32))
+                .bg(rgba(0xFFFFFF10u32))
                 .border(px(1.0))
                 .border_color(rgba(UiConstants::STROKE_RGBA))
-                .hover(|s| s.bg(rgba(0xFFFFFF30u32)));
+                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                .hover(|s| s.bg(rgba(0xFFFFFF1Au32)));
         }
         btn.child(label.to_string())
     }

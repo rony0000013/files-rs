@@ -80,6 +80,12 @@ impl AppWindow {
         };
         let initial_path = window_view.state.main_view.primary_path.clone();
 
+        let show_chk = window_view.state.settings.read(cx).config.preferences.show_checkboxes_when_selecting;
+        if show_chk {
+            window_view.state.main_view.selection_mode = crate::ui::views::main_view::SelectionMode::Checkbox;
+            window_view.state.secondary_view.selection_mode = crate::ui::views::main_view::SelectionMode::Checkbox;
+        }
+
         window_view.state.secondary_file_items =
             cx.new(|_| crate::ui::views::main_view::FileItems::default());
 
@@ -1161,7 +1167,12 @@ impl AppWindow {
         }
 
         // Intercept AddItem dialog input typing
-        if let Some(DialogType::AddItem { ref mut name, .. }) = self.state.active_dialog {
+        if let Some(DialogType::AddItem {
+            ref mut name,
+            ref mut selected_all,
+            ..
+        }) = self.state.active_dialog
+        {
             let key = keystroke.key.as_str();
             match key {
                 "escape" | "Escape" => {
@@ -1171,11 +1182,32 @@ impl AppWindow {
                     self.confirm_add_item(cx);
                 }
                 "backspace" | "Backspace" => {
-                    name.pop();
+                    if *selected_all {
+                        name.clear();
+                        *selected_all = false;
+                    } else {
+                        name.pop();
+                    }
+                    cx.notify();
+                }
+                "delete" | "Delete" => {
+                    if *selected_all {
+                        name.clear();
+                        *selected_all = false;
+                        cx.notify();
+                    }
+                }
+                "left" | "Left" | "right" | "Right" | "home" | "Home" | "end" | "End" => {
+                    *selected_all = false;
                     cx.notify();
                 }
                 "space" | "Space" => {
-                    name.push(' ');
+                    if *selected_all {
+                        *name = " ".to_string();
+                        *selected_all = false;
+                    } else {
+                        name.push(' ');
+                    }
                     cx.notify();
                 }
                 _ => {
@@ -1184,7 +1216,12 @@ impl AppWindow {
                         && !keystroke.modifiers.platform
                         && keystroke.key.chars().count() == 1
                     {
-                        name.push_str(&keystroke.key);
+                        if *selected_all {
+                            *name = keystroke.key.clone();
+                            *selected_all = false;
+                        } else {
+                            name.push_str(&keystroke.key);
+                        }
                         cx.notify();
                     }
                 }
@@ -1203,11 +1240,84 @@ impl AppWindow {
                     self.commit_rename(cx);
                 }
                 "backspace" | "Backspace" => {
-                    self.state.active_view_mut().rename_text.pop();
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_text.clear();
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = 0;
+                    } else if view.rename_cursor_pos > 0 && !view.rename_text.is_empty() {
+                        let mut chars: Vec<char> = view.rename_text.chars().collect();
+                        let pos = view.rename_cursor_pos.min(chars.len());
+                        chars.remove(pos - 1);
+                        view.rename_cursor_pos = pos - 1;
+                        view.rename_text = chars.into_iter().collect();
+                    }
+                    cx.notify();
+                }
+                "delete" | "Delete" => {
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_text.clear();
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = 0;
+                    } else {
+                        let mut chars: Vec<char> = view.rename_text.chars().collect();
+                        let pos = view.rename_cursor_pos.min(chars.len());
+                        if pos < chars.len() {
+                            chars.remove(pos);
+                            view.rename_text = chars.into_iter().collect();
+                        }
+                    }
+                    cx.notify();
+                }
+                "left" | "Left" => {
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = 0;
+                    } else if view.rename_cursor_pos > 0 {
+                        view.rename_cursor_pos -= 1;
+                    }
+                    cx.notify();
+                }
+                "right" | "Right" => {
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = view.rename_text.chars().count();
+                    } else {
+                        let char_count = view.rename_text.chars().count();
+                        if view.rename_cursor_pos < char_count {
+                            view.rename_cursor_pos += 1;
+                        }
+                    }
+                    cx.notify();
+                }
+                "home" | "Home" => {
+                    let view = self.state.active_view_mut();
+                    view.rename_selected_all = false;
+                    view.rename_cursor_pos = 0;
+                    cx.notify();
+                }
+                "end" | "End" => {
+                    let view = self.state.active_view_mut();
+                    view.rename_selected_all = false;
+                    view.rename_cursor_pos = view.rename_text.chars().count();
                     cx.notify();
                 }
                 "space" | "Space" => {
-                    self.state.active_view_mut().rename_text.push(' ');
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_text = " ".to_string();
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = 1;
+                    } else {
+                        let mut chars: Vec<char> = view.rename_text.chars().collect();
+                        let pos = view.rename_cursor_pos.min(chars.len());
+                        chars.insert(pos, ' ');
+                        view.rename_cursor_pos = pos + 1;
+                        view.rename_text = chars.into_iter().collect();
+                    }
                     cx.notify();
                 }
                 _ => {
@@ -1216,8 +1326,19 @@ impl AppWindow {
                         && !keystroke.modifiers.platform
                         && keystroke.key.chars().count() == 1
                     {
-                        let ch = keystroke.key.clone();
-                        self.state.active_view_mut().rename_text.push_str(&ch);
+                        let ch = keystroke.key.chars().next().unwrap();
+                        let view = self.state.active_view_mut();
+                        if view.rename_selected_all {
+                            view.rename_text = ch.to_string();
+                            view.rename_selected_all = false;
+                            view.rename_cursor_pos = 1;
+                        } else {
+                            let mut chars: Vec<char> = view.rename_text.chars().collect();
+                            let pos = view.rename_cursor_pos.min(chars.len());
+                            chars.insert(pos, ch);
+                            view.rename_cursor_pos = pos + 1;
+                            view.rename_text = chars.into_iter().collect();
+                        }
                         cx.notify();
                     }
                 }
@@ -1631,8 +1752,21 @@ impl AppWindow {
             .and_then(|&idx| self.state.pane_view(pane_focus).items.get(idx))
             .cloned();
         if let Some(item) = item_opt {
-            self.state.active_dialog = Some(DialogType::Properties { item });
-            cx.notify();
+            #[cfg(windows)]
+            {
+                let path = item.path.clone();
+                let hwnd = self.state.window_hwnd;
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = crate::platform::windows::shell_service::ShellService::open_properties_with_hwnd(&path, Some(hwnd));
+                    })
+                    .detach();
+            }
+            #[cfg(not(windows))]
+            {
+                self.state.active_dialog = Some(DialogType::Properties { item });
+                cx.notify();
+            }
         }
     }
 
@@ -4375,6 +4509,9 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.focus_pane(pane_focus, cx);
+        if self.state.pane_view(pane_focus).renaming_index.is_some() {
+            self.commit_rename(cx);
+        }
         let double_click_back = self
             .state
             .pane_view_mut(pane_focus)
@@ -4451,6 +4588,9 @@ impl AppWindow {
     /// Clear all selections in the active pane.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
+        if self.state.pane_view(pane_focus).renaming_index.is_some() {
+            self.commit_rename(cx);
+        }
         {
             let view = self.state.pane_view_mut(pane_focus);
             view.selected_indices.clear();
@@ -4563,6 +4703,11 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.focus_pane(pane_focus, cx);
+        if let Some(renaming_idx) = self.state.pane_view(pane_focus).renaming_index {
+            if renaming_idx != idx {
+                self.commit_rename(cx);
+            }
+        }
         if click_count == 2 {
             self.state.main_view.drag_state.pending_candidate = None;
             if is_dir {
@@ -5043,10 +5188,12 @@ impl AppWindow {
     /// Cycle through selection modes: Normal → Checkbox → HoverSelect → Normal
     pub fn toggle_selection_checkboxes(&mut self, cx: &mut Context<Self>) {
         use crate::ui::views::main_view::SelectionMode;
-        self.state.main_view.selection_mode = match self.state.main_view.selection_mode {
+        let new_mode = match self.state.main_view.selection_mode {
             SelectionMode::Checkbox => SelectionMode::Normal,
             _ => SelectionMode::Checkbox,
         };
+        self.state.main_view.selection_mode = new_mode.clone();
+        self.state.secondary_view.selection_mode = new_mode;
         let enabled = matches!(
             self.state.main_view.selection_mode,
             SelectionMode::Checkbox
@@ -6084,20 +6231,20 @@ impl AppWindow {
     }
 
     pub fn confirm_add_item(&mut self, cx: &mut Context<Self>) {
-        if let Some(DialogType::AddItem { is_folder, name }) = self.state.active_dialog.clone() {
+        if let Some(DialogType::AddItem { is_folder, name, .. }) = self.state.active_dialog.clone() {
+            let default_name = if is_folder { "New folder" } else { "New Text Document.txt" };
             let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                let mut target_path = self.state.main_view.primary_path.as_path().to_path_buf();
-                target_path.push(trimmed);
-                if is_folder {
-                    let _ = std::fs::create_dir_all(&target_path);
-                } else {
-                    let _ = std::fs::write(&target_path, b"");
-                }
-                // Refresh directory
-                let current_path = self.state.main_view.primary_path.clone();
-                self.navigate(current_path, cx);
+            let final_name = if trimmed.is_empty() { default_name } else { trimmed };
+            let mut target_path = self.state.main_view.primary_path.as_path().to_path_buf();
+            target_path.push(final_name);
+            if is_folder {
+                let _ = std::fs::create_dir_all(&target_path);
+            } else {
+                let _ = std::fs::write(&target_path, b"");
             }
+            // Refresh directory
+            let current_path = self.state.main_view.primary_path.clone();
+            self.navigate(current_path, cx);
         }
         self.state.active_dialog = None;
         cx.notify();

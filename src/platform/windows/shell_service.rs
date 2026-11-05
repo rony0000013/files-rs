@@ -13,6 +13,14 @@ impl ShellService {
     /// Synchronous core of [`Self::open_properties`] (the body is sync
     /// ShellExecuteExW; the async wrapper exists for callers on async contexts).
     pub fn open_properties_sync(path: &FilesPath) -> Result<()> {
+        Self::open_properties_with_hwnd(path, None)
+    }
+
+    /// Open properties targeting a specific parent HWND (as an isize handle)
+    pub fn open_properties_with_hwnd(
+        path: &FilesPath,
+        hwnd: Option<isize>,
+    ) -> Result<()> {
         #[cfg(windows)]
         {
             let wide_path: Vec<u16> = path
@@ -26,9 +34,15 @@ impl ShellService {
                 .chain(std::iter::once(0))
                 .collect();
 
+            let target_hwnd = hwnd
+                .filter(|&h| h != 0)
+                .map(|h| windows::Win32::Foundation::HWND(h as *mut _))
+                .unwrap_or_else(|| unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() });
+
             let mut sei = SHELLEXECUTEINFOW::default();
             sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
             sei.fMask = SEE_MASK_INVOKEIDLIST;
+            sei.hwnd = target_hwnd;
             sei.lpVerb = PCWSTR(wide_op.as_ptr());
             sei.lpFile = PCWSTR(wide_path.as_ptr());
             sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
@@ -40,7 +54,7 @@ impl ShellService {
         }
         #[cfg(not(windows))]
         {
-            let _ = path;
+            let _ = (path, hwnd);
             tracing::warn!("open_properties is only implemented for Windows");
         }
         Ok(())

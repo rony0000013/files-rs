@@ -6,6 +6,77 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
 
+/// Renders the inline rename input container with WinUI 3 selection highlight and blinking cursor.
+pub fn render_inline_rename_element(
+    rename_text: &str,
+    selected_all: bool,
+    cursor_pos: usize,
+) -> AnyElement {
+    let chars: Vec<char> = rename_text.chars().collect();
+    let pos = cursor_pos.min(chars.len());
+    let before: String = chars[..pos].iter().collect();
+    let after: String = chars[pos..].iter().collect();
+
+    div()
+        .bg(rgba(0x1E1E1EFF))
+        .border(px(1.0))
+        .border_color(rgb(0x60CDFF))
+        .border_b(px(2.0))
+        .rounded(px(4.0))
+        .px(px(6.0))
+        .py(px(2.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .children(if selected_all {
+            vec![
+                div()
+                    .bg(rgb(0x0078D4))
+                    .text_color(rgb(0xFFFFFF))
+                    .rounded(px(2.0))
+                    .px(px(2.0))
+                    .child(if rename_text.is_empty() {
+                        " ".to_string()
+                    } else {
+                        rename_text.to_string()
+                    })
+                    .into_any_element(),
+                div()
+                    .w(px(1.5))
+                    .h(px(14.0))
+                    .bg(rgb(0xFFFFFF))
+                    .with_animation(
+                        "inline-rename-blink",
+                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                    )
+                    .into_any_element(),
+            ]
+        } else {
+            vec![
+                div()
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .child(before)
+                    .into_any_element(),
+                div()
+                    .w(px(1.5))
+                    .h(px(14.0))
+                    .bg(rgb(0xFFFFFF))
+                    .with_animation(
+                        "inline-rename-blink",
+                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                    )
+                    .into_any_element(),
+                div()
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .child(after)
+                    .into_any_element(),
+            ]
+        })
+        .into_any_element()
+}
+
 /// Compute an adaptive 3-line filename label, effective font size, and line height.
 ///
 /// Behavior:

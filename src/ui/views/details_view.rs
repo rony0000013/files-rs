@@ -50,6 +50,7 @@ impl MainView {
         let renaming_idx = main_state.renaming_index;
         let rename_text = &main_state.rename_text;
         let lod_fast = zoom < 0.20;
+        let is_cut = main_state.cut_paths.contains(item.path.as_path());
 
         let is_dir = matches!(item.file_type, FileType::Directory);
         let display_name = main_state.display_name(item).into_owned();
@@ -198,6 +199,14 @@ impl MainView {
             row = row.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
         }
 
+        if is_cut {
+            row = row
+                .opacity(0.55)
+                .border(px(1.0))
+                .border_dashed()
+                .border_color(rgba(0x60CDFFCCu32));
+        }
+
         let mut name_row = div()
             .flex_grow()
             .min_w(px(100.0))
@@ -225,11 +234,18 @@ impl MainView {
                     })
                     .child(
                         div()
-                            .w(px(14.0))
-                            .h(px(14.0))
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .border(px(1.5))
-                            .border_color(rgba(UiConstants::ACCENT_RGBA))
-                            .rounded(px(3.0))
+                            .border_color(if is_selected {
+                                rgba(UiConstants::ACCENT_RGBA)
+                            } else {
+                                rgba(0xFFFFFF80u32)
+                            })
+                            .rounded(px(3.5))
                             .bg(if is_selected {
                                 rgba(UiConstants::ACCENT_RGBA)
                             } else {
@@ -237,7 +253,11 @@ impl MainView {
                             })
                             .child(if is_selected {
                                 div()
-                                    .text_size(px(9.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(10.0))
+                                    .line_height(px(10.0))
                                     .font_family(UiConstants::FONT_MDL2)
                                     .text_color(rgb(0xFFFFFF))
                                     .child("\u{E73E}")
@@ -293,15 +313,11 @@ impl MainView {
                     .line_height(px(name_line_h))
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(if renaming_idx == Some(idx) {
-                        div()
-                            .bg(rgba(0xFFFFFF20u32))
-                            .border(px(1.0))
-                            .border_color(rgba(UiConstants::ACCENT_RGBA))
-                            .rounded(px(3.0))
-                            .px(px(6.0))
-                            .py(px(1.0))
-                            .child(rename_text.clone())
-                            .into_any_element()
+                        crate::ui::views::helpers::render_inline_rename_element(
+                            rename_text,
+                            main_state.rename_selected_all,
+                            main_state.rename_cursor_pos,
+                        )
                     } else {
                         div()
                             .flex_1()

@@ -510,37 +510,7 @@ impl ToolbarView {
         // ═════════════════════════════════════════════════════════════════════
         let mut right_group = div().flex().flex_row().items_center().gap(px(4.0));
 
-        // 1. Filter Toggle Button
-        let filter_active = !filter_text.is_empty() || show_filter_bar;
-        {
-            let v_filter = view.clone();
-            right_group = right_group.child(ToolbarButton::build(
-                "\u{E71C}",
-                if !filter_text.is_empty() {
-                    Some(filter_text.as_str())
-                } else if show_labels {
-                    Some("Filter")
-                } else {
-                    None
-                },
-                true,
-                filter_active,
-                move |_, _, cx| {
-                    v_filter.update(cx, |this, cx| {
-                        this.close_toolbar_flyout(cx);
-                        if !this.state.main_view.filter_text.is_empty() {
-                            this.set_filter_text(String::new(), cx);
-                        } else {
-                            this.state.main_view.show_filter_bar =
-                                !this.state.main_view.show_filter_bar;
-                            cx.notify();
-                        }
-                    });
-                },
-            ));
-        }
-
-        // 2. Selection Options Flyout (`\u{E762} ⌄`)
+        // 1. Selection Options Flyout (`\u{E762} ⌄`)
         {
             let sel_open = active_flyout == Some("selection");
             let v_sel = view.clone();
@@ -557,7 +527,7 @@ impl ToolbarView {
             ));
         }
 
-        // 3. Sort & Group Flyout (`\u{E8CB} ⌄` — `ArrangementOptions` in `Toolbar.xaml`)
+        // 2. Sort Flyout (`\u{E8CB} ⌄` — SortOptions in `Toolbar.xaml`)
         {
             let sort_open = active_flyout == Some("sort");
             let sort_label = match sort_col {
@@ -569,11 +539,7 @@ impl ToolbarView {
                 SortBy::Tag => "Tag",
             };
             let dir_arrow = if sort_asc { "↑" } else { "↓" };
-            let badge = if *group_by != GroupColumn::None {
-                format!("{} {} • Grouped", sort_label, dir_arrow)
-            } else {
-                format!("{} {}", sort_label, dir_arrow)
-            };
+            let badge = format!("{} {}", sort_label, dir_arrow);
             let v_sort = view.clone();
             right_group = right_group.child(Self::build_dropdown_trigger(
                 "\u{E8CB}",
@@ -587,6 +553,40 @@ impl ToolbarView {
                     cx.stop_propagation();
                     v_sort.update(cx, |this, cx| {
                         this.toggle_toolbar_flyout("sort", cx);
+                    });
+                },
+            ));
+        }
+
+        // 3. Group by Flyout (`\u{F168} ⌄` — dedicated GroupOptions button beside Sort)
+        {
+            let group_open = active_flyout == Some("group");
+            let group_label = match group_by {
+                GroupColumn::None => "Group",
+                GroupColumn::Name => "Group: Name",
+                GroupColumn::DateModified => "Group: Date",
+                GroupColumn::DateCreated => "Group: Created",
+                GroupColumn::Size => "Group: Size",
+                GroupColumn::FileType => "Group: Type",
+                GroupColumn::SyncStatus => "Group: Sync",
+                GroupColumn::Tag => "Group: Tag",
+            };
+            let is_grouped = *group_by != GroupColumn::None;
+            let v_group = view.clone();
+            right_group = right_group.child(Self::build_dropdown_trigger(
+                if is_grouped { "\u{EA1F}" } else { "\u{F168}" },
+                if show_labels {
+                    Some(group_label)
+                } else if is_grouped {
+                    Some("Grouped")
+                } else {
+                    None
+                },
+                group_open,
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    v_group.update(cx, |this, cx| {
+                        this.toggle_toolbar_flyout("group", cx);
                     });
                 },
             ));
@@ -724,7 +724,8 @@ impl ToolbarView {
         let menu_card: AnyElement = match flyout_id {
             "new" => Self::build_new_item_flyout(sidebar_w, view.clone()).into_any_element(),
             "selection" => Self::build_selection_flyout(state, view.clone()).into_any_element(),
-            "sort" => Self::build_sort_group_flyout(state, view.clone()).into_any_element(),
+            "sort" => Self::build_sort_flyout(state, view.clone()).into_any_element(),
+            "group" => Self::build_group_flyout(state, view.clone()).into_any_element(),
             "layout" => Self::build_layout_flyout(state, view.clone()).into_any_element(),
             _ => return None,
         };
@@ -832,12 +833,13 @@ impl ToolbarView {
         let v_clr = view.clone();
         let v_chk = view.clone();
         let has_sel = !state.main_view.selected_indices.is_empty();
+        let is_chk_active = state.main_view.selection_mode == crate::ui::views::main_view::SelectionMode::Checkbox;
 
         div()
             .absolute()
             .top(px(124.0))
-            .right(px(220.0))
-            .w(px(230.0))
+            .right(px(240.0))
+            .w(px(240.0))
             .p(px(6.0))
             .rounded(px(8.0))
             .bg(rgb(0x282828))
@@ -888,27 +890,26 @@ impl ToolbarView {
             ))
             .child(div().h(px(1.0)).my(px(3.0)).bg(rgba(0xFFFFFF14u32)))
             .child(Self::flyout_menu_item(
-                "\u{E73A}",
+                if is_chk_active { "\u{E73E}" } else { "\u{E73A}" },
                 "Toggle Selection Checkboxes",
                 None,
-                false,
+                is_chk_active,
                 move |_, _, cx| {
                     v_chk.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
-                        this.toggle_setting("show_checkboxes_when_selecting", cx);
+                        this.toggle_selection_checkboxes(cx);
                     });
                 },
             ))
     }
 
-    fn build_sort_group_flyout(
+    fn build_sort_flyout(
         state: &AppState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let cur_sort = &state.main_view.sort.column;
         let cur_asc = state.main_view.sort.ascending;
         let cur_folders_top = state.main_view.sort.folders_first;
-        let cur_group = &state.main_view.group_by;
 
         let sort_options = [
             (SortBy::Name, "Name"),
@@ -919,21 +920,10 @@ impl ToolbarView {
             (SortBy::Tag, "File tag"),
         ];
 
-        let group_options = [
-            (GroupColumn::None, "None"),
-            (GroupColumn::Name, "Name"),
-            (GroupColumn::DateModified, "Date modified"),
-            (GroupColumn::DateCreated, "Date created"),
-            (GroupColumn::Size, "Size"),
-            (GroupColumn::FileType, "Type"),
-            (GroupColumn::SyncStatus, "Sync status"),
-            (GroupColumn::Tag, "File tag"),
-        ];
-
         let mut col = div()
             .absolute()
             .top(px(124.0))
-            .right(px(120.0))
+            .right(px(150.0))
             .w(px(236.0))
             .p(px(6.0))
             .rounded(px(8.0))
@@ -1005,8 +995,43 @@ impl ToolbarView {
                         this.toggle_setting("folder_on_top", cx);
                     });
                 },
-            ))
-            .child(div().h(px(1.0)).my(px(3.0)).bg(rgba(0xFFFFFF14u32)))
+            ));
+
+        col
+    }
+
+    fn build_group_flyout(
+        state: &AppState,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let cur_group = &state.main_view.group_by;
+
+        let group_options = [
+            (GroupColumn::None, "None"),
+            (GroupColumn::Name, "Name"),
+            (GroupColumn::DateModified, "Date modified"),
+            (GroupColumn::DateCreated, "Date created"),
+            (GroupColumn::Size, "Size"),
+            (GroupColumn::FileType, "Type"),
+            (GroupColumn::SyncStatus, "Sync status"),
+            (GroupColumn::Tag, "File tag"),
+        ];
+
+        let mut col = div()
+            .absolute()
+            .top(px(124.0))
+            .right(px(70.0))
+            .w(px(236.0))
+            .p(px(6.0))
+            .rounded(px(8.0))
+            .bg(rgb(0x282828))
+            .border(px(1.0))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .gap(px(1.5))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(Self::flyout_section_header("Group by"));
 
         for (g_col, label) in group_options {

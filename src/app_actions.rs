@@ -474,6 +474,10 @@ impl AppWindow {
             .collect();
 
         if !items.is_empty() {
+            let cut_set: std::collections::HashSet<std::path::PathBuf> =
+                items.iter().map(|i| i.path.clone()).collect();
+            self.state.main_view.cut_paths = cut_set.clone();
+            self.state.secondary_view.cut_paths = cut_set;
             self.state.clipboard = ClipboardState::Cut(items.clone());
             tracing::info!("Cut {} items to clipboard", items.len());
         }
@@ -481,6 +485,8 @@ impl AppWindow {
     }
 
     pub fn copy_selected(&mut self, cx: &mut Context<Self>) {
+        self.state.main_view.cut_paths.clear();
+        self.state.secondary_view.cut_paths.clear();
         let active_view = self.state.active_view();
         let indices: Vec<usize> = active_view
             .selected_indices
@@ -683,6 +689,8 @@ impl AppWindow {
                 this_weak
                     .update(&mut async_cx, |this, cx| {
                         this.state.clipboard = ClipboardState::Empty;
+                        this.state.main_view.cut_paths.clear();
+                        this.state.secondary_view.cut_paths.clear();
                         this.refresh(cx);
                     })
                     .ok();
@@ -2394,6 +2402,15 @@ impl AppWindow {
         self.state.secondary_view.sort.folders_first = folder_on_top;
         self.state.secondary_view.sort.ascending = sort_asc;
 
+        let show_chk = self.state.settings.read(cx).config.preferences.show_checkboxes_when_selecting;
+        let sel_mode = if show_chk {
+            crate::ui::views::main_view::SelectionMode::Checkbox
+        } else {
+            crate::ui::views::main_view::SelectionMode::Normal
+        };
+        self.state.main_view.selection_mode = sel_mode.clone();
+        self.state.secondary_view.selection_mode = sel_mode;
+
         if key == "index_all_drives_folder_sizes"
             && self.state.settings.read(cx).config.view.index_all_drives_folder_sizes
         {
@@ -2629,7 +2646,8 @@ impl AppWindow {
     pub fn new_folder(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = Some(DialogType::AddItem {
             is_folder: true,
-            name: String::new(),
+            name: "New folder".to_string(),
+            selected_all: true,
         });
         cx.notify();
     }
@@ -2637,36 +2655,42 @@ impl AppWindow {
     pub fn new_file(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = Some(DialogType::AddItem {
             is_folder: false,
-            name: String::new(),
+            name: "New Text Document.txt".to_string(),
+            selected_all: true,
         });
         cx.notify();
     }
 
     pub fn rename_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(&first_selected) = self.state.main_view.selected_indices.iter().next() {
+        if let Some(&first_selected) = self.state.active_view().selected_indices.iter().next() {
             self.start_rename(first_selected, cx);
         }
     }
 
     pub fn share_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(&idx) = self.state.main_view.selected_indices.iter().next() {
-            if let Some(item) = self.state.main_view.items.get(idx) {
-                let share_path = item.path.clone();
-                #[cfg(windows)]
-                {
-                    cx.background_executor()
-                        .spawn(async move {
-                            let service =
-                                crate::platform::windows::share_service::ShareService::new();
-                            let _ = service.share_file(0, &share_path).await;
-                        })
-                        .detach();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = share_path;
-                    tracing::info!("Share not implemented on this platform");
-                }
+        let hwnd = self.state.window_hwnd;
+        let selected_paths: Vec<FilesPath> = self
+            .state
+            .active_view()
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| self.state.active_view().items.get(idx).map(|item| item.path.clone()))
+            .collect();
+        if !selected_paths.is_empty() {
+            #[cfg(windows)]
+            {
+                cx.background_executor()
+                    .spawn(async move {
+                        let service =
+                            crate::platform::windows::share_service::ShareService::new();
+                        let _ = service.share_files(hwnd, &selected_paths).await;
+                    })
+                    .detach();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (hwnd, selected_paths);
+                tracing::info!("Share not implemented on this platform");
             }
         }
     }
@@ -2785,10 +2809,15 @@ impl AppWindow {
     }
 
     pub fn start_rename(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.state.active_view().renaming_index.is_some() {
+            self.commit_rename(cx);
+        }
         let view = self.state.active_view_mut();
         if let Some(item) = view.items.get(index) {
             view.renaming_index = Some(index);
             view.rename_text = item.name.clone();
+            view.rename_selected_all = true;
+            view.rename_cursor_pos = view.rename_text.chars().count();
             cx.notify();
         }
     }

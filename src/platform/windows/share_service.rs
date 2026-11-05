@@ -19,6 +19,7 @@ impl ShareService {
     pub async fn show_share_ui(&self, window_handle: isize, paths: &[FilesPath]) -> Result<()> {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
         use windows::Win32::System::Com::{
             CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
         };
@@ -28,39 +29,44 @@ impl ShareService {
             return Err(anyhow!("No files to share"));
         }
 
-        // Collect file paths as space-separated string for the share target
         let path_strings: Vec<String> = paths
             .iter()
             .map(|p| p.as_path().to_string_lossy().to_string())
             .collect();
 
-        // Build the shell execute command to invoke share dialog
-        // Using explorer's "send to" context or the share contract
+        let hwnd = if window_handle != 0 {
+            HWND(window_handle as *mut _)
+        } else {
+            unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+        };
+
         for path_str in &path_strings {
             let wide_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
 
-            // Try to invoke share UI via shell
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
                 let mut sei = windows::Win32::UI::Shell::SHELLEXECUTEINFOW::default();
                 sei.cbSize =
                     std::mem::size_of::<windows::Win32::UI::Shell::SHELLEXECUTEINFOW>() as u32;
+                sei.hwnd = hwnd;
                 sei.fMask = SEE_MASK_INVOKEIDLIST;
                 sei.nShow = 1; // SW_SHOWNORMAL
 
-                // For single file, use "open" verb which brings up share options
-                let wide_verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
-                sei.lpVerb = PCWSTR(wide_verb.as_ptr());
+                // In Windows 10/11 Shell, canonical verb is "share" or "windows.share"
+                let wide_verb_share: Vec<u16> = "share\0".encode_utf16().collect();
+                sei.lpVerb = PCWSTR(wide_verb_share.as_ptr());
                 sei.lpFile = PCWSTR(wide_path.as_ptr());
 
-                // Note: Full share UI requires WinRT DataTransferManagerInterop
-                // This fallback uses shell integration which invokes the default handler
-                let result = ShellExecuteExW(&mut sei);
+                let mut result = ShellExecuteExW(&mut sei);
+                if result.is_err() {
+                    let wide_verb_win_share: Vec<u16> = "windows.share\0".encode_utf16().collect();
+                    sei.lpVerb = PCWSTR(wide_verb_win_share.as_ptr());
+                    result = ShellExecuteExW(&mut sei);
+                }
 
                 CoUninitialize();
 
-                // Log but don't fail if share UI can't be shown
                 if let Err(e) = result {
                     tracing::debug!("Share UI not available for {}: {}", path_str, e);
                 } else {

@@ -827,6 +827,15 @@ pub struct MainViewState {
     pub renaming_index: Option<usize>,
     /// Current rename text (used during inline rename)
     pub rename_text: String,
+    /// Whether all text is currently selected in the inline rename box (e.g. on initial rename trigger)
+    #[serde(skip)]
+    pub rename_selected_all: bool,
+    /// Cursor character index inside rename_text
+    #[serde(skip)]
+    pub rename_cursor_pos: usize,
+    /// Paths of files currently cut to the clipboard (rendered with opacity + dashed border)
+    #[serde(skip)]
+    pub cut_paths: HashSet<std::path::PathBuf>,
     pub compact_mode: bool,
     /// Cached text for file preview
     pub preview_text: Option<String>,
