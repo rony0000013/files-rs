@@ -2232,6 +2232,10 @@ impl AppWindow {
                     s.config.preferences.show_checkboxes_when_selecting =
                         !s.config.preferences.show_checkboxes_when_selecting
                 }
+                "show_button_tooltips" => {
+                    s.config.preferences.show_button_tooltips =
+                        !s.config.preferences.show_button_tooltips
+                }
                 "show_file_extension_warning" => {
                     s.config.preferences.show_file_extension_warning =
                         !s.config.preferences.show_file_extension_warning

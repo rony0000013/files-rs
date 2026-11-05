@@ -1095,10 +1095,11 @@ impl MainViewState {
                     .line_clamp(3)
                     .text_ellipsis()
                     .child(if renaming_index == Some(index) {
-                        crate::ui::views::helpers::render_inline_rename_element(
+                        crate::ui::views::helpers::render_inline_rename_element_multiline(
                             rename_text,
                             rename_selected_all,
                             rename_cursor_pos,
+                            Some(label_box_h),
                         )
                     } else {
                         display_label.into_any_element()

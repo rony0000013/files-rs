@@ -197,6 +197,7 @@ impl ToolbarView {
                 .opacity(if can_modify_dir { 1.0 } else { 0.45 })
                 .child(
                     div()
+                        .id("tb-new-btn")
                         .flex()
                         .flex_row()
                         .items_center()
@@ -211,10 +212,31 @@ impl ToolbarView {
                                 s
                             }
                         })
+                        .on_hover({
+                            let v_tip = view.clone();
+                            move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                                let pos = window.mouse_position();
+                                if *hovering {
+                                    v_tip.update(cx, |this, cx| {
+                                        this.start_button_tooltip(
+                                            "New folder".to_string(),
+                                            Some("Ctrl+Shift+N".to_string()),
+                                            pos,
+                                            cx,
+                                        );
+                                    });
+                                } else {
+                                    v_tip.update(cx, |this, cx| {
+                                        this.stop_button_tooltip(cx);
+                                    });
+                                }
+                            }
+                        })
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
                             if can_modify_dir {
                                 v_new_primary.update(cx, |this, cx| {
+                                    this.stop_button_tooltip(cx);
                                     this.close_toolbar_flyout(cx);
                                     this.new_folder(cx);
                                 });
@@ -238,6 +260,7 @@ impl ToolbarView {
                 .child(div().w(px(1.0)).h(px(16.0)).bg(rgba(0xFFFFFF18u32)))
                 .child(
                     div()
+                        .id("tb-new-arrow")
                         .flex()
                         .items_center()
                         .justify_center()
@@ -251,10 +274,31 @@ impl ToolbarView {
                                 s
                             }
                         })
+                        .on_hover({
+                            let v_tip = view.clone();
+                            move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                                let pos = window.mouse_position();
+                                if *hovering {
+                                    v_tip.update(cx, |this, cx| {
+                                        this.start_button_tooltip(
+                                            "Create new item".to_string(),
+                                            None,
+                                            pos,
+                                            cx,
+                                        );
+                                    });
+                                } else {
+                                    v_tip.update(cx, |this, cx| {
+                                        this.stop_button_tooltip(cx);
+                                    });
+                                }
+                            }
+                        })
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
                             if can_modify_dir {
                                 v_new_flyout.update(cx, |this, cx| {
+                                    this.stop_button_tooltip(cx);
                                     this.toggle_toolbar_flyout("new", cx);
                                 });
                             }
@@ -275,11 +319,15 @@ impl ToolbarView {
         // 2. Cut / Copy / Paste
         if toolbar_customization.is_visible("cut") {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-cut",
                 "\u{E8C6}",
                 if show_labels { Some("Cut") } else { None },
+                "Cut",
+                Some("Ctrl+X"),
                 has_selection && can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -291,11 +339,15 @@ impl ToolbarView {
 
         if toolbar_customization.is_visible("copy") {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-copy",
                 "\u{E8C8}",
                 if show_labels { Some("Copy") } else { None },
+                "Copy",
+                Some("Ctrl+C"),
                 has_selection && can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -307,11 +359,15 @@ impl ToolbarView {
 
         if toolbar_customization.is_visible("paste") {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-paste",
                 "\u{E77F}",
                 if show_labels { Some("Paste") } else { None },
+                "Paste",
+                Some("Ctrl+V"),
                 has_clipboard && can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -324,11 +380,15 @@ impl ToolbarView {
         // 3. Rename / Share / Delete / Properties
         if toolbar_customization.is_visible("rename") {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-rename",
                 "\u{E8AC}",
                 if show_labels { Some("Rename") } else { None },
+                "Rename",
+                Some("F2"),
                 single_selection && can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -340,11 +400,15 @@ impl ToolbarView {
 
         {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-share",
                 "\u{E72D}",
                 if show_labels { Some("Share") } else { None },
+                "Share",
+                None,
                 has_selection && can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -356,11 +420,15 @@ impl ToolbarView {
 
         if toolbar_customization.is_visible("delete") {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-delete",
                 "\u{E74D}",
                 if show_labels { Some("Delete") } else { None },
+                "Delete",
+                Some("Del"),
                 has_selection && (!is_home && !is_settings),
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -376,11 +444,15 @@ impl ToolbarView {
 
         {
             let v = view.clone();
-            left_group = left_group.child(ToolbarButton::build(
+            left_group = left_group.child(ToolbarButton::build_with_tooltip(
+                "tb-properties",
                 "\u{E946}",
                 if show_labels { Some("Properties") } else { None },
+                "Properties",
+                Some("Alt+Enter"),
                 can_modify_dir,
                 false,
+                view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -514,10 +586,14 @@ impl ToolbarView {
         {
             let sel_open = active_flyout == Some("selection");
             let v_sel = view.clone();
-            right_group = right_group.child(Self::build_dropdown_trigger(
+            right_group = right_group.child(Self::build_dropdown_trigger_with_tooltip(
+                "tb-sel",
                 "\u{E762}",
                 if show_labels { Some("Select") } else { None },
+                "Selection options",
+                Some("Ctrl+A"),
                 sel_open,
+                view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_sel.update(cx, |this, cx| {
@@ -541,14 +617,18 @@ impl ToolbarView {
             let dir_arrow = if sort_asc { "↑" } else { "↓" };
             let badge = format!("{} {}", sort_label, dir_arrow);
             let v_sort = view.clone();
-            right_group = right_group.child(Self::build_dropdown_trigger(
+            right_group = right_group.child(Self::build_dropdown_trigger_with_tooltip(
+                "tb-sort",
                 "\u{E8CB}",
                 if show_labels {
                     Some(badge.as_str())
                 } else {
                     None
                 },
+                "Sort options",
+                None,
                 sort_open,
+                view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_sort.update(cx, |this, cx| {
@@ -573,7 +653,8 @@ impl ToolbarView {
             };
             let is_grouped = *group_by != GroupColumn::None;
             let v_group = view.clone();
-            right_group = right_group.child(Self::build_dropdown_trigger(
+            right_group = right_group.child(Self::build_dropdown_trigger_with_tooltip(
+                "tb-group",
                 if is_grouped { "\u{EA1F}" } else { "\u{F168}" },
                 if show_labels {
                     Some(group_label)
@@ -582,7 +663,10 @@ impl ToolbarView {
                 } else {
                     None
                 },
+                "Group by options",
+                None,
                 group_open,
+                view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_group.update(cx, |this, cx| {
@@ -603,14 +687,18 @@ impl ToolbarView {
                 ViewMode::Columns => ("\u{E8F1}", "Columns"),
             };
             let v_layout = view.clone();
-            right_group = right_group.child(Self::build_dropdown_trigger(
+            right_group = right_group.child(Self::build_dropdown_trigger_with_tooltip(
+                "tb-layout",
                 layout_icon,
                 if show_labels {
                     Some(layout_label)
                 } else {
                     None
                 },
+                "View layout options",
+                None,
                 layout_open,
+                view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_layout.update(cx, |this, cx| {
@@ -628,11 +716,15 @@ impl ToolbarView {
         {
             let pane_open = !matches!(side_pane, SidePaneMode::None);
             let v_pane = view.clone();
-            right_group = right_group.child(ToolbarButton::build(
+            right_group = right_group.child(ToolbarButton::build_with_tooltip(
+                "tb-pane",
                 "\u{E890}",
                 if show_labels { Some("Pane") } else { None },
+                "Details pane",
+                Some("Ctrl+Shift+P"),
                 true,
                 pane_open,
+                view.clone(),
                 move |_, _, cx| {
                     v_pane.update(cx, |this, cx| {
                         this.close_toolbar_flyout(cx);
@@ -709,6 +801,91 @@ impl ToolbarView {
         )
     }
 
+    fn build_dropdown_trigger_with_tooltip(
+        id: impl Into<ElementId>,
+        glyph: &str,
+        label: Option<&str>,
+        tip_text: &'static str,
+        tip_shortcut: Option<&'static str>,
+        is_open: bool,
+        view: Entity<crate::app::AppWindow>,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let v_tip = view.clone();
+        let v_click = view.clone();
+        let text = tip_text.to_string();
+        let shortcut = tip_shortcut.map(|s| s.to_string());
+
+        let mut btn = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(5.0))
+            .h(px(30.0))
+            .px(px(8.0))
+            .rounded(px(6.0))
+            .cursor_pointer();
+
+        if is_open {
+            btn = btn
+                .bg(rgba(0x60CDFF24u32))
+                .border(px(1.0))
+                .border_color(rgba(0x60CDFF66u32));
+        } else {
+            btn = btn.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
+        }
+
+        let mut final_btn = btn.id(id)
+            .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                let pos = window.mouse_position();
+                let t = text.clone();
+                let sc = shortcut.clone();
+                if *hovering {
+                    v_tip.update(cx, |this, cx| {
+                        this.start_button_tooltip(t, sc, pos, cx);
+                    });
+                } else {
+                    v_tip.update(cx, |this, cx| {
+                        this.stop_button_tooltip(cx);
+                    });
+                }
+            })
+            .on_mouse_down(MouseButton::Left, move |e, w, cx| {
+                v_click.update(cx, |this, cx| {
+                    this.stop_button_tooltip(cx);
+                });
+                on_click(e, w, cx);
+            })
+            .child(
+                div()
+                    .text_size(px(14.5))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(if is_open {
+                        rgb(0x60CDFF)
+                    } else {
+                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                    })
+                    .child(glyph.to_string()),
+            );
+
+        if let Some(lbl) = label {
+            final_btn = final_btn.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .child(lbl.to_string()),
+            );
+        }
+
+        final_btn.child(
+            div()
+                .text_size(px(9.0))
+                .font_family(UiConstants::FONT_ICONS)
+                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                .child("\u{E70D}"),
+        )
+    }
+
     /// Render the floating WinUI 3 Flyout Menu when a Top Ribbon dropdown (`"new"`, `"selection"`, `"sort"`, `"layout"`) is open.
     pub fn build_flyout_overlay(
         state: &AppState,
@@ -765,7 +942,7 @@ impl ToolbarView {
             .w(px(230.0))
             .p(px(6.0))
             .rounded(px(8.0))
-            .bg(rgb(0x282828))
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
@@ -842,7 +1019,7 @@ impl ToolbarView {
             .w(px(240.0))
             .p(px(6.0))
             .rounded(px(8.0))
-            .bg(rgb(0x282828))
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
@@ -927,7 +1104,7 @@ impl ToolbarView {
             .w(px(236.0))
             .p(px(6.0))
             .rounded(px(8.0))
-            .bg(rgb(0x282828))
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
@@ -1024,7 +1201,7 @@ impl ToolbarView {
             .w(px(236.0))
             .p(px(6.0))
             .rounded(px(8.0))
-            .bg(rgb(0x282828))
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
@@ -1085,7 +1262,7 @@ impl ToolbarView {
             .w(px(248.0))
             .p(px(6.0))
             .rounded(px(8.0))
-            .bg(rgb(0x282828))
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .shadow_lg()
@@ -1327,6 +1504,107 @@ impl ToolbarButton {
         }
 
         btn
+    }
+
+    fn build_with_tooltip(
+        id: impl Into<ElementId>,
+        glyph: &str,
+        label: Option<&str>,
+        tip_text: &'static str,
+        tip_shortcut: Option<&'static str>,
+        is_enabled: bool,
+        is_toggled: bool,
+        view: Entity<crate::app::AppWindow>,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let v_tip = view.clone();
+        let v_click = view.clone();
+        let text = tip_text.to_string();
+        let shortcut = tip_shortcut.map(|s| s.to_string());
+
+        let mut btn = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .gap(px(5.0))
+            .min_w(px(30.0))
+            .h(px(30.0))
+            .px(if label.is_some() { px(9.0) } else { px(7.0) })
+            .rounded(px(6.0));
+
+        if is_toggled {
+            btn = btn
+                .bg(rgba(0x60CDFF22u32))
+                .border(px(1.0))
+                .border_color(rgba(0x60CDFF66u32));
+        }
+
+        let stateful = btn.id(id);
+
+        let final_btn = if is_enabled {
+            stateful
+                .cursor_pointer()
+                .hover(|s| {
+                    if is_toggled {
+                        s.bg(rgba(0x60CDFF32u32))
+                    } else {
+                        s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
+                    }
+                })
+                .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                    let pos = window.mouse_position();
+                    let t = text.clone();
+                    let sc = shortcut.clone();
+                    if *hovering {
+                        v_tip.update(cx, |this, cx| {
+                            this.start_button_tooltip(t, sc, pos, cx);
+                        });
+                    } else {
+                        v_tip.update(cx, |this, cx| {
+                            this.stop_button_tooltip(cx);
+                        });
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, move |e, w, cx| {
+                    v_click.update(cx, |this, cx| {
+                        this.stop_button_tooltip(cx);
+                    });
+                    on_click(e, w, cx);
+                })
+        } else {
+            stateful
+        };
+
+        let mut elem = final_btn
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .font_family(UiConstants::FONT_ICONS)
+                    .text_color(if is_toggled {
+                        rgb(0x60CDFF)
+                    } else if is_enabled {
+                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                    } else {
+                        rgba(UiConstants::TEXT_MUTED_RGBA)
+                    })
+                    .child(glyph.to_string()),
+            );
+
+        if let Some(lbl) = label {
+            elem = elem.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(if is_enabled {
+                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                    } else {
+                        rgba(UiConstants::TEXT_MUTED_RGBA)
+                    })
+                    .child(lbl.to_string()),
+            );
+        }
+
+        elem
     }
 }
 

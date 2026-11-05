@@ -1205,6 +1205,80 @@ impl NavigationBarView {
         )
     }
 
+    fn render_nav_btn_with_tooltip(
+        id: impl Into<ElementId>,
+        icon: &'static str,
+        tip_text: &'static str,
+        tip_shortcut: Option<&'static str>,
+        enabled: bool,
+        view: Entity<crate::app::AppWindow>,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+        on_right_click: Option<Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>>,
+    ) -> impl IntoElement {
+        let v_tip = view.clone();
+        let v_click = view.clone();
+        let text = tip_text.to_string();
+        let shortcut = tip_shortcut.map(|s| s.to_string());
+
+        let mut btn = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(36.0))
+            .h(px(32.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .text_color(if enabled {
+                rgba(UiConstants::TEXT_PRIMARY_RGBA)
+            } else {
+                rgba(UiConstants::TEXT_MUTED_RGBA)
+            });
+
+        let stateful = btn.id(id);
+
+        let final_btn = if enabled {
+            let mut b = stateful
+                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
+                    let pos = window.mouse_position();
+                    let t = text.clone();
+                    let sc = shortcut.clone();
+                    if *hovering {
+                        v_tip.update(cx, |this, cx| {
+                            this.start_button_tooltip(t, sc, pos, cx);
+                        });
+                    } else {
+                        v_tip.update(cx, |this, cx| {
+                            this.stop_button_tooltip(cx);
+                        });
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, move |ev, win, cx| {
+                    v_click.update(cx, |this, cx| {
+                        this.stop_button_tooltip(cx);
+                    });
+                    on_click(ev, win, cx);
+                });
+
+            if let Some(rc) = on_right_click {
+                b = b.on_mouse_down(MouseButton::Right, move |ev, win, cx| {
+                    cx.stop_propagation();
+                    rc(ev, win, cx);
+                });
+            }
+            b
+        } else {
+            stateful
+        };
+
+        final_btn.child(
+            div()
+                .text_size(px(14.0))
+                .font_family(UiConstants::FONT_ICONS)
+                .child(icon),
+        )
+    }
+
     /// Files-community `OmnibarMode` pill button (30x28px rounded pill inside the 36px Omnibar).
     fn render_mode_icon_btn(
         icon: &'static str,
@@ -1390,9 +1464,17 @@ impl NavigationBarView {
         );
         row = row.child(
             div()
-                .w(px(1.5))
+                .w(px(0.0))
                 .h(px(16.0))
-                .bg(rgba(UiConstants::ACCENT_RGBA)),
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(-0.75))
+                        .w(px(1.5))
+                        .h(px(16.0))
+                        .bg(rgba(UiConstants::ACCENT_RGBA)),
+                ),
         );
         if !after.is_empty() {
             row = row.child(
@@ -2252,9 +2334,13 @@ impl NavigationBarView {
                     .flex_shrink_0()
                     .gap(px(2.0))
                     // SidebarPaneToggleButton (`NavigationToolbar.xaml:98-117`)
-                    .child(Self::render_nav_btn(
+                    .child(Self::render_nav_btn_with_tooltip(
+                        "nav-sidebar-toggle",
                         "\u{E700}",
+                        "Toggle sidebar",
+                        None,
                         true,
+                        view.clone(),
                         move |_, _, cx| {
                             v_sidebar_toggle.update(cx, |this, cx| {
                                 if !this.state.sidebar_visible {
@@ -2267,9 +2353,13 @@ impl NavigationBarView {
                         },
                         None,
                     ))
-                    .child(Self::render_nav_btn(
+                    .child(Self::render_nav_btn_with_tooltip(
+                        "nav-back",
                         "\u{E72B}",
+                        "Back",
+                        Some("Alt+Left"),
                         can_go_back,
+                        view.clone(),
                         move |_, _, cx| {
                             v_back.update(cx, |this, cx| {
                                 this.dismiss_omnibar(cx);
@@ -2284,9 +2374,13 @@ impl NavigationBarView {
                             });
                         })),
                     ))
-                    .child(Self::render_nav_btn(
+                    .child(Self::render_nav_btn_with_tooltip(
+                        "nav-forward",
                         "\u{E72A}",
+                        "Forward",
+                        Some("Alt+Right"),
                         can_go_forward,
+                        view.clone(),
                         move |_, _, cx| {
                             v_forward.update(cx, |this, cx| {
                                 this.dismiss_omnibar(cx);
@@ -2301,9 +2395,13 @@ impl NavigationBarView {
                             });
                         })),
                     ))
-                    .child(Self::render_nav_btn(
+                    .child(Self::render_nav_btn_with_tooltip(
+                        "nav-up",
                         "\u{E74A}",
+                        "Up",
+                        Some("Alt+Up"),
                         true,
+                        view.clone(),
                         move |_, _, cx| {
                             v_up.update(cx, |this, cx| {
                                 this.dismiss_omnibar(cx);
@@ -2312,9 +2410,13 @@ impl NavigationBarView {
                         },
                         None,
                     ))
-                    .child(Self::render_nav_btn(
+                    .child(Self::render_nav_btn_with_tooltip(
+                        "nav-refresh",
                         "\u{E72C}",
+                        "Refresh",
+                        Some("F5"),
                         true,
+                        view.clone(),
                         move |_, _, cx| {
                             v_refresh.update(cx, |this, cx| {
                                 this.dismiss_omnibar(cx);

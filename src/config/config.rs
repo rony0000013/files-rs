@@ -524,6 +524,9 @@ pub struct UserPreferences {
     pub enable_smooth_scrolling: bool,
     /// Reverse mouse wheel direction when scrolling tabs
     pub reverse_tab_scroll_direction: bool,
+    /// Show informative tooltips with shortcuts when hovering over buttons and commands
+    #[serde(default = "default_true")]
+    pub show_button_tooltips: bool,
 }
 
 impl Default for UserPreferences {
@@ -558,6 +561,7 @@ impl Default for UserPreferences {
             ctx_show_edit_tags: true,
             enable_smooth_scrolling: true,
             reverse_tab_scroll_direction: false,
+            show_button_tooltips: true,
         }
     }
 }

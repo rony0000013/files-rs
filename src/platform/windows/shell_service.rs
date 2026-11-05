@@ -29,27 +29,48 @@ impl ShellService {
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
-            let wide_op: Vec<u16> = "properties"
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
 
             let target_hwnd = hwnd
                 .filter(|&h| h != 0)
                 .map(|h| windows::Win32::Foundation::HWND(h as *mut _))
                 .unwrap_or_else(|| unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() });
 
-            let mut sei = SHELLEXECUTEINFOW::default();
-            sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-            sei.fMask = SEE_MASK_INVOKEIDLIST;
-            sei.hwnd = target_hwnd;
-            sei.lpVerb = PCWSTR(wide_op.as_ptr());
-            sei.lpFile = PCWSTR(wide_path.as_ptr());
-            sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
+            let opt_hwnd = if target_hwnd.0.is_null() {
+                None
+            } else {
+                Some(target_hwnd)
+            };
 
-            unsafe {
-                ShellExecuteExW(&mut sei)
-                    .map_err(|e| anyhow!("Failed to open properties: {}", e))?;
+            // 1. Prefer SHObjectProperties from Shell32 (SHOP_FILEPATH).
+            // This directly invokes the Shell Property Sheet host for any file or folder path
+            // without requiring or failing on file associations (which fails for folders with dots).
+            let ret = unsafe {
+                windows::Win32::UI::Shell::SHObjectProperties(
+                    opt_hwnd,
+                    windows::Win32::UI::Shell::SHOP_FILEPATH,
+                    PCWSTR(wide_path.as_ptr()),
+                    PCWSTR::null(),
+                )
+            };
+
+            if !ret.as_bool() {
+                unsafe {
+                    // Fallback to ShellExecuteExW with SEE_MASK_INVOKEIDLIST
+                    let wide_op: Vec<u16> = "properties"
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect();
+
+                    let mut sei = SHELLEXECUTEINFOW::default();
+                    sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+                    sei.fMask = SEE_MASK_INVOKEIDLIST;
+                    sei.hwnd = target_hwnd;
+                    sei.lpVerb = PCWSTR(wide_op.as_ptr());
+                    sei.lpFile = PCWSTR(wide_path.as_ptr());
+                    sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
+
+                    let _ = ShellExecuteExW(&mut sei);
+                }
             }
         }
         #[cfg(not(windows))]

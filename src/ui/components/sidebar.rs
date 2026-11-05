@@ -707,10 +707,10 @@ impl SidebarView {
             .left(tooltip_left)
             .top(px(top_offset.max(0.0)))
             .w(px(TOOLTIP_WIDTH))
-            .bg(rgb(0x2C2C2C)) // Slightly lighter than sidebar
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .rounded(px(8.0))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+            .border_color(rgba(0xFFFFFF18u32))
             .shadow_lg()
             .flex_col()
             .p(px(8.0))

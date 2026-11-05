@@ -2242,6 +2242,16 @@ impl crate::ui::components::dialogs::DialogsView {
                     view.clone(),
                 ),
             ))
+            .child(Self::settings_card(
+                Some("\u{E7C5}"),
+                "Show command and button tooltips",
+                Some("Show informative hover tooltips with names and keyboard shortcuts on buttons and icons"),
+                Self::settings_toggle_switch(
+                    config.preferences.show_button_tooltips,
+                    "show_button_tooltips",
+                    view.clone(),
+                ),
+            ))
             .child(Self::settings_section_heading("Behaviors"))
             .child(Self::settings_expander(
                 "folders_single_click",

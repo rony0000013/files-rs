@@ -6,18 +6,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
 
-/// Renders the inline rename input container with WinUI 3 selection highlight and blinking cursor.
+/// Renders the inline rename input container with WinUI 3 selection highlight and smooth stationary cursor.
 pub fn render_inline_rename_element(
     rename_text: &str,
     selected_all: bool,
     cursor_pos: usize,
+) -> AnyElement {
+    render_inline_rename_element_multiline(rename_text, selected_all, cursor_pos, None)
+}
+
+/// Multiline-capable inline rename element for Grid view label boxes (takes full 2-3 row height).
+pub fn render_inline_rename_element_multiline(
+    rename_text: &str,
+    selected_all: bool,
+    cursor_pos: usize,
+    min_height: Option<f32>,
 ) -> AnyElement {
     let chars: Vec<char> = rename_text.chars().collect();
     let pos = cursor_pos.min(chars.len());
     let before: String = chars[..pos].iter().collect();
     let after: String = chars[pos..].iter().collect();
 
-    div()
+    // Zero-width stationary cursor element: doesn't displace characters when moving
+    let cursor_bar = div()
+        .w(px(0.0))
+        .h(px(14.0))
+        .flex_shrink_0()
+        .child(
+            div()
+                .absolute()
+                .left(px(-0.75))
+                .w(px(1.5))
+                .h(px(14.0))
+                .bg(rgb(0xFFFFFF))
+                .with_animation(
+                    "inline-rename-blink",
+                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                ),
+        );
+
+    let mut container = div()
         .bg(rgba(0x1E1E1EFF))
         .border(px(1.0))
         .border_color(rgb(0x60CDFF))
@@ -26,8 +55,19 @@ pub fn render_inline_rename_element(
         .px(px(6.0))
         .py(px(2.0))
         .flex()
-        .flex_row()
-        .items_center()
+        .flex_row();
+
+    if let Some(mh) = min_height {
+        container = container
+            .min_h(px(mh))
+            .w_full()
+            .flex_wrap()
+            .items_start();
+    } else {
+        container = container.items_center();
+    }
+
+    container
         .children(if selected_all {
             vec![
                 div()
@@ -41,16 +81,7 @@ pub fn render_inline_rename_element(
                         rename_text.to_string()
                     })
                     .into_any_element(),
-                div()
-                    .w(px(1.5))
-                    .h(px(14.0))
-                    .bg(rgb(0xFFFFFF))
-                    .with_animation(
-                        "inline-rename-blink",
-                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                    )
-                    .into_any_element(),
+                cursor_bar.into_any_element(),
             ]
         } else {
             vec![
@@ -58,16 +89,7 @@ pub fn render_inline_rename_element(
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(before)
                     .into_any_element(),
-                div()
-                    .w(px(1.5))
-                    .h(px(14.0))
-                    .bg(rgb(0xFFFFFF))
-                    .with_animation(
-                        "inline-rename-blink",
-                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                    )
-                    .into_any_element(),
+                cursor_bar.into_any_element(),
                 div()
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(after)

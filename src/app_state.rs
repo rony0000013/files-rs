@@ -311,6 +311,14 @@ pub struct HoverTooltipData {
     pub item: crate::domain::metadata::FileItem,
 }
 
+/// Data for button/command tooltips shown on hover (with keyboard shortcut)
+#[derive(Debug, Clone)]
+pub struct ButtonTooltipData {
+    pub text: String,
+    pub shortcut: Option<String>,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 /// Tab drag, smooth scroll physics, hover preview, and cross-window docking state.
 #[derive(Clone)]
 pub struct TabDragState {
@@ -476,6 +484,10 @@ pub struct AppWindow {
     pub hover_item_index: Option<usize>,
     /// Hover tooltip state for file preview popup
     pub hover_tooltip: Option<HoverTooltipData>,
+    /// Hover tooltip state for buttons and commands
+    pub button_tooltip: Option<ButtonTooltipData>,
+    /// Active button tooltip timer task
+    pub button_tooltip_task: Option<Task<()>>,
     /// Lightweight hover label for context-menu toolbar buttons and classic
     /// rows: (text, cursor position). Set on row hover, cleared on leave and
     /// whenever the menu closes.

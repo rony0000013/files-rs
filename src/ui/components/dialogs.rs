@@ -768,13 +768,21 @@ impl DialogsView {
                             )
                             .child(
                                 div()
-                                    .w(px(1.5))
+                                    .w(px(0.0))
                                     .h(px(16.0))
-                                    .bg(rgb(0xFFFFFF))
-                                    .with_animation(
-                                        "add-cursor-blink",
-                                        Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                        |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                    .flex_shrink_0()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px(-0.75))
+                                            .w(px(1.5))
+                                            .h(px(16.0))
+                                            .bg(rgb(0xFFFFFF))
+                                            .with_animation(
+                                                "add-cursor-blink",
+                                                Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                                |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                            ),
                                     ),
                             ),
                     ),
@@ -867,13 +875,21 @@ impl DialogsView {
                                         .child(default_placeholder.to_string())
                                         .into_any_element(),
                                     div()
-                                        .w(px(1.5))
+                                        .w(px(0.0))
                                         .h(px(16.0))
-                                        .bg(rgb(0xFFFFFF))
-                                        .with_animation(
-                                            "add-item-cursor-blink",
-                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        .flex_shrink_0()
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-0.75))
+                                                .w(px(1.5))
+                                                .h(px(16.0))
+                                                .bg(rgb(0xFFFFFF))
+                                                .with_animation(
+                                                    "add-item-cursor-blink",
+                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                                ),
                                         )
                                         .into_any_element(),
                                 ]
@@ -888,13 +904,21 @@ impl DialogsView {
                                         .child(name.to_string())
                                         .into_any_element(),
                                     div()
-                                        .w(px(1.5))
+                                        .w(px(0.0))
                                         .h(px(16.0))
-                                        .bg(rgb(0xFFFFFF))
-                                        .with_animation(
-                                            "add-item-cursor-blink",
-                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        .flex_shrink_0()
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-0.75))
+                                                .w(px(1.5))
+                                                .h(px(16.0))
+                                                .bg(rgb(0xFFFFFF))
+                                                .with_animation(
+                                                    "add-item-cursor-blink",
+                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                                ),
                                         )
                                         .into_any_element(),
                                 ]
@@ -906,13 +930,21 @@ impl DialogsView {
                                         .child(name.to_string())
                                         .into_any_element(),
                                     div()
-                                        .w(px(1.5))
+                                        .w(px(0.0))
                                         .h(px(16.0))
-                                        .bg(rgb(0xFFFFFF))
-                                        .with_animation(
-                                            "add-item-cursor-blink",
-                                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                        .flex_shrink_0()
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-0.75))
+                                                .w(px(1.5))
+                                                .h(px(16.0))
+                                                .bg(rgb(0xFFFFFF))
+                                                .with_animation(
+                                                    "add-item-cursor-blink",
+                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                                                ),
                                         )
                                         .into_any_element(),
                                 ]

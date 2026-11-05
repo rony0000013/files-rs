@@ -25,7 +25,7 @@ use crate::ui::views::main_view::{
     MainViewState,
 };
 pub use app_state::{
-    icons_cache_dir, AppState, AppWindow, HoverTooltipData, SidebarDragState,
+    icons_cache_dir, AppState, AppWindow, ButtonTooltipData, HoverTooltipData, SidebarDragState,
     SidebarPinnedDragState, TagState,
 };
 use gpui::*;
@@ -53,6 +53,8 @@ impl AppWindow {
             state,
             hover_item_index: None,
             hover_tooltip: None,
+            button_tooltip: None,
+            button_tooltip_task: None,
             menu_tip: None,
             hover_timer_task: None,
             tab_hover_timer_task: None,
@@ -5976,9 +5978,21 @@ impl AppWindow {
                         created: md.as_ref().and_then(|m| m.created().ok()),
                         tags: Vec::new(),
                     };
-                    this.state.active_dialog =
-                        Some(crate::ui::components::dialogs::DialogType::Properties { item });
-                    cx.notify();
+                    #[cfg(windows)]
+                    {
+                        let hwnd = this.state.window_hwnd;
+                        cx.background_executor()
+                            .spawn(async move {
+                                let _ = crate::platform::windows::shell_service::ShellService::open_properties_with_hwnd(&path, Some(hwnd));
+                            })
+                            .detach();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        this.state.active_dialog =
+                            Some(crate::ui::components::dialogs::DialogType::Properties { item });
+                        cx.notify();
+                    }
                 } else if shift {
                     let dir = if path.as_path().is_file() {
                         path.parent().unwrap_or_else(|| path.clone())
@@ -6814,6 +6828,61 @@ impl AppWindow {
         self.hover_item_index = None;
         self.hover_tooltip = None;
         cx.notify();
+    }
+
+    const BUTTON_TOOLTIP_DELAY_MS: u64 = 750;
+
+    /// Start hover timer for button/command tooltip.
+    pub fn start_button_tooltip(
+        &mut self,
+        text: String,
+        shortcut: Option<String>,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.settings.read(cx).config.preferences.show_button_tooltips {
+            return;
+        }
+
+        if let Some(tip) = &self.button_tooltip {
+            if tip.text == text {
+                return;
+            }
+        }
+
+        self.button_tooltip_task = None;
+
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(Self::BUTTON_TOOLTIP_DELAY_MS))
+                    .await;
+
+                this_weak
+                    .update(&mut async_app, |this, cx| {
+                        this.button_tooltip = Some(ButtonTooltipData {
+                            text,
+                            shortcut,
+                            position,
+                        });
+                        cx.notify();
+                    })
+                    .ok();
+            },
+        );
+
+        self.button_tooltip_task = Some(task);
+    }
+
+    /// Clear button tooltip and cancel pending timer.
+    pub fn stop_button_tooltip(&mut self, cx: &mut Context<Self>) {
+        if self.button_tooltip.is_some() || self.button_tooltip_task.is_some() {
+            self.button_tooltip_task = None;
+            self.button_tooltip = None;
+            cx.notify();
+        }
     }
     /// Returns true if the action was handled.
     pub fn dispatch_action(

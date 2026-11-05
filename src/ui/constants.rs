@@ -33,6 +33,10 @@ impl UiConstants {
     pub const BG_DIALOG_RGB: u32 = 0x2B2B2B;
     pub const BG_DIALOG_RGBA: u32 = 0x2B2B2BF2;
 
+    /// Menus & Flyouts (Sort, Group, Context, Layout, Selection, Tooltips) Acrylic / Mica darkish tint
+    pub const BG_FLYOUT_MICA_RGBA: u32 = 0x181818F2;
+    pub const BG_FLYOUT_MICA_RGB: u32 = 0x181818;
+
     /// Tab Bar background (`App.Theme.BackgroundBrush` = `Transparent` over Mica titlebar)
     pub const BG_TAB_BAR_RGBA: u32 = 0x00000000;
 

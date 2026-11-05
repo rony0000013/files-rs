@@ -1139,10 +1139,11 @@ impl Render for AppWindow {
                 .left(tx)
                 .top(ty)
                 .w(px(tooltip_w))
-                .bg(rgb(0x2B2B2B))
+                .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
                 .border(px(1.0))
-                .border_color(rgb(0x444444))
+                .border_color(rgba(0xFFFFFF18u32))
                 .rounded(px(8.0))
+                .shadow_lg()
                 .py(px(10.0))
                 .px(px(12.0))
                 .overflow_hidden()
@@ -1151,6 +1152,66 @@ impl Render for AppWindow {
             base = base.child(tooltip.with_animation(
                 "tooltip-fade",
                 Animation::new(std::time::Duration::from_millis(120)),
+                |elem, delta| elem.opacity(delta),
+            ));
+        }
+
+        // Render button & command tooltip (at app level, outside overflow containers)
+        if let Some(tip) = &self.button_tooltip {
+            let pos = tip.position;
+            let win_bounds = window.bounds();
+            let win_w = win_bounds.size.width;
+            let win_h = win_bounds.size.height;
+            let mut tx = pos.x + px(4.0);
+            let mut ty = pos.y + px(24.0);
+
+            if tx + px(200.0) > win_w {
+                tx = (win_w - px(210.0)).max(px(8.0));
+            }
+            if ty + px(36.0) > win_h {
+                ty = (pos.y - px(34.0)).max(px(8.0));
+            }
+
+            let mut card = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .font_weight(FontWeight(500.0))
+                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                        .child(tip.text.clone()),
+                );
+
+            if let Some(sc) = &tip.shortcut {
+                card = card.child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(sc.clone()),
+                );
+            }
+
+            let tooltip_elem = div()
+                .absolute()
+                .left(tx)
+                .top(ty)
+                .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
+                .border(px(1.0))
+                .border_color(rgba(0xFFFFFF18u32))
+                .rounded(px(6.0))
+                .shadow_md()
+                .py(px(4.0))
+                .px(px(8.0))
+                .child(card);
+
+            base = base.child(tooltip_elem.with_animation(
+                "btn-tooltip-fade",
+                Animation::new(std::time::Duration::from_millis(100)),
                 |elem, delta| elem.opacity(delta),
             ));
         }
