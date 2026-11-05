@@ -1086,30 +1086,39 @@ impl AppWindow {
                     self.refresh_omnibar_suggestions(cx);
                 }
                 _ => {
-                    if !ctrl && !alt && !keystroke.modifiers.platform && key.chars().count() == 1 {
-                        // Prefix mode switching: typing `>` or `?` at start of Path Mode switches to
-                        // Command Palette or Search Mode automatically!
-                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Path)
-                            && (self.state.nav_bar.selection_all
-                                || self.state.nav_bar.edit_text.is_empty())
-                        {
-                            if key == ">" {
-                                self.activate_omnibar_command_mode(cx);
-                                return;
-                            } else if key == "?" {
-                                self.activate_omnibar_search_mode(cx);
-                                return;
+                    if !ctrl && !alt && !keystroke.modifiers.platform {
+                        let typed_str = keystroke.key_char.as_deref().unwrap_or(key);
+                        if let Some(mut ch) = typed_str.chars().next() {
+                            if shift && ch.is_ascii_lowercase() {
+                                ch = ch.to_ascii_uppercase();
+                            }
+                            if !ch.is_control() && (typed_str.chars().count() == 1 || key.chars().count() == 1) {
+                                let insert_str = ch.to_string();
+                                // Prefix mode switching: typing `>` or `?` at start of Path Mode switches to
+                                // Command Palette or Search Mode automatically!
+                                if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Path)
+                                    && (self.state.nav_bar.selection_all
+                                        || self.state.nav_bar.edit_text.is_empty())
+                                {
+                                    if insert_str == ">" {
+                                        self.activate_omnibar_command_mode(cx);
+                                        return;
+                                    } else if insert_str == "?" {
+                                        self.activate_omnibar_search_mode(cx);
+                                        return;
+                                    }
+                                }
+
+                                self.state.nav_bar.insert_text(&insert_str);
+                                self.state.nav_bar.selected_suggestion_index = None;
+                                self.state.nav_bar.show_suggestions = true;
+                                if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                                    let query = self.state.nav_bar.search_query.clone();
+                                    self.update_search(query, cx);
+                                }
+                                self.refresh_omnibar_suggestions(cx);
                             }
                         }
-
-                        self.state.nav_bar.insert_text(key);
-                        self.state.nav_bar.selected_suggestion_index = None;
-                        self.state.nav_bar.show_suggestions = true;
-                        if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                            let query = self.state.nav_bar.search_query.clone();
-                            self.update_search(query, cx);
-                        }
-                        self.refresh_omnibar_suggestions(cx);
                     }
                 }
             }
@@ -1544,22 +1553,33 @@ impl AppWindow {
                     if !keystroke.modifiers.control
                         && !keystroke.modifiers.alt
                         && !keystroke.modifiers.platform
-                        && keystroke.key.chars().count() == 1
                     {
-                        let ch = keystroke.key.chars().next().unwrap();
-                        let view = self.state.active_view_mut();
-                        if view.rename_selected_all {
-                            view.rename_text = ch.to_string();
-                            view.rename_selected_all = false;
-                            view.rename_cursor_pos = 1;
-                        } else {
-                            let mut chars: Vec<char> = view.rename_text.chars().collect();
-                            let pos = view.rename_cursor_pos.min(chars.len());
-                            chars.insert(pos, ch);
-                            view.rename_cursor_pos = pos + 1;
-                            view.rename_text = chars.into_iter().collect();
+                        // In GPUI, keystroke.key_char contains the typed character (accounting for Shift, CapsLock, layout)
+                        let typed_str = keystroke.key_char.as_deref().unwrap_or(keystroke.key.as_str());
+                        if let Some(mut ch) = typed_str.chars().next() {
+                            if keystroke.modifiers.shift && ch.is_ascii_lowercase() {
+                                ch = ch.to_ascii_uppercase();
+                            }
+                            // Filter control codes and Windows invalid filename characters: \ / : * ? " < > |
+                            if !ch.is_control()
+                                && !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&ch)
+                                && (typed_str.chars().count() == 1 || keystroke.key.chars().count() == 1)
+                            {
+                                let view = self.state.active_view_mut();
+                                if view.rename_selected_all {
+                                    view.rename_text = ch.to_string();
+                                    view.rename_selected_all = false;
+                                    view.rename_cursor_pos = 1;
+                                } else {
+                                    let mut chars: Vec<char> = view.rename_text.chars().collect();
+                                    let pos = view.rename_cursor_pos.min(chars.len());
+                                    chars.insert(pos, ch);
+                                    view.rename_cursor_pos = pos + 1;
+                                    view.rename_text = chars.into_iter().collect();
+                                }
+                                cx.notify();
+                            }
                         }
-                        cx.notify();
                     }
                 }
             }

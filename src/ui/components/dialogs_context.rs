@@ -508,7 +508,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             for e in entries.iter() {
                                 menu_h += if e.separator { 9.0 } else { 29.0 };
                             }
-                            let inline = Self::classic_rows(
+                            let (inline, child_panel) = Self::classic_rows(
                                 entries,
                                 &classic_open,
                                 &[],
@@ -525,6 +525,9 @@ impl crate::ui::components::dialogs::DialogsView {
                             );
                             for row in inline {
                                 menu = menu.child(row);
+                            }
+                            if let Some(child) = child_panel {
+                                menu = menu.child(child);
                             }
                         }
                         Some(_) => {
@@ -734,7 +737,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             for e in entries.iter() {
                                 menu_h += if e.separator { 9.0 } else { 29.0 };
                             }
-                            let inline = Self::classic_rows(
+                            let (inline, child_panel) = Self::classic_rows(
                                 entries,
                                 &classic_open,
                                 &[],
@@ -751,6 +754,9 @@ impl crate::ui::components::dialogs::DialogsView {
                             );
                             for row in inline {
                                 menu = menu.child(row);
+                            }
+                            if let Some(child) = child_panel {
+                                menu = menu.child(child);
                             }
                         }
                         Some(_) => {
@@ -2063,7 +2069,6 @@ impl crate::ui::components::dialogs::DialogsView {
         panel
     }
 
-
     /// "Show more options" flyout: the real classic shell items with their
     /// real extension icons, expanded inline on hover (Files parity).
     pub(crate) fn classic_submenu(
@@ -2107,7 +2112,7 @@ impl crate::ui::components::dialogs::DialogsView {
         }
         let panel_abs_top = row_abs_y + adjusted_top;
 
-        let rows: Vec<gpui::Stateful<Div>> = match classic {
+        let (rows, child_panel): (Vec<gpui::Stateful<Div>>, Option<gpui::Stateful<Div>>) = match classic {
             Some(entries) if !entries.is_empty() => {
                 let mut next_id: usize = 0;
                 Self::classic_rows(
@@ -2127,10 +2132,10 @@ impl crate::ui::components::dialogs::DialogsView {
                 )
             }
             Some(_) => {
-                vec![Self::classic_note_row("(No extended options)", &mut 0usize)]
+                (vec![Self::classic_note_row("(No extended options)", &mut 0usize)], None)
             }
-            None if loading => vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)],
-            None => vec![Self::classic_note_row("(Unavailable)", &mut 0usize)],
+            None if loading => (vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)], None),
+            None => (vec![Self::classic_note_row("(Unavailable)", &mut 0usize)], None),
         };
 
         let mut panel = div()
@@ -2175,6 +2180,9 @@ impl crate::ui::components::dialogs::DialogsView {
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         for row in rows {
             panel = panel.child(row);
+        }
+        if let Some(child) = child_panel {
+            panel = panel.child(child);
         }
         panel
     }
@@ -2293,8 +2301,9 @@ impl crate::ui::components::dialogs::DialogsView {
         win_w: f32,
         win_h: f32,
         flipped_left: bool,
-    ) -> Vec<gpui::Stateful<Div>> {
+    ) -> (Vec<gpui::Stateful<Div>>, Option<gpui::Stateful<Div>>) {
         let mut rows = Vec::new();
+        let mut active_child_panel: Option<gpui::Stateful<Div>> = None;
         let mut acc_h = 0.0f32;
         for (i, entry) in entries.iter().enumerate() {
             let row_off = acc_h;
@@ -2423,6 +2432,8 @@ impl crate::ui::components::dialogs::DialogsView {
                 wrapper = wrapper
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             }
+            rows.push(wrapper);
+
             if show_kids {
                 // Nested panel geometry: cascade with collision detection & WinUI 3 placement
                 let child_w = 240.0f32;
@@ -2460,7 +2471,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 let child_abs_top = row_abs_y + adjusted_top;
 
                 let mut nid = *next_id;
-                let kids = Self::classic_rows(
+                let (kids, grandchild_panel) = Self::classic_rows(
                     &entry.children,
                     open,
                     &path,
@@ -2478,11 +2489,11 @@ impl crate::ui::components::dialogs::DialogsView {
                 *next_id = nid;
                 let mut nested = div()
                     .absolute()
-                    .top(px(adjusted_top))
+                    .top(px(row_off + adjusted_top))
                     .left(px(child_rel_left))
                     .w(px(child_w))
                     .flex_col()
-                    .bg(rgba(0x202020FE))
+                    .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
                     .border(px(1.0))
                     .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
                     .rounded(px(8.0))
@@ -2525,11 +2536,13 @@ impl crate::ui::components::dialogs::DialogsView {
                 for row in kids {
                     nested = nested.child(row);
                 }
-                wrapper = wrapper.child(nested);
+                if let Some(grandchild) = grandchild_panel {
+                    nested = nested.child(grandchild);
+                }
+                active_child_panel = Some(nested);
             }
-            rows.push(wrapper);
         }
-        rows
+        (rows, active_child_panel)
     }
 
     /// Layout › flyout (Details / List / Grid / Columns).
