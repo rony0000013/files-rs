@@ -550,6 +550,15 @@ impl DialogsView {
 
         // Modal overlay
         let is_zoom = matches!(dialog, DialogType::ZoomSlider { .. });
+        let is_popup_menu = matches!(
+            dialog,
+            DialogType::ContextMenu { .. }
+                | DialogType::TabContextMenu { .. }
+                | DialogType::TabActionsDropdown { .. }
+                | DialogType::SidebarContextMenu { .. }
+                | DialogType::ColumnVisibilityMenu { .. }
+                | DialogType::SiblingDropdown { .. }
+        );
         let v_overlay_close = view.clone();
 
         // For ZoomSlider, add drag handlers to the overlay so they capture
@@ -593,15 +602,6 @@ impl DialogsView {
                     });
                 });
         } else {
-            let is_popup_menu = matches!(
-                dialog,
-                DialogType::ContextMenu { .. }
-                    | DialogType::TabContextMenu { .. }
-                    | DialogType::TabActionsDropdown { .. }
-                    | DialogType::SidebarContextMenu { .. }
-                    | DialogType::ColumnVisibilityMenu { .. }
-                    | DialogType::SiblingDropdown { .. }
-            );
             if !is_popup_menu {
                 // WinUI 3 ContentDialog Smoke backdrop
                 overlay = overlay.bg(rgba(0x00000075u32));
@@ -620,14 +620,34 @@ impl DialogsView {
         }
 
         let mut container = div()
-            .bg(rgb(0x202020))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            .rounded(px(8.0))
-            .shadow_lg()
             // Stop clicks on the dialog itself from bubbling up to the overlay and closing it
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(content);
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+
+        if is_popup_menu {
+            match dialog {
+                DialogType::ContextMenu { .. } => {
+                    // ContextMenu manages its own container div with BG_FLYOUT_MICA_RGBA
+                    // and SURFACE_STROKE_FLYOUT_RGBA to avoid duplicate borders or opaque backplates
+                }
+                _ => {
+                    container = container
+                        .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
+                        .border(px(1.0))
+                        .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
+                        .rounded(px(8.0))
+                        .shadow_lg();
+                }
+            }
+        } else {
+            container = container
+                .bg(rgba(UiConstants::BG_DIALOG_RGBA))
+                .border(px(1.0))
+                .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                .rounded(px(8.0))
+                .shadow_lg();
+        }
+
+        container = container.child(content);
 
         // For ZoomSlider, let mouse_move pass through so the drag handler can receive it.
         if !is_zoom {

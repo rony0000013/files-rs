@@ -310,6 +310,7 @@ impl MainViewState {
                     &main_state.rename_text,
                     main_state.rename_selected_all,
                     main_state.rename_cursor_pos,
+                    v.clone(),
                 )
             } else {
                 div()
@@ -927,6 +928,7 @@ impl MainViewState {
                                 move |event, window, cx| {
                                     v.update(cx, |this, cx| {
                                         this.focus_pane(pane_focus, cx);
+                                        this.commit_rename_if_active(cx);
                                         this.clear_selection(cx);
                                         this.show_context_menu(None, event.position, window, cx);
                                     });
@@ -941,6 +943,7 @@ impl MainViewState {
                                         event.modifiers.control || event.modifiers.shift;
                                     v.update(cx, |this, cx| {
                                         this.focus_pane(pane_focus, cx);
+                                        this.commit_rename_if_active(cx);
                                         this.start_lasso_in_pane(
                                             pane_focus,
                                             pos,

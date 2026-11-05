@@ -2827,11 +2827,27 @@ impl AppWindow {
     }
 
     pub fn commit_rename(&mut self, cx: &mut Context<Self>) {
-        let pane_focus = self.state.active_pane_focus();
+        let active_focus = self.state.active_pane_focus();
+        let target_pane = if self.state.pane_view(active_focus).renaming_index.is_some() {
+            Some(active_focus)
+        } else if self.state.main_view.renaming_index.is_some() {
+            Some(crate::core::navigation_manager::PaneFocus::Primary)
+        } else if self.state.secondary_view.renaming_index.is_some() {
+            Some(crate::core::navigation_manager::PaneFocus::Secondary)
+        } else {
+            None
+        };
+
+        let Some(pane_focus) = target_pane else {
+            return;
+        };
+
         let rename_info = {
             let view = self.state.pane_view_mut(pane_focus);
             if let Some(idx) = view.renaming_index.take() {
                 let new_name = view.rename_text.trim().to_string();
+                view.rename_selected_all = false;
+                view.rename_cursor_pos = 0;
                 view.items.get(idx).map(|item| (idx, item.path.clone(), item.name.clone(), new_name))
             } else {
                 None
@@ -2868,6 +2884,10 @@ impl AppWindow {
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         self.state.main_view.renaming_index = None;
         self.state.secondary_view.renaming_index = None;
+        self.state.main_view.rename_selected_all = false;
+        self.state.secondary_view.rename_selected_all = false;
+        self.state.main_view.rename_cursor_pos = 0;
+        self.state.secondary_view.rename_cursor_pos = 0;
         cx.notify();
     }
 
@@ -3274,6 +3294,9 @@ impl AppWindow {
                 weak
                     .update(&mut async_app, |this, cx| {
                         if this.submenu_grace_gen == grace {
+                            if this.submenu_panel_hovered || this.submenu_row_hovered {
+                                return;
+                            }
                             close(this, cx);
                         }
                     })
@@ -4242,6 +4265,7 @@ impl AppWindow {
     }
 
     pub fn toggle_toolbar_flyout(&mut self, flyout_id: &str, cx: &mut Context<Self>) {
+        self.commit_rename_if_active(cx);
         if self.state.main_view.toolbar_customization.active_flyout.as_deref() == Some(flyout_id) {
             self.state.main_view.toolbar_customization.active_flyout = None;
         } else {

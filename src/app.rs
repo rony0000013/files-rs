@@ -61,6 +61,8 @@ impl AppWindow {
             menu_task: None,
             submenu_grace: None,
             submenu_grace_gen: 0,
+            submenu_panel_hovered: false,
+            submenu_row_hovered: false,
             submenu_intent: None,
             submenu_intent_gen: 0,
             sidebar_pinned_drag: None,
@@ -488,6 +490,48 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Commit any active rename across primary or secondary pane if in progress
+    pub fn commit_rename_if_active(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.renaming_index.is_some()
+            || self.state.secondary_view.renaming_index.is_some()
+        {
+            self.commit_rename(cx);
+        }
+    }
+}
+
+fn prev_word_boundary(text: &str, cur: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    if cur == 0 || chars.is_empty() {
+        return 0;
+    }
+    let mut i = cur.min(chars.len());
+    while i > 0 && !chars[i - 1].is_alphanumeric() {
+        i -= 1;
+    }
+    while i > 0 && chars[i - 1].is_alphanumeric() {
+        i -= 1;
+    }
+    i
+}
+
+fn next_word_boundary(text: &str, cur: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    if cur >= len {
+        return len;
+    }
+    let mut i = cur;
+    while i < len && chars[i].is_alphanumeric() {
+        i += 1;
+    }
+    while i < len && !chars[i].is_alphanumeric() {
+        i += 1;
+    }
+    i
+}
+
+impl AppWindow {
     /// Handle a keyboard event by dispatching to the appropriate handler.
     pub fn handle_key_event(
         &mut self,
@@ -1176,6 +1220,49 @@ impl AppWindow {
         }) = self.state.active_dialog
         {
             let key = keystroke.key.as_str();
+            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+            if is_ctrl {
+                match key {
+                    "a" | "A" => {
+                        *selected_all = true;
+                        cx.notify();
+                    }
+                    "c" | "C" => {
+                        if !name.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
+                        }
+                    }
+                    "x" | "X" => {
+                        if *selected_all && !name.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
+                            name.clear();
+                            *selected_all = false;
+                            cx.notify();
+                        }
+                    }
+                    "v" | "V" => {
+                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                            let clean: String = clip
+                                .chars()
+                                .filter(|c| !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+                                .collect();
+                            if !clean.is_empty() {
+                                if *selected_all {
+                                    *name = clean;
+                                    *selected_all = false;
+                                } else {
+                                    name.push_str(&clean);
+                                }
+                                cx.notify();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
             match key {
                 "escape" | "Escape" => {
                     self.close_dialog(cx);
@@ -1231,9 +1318,112 @@ impl AppWindow {
             return;
         }
 
-        // Intercept inline renaming input typing (in either pane)
+        // Intercept inline renaming input typing (in either pane) - Zed inspired text editing
         if self.state.active_view().renaming_index.is_some() {
             let key = keystroke.key.as_str();
+            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+            if is_ctrl {
+                match key {
+                    "a" | "A" => {
+                        let view = self.state.active_view_mut();
+                        view.rename_selected_all = true;
+                        view.rename_cursor_pos = view.rename_text.chars().count();
+                        cx.notify();
+                    }
+                    "c" | "C" => {
+                        let view = self.state.active_view();
+                        if view.rename_selected_all && !view.rename_text.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(view.rename_text.clone()));
+                        }
+                    }
+                    "x" | "X" => {
+                        let view = self.state.active_view_mut();
+                        if view.rename_selected_all && !view.rename_text.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(view.rename_text.clone()));
+                            view.rename_text.clear();
+                            view.rename_selected_all = false;
+                            view.rename_cursor_pos = 0;
+                            cx.notify();
+                        }
+                    }
+                    "v" | "V" => {
+                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                            let clean: String = clip
+                                .chars()
+                                .filter(|c| !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+                                .collect();
+                            if !clean.is_empty() {
+                                let view = self.state.active_view_mut();
+                                if view.rename_selected_all {
+                                    view.rename_text = clean.clone();
+                                    view.rename_selected_all = false;
+                                    view.rename_cursor_pos = clean.chars().count();
+                                } else {
+                                    let mut chars: Vec<char> = view.rename_text.chars().collect();
+                                    let pos = view.rename_cursor_pos.min(chars.len());
+                                    for (offset, ch) in clean.chars().enumerate() {
+                                        chars.insert(pos + offset, ch);
+                                    }
+                                    view.rename_cursor_pos = pos + clean.chars().count();
+                                    view.rename_text = chars.into_iter().collect();
+                                }
+                                cx.notify();
+                            }
+                        }
+                    }
+                    "left" | "Left" => {
+                        let view = self.state.active_view_mut();
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = prev_word_boundary(&view.rename_text, view.rename_cursor_pos);
+                        cx.notify();
+                    }
+                    "right" | "Right" => {
+                        let view = self.state.active_view_mut();
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = next_word_boundary(&view.rename_text, view.rename_cursor_pos);
+                        cx.notify();
+                    }
+                    "backspace" | "Backspace" => {
+                        let view = self.state.active_view_mut();
+                        if view.rename_selected_all {
+                            view.rename_text.clear();
+                            view.rename_selected_all = false;
+                            view.rename_cursor_pos = 0;
+                        } else {
+                            let prev = prev_word_boundary(&view.rename_text, view.rename_cursor_pos);
+                            let mut chars: Vec<char> = view.rename_text.chars().collect();
+                            let cur = view.rename_cursor_pos.min(chars.len());
+                            if prev < cur {
+                                chars.drain(prev..cur);
+                                view.rename_cursor_pos = prev;
+                                view.rename_text = chars.into_iter().collect();
+                            }
+                        }
+                        cx.notify();
+                    }
+                    "delete" | "Delete" => {
+                        let view = self.state.active_view_mut();
+                        if view.rename_selected_all {
+                            view.rename_text.clear();
+                            view.rename_selected_all = false;
+                            view.rename_cursor_pos = 0;
+                        } else {
+                            let next = next_word_boundary(&view.rename_text, view.rename_cursor_pos);
+                            let mut chars: Vec<char> = view.rename_text.chars().collect();
+                            let cur = view.rename_cursor_pos.min(chars.len());
+                            if cur < next {
+                                chars.drain(cur..next.min(chars.len()));
+                                view.rename_text = chars.into_iter().collect();
+                            }
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
             match key {
                 "escape" | "Escape" => {
                     self.cancel_rename(cx);
@@ -2401,6 +2591,7 @@ impl AppWindow {
         if !changed {
             return;
         }
+        self.commit_rename_if_active(cx);
         self.state.main_view.active_pane = effective;
         self.state.secondary_view.active_pane = effective;
         self.state.navigation.update(cx, |nav, _cx| {
@@ -6241,6 +6432,8 @@ impl AppWindow {
         self.menu_tip = None;
         self.submenu_grace = None;
         self.submenu_intent = None;
+        self.submenu_panel_hovered = false;
+        self.submenu_row_hovered = false;
         cx.notify();
     }
 
@@ -6830,7 +7023,7 @@ impl AppWindow {
         cx.notify();
     }
 
-    const BUTTON_TOOLTIP_DELAY_MS: u64 = 750;
+    const BUTTON_TOOLTIP_DELAY_MS: u64 = 1250;
 
     /// Start hover timer for button/command tooltip.
     pub fn start_button_tooltip(

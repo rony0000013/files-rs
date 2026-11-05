@@ -50,13 +50,13 @@ impl crate::ui::components::dialogs::DialogsView {
         // - max height 480px
         let mut menu = div()
             .flex_col()
-            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA)) // LayerFillColorDefault dark (#1A1A1A @ F2)
+            .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0))
-            .w(px(292.0));
+            .w(px(284.0));
         // Running content height + the ShowMore row offset (for flyout
         // geometry: bottom-anchored tall panels + on-screen caps). Starts
         // with chrome: py(4) top + toolbar(~34 incl. separator) on item
@@ -878,22 +878,29 @@ impl crate::ui::components::dialogs::DialogsView {
         div()
             .flex()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .py(px(5.0))
+            .gap(px(10.0))
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
             .on_mouse_down(MouseButton::Left, on_click)
             .child(
                 div()
-                    .text_size(px(16.0))
+                    .w(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.0))
                     .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(13.0))
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.into()),
             )
@@ -909,21 +916,29 @@ impl crate::ui::components::dialogs::DialogsView {
         div()
             .flex()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .py(px(10.0))
+            .gap(px(10.0))
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(44.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
             .on_mouse_down(MouseButton::Left, on_click)
             .child(
                 div()
+                    .w(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_size(px(16.0))
+                    .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(13.5))
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.to_string()),
             )
@@ -940,37 +955,44 @@ impl crate::ui::components::dialogs::DialogsView {
             MenuTrailing::None => None,
             MenuTrailing::Hint(hint) => Some(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(rgba(0xFFFFFF60u32))
+                    .text_size(px(11.5))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
                     .child(hint.to_string()),
             ),
             MenuTrailing::Chevron => Some(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .font_family(UiConstants::FONT_MDL2)
-                    .text_color(rgba(0xFFFFFF60u32))
+                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
                     .child("\u{E76C}"),
             ),
         };
         div()
             .flex()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .py(px(5.0))
+            .gap(px(10.0))
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
             .on_mouse_down(MouseButton::Left, on_click)
             .child(
                 div()
-                    .text_size(px(16.0))
+                    .w(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.0))
                     .font_family(UiConstants::FONT_MDL2)
                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                     .child(glyph.to_string()),
             )
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(13.0))
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.to_string()),
             )
@@ -2045,11 +2067,14 @@ impl crate::ui::components::dialogs::DialogsView {
             // panel (or returning to the row) cancels it.
             if *hovering {
                 v_hover.update(cx, |this, cx| {
+                    this.submenu_row_hovered = true;
+                    this.submenu_grace_cancel();
                     this.set_open_submenu_intent(kind, cx);
                 });
             } else {
                 let v = v_hover.clone();
                 v.update(cx, |this, cx| {
+                    this.submenu_row_hovered = false;
                     this.submenu_grace_close(
                         |this, cx| this.set_open_submenu(None, cx),
                         cx,
@@ -2071,16 +2096,16 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
-        let left = if flip { -222.0 } else { 290.0 };
+        let left = if flip { -216.0 } else { 280.0 };
         let mut panel = div()
             .absolute()
-            .top(px(-8.0))
+            .top(px(-4.0))
             .left(px(left))
             .w(px(220.0))
             .flex_col()
             .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0))
@@ -2090,11 +2115,14 @@ impl crate::ui::components::dialogs::DialogsView {
                 // once it truly leaves, so diagonal entry never kills it.
                 if *hovering {
                     v.update(cx, |this, cx| {
+                        this.submenu_panel_hovered = true;
+                        this.submenu_grace_cancel();
                         this.set_open_submenu(Some(kind), cx);
                     });
                 } else {
                     let v2 = v.clone();
                     v2.update(cx, |this, cx| {
+                        this.submenu_panel_hovered = false;
                         this.submenu_grace_close(
                             |this, cx| this.set_open_submenu(None, cx),
                             cx,
@@ -2151,7 +2179,7 @@ impl crate::ui::components::dialogs::DialogsView {
             None if loading => vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)],
             None => vec![Self::classic_note_row("(Unavailable)", &mut 0usize)],
         };
-        let left = if flip { -262.0 } else { 290.0 };
+        let left = if flip { -256.0 } else { 280.0 };
         let scroll = fly_h > max_h;
         let mut panel = div()
             .absolute()
@@ -2161,7 +2189,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .flex_col()
             .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
-            .border_color(rgba(UiConstants::STROKE_RGBA))
+            .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0));
@@ -2178,11 +2206,14 @@ impl crate::ui::components::dialogs::DialogsView {
                 move |hovering: &bool, _, cx| {
                     if *hovering {
                         v.update(cx, |this, cx| {
+                            this.submenu_panel_hovered = true;
+                            this.submenu_grace_cancel();
                             this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
                         });
                     } else {
                         let v2 = v.clone();
                         v2.update(cx, |this, cx| {
+                            this.submenu_panel_hovered = false;
                             this.submenu_grace_close(
                                 |this, cx| this.set_open_submenu(None, cx),
                                 cx,
@@ -2477,7 +2508,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     .flex_col()
                     .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
                     .border(px(1.0))
-                    .border_color(rgba(UiConstants::STROKE_RGBA))
+                    .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
                     .rounded(px(8.0))
                     .shadow_lg()
                     .py(px(4.0));
@@ -2499,12 +2530,15 @@ impl crate::ui::components::dialogs::DialogsView {
                             if *hovering {
                                 let keep = keep.clone();
                                 v.update(cx, |this, cx| {
+                                    this.submenu_panel_hovered = true;
+                                    this.submenu_grace_cancel();
                                     this.set_classic_open(keep, cx)
                                 });
                             } else {
                                 let v2 = v.clone();
                                 let up = up.clone();
                                 v2.update(cx, |this, cx| {
+                                    this.submenu_panel_hovered = false;
                                     this.submenu_grace_close(
                                         move |this, cx| this.set_classic_open(up, cx),
                                         cx,

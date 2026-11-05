@@ -26,6 +26,7 @@ impl AppWindow {
         pane_focus: PaneFocus,
         cx: &mut Context<Self>,
     ) {
+        self.commit_rename_if_active(cx);
         let is_secondary = pane_focus == PaneFocus::Secondary
             && self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
 

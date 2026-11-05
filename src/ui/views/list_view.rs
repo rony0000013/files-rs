@@ -254,7 +254,7 @@ impl MainViewState {
         }
 
         if is_checkbox && !lod_fast {
-            let v_cb = view_row;
+            let v_cb = view_row.clone();
             cell = cell.child(
                 div()
                     .w(px(16.0))
@@ -354,6 +354,7 @@ impl MainViewState {
                             &main_state.rename_text,
                             main_state.rename_selected_all,
                             main_state.rename_cursor_pos,
+                            view_row.clone(),
                         )
                     } else {
                         display_label.into_any_element()
@@ -401,6 +402,7 @@ impl MainViewState {
                 move |event, window, cx| {
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.clear_selection(cx);
                         this.show_context_menu(None, event.position, window, cx);
                     });
@@ -413,6 +415,7 @@ impl MainViewState {
                     let additive = event.modifiers.control || event.modifiers.shift;
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                     });
                 }
@@ -717,6 +720,7 @@ impl MainViewState {
                 move |event, window, cx| {
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.clear_selection(cx);
                         this.show_context_menu(None, event.position, window, cx);
                     });
@@ -729,6 +733,7 @@ impl MainViewState {
                     let additive = event.modifiers.control || event.modifiers.shift;
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                     });
                 }
@@ -1040,6 +1045,7 @@ impl MainViewState {
                 move |event, window, cx| {
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.clear_selection(cx);
                         this.show_context_menu(None, event.position, window, cx);
                     });
@@ -1052,6 +1058,7 @@ impl MainViewState {
                     let additive = event.modifiers.control || event.modifiers.shift;
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                     });
                 }
@@ -1414,7 +1421,7 @@ impl MainViewState {
                 }
             })
             .on_mouse_down(MouseButton::Right, {
-                let v = view;
+                let v = view.clone();
                 move |ev, window, cx| {
                     cx.stop_propagation();
                     v.update(cx, |this, cx| {
@@ -1537,6 +1544,7 @@ impl MainViewState {
                                 &main_state.rename_text,
                                 main_state.rename_selected_all,
                                 main_state.rename_cursor_pos,
+                                view.clone(),
                             )
                         } else {
                             div()

@@ -225,6 +225,7 @@ impl MainViewState {
                     let additive = event.modifiers.control || event.modifiers.shift;
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                     });
                 }
@@ -555,6 +556,7 @@ impl MainViewState {
                     let additive = event.modifiers.control || event.modifiers.shift;
                     v.update(cx, |this, cx| {
                         this.focus_pane(pane_focus, cx);
+                        this.commit_rename_if_active(cx);
                         this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                     });
                 }
@@ -1100,6 +1102,7 @@ impl MainViewState {
                             rename_selected_all,
                             rename_cursor_pos,
                             Some(label_box_h),
+                            view.clone(),
                         )
                     } else {
                         display_label.into_any_element()

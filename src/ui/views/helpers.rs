@@ -11,8 +11,9 @@ pub fn render_inline_rename_element(
     rename_text: &str,
     selected_all: bool,
     cursor_pos: usize,
+    view: Entity<crate::app::AppWindow>,
 ) -> AnyElement {
-    render_inline_rename_element_multiline(rename_text, selected_all, cursor_pos, None)
+    render_inline_rename_element_multiline(rename_text, selected_all, cursor_pos, None, view)
 }
 
 /// Multiline-capable inline rename element for Grid view label boxes (takes full 2-3 row height).
@@ -21,6 +22,7 @@ pub fn render_inline_rename_element_multiline(
     selected_all: bool,
     cursor_pos: usize,
     min_height: Option<f32>,
+    view: Entity<crate::app::AppWindow>,
 ) -> AnyElement {
     let chars: Vec<char> = rename_text.chars().collect();
     let pos = cursor_pos.min(chars.len());
@@ -55,7 +57,24 @@ pub fn render_inline_rename_element_multiline(
         .px(px(6.0))
         .py(px(2.0))
         .flex()
-        .flex_row();
+        .flex_row()
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, {
+            let v = view.clone();
+            move |ev, _, cx| {
+                cx.stop_propagation();
+                v.update(cx, |this, cx| {
+                    let view_state = this.state.active_view_mut();
+                    if ev.click_count == 2 {
+                        view_state.rename_selected_all = true;
+                        view_state.rename_cursor_pos = view_state.rename_text.chars().count();
+                    } else {
+                        view_state.rename_selected_all = false;
+                    }
+                    cx.notify();
+                });
+            }
+        });
 
     if let Some(mh) = min_height {
         container = container

@@ -502,6 +502,9 @@ pub struct AppWindow {
     /// whenever the cursor re-enters a row or panel.
     pub submenu_grace: Option<Task<()>>,
     pub submenu_grace_gen: u64,
+    /// Hover tracking to prevent race conditions during submenu travel
+    pub submenu_panel_hovered: bool,
+    pub submenu_row_hovered: bool,
     /// Pending submenu *switch* timer + generation (hover intent).
     pub submenu_intent: Option<Task<()>>,
     pub submenu_intent_gen: u64,

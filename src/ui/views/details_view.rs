@@ -216,7 +216,7 @@ impl MainView {
             .gap(px(8.0));
 
         if is_checkbox && !lod_fast {
-            let v_cb = view_row;
+            let v_cb = view_row.clone();
             name_row = name_row.child(
                 div()
                     .w(px(18.0))
@@ -317,6 +317,7 @@ impl MainView {
                             rename_text,
                             main_state.rename_selected_all,
                             main_state.rename_cursor_pos,
+                            view_row.clone(),
                         )
                     } else {
                         div()
@@ -451,6 +452,7 @@ impl MainView {
                         move |event, window, cx| {
                             v.update(cx, |this, cx| {
                                 this.focus_pane(pane_focus, cx);
+                                this.commit_rename_if_active(cx);
                                 this.clear_selection(cx);
                                 this.show_context_menu(None, event.position, window, cx);
                             });
@@ -463,6 +465,7 @@ impl MainView {
                             let additive = event.modifiers.control || event.modifiers.shift;
                             v.update(cx, |this, cx| {
                                 this.focus_pane(pane_focus, cx);
+                                this.commit_rename_if_active(cx);
                                 this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                             });
                         }
@@ -746,6 +749,7 @@ impl MainView {
                         move |event, window, cx| {
                             v.update(cx, |this, cx| {
                                 this.focus_pane(pane_focus, cx);
+                                this.commit_rename_if_active(cx);
                                 this.clear_selection(cx);
                                 this.show_context_menu(None, event.position, window, cx);
                             });
@@ -758,6 +762,7 @@ impl MainView {
                             let additive = event.modifiers.control || event.modifiers.shift;
                             v.update(cx, |this, cx| {
                                 this.focus_pane(pane_focus, cx);
+                                this.commit_rename_if_active(cx);
                                 this.start_lasso_in_pane(pane_focus, pos, list_origin, additive, cx);
                             });
                         }
