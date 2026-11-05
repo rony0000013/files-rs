@@ -1458,6 +1458,7 @@ impl NavigationBarView {
         row = row.child(
             div()
                 .text_size(px(13.0))
+                .font_family(UiConstants::FONT_MAIN)
                 .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                 .whitespace_nowrap()
                 .child(before),
@@ -1465,6 +1466,7 @@ impl NavigationBarView {
         row = row.child(
             div()
                 .w(px(0.0))
+                .min_w(px(0.0))
                 .h(px(16.0))
                 .flex_shrink_0()
                 .child(
@@ -1480,6 +1482,7 @@ impl NavigationBarView {
             row = row.child(
                 div()
                     .text_size(px(13.0))
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .whitespace_nowrap()
                     .child(after),

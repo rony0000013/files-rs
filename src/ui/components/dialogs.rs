@@ -75,6 +75,10 @@ pub enum DialogType {
         expanded: bool,
         /// Viewport-derived cap: the menu scrolls internally past this.
         max_h: f32,
+        /// Pre-read window width to avoid view.read(cx) crash during render
+        win_w: f32,
+        /// Pre-read window height to avoid view.read(cx) crash during render
+        win_h: f32,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -440,6 +444,8 @@ impl DialogsView {
                 flip,
                 expanded,
                 max_h,
+                win_w,
+                win_h,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -456,6 +462,8 @@ impl DialogsView {
                 *flip,
                 *expanded,
                 *max_h,
+                *win_w,
+                *win_h,
                 view.clone(),
                 cx,
             )

@@ -149,6 +149,7 @@ impl Render for AppWindow {
         // Dismiss omnibar if window lost focus (e.g. user alt-tabbed or clicked outside)
         if !window.is_window_active() {
             self.dismiss_omnibar(cx);
+            self.commit_rename_if_active(cx);
             if self.state.nav_bar.breadcrumb_dropdown_open {
                 self.state.nav_bar.close_breadcrumb_dropdown();
             }
@@ -282,6 +283,7 @@ impl Render for AppWindow {
                                     window.focus(&main_focus);
                                     view.update(cx, |this, cx| {
                                         this.dismiss_omnibar(cx);
+                                        this.commit_rename_if_active(cx);
                                     });
                                 }
                             })
@@ -331,6 +333,7 @@ impl Render for AppWindow {
                                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                                 view.update(cx, |this, cx| {
                                                     this.dismiss_omnibar(cx);
+                                                    this.commit_rename_if_active(cx);
                                                 });
                                             })
                                             .child(TabBarView::build(
@@ -523,6 +526,7 @@ impl Render for AppWindow {
                                                 move |_event, _win, cx| {
                                                     view.update(cx, |this, cx| {
                                                         this.dismiss_omnibar(cx);
+                                                        this.commit_rename_if_active(cx);
                                                     });
                                                 }
                                             });
@@ -847,6 +851,7 @@ impl Render for AppWindow {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.dismiss_omnibar(cx);
+                            this.commit_rename_if_active(cx);
                         });
                     })
                     .child(dropdown),

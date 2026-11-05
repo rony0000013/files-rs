@@ -33,6 +33,7 @@ pub fn render_inline_rename_element_multiline(
     // Zero-width stationary cursor element: doesn't displace characters when moving
     let cursor_bar = div()
         .w(px(0.0))
+        .min_w(px(0.0))
         .h(px(16.0))
         .flex_shrink_0()
         .child(
@@ -51,9 +52,10 @@ pub fn render_inline_rename_element_multiline(
 
     // Zed-inspired auto-scroll offset calculation: keep the caret comfortably in view.
     // Average Segoe UI character pitch is ~7.2px at 12.5px font size.
+    // Only scroll when cursor exceeds comfortable viewport width (240px)
     let cursor_x = pos as f32 * 7.2;
-    let scroll_x = if cursor_x > 90.0 {
-        cursor_x - 70.0
+    let scroll_x = if cursor_x > 240.0 {
+        cursor_x - 220.0
     } else {
         0.0
     };
@@ -113,12 +115,14 @@ pub fn render_inline_rename_element_multiline(
         } else {
             vec![
                 div()
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .whitespace_nowrap()
                     .child(before)
                     .into_any_element(),
                 cursor_bar.into_any_element(),
                 div()
+                    .font_family(UiConstants::FONT_MAIN)
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .whitespace_nowrap()
                     .child(after)
@@ -127,6 +131,262 @@ pub fn render_inline_rename_element_multiline(
         });
 
     container.child(inner_row).into_any_element()
+}
+
+/// A wrapped line segment inside the multiline grid rename editor.
+#[derive(Debug, Clone)]
+pub struct WrappedRenameLine {
+    pub text: String,
+    pub start_char_idx: usize,
+    pub end_char_idx: usize,
+}
+
+/// Delimiter-aware line wrapping for multiline rename in Grid view.
+/// Breaks on spaces, dots, dashes, underscores, and brackets without splitting mid-character.
+pub fn wrap_rename_text(
+    text: &str,
+    chars_per_line: usize,
+    max_lines: usize,
+) -> Vec<WrappedRenameLine> {
+    if text.is_empty() {
+        return vec![WrappedRenameLine {
+            text: String::new(),
+            start_char_idx: 0,
+            end_char_idx: 0,
+        }];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let total_len = chars.len();
+    let mut lines = Vec::new();
+    let mut cur_start = 0;
+
+    while cur_start < total_len && lines.len() < max_lines {
+        // If this is the last allowed line, include all remaining characters
+        if lines.len() == max_lines - 1 {
+            let line_chars: String = chars[cur_start..].iter().collect();
+            lines.push(WrappedRenameLine {
+                text: line_chars,
+                start_char_idx: cur_start,
+                end_char_idx: total_len,
+            });
+            break;
+        }
+
+        let remaining = total_len - cur_start;
+        if remaining <= chars_per_line {
+            let line_chars: String = chars[cur_start..].iter().collect();
+            lines.push(WrappedRenameLine {
+                text: line_chars,
+                start_char_idx: cur_start,
+                end_char_idx: total_len,
+            });
+            break;
+        }
+
+        // Search for a natural break point (whitespace or delimiter)
+        let max_chunk = chars_per_line.min(remaining);
+        let mut break_idx = None;
+
+        // 1. Whitespace
+        for i in (1..=max_chunk).rev() {
+            if chars[cur_start + i - 1].is_whitespace() {
+                break_idx = Some(cur_start + i);
+                break;
+            }
+        }
+
+        // 2. Delimiters ('.', '-', '_', ')', ']')
+        if break_idx.is_none() {
+            let min_search = chars_per_line.saturating_sub(6).max(1);
+            for i in (min_search..=max_chunk).rev() {
+                let ch = chars[cur_start + i - 1];
+                if matches!(ch, '.' | '-' | '_' | ')' | ']' | '(' | '[') {
+                    break_idx = Some(cur_start + i);
+                    break;
+                }
+            }
+        }
+
+        let next_start = break_idx.unwrap_or(cur_start + max_chunk);
+        let line_chars: String = chars[cur_start..next_start].iter().collect();
+        lines.push(WrappedRenameLine {
+            text: line_chars,
+            start_char_idx: cur_start,
+            end_char_idx: next_start,
+        });
+        cur_start = next_start;
+    }
+
+    if lines.is_empty() {
+        lines.push(WrappedRenameLine {
+            text: String::new(),
+            start_char_idx: 0,
+            end_char_idx: 0,
+        });
+    }
+    lines
+}
+
+/// Renders a multiline word-wrapped inline rename element for Grid View tiles,
+/// occupying the full 2–3 row label height (`label_box_h`) with WinUI 3 focus border,
+/// selection highlighting across all lines, and stationary cursor tracking.
+pub fn render_inline_rename_grid(
+    rename_text: &str,
+    selected_all: bool,
+    cursor_pos: usize,
+    box_height: f32,
+    font_size: f32,
+    line_h: f32,
+    avail_w: f32,
+    view: Entity<crate::app::AppWindow>,
+) -> AnyElement {
+    let chars_per_line = ((avail_w.max(60.0) / (font_size * 0.58)).floor() as usize).max(8);
+    let lines = wrap_rename_text(rename_text, chars_per_line, 3);
+    let total_chars = rename_text.chars().count();
+    let clamped_pos = cursor_pos.min(total_chars);
+
+    // Outer input container with WinUI 3 focus border, taking full label box height
+    let mut container = div()
+        .w_full()
+        .h(px(box_height))
+        .mt(px(4.0))
+        .px(px(4.0))
+        .py(px(2.0))
+        .bg(rgba(0x1E1E1EF0))
+        .border(px(1.0))
+        .border_color(rgb(0x60CDFF))
+        .border_b(px(2.0))
+        .rounded(px(4.0))
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, {
+            let v = view.clone();
+            move |ev, _, cx| {
+                cx.stop_propagation();
+                v.update(cx, |this, cx| {
+                    let view_state = this.state.active_view_mut();
+                    if ev.click_count == 2 {
+                        view_state.rename_selected_all = true;
+                        view_state.rename_cursor_pos = view_state.rename_text.chars().count();
+                    } else {
+                        view_state.rename_selected_all = false;
+                    }
+                    cx.notify();
+                });
+            }
+        });
+
+    let num_lines = lines.len();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let is_last_line = line_idx == num_lines - 1;
+        let is_active_line = clamped_pos >= line.start_char_idx
+            && (clamped_pos < line.end_char_idx || (is_last_line && clamped_pos >= line.end_char_idx));
+
+        if selected_all {
+            container = container.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        div()
+                            .bg(rgb(0x0078D4))
+                            .text_color(rgb(0xFFFFFF))
+                            .rounded(px(2.0))
+                            .px(px(2.0))
+                            .text_size(px(font_size))
+                            .line_height(px(line_h))
+                            .font_family(UiConstants::FONT_MAIN)
+                            .whitespace_nowrap()
+                            .child(if line.text.is_empty() {
+                                " ".to_string()
+                            } else {
+                                line.text.clone()
+                            }),
+                    ),
+            );
+        } else if is_active_line {
+            let line_chars: Vec<char> = line.text.chars().collect();
+            let col = clamped_pos.saturating_sub(line.start_char_idx).min(line_chars.len());
+            let before: String = line_chars[..col].iter().collect();
+            let after: String = line_chars[col..].iter().collect();
+
+            let cursor_bar = div()
+                .w(px(0.0))
+                .min_w(px(0.0))
+                .h(px(line_h.max(14.0)))
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(-0.75))
+                        .w(px(1.5))
+                        .h(px(line_h.max(14.0)))
+                        .bg(rgb(0xFFFFFF))
+                        .with_animation(
+                            "inline-rename-grid-blink",
+                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                        ),
+                );
+
+            container = container.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .justify_center()
+                    .items_center()
+                    .whitespace_nowrap()
+                    .child(
+                        div()
+                            .text_size(px(font_size))
+                            .line_height(px(line_h))
+                            .font_family(UiConstants::FONT_MAIN)
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .whitespace_nowrap()
+                            .child(before),
+                    )
+                    .child(cursor_bar)
+                    .child(
+                        div()
+                            .text_size(px(font_size))
+                            .line_height(px(line_h))
+                            .font_family(UiConstants::FONT_MAIN)
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .whitespace_nowrap()
+                            .child(after),
+                    ),
+            );
+        } else {
+            container = container.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(font_size))
+                            .line_height(px(line_h))
+                            .font_family(UiConstants::FONT_MAIN)
+                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                            .whitespace_nowrap()
+                            .child(if line.text.is_empty() {
+                                " ".to_string()
+                            } else {
+                                line.text.clone()
+                            }),
+                    ),
+            );
+        }
+    }
+
+    container.into_any_element()
 }
 
 /// Compute an adaptive 3-line filename label, effective font size, and line height.
@@ -528,5 +788,16 @@ mod tests {
             "Sorting 50,000 filenames took {:?} (expected < 250ms in debug / < 15ms in release)",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_wrap_rename_text_delimiter_and_multiline() {
+        let text = "Verity.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv";
+        let lines = wrap_rename_text(text, 18, 3);
+        assert!(lines.len() <= 3);
+        let joined: String = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(joined, text);
+        assert_eq!(lines[0].start_char_idx, 0);
+        assert_eq!(lines.last().unwrap().end_char_idx, text.chars().count());
     }
 }

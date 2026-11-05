@@ -28,6 +28,8 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         expanded: bool,
         max_h: f32,
+        win_w: f32,
+        win_h: f32,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -69,12 +71,8 @@ impl crate::ui::components::dialogs::DialogsView {
         let menu_top: f32 = position.y.into();
         #[allow(unused_variables)]
         let menu_left: f32 = position.x.into();
-        let (win_w, win_h) = {
-            let s = view.read(cx).state.last_window_size;
-            let w = f32::from(s.width);
-            let h = f32::from(s.height);
-            (if w > 100.0 { w } else { 1280.0 }, if h > 100.0 { h } else { 800.0 })
-        };
+        let win_w = if win_w > 100.0 { win_w } else { 1280.0 };
+        let win_h = if win_h > 100.0 { win_h } else { 800.0 };
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -790,98 +788,6 @@ impl crate::ui::components::dialogs::DialogsView {
             Animation::new(std::time::Duration::from_millis(120)),
             |elem, delta| elem.opacity(delta),
         )
-    }
-
-    /// Build context menu items for all available tags with toggle logic
-    pub(crate) fn context_menu_tags_submenu(
-        view: Entity<crate::app::AppWindow>,
-        cx: &mut Context<crate::app::AppWindow>,
-    ) -> Div {
-        let app = view.read(cx);
-        let common_tags = app.get_common_tags_for_selected();
-
-        let mut container = div().flex_col();
-
-        // "Tags" header
-        container = container.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.0))
-                .px(px(12.0))
-                .py(px(6.0))
-                .child(
-                    div()
-                        .text_size(px(14.0))
-                        .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                        .child("\u{E8EC}"),
-                )
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                        .child("Tags"),
-                ),
-        );
-
-        if common_tags.is_empty() {
-            container = container.child(
-                div().flex().items_center().px(px(12.0)).py(px(4.0)).child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(rgb(UiConstants::TEXT_SECONDARY_RGB))
-                        .child("No tags available"),
-                ),
-            );
-        } else {
-            for (tag_name, tag_state) in &common_tags {
-                let is_all = *tag_state == crate::app::TagState::All;
-                let tag_name_clone = tag_name.clone();
-                let v = view.clone();
-
-                let (glyph, label) = if is_all {
-                    ("\u{E73E}", format!("{} (remove)", tag_name))
-                } else {
-                    ("\u{E8EC}", format!("{} (add)", tag_name))
-                };
-
-                container = container.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.0))
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgba(0xFFFFFF15u32)))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            if is_all {
-                                v.update(cx, |this, cx| {
-                                    this.remove_tag_from_selected(&tag_name_clone, cx);
-                                });
-                            } else {
-                                v.update(cx, |this, cx| {
-                                    this.add_tag_to_selected(tag_name_clone.clone(), cx);
-                                });
-                            }
-                        })
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                                .child(glyph),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                .child(label),
-                        ),
-                );
-            }
-        }
-
-        container
     }
 
     pub(crate) fn context_menu_item(

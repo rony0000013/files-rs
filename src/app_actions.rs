@@ -2813,9 +2813,7 @@ impl AppWindow {
     }
 
     pub fn start_rename(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.state.active_view().renaming_index.is_some() {
-            self.commit_rename(cx);
-        }
+        self.commit_rename_if_active(cx);
         let view = self.state.active_view_mut();
         if let Some(item) = view.items.get(index) {
             view.renaming_index = Some(index);
@@ -2933,6 +2931,7 @@ impl AppWindow {
         let position = Point { x: px(x), y: px(y) };
         // Flyouts open left when there is no room on the right.
         let vpw: f32 = vp.width.into();
+        let vph: f32 = vp.height.into();
         let flip = x + 292.0 + 268.0 > vpw;
         // Pre-read selection data to avoid view.read(cx) crash during dialog render
         let selected_indices = &self.state.main_view.selected_indices;
@@ -3023,6 +3022,8 @@ impl AppWindow {
             flip,
             expanded,
             max_h,
+            win_w: vpw,
+            win_h: vph,
         });
         // Preload the classic items the moment the menu opens (all styles):
         // phase 1 (labels) lands in ~50ms so the flyout renders instantly on

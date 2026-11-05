@@ -4896,10 +4896,8 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.focus_pane(pane_focus, cx);
-        if let Some(renaming_idx) = self.state.pane_view(pane_focus).renaming_index {
-            if renaming_idx != idx {
-                self.commit_rename(cx);
-            }
+        if self.state.pane_view(pane_focus).renaming_index.is_some() {
+            self.commit_rename(cx);
         }
         if click_count == 2 {
             self.state.main_view.drag_state.pending_candidate = None;
