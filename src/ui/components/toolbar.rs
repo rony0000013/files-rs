@@ -557,7 +557,7 @@ impl ToolbarView {
             ));
         }
 
-        // 3. Sort & Group Flyout (`\u{E8CB} Sort ⌄`)
+        // 3. Sort & Group Flyout (`\u{E8CB} ⌄` — `ArrangementOptions` in `Toolbar.xaml`)
         {
             let sort_open = active_flyout == Some("sort");
             let sort_label = match sort_col {
@@ -577,7 +577,11 @@ impl ToolbarView {
             let v_sort = view.clone();
             right_group = right_group.child(Self::build_dropdown_trigger(
                 "\u{E8CB}",
-                Some(&badge),
+                if show_labels {
+                    Some(badge.as_str())
+                } else {
+                    None
+                },
                 sort_open,
                 move |_, _, cx| {
                     cx.stop_propagation();
@@ -588,7 +592,7 @@ impl ToolbarView {
             ));
         }
 
-        // 4. Layout & View Mode Flyout (`Layout icon + ⌄`)
+        // 4. Layout & View Mode Flyout (`LayoutOptionsButton` in `Toolbar.xaml`)
         {
             let layout_open = active_flyout == Some("layout");
             let (layout_icon, layout_label) = match view_mode {
@@ -601,7 +605,11 @@ impl ToolbarView {
             let v_layout = view.clone();
             right_group = right_group.child(Self::build_dropdown_trigger(
                 layout_icon,
-                Some(layout_label),
+                if show_labels {
+                    Some(layout_label)
+                } else {
+                    None
+                },
                 layout_open,
                 move |_, _, cx| {
                     cx.stop_propagation();

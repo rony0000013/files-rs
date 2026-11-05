@@ -1,17 +1,17 @@
-//! Bottom Status Bar — FilePilot + Files-community Hybrid Telemetry & Control Bar
+//! Bottom Status Bar (`StatusBar.xaml` in `Files-community` Unibody Design)
 //!
-//! Layout (`32px` height, unibody acrylic/mica surface):
-//! - **LEFT**: Folder & file counts, live drive free-space mini-meter, selection count/size badge,
-//!   and FilePilot-style quick selection actions (`All`, `Inv`, `Clear`).
-//! - **CENTER**: Git branch pill, interactive `Sort: <Col> ▲/▼` pill, interactive `Group: <Col>` pill,
-//!   and quick `Filter` bar toggle.
-//! - **RIGHT**: 5-mode segmented View Switcher (`Details`, `List`, `Cards`, `Grid`, `Columns`),
-//!   inline `-` / 8-segment clickable Zoom Bar / `+` + `%` badge, `View Lock`, `Shelf`, and `Preview` toggles.
+//! Layout (`32px` height, integrated into the bottom of the `ModernShellPage` rounded card):
+//! - **LEFT (`Spacing="8"`, `TextFillColorSecondaryBrush`)**:
+//!   - `DirectoryItemCount` (`"X items"` or `"X item"`)
+//!   - `1px × 18px` vertical divider + `SelectedItemsCountString` (`"Y items selected"`) when items are selected
+//!   - `1px × 18px` vertical divider + `ItemSize` (`"Z MB"`) when selection size is available
+//! - **RIGHT (`Spacing="4"`, subtle transparent command buttons)**:
+//!   - Git Sync button (`\u{E895}` + sync status) + `1px × 18px` divider + Git Branch button (`\u{E8AD}` + branch name)
+//!   - `Open in Terminal / IDE` button
+//!   - Subtle zoom level button (`100%`)
 
 use crate::app::AppState;
-use crate::config::config::{GroupColumn, SortBy, ViewMode};
 use crate::ui::constants::UiConstants;
-use crate::ui::views::main_view::SidePaneMode;
 use gpui::*;
 
 /// Status bar state — tracks directory & drive telemetry.
@@ -90,6 +90,13 @@ pub fn format_size(bytes: u64) -> String {
 pub struct StatusBarView;
 
 impl StatusBarView {
+    fn vertical_divider() -> Div {
+        div()
+            .w(px(1.0))
+            .h(px(18.0))
+            .bg(rgba(UiConstants::DIVIDER_RGBA))
+    }
+
     pub fn build(
         state: &StatusBarState,
         app: &AppState,
@@ -97,32 +104,21 @@ impl StatusBarView {
     ) -> impl IntoElement {
         let active_pane = app.active_pane_focus();
         let pv = app.pane_view(active_pane);
-        let view_mode = pv.view_mode.clone();
         let zoom_level = pv.zoom_level.clamp(0.0, 1.0);
-        let zoom_pct = (zoom_level * 100.0).round() as u32;
-        let sort_col = pv.sort.column.clone();
-        let sort_asc = pv.sort.ascending;
-        let group_by = pv.group_by;
-        let filter_active = pv.show_filter_bar || !pv.filter_text.is_empty();
-        let shelf_open = app.main_view.shelf_visible;
-        let preview_open = app.main_view.side_pane != SidePaneMode::None;
+        let zoom_pct = ((0.5 + zoom_level * 1.25) * 100.0).round() as u32;
 
-        let sort_col_label = match sort_col {
-            SortBy::Name => "Name",
-            SortBy::DateModified => "Modified",
-            SortBy::DateCreated => "Created",
-            SortBy::Size => "Size",
-            SortBy::Type => "Type",
-            SortBy::Tag => "Tag",
+        let item_count_text = if state.total_count == 1 {
+            "1 item".to_string()
+        } else {
+            format!("{} items", state.total_count)
         };
-        let sort_dir_arrow = if sort_asc { "▲" } else { "▼" };
 
-        let single_sel_name: Option<String> = if state.selected_count == 1 {
-            pv.selected_indices
-                .iter()
-                .next()
-                .and_then(|&i| pv.items.get(i))
-                .map(|it| crate::ui::views::grid_view::shorten_filename_middle(&it.name, 24))
+        let selected_count_text = if state.selected_count > 0 {
+            if state.selected_count == 1 {
+                Some("1 item selected".to_string())
+            } else {
+                Some(format!("{} items selected", state.selected_count))
+            }
         } else {
             None
         };
@@ -131,56 +127,181 @@ impl StatusBarView {
             Some(format_size(state.selected_size_bytes))
         } else if state.folder_size_pending {
             let dots = ".".repeat((state.spinner_frame % 4) as usize);
-            Some(format!("calc{}", dots))
+            Some(format!("Calculating{}", dots))
         } else {
             None
         };
 
-        // Drive capacity telemetry
-        let drive_meter = if state.total_bytes > 0 {
-            let used = state.total_bytes.saturating_sub(state.free_bytes);
-            let ratio = (used as f64 / state.total_bytes as f64).clamp(0.0, 1.0) as f32;
-            let bar_color = if ratio > 0.90 {
-                0xFF99A4u32
-            } else if ratio > 0.75 {
-                0xFCE100u32
-            } else {
-                0x60CDFFu32
-            };
-            Some(
+        // ── LEFT STACK (`StatusBar.xaml` Left Column: Spacing="8", TextFillColorSecondaryBrush)
+        let mut left_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .overflow_hidden()
+            .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(7.0))
-                    .py(px(2.0))
-                    .rounded(px(4.0))
-                    .bg(rgba(0xFFFFFF07u32))
+                    .text_size(px(12.0))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(item_count_text),
+            );
+
+        if let Some(sel_text) = selected_count_text {
+            left_row = left_row
+                .child(Self::vertical_divider())
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(sel_text),
+                );
+        }
+
+        if let Some(size_text) = sel_size_label {
+            left_row = left_row
+                .child(Self::vertical_divider())
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(size_text),
+                );
+        }
+
+        // ── RIGHT STACK (`StatusBar.xaml` Right Column: Git Sync | Git Branch | Open in IDE/Terminal | Zoom)
+        let mut right_row = div().flex().flex_row().items_center().gap(px(4.0));
+
+        if state.show_git_actions {
+            if let Some(branch) = state.git_branch.as_ref() {
+                let v_git_sync = view.clone();
+                right_row = right_row
                     .child(
                         div()
-                            .w(px(42.0))
-                            .h(px(5.0))
-                            .rounded(px(2.5))
-                            .bg(rgba(0xFFFFFF18u32))
-                            .overflow_hidden()
+                            .id("status-git-sync")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                v_git_sync.update(cx, |this, cx| {
+                                    let _ = this.refresh(cx);
+                                });
+                            })
                             .child(
                                 div()
-                                    .w(px((42.0 * ratio).max(3.0)))
-                                    .h_full()
-                                    .rounded(px(2.5))
-                                    .bg(rgb(bar_color)),
+                                    .text_size(px(12.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    .child("\u{E895}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child("0 ↑  0 ↓"),
                             ),
                     )
+                    .child(Self::vertical_divider())
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                            .child(format!("{} free", format_size(state.free_bytes))),
+                            .id("status-git-branch")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    .child("\u{E8AD}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                    .child(branch.clone()),
+                            ),
+                    )
+                    .child(Self::vertical_divider());
+            }
+        }
+
+        // Open in Terminal / IDE button (`OpenInIdeButton` in `StatusBar.xaml`)
+        {
+            let v_term = view.clone();
+            right_row = right_row.child(
+                div()
+                    .id("status-open-terminal")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        v_term.update(cx, |this, cx| {
+                            this.dispatch_action(
+                                crate::core::action_registry::ActionKind::OpenTerminal,
+                                cx,
+                            );
+                        });
+                    })
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_family(UiConstants::FONT_ICONS)
+                            .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                            .child("\u{E756}"),
                     ),
-            )
-        } else {
-            None
-        };
+            );
+        }
+
+        // Subtle Zoom Percentage Button (Click: open zoom popover, Double-click: reset zoom)
+        {
+            let v_pct = view;
+            right_row = right_row
+                .child(Self::vertical_divider())
+                .child(
+                    div()
+                        .id("status-zoom-controls")
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                        .on_mouse_down(MouseButton::Left, move |event, _win, cx| {
+                            v_pct.update(cx, |this, cx| {
+                                if event.click_count == 2 {
+                                    this.reset_zoom(cx);
+                                } else {
+                                    let mut pos = event.position;
+                                    pos.y -= px(320.0);
+                                    pos.x -= px(260.0);
+                                    this.open_zoom_slider(pos, cx);
+                                }
+                            });
+                        })
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                                .child(format!("{}%", zoom_pct)),
+                        ),
+                );
+        }
 
         div()
             .id("status-bar")
@@ -189,656 +310,12 @@ impl StatusBarView {
             .justify_between()
             .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW as f32))
             .w_full()
-            .px(px(10.0))
+            .px(px(12.0))
             .bg(rgba(UiConstants::BG_STATUS_BAR_RGBA))
             .border_t(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))
-            // ── LEFT CLUSTER: Counts, Drive Space Meter & Selection Quick-Actions ──
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .overflow_hidden()
-                    // Folder & File counts pill
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(rgba(0xFFFFFF06u32))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(rgb(0xF5B942))
-                                    .child("\u{E8B7}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.5))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(format!("{}", state.folder_count)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                                    .child("•"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(rgb(0x60CDFF))
-                                    .child("\u{E8A5}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.5))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(format!("{}", state.file_count)),
-                            ),
-                    )
-                    .children(drive_meter)
-                    // Selection pill + Quick-action buttons (`All`, `Inv`, `Clear`)
-                    .child(if state.selected_count > 0 {
-                        let v_all = view.clone();
-                        let v_inv = view.clone();
-                        let v_clr = view.clone();
-                        let mut sel_text = format!("{} selected", state.selected_count);
-                        if let Some(ref sz) = sel_size_label {
-                            sel_text.push_str(&format!(" ({})", sz));
-                        }
-                        if let Some(ref name) = single_sel_name {
-                            sel_text.push_str(&format!(" · {}", name));
-                        }
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(3.0))
-                            .child(
-                                div()
-                                    .px(px(7.0))
-                                    .py(px(2.0))
-                                    .rounded(px(4.0))
-                                    .bg(rgba(0x0078D433u32))
-                                    .border(px(1.0))
-                                    .border_color(rgba(0x60CDFF55u32))
-                                    .text_size(px(11.5))
-                                    .font_weight(FontWeight(600.0))
-                                    .text_color(rgb(0x60CDFF))
-                                    .child(sel_text),
-                            )
-                            .child(
-                                div()
-                                    .id("status-sel-all")
-                                    .px(px(5.0))
-                                    .py(px(2.0))
-                                    .rounded(px(3.0))
-                                    .cursor_pointer()
-                                    .bg(rgba(0xFFFFFF08u32))
-                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                                    .text_size(px(10.5))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_all.update(cx, |this, cx| {
-                                            this.select_all(cx);
-                                        });
-                                    })
-                                    .child("All"),
-                            )
-                            .child(
-                                div()
-                                    .id("status-sel-inv")
-                                    .px(px(5.0))
-                                    .py(px(2.0))
-                                    .rounded(px(3.0))
-                                    .cursor_pointer()
-                                    .bg(rgba(0xFFFFFF08u32))
-                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                                    .text_size(px(10.5))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_inv.update(cx, |this, cx| {
-                                            this.invert_selection(cx);
-                                        });
-                                    })
-                                    .child("Inv"),
-                            )
-                            .child(
-                                div()
-                                    .id("status-sel-clear")
-                                    .px(px(5.0))
-                                    .py(px(2.0))
-                                    .rounded(px(3.0))
-                                    .cursor_pointer()
-                                    .bg(rgba(0xFFFFFF08u32))
-                                    .hover(|s| s.bg(rgba(0xFF99A428u32)))
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(0xFF99A4))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_clr.update(cx, |this, cx| {
-                                            this.clear_selection(cx);
-                                        });
-                                    })
-                                    .child("Clear"),
-                            )
-                            .into_any_element()
-                    } else {
-                        let v_all = view.clone();
-                        div()
-                            .id("status-sel-all-idle")
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .text_size(px(11.0))
-                            .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_all.update(cx, |this, cx| {
-                                    this.select_all(cx);
-                                });
-                            })
-                            .child("Select All")
-                            .into_any_element()
-                    }),
-            )
-            // ── CENTER CLUSTER: Git Branch + Interactive Sort / Group / Filter Pills ──
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    // Git branch badge
-                    .children(if state.show_git_actions {
-                        state.git_branch.as_ref().map(|branch| {
-                            div()
-                                .id("status-git-branch")
-                                .flex()
-                                .items_center()
-                                .gap(px(5.0))
-                                .rounded(px(4.0))
-                                .px(px(7.0))
-                                .py(px(2.0))
-                                .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .font_family(UiConstants::FONT_MDL2)
-                                        .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
-                                        .child("\u{E8AD}"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                        .child(branch.clone()),
-                                )
-                        })
-                    } else {
-                        None
-                    })
-                    // Interactive Sort Pill (Left-click: toggle direction, Right-click: cycle column)
-                    .child({
-                        let v_sort_l = view.clone();
-                        let v_sort_r = view.clone();
-                        let cur_sort = sort_col.clone();
-                        div()
-                            .id("status-sort-pill")
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .px(px(7.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .bg(rgba(0xFFFFFF07u32))
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_sort_l.update(cx, |this, cx| {
-                                    let asc = !this
-                                        .state
-                                        .pane_view(this.state.active_pane_focus())
-                                        .sort
-                                        .ascending;
-                                    this.set_sort_ascending(asc, cx);
-                                });
-                            })
-                            .on_mouse_down(MouseButton::Right, move |_, _, cx| {
-                                let next_col = match cur_sort {
-                                    SortBy::Name => SortBy::DateModified,
-                                    SortBy::DateModified => SortBy::Size,
-                                    SortBy::Size => SortBy::Type,
-                                    SortBy::Type => SortBy::DateCreated,
-                                    SortBy::DateCreated => SortBy::Tag,
-                                    SortBy::Tag => SortBy::Name,
-                                };
-                                v_sort_r.update(cx, |this, cx| {
-                                    this.set_sort_column(next_col, cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(rgb(0x60CDFF))
-                                    .child("\u{E8CB}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child(format!("{} {}", sort_col_label, sort_dir_arrow)),
-                            )
-                    })
-                    // Interactive Group Pill (Left-click: cycle group-by, Right-click: clear group-by)
-                    .child({
-                        let v_grp_l = view.clone();
-                        let v_grp_r = view.clone();
-                        let is_grouped = group_by != GroupColumn::None;
-                        div()
-                            .id("status-group-pill")
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .px(px(7.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .bg(if is_grouped {
-                                rgba(0x0078D430u32)
-                            } else {
-                                rgba(0xFFFFFF07u32)
-                            })
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_grp_l.update(cx, |this, cx| {
-                                    this.cycle_group_by(cx);
-                                });
-                            })
-                            .on_mouse_down(MouseButton::Right, move |_, _, cx| {
-                                v_grp_r.update(cx, |this, cx| {
-                                    this.set_group_by(GroupColumn::None, cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if is_grouped {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child("\u{F168}"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(if is_grouped {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child(if is_grouped {
-                                        format!("Group: {}", group_by.display_name())
-                                    } else {
-                                        "Group".to_string()
-                                    }),
-                            )
-                    })
-                    // Filter & Group Bar Toggle Pill
-                    .child({
-                        let v_flt = view.clone();
-                        div()
-                            .id("status-filter-pill")
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .bg(if filter_active {
-                                rgba(0x0078D430u32)
-                            } else {
-                                rgba(0xFFFFFF07u32)
-                            })
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_flt.update(cx, |this, cx| {
-                                    let p = this.state.active_pane_focus();
-                                    let pv = this.state.pane_view_mut(p);
-                                    pv.show_filter_bar = !pv.show_filter_bar;
-                                    cx.notify();
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if filter_active {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child("\u{E71C}"),
-                            )
-                    }),
-            )
-            // ── RIGHT CLUSTER: 5-Mode View Switcher + Inline Zoom Bar + Pane Toggles ──
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    // 5-Mode Segmented View Switcher Strip (`Details`, `List`, `Cards`, `Grid`, `Columns`)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(1.0))
-                            .p(px(2.0))
-                            .rounded(px(5.0))
-                            .bg(rgba(0x00000028u32))
-                            .border(px(1.0))
-                            .border_color(rgba(0xFFFFFF0Cu32))
-                            .children(
-                                [
-                                    (ViewMode::Details, "\u{E8FD}", "Details"),
-                                    (ViewMode::List, "\u{E8EF}", "List"),
-                                    (ViewMode::Cards, "\u{E8A9}", "Cards"),
-                                    (ViewMode::Grid, "\u{F0E2}", "Grid"),
-                                    (ViewMode::Columns, "\u{E8E4}", "Columns"),
-                                ]
-                                .into_iter()
-                                .map(|(mode_opt, glyph, _tip)| {
-                                    let active = view_mode == mode_opt;
-                                    let v_m = view.clone();
-                                    let m_target = mode_opt.clone();
-                                    div()
-                                        .w(px(24.0))
-                                        .h(px(20.0))
-                                        .rounded(px(3.5))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .bg(if active {
-                                            rgba(UiConstants::ACCENT_RGBA)
-                                        } else {
-                                            rgba(0x00000000u32)
-                                        })
-                                        .hover(|s| {
-                                            if active {
-                                                s
-                                            } else {
-                                                s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
-                                            }
-                                        })
-                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                            let m = m_target.clone();
-                                            v_m.update(cx, |this, cx| {
-                                                this.set_view_mode(m, cx);
-                                            });
-                                        })
-                                        .child(
-                                            div()
-                                                .text_size(px(11.5))
-                                                .font_family(UiConstants::FONT_MDL2)
-                                                .text_color(if active {
-                                                    rgb(0xFFFFFF)
-                                                } else {
-                                                    rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                                })
-                                                .child(glyph),
-                                        )
-                                }),
-                            ),
-                    )
-                    // Inline `-` / 8-Segment Interactive Zoom Track / `+` + `%` Badge
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(3.0))
-                            .px(px(5.0))
-                            .py(px(2.0))
-                            .rounded(px(5.0))
-                            .bg(rgba(0xFFFFFF06u32))
-                            // Zoom Out `-`
-                            .child({
-                                let v_out = view.clone();
-                                div()
-                                    .id("status-zoom-out")
-                                    .w(px(18.0))
-                                    .h(px(18.0))
-                                    .rounded(px(3.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_out.update(cx, |this, cx| {
-                                            this.zoom_out(cx);
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(10.0))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                            .child("\u{E738}"),
-                                    )
-                            })
-                            // 8-Segment Clickable Zoom Bar
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.0))
-                                    .children((0..8).map(|seg_idx| {
-                                        let seg_val = seg_idx as f32 / 7.0;
-                                        let filled = zoom_level + 0.06 >= seg_val;
-                                        let v_seg = view.clone();
-                                        div()
-                                            .w(px(6.0))
-                                            .h(px(10.0))
-                                            .rounded(px(1.5))
-                                            .cursor_pointer()
-                                            .bg(if filled {
-                                                rgb(0x60CDFF)
-                                            } else {
-                                                rgba(0xFFFFFF1Eu32)
-                                            })
-                                            .hover(|s| s.bg(rgb(0x98E0FF)))
-                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                v_seg.update(cx, |this, cx| {
-                                                    let p = this.state.active_pane_focus();
-                                                    this.state.pane_view_mut(p).zoom_level = seg_val;
-                                                    if p == crate::core::navigation_manager::PaneFocus::Primary {
-                                                        this.state.main_view.zoom_level = seg_val;
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            })
-                                    })),
-                            )
-                            // Zoom In `+`
-                            .child({
-                                let v_in = view.clone();
-                                div()
-                                    .id("status-zoom-in")
-                                    .w(px(18.0))
-                                    .h(px(18.0))
-                                    .rounded(px(3.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_in.update(cx, |this, cx| {
-                                            this.zoom_in(cx);
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(10.0))
-                                            .font_family(UiConstants::FONT_MDL2)
-                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                            .child("\u{E710}"),
-                                    )
-                            })
-                            // Zoom `%` Popover / Reset Button
-                            .child({
-                                let v_pct = view.clone();
-                                div()
-                                    .id("status-zoom-controls")
-                                    .min_w(px(38.0))
-                                    .px(px(5.0))
-                                    .py(px(1.5))
-                                    .rounded(px(3.5))
-                                    .cursor_pointer()
-                                    .bg(rgba(UiConstants::BG_BADGE_RGBA))
-                                    .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .on_mouse_down(MouseButton::Left, move |event, _win, cx| {
-                                        v_pct.update(cx, |this, cx| {
-                                            if event.click_count == 2 {
-                                                this.reset_zoom(cx);
-                                            } else {
-                                                let mut pos = event.position;
-                                                pos.y -= px(320.0);
-                                                pos.x -= px(260.0);
-                                                this.open_zoom_slider(pos, cx);
-                                            }
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                            .child(format!("{}%", zoom_pct)),
-                                    )
-                            }),
-                    )
-                    // View Lock + Shelf + Preview Toggles
-                    .child({
-                        let v_lock = view.clone();
-                        div()
-                            .id("status-view-lock")
-                            .w(px(24.0))
-                            .h(px(22.0))
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .bg(if app.main_view.view_lock_enabled {
-                                rgba(0x005FB838u32)
-                            } else {
-                                rgba(0x00000000u32)
-                            })
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_lock.update(cx, |this, cx| {
-                                    this.toggle_view_lock(cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if app.main_view.view_lock_enabled {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child(if app.main_view.view_lock_enabled {
-                                        "\u{E72E}"
-                                    } else {
-                                        "\u{E785}"
-                                    }),
-                            )
-                    })
-                    .child({
-                        let v_shelf = view.clone();
-                        div()
-                            .id("status-shelf-toggle")
-                            .w(px(24.0))
-                            .h(px(22.0))
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .bg(if shelf_open {
-                                rgba(0x005FB838u32)
-                            } else {
-                                rgba(0x00000000u32)
-                            })
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_shelf.update(cx, |this, cx| {
-                                    this.toggle_shelf(cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if shelf_open {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child("\u{E7B8}"),
-                            )
-                    })
-                    .child({
-                        let v_prev = view;
-                        div()
-                            .id("status-preview-toggle")
-                            .w(px(24.0))
-                            .h(px(22.0))
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .bg(if preview_open {
-                                rgba(0x005FB838u32)
-                            } else {
-                                rgba(0x00000000u32)
-                            })
-                            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_prev.update(cx, |this, cx| {
-                                    this.toggle_preview_pane(cx);
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_family(UiConstants::FONT_MDL2)
-                                    .text_color(if preview_open {
-                                        rgb(0x60CDFF)
-                                    } else {
-                                        rgba(UiConstants::TEXT_SECONDARY_RGBA)
-                                    })
-                                    .child("\u{E89F}"),
-                            )
-                    }),
-            )
+            .child(left_row)
+            .child(right_row)
     }
 }
 

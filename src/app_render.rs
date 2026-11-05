@@ -383,6 +383,7 @@ impl Render for AppWindow {
                                             .flex_grow()
                                             .h_full()
                                             .w_full()
+                                            .bg(rgba(UiConstants::BG_SIDEBAR_RGBA))
                                             // Track mouse moves ANYWHERE in this row during sidebar resize
                                             .on_mouse_move({
                                                 let view = view.clone();
@@ -544,8 +545,13 @@ impl Render for AppWindow {
                                                 .flex_grow()
                                                 .w_full()
                                                 .h_full()
+                                                .pl(px(if state.sidebar_visible {
+                                                    2.0
+                                                } else {
+                                                    8.0
+                                                }))
                                                 .pr(px(8.0))
-                                                .pb(px(4.0))
+                                                .pb(px(8.0))
                                                 .gap(px(4.0))
                                                 .on_mouse_down(MouseButton::Left, {
                                                     let view = cx.entity();
@@ -614,6 +620,18 @@ impl Render for AppWindow {
                                                             } else {
                                                                 0.0
                                                             };
+                                                            let status_bar_el = if show_status_bar {
+                                                                Some(
+                                                                    StatusBarView::build(
+                                                                        &state.status_bar,
+                                                                        state,
+                                                                        cx.entity(),
+                                                                    )
+                                                                    .into_any_element(),
+                                                                )
+                                                            } else {
+                                                                None
+                                                            };
                                                             let tree = MainView::build_with_secondary(
                                                                 &state.main_view,
                                                                 state.file_items.clone(),
@@ -623,6 +641,7 @@ impl Render for AppWindow {
                                                                 settings_data,
                                                                 content_w,
                                                                 sidebar_offset_x,
+                                                                status_bar_el,
                                                             );
                                                             // NOTE: bounded GPU image-cache wrap
                                                             // (gpui::image_cache) reverted 2026-10-15:
@@ -633,22 +652,7 @@ impl Render for AppWindow {
                                                             let _ = &state.image_cache;
                                                             tree.into_any_element()
                                                         }),
-                                                )
-                                                .children(if show_status_bar {
-                                                    vec![div()
-                                                        .flex_shrink_0()
-                                                        .w_full()
-                                                        .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW
-                                                            as f32))
-                                                        .child(StatusBarView::build(
-                                                            &state.status_bar,
-                                                            state,
-                                                            cx.entity(),
-                                                        ))
-                                                        .into_any_element()]
-                                                } else {
-                                                    vec![]
-                                                }),
+                                                ),
                                         )
                                     }),
                             )
@@ -766,8 +770,8 @@ impl Render for AppWindow {
                     section_idx,
                     state.sidebar.sections.iter().find(|s| s.id == sid),
                 ) {
-                    // Y offset: 40px home toggle + 12px scroll padding + idx * 36px per collapsed icon
-                    let tooltip_y = 52.0 + idx as f32 * 36.0;
+                    // Y offset: 28px home row + 12px scroll padding + idx * 36px per collapsed icon
+                    let tooltip_y = 40.0 + idx as f32 * 36.0;
                     base = base.child({
                         let sidebar_w = px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32);
                         let tooltip_left = sidebar_w + px(4.0);
@@ -822,13 +826,13 @@ impl Render for AppWindow {
         // Render omnibar suggestions dropdown at app root level (outside nav bar's
         // fixed-height container) so it can extend below the nav bar.
         if state.nav_bar.show_suggestions && !state.nav_bar.suggestions.is_empty() {
-            // NavBar padding=12px + 4 buttons(36px each) + 3 gaps(2px) + pill_gap(8px) = 170px from left
-            // Right side: status bell (38px) + gap (8px) + padding (12px) = 58px
-            let nav_btn_area = 4.0 * 36.0 + 3.0 * 2.0; // 150px
-            let pill_left = 12.0 + nav_btn_area + 8.0; // 170px
+            // NavBar padding=8px + 5 buttons(36px each) + 4 gaps(2px) + pill_gap(8px) = 204px from left
+            // Right side: status bell (36px) + gap (8px) + padding (12px) = 56px
+            let nav_btn_area = 5.0 * 36.0 + 4.0 * 2.0; // 188px
+            let pill_left = 8.0 + nav_btn_area + 8.0; // 204px
             let anim_offset = (1.0 - state.nav_bar.dropdown_anim.clamp(0.0, 1.0)) * -6.0;
             let dropdown_top = 40.0 + 46.0 + anim_offset; // 86px
-            let dropdown_width = (f32::from(live_size.width) - pill_left - 58.0).max(260.0);
+            let dropdown_width = (f32::from(live_size.width) - pill_left - 56.0).max(260.0);
 
             let dropdown =
                 build_suggestions_dropdown(&state.nav_bar, &state.action_registry, cx.entity());

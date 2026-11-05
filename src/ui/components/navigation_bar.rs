@@ -1584,6 +1584,7 @@ impl NavigationBarView {
         _registry: &ActionRegistry,
         status: &crate::ui::components::status_center::StatusCenterState,
     ) -> impl IntoElement {
+        let v_sidebar_toggle = view.clone();
         let v_back = view.clone();
         let v_back_rc = view.clone();
         let v_forward = view.clone();
@@ -1597,8 +1598,8 @@ impl NavigationBarView {
             let edit_mode = state.edit_mode;
             let is_focused = state.is_focused();
 
-            // Files-community Omnibar styling:
-            // Rounded pill (`CornerRadius = 18`), 36px height, 2px accent border when focused
+            // Files-community Omnibar styling (`Omnibar.xaml`):
+            // Rounded pill (`CornerRadius = 18..19`), 36px height, `ControlFillColorDefaultBrush` + `CircleElevationBorderBrush`
             let mut pill = div()
                 .flex()
                 .items_center()
@@ -1618,9 +1619,9 @@ impl NavigationBarView {
             } else {
                 pill = pill
                     .border(px(1.0))
-                    .border_color(rgba(0xFFFFFF1Eu32))
-                    .bg(rgba(0xFFFFFF0Au32))
-                    .hover(|s| s.bg(rgba(0xFFFFFF12u32)));
+                    .border_color(rgba(UiConstants::BORDER_OMNIBAR_RGBA))
+                    .bg(rgba(UiConstants::BG_BREADCRUMB_RGBA))
+                    .hover(|s| s.bg(rgba(0xFFFFFF14u32)));
             }
 
             // Mode switcher handlers
@@ -1649,11 +1650,12 @@ impl NavigationBarView {
             let cmd_active = state_mode == OmnibarMode::CommandPalette;
             let search_active = state_mode == OmnibarMode::Search;
 
-            // Left mode switcher cluster (matches Omnibar.xaml PART_ModesHostGrid: Path | Commands | Search)
+            // Right-aligned Omnibar mode switcher cluster (`Omnibar.xaml` PART_ModesHostGrid: Path | Commands | Search)
             let mode_icons = div()
                 .flex()
                 .items_center()
                 .flex_shrink_0()
+                .child(Self::render_pill_separator())
                 .child(Self::render_mode_icon_btn(
                     "\u{E8B7}", // Path mode
                     path_active,
@@ -1674,8 +1676,6 @@ impl NavigationBarView {
                     is_focused,
                     on_search_click,
                 ));
-
-            pill = pill.child(mode_icons);
 
             // Middle content area
             if state_mode == OmnibarMode::Path && !edit_mode {
@@ -1984,7 +1984,6 @@ impl NavigationBarView {
                     );
 
                 pill = pill
-                    .child(Self::render_pill_separator())
                     .child(
                         div()
                             .flex()
@@ -1994,19 +1993,19 @@ impl NavigationBarView {
                             .children(breadcrumb_views),
                     )
                     .child(spacer)
-                    .child(copy_btn);
+                    .child(copy_btn)
+                    .child(mode_icons);
             } else if state_mode == OmnibarMode::Path && edit_mode {
                 let v_confirm = view.clone();
                 let v_cancel = view.clone();
                 pill = pill
-                    .child(Self::render_pill_separator())
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .flex_1()
                             .min_w(px(0.0))
-                            .px(px(6.0))
+                            .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
                                 &state.edit_text,
                                 "Enter a folder path, ~, %VAR%, or '>' for commands...",
@@ -2070,18 +2069,18 @@ impl NavigationBarView {
                                             .child("\u{E894}"),
                                     ),
                             ),
-                    );
+                    )
+                    .child(mode_icons);
             } else if state_mode == OmnibarMode::CommandPalette {
                 let v_cancel = view.clone();
                 pill = pill
-                    .child(Self::render_pill_separator())
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .flex_1()
                             .min_w(px(0.0))
-                            .px(px(6.0))
+                            .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
                                 &state.command_query,
                                 "Type a command name or shortcut...",
@@ -2115,7 +2114,8 @@ impl NavigationBarView {
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                                     .child("\u{E894}"),
                             ),
-                    );
+                    )
+                    .child(mode_icons);
             } else if state_mode == OmnibarMode::Search {
                 let v_clear = view.clone();
                 let v_re = view.clone();
@@ -2137,14 +2137,13 @@ impl NavigationBarView {
                 );
 
                 pill = pill
-                    .child(Self::render_pill_separator())
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .flex_1()
                             .min_w(px(0.0))
-                            .px(px(6.0))
+                            .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
                                 &state.search_query,
                                 &placeholder,
@@ -2230,7 +2229,8 @@ impl NavigationBarView {
                                             .child("\u{E894}"),
                                     ),
                             ),
-                    );
+                    )
+                    .child(mode_icons);
             }
 
             pill
@@ -2240,17 +2240,33 @@ impl NavigationBarView {
             .id("navigation-bar")
             .flex()
             .items_center()
-            .h(Pixels::from(48.0))
+            .h(Pixels::from(46.0))
             .w_full()
-            .px(Pixels::from(12.0))
+            .px(Pixels::from(8.0))
             .gap(px(8.0))
-            .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
+            .bg(rgba(UiConstants::BG_NAV_BAR_RGBA))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .flex_shrink_0()
                     .gap(px(2.0))
+                    // SidebarPaneToggleButton (`NavigationToolbar.xaml:98-117`)
+                    .child(Self::render_nav_btn(
+                        "\u{E700}",
+                        true,
+                        move |_, _, cx| {
+                            v_sidebar_toggle.update(cx, |this, cx| {
+                                if !this.state.sidebar_visible {
+                                    this.state.sidebar_visible = true;
+                                } else {
+                                    this.state.sidebar.toggle_collapsed();
+                                }
+                                cx.notify();
+                            });
+                        },
+                        None,
+                    ))
                     .child(Self::render_nav_btn(
                         "\u{E72B}",
                         can_go_back,

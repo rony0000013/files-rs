@@ -8,42 +8,52 @@ impl UiConstants {
     // COLORS — Backgrounds (Layered for Windows 11 Mica / Mica Alt)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// Mica recipe (dark): DWM draws blurred-wallpaper Mica behind the window;
-    /// every full-area fill below is translucent so it shows through.
-    /// Root + chrome ~65% (Mica clearly visible), content ~85% (readable),
-    /// menus ~95% (solid for contrast).
+    /// Mica recipe (dark): DWM / `wallpaper_mica` draws blurred-wallpaper Mica behind the window;
+    /// `AppBackground` applies the `MicaBaseAlt` tint (`BG_MAIN_MICA_ALT_RGBA` / `BG_MICA_ROOT_RGBA`),
+    /// and all surfaces above it use WinUI 3 (`App.xaml` Dark theme) translucent white-alpha layers
+    /// so the Unibody shell and floating cards let Mica shine through seamlessly.
     pub const BG_MICA_ROOT_RGBA: u32 = 0x1F1F1FA6;
-    pub const BG_MICA_CHROME_RGBA: u32 = 0x232323A6;
-    pub const BG_MICA_CONTENT_RGBA: u32 = 0x1C1C1CD9;
-    /// Main window background (Translucent layer over Mica, or solid fallback)
-    pub const BG_MAIN_RGBA: u32 = 0x1C1C1CFF;
-    pub const BG_MAIN_MICA_ALT_RGBA: u32 = 0x141414CC;
-    pub const BG_MAIN_RGB: u32 = 0x1C1C1C;
+    /// TabBar / titlebar strip (`App.Theme.BackgroundBrush` = `Transparent` over Mica Alt base)
+    pub const BG_MICA_CHROME_RGBA: u32 = 0x00000000;
+    /// Unibody shell layer (`LayerOnMicaBaseAltFillColorDefault` = `#FFFFFF0A`)
+    /// Shared identically by Selected Tab, NavigationToolbar (AddressBar), and SidebarView pane background.
+    pub const BG_UNIBODY_LAYER_RGBA: u32 = 0xFFFFFF0A;
+    /// Primary FileArea floating card (`App.Theme.FileArea.BackgroundBrush` = `CardBackgroundFillColorDefault` `#FFFFFF0D`)
+    pub const BG_MICA_CONTENT_RGBA: u32 = 0xFFFFFF0D;
+    /// Primary FileArea floating card (`CardBackgroundFillColorDefault` `#FFFFFF0D`)
+    pub const BG_MAIN_RGBA: u32 = 0xFFFFFF0D;
+    pub const BG_MAIN_MICA_ALT_RGBA: u32 = 0x161616D4;
+    pub const BG_MAIN_RGB: u32 = 0x191919;
 
-    /// Sidebar background (Translucent so DWM Mica shows through)
-    pub const BG_SIDEBAR_RGBA: u32 = 0x202020FF;
+    /// Sidebar background (`App.Theme.Sidebar.BackgroundBrush` = `LayerOnMicaBaseAltFillColorDefault` `#FFFFFF0A`)
+    pub const BG_SIDEBAR_RGBA: u32 = 0xFFFFFF0A;
     pub const BG_SIDEBAR_RGB: u32 = 0x202020;
 
     /// Dialog background (Acrylic / Elevated Flyout surface)
     pub const BG_DIALOG_RGB: u32 = 0x2B2B2B;
     pub const BG_DIALOG_RGBA: u32 = 0x2B2B2BF2;
 
-    /// Tab Bar background (Transparent over Mica titlebar)
-    pub const BG_TAB_BAR_RGBA: u32 = 0x1A1A1A00;
+    /// Tab Bar background (`App.Theme.BackgroundBrush` = `Transparent` over Mica titlebar)
+    pub const BG_TAB_BAR_RGBA: u32 = 0x00000000;
 
-    /// Navigation / Breadcrumb Bar background
-    pub const BG_NAV_BAR_RGBA: u32 = 0x1C1C1CE6;
-    pub const BG_NAV_BAR_RGB: u32 = 0x1C1C1C;
+    /// Navigation / Breadcrumb Bar background (`App.Theme.AddressBar.BackgroundBrush` = `LayerOnMicaBaseAltFillColorDefault` `#FFFFFF0A`)
+    pub const BG_NAV_BAR_RGBA: u32 = 0xFFFFFF0A;
+    pub const BG_NAV_BAR_RGB: u32 = 0x202020;
 
-    /// Toolbar background (WinUI 3 LayerFillColorDefault card layer)
-    pub const BG_TOOLBAR_RGBA: u32 = 0x2C2C2CFF;
-    pub const BG_TOOLBAR_RGB: u32 = 0x2C2C2C;
+    /// Toolbar & InfoPane floating card background (`App.Theme.Toolbar.BackgroundBrush` = `CardBackgroundFillColorSecondary` `#FFFFFF08`)
+    pub const BG_TOOLBAR_RGBA: u32 = 0xFFFFFF08;
+    pub const BG_TOOLBAR_RGB: u32 = 0x282828;
 
-    /// Status bar background (Translucent footer over Mica)
-    pub const BG_STATUS_BAR_RGBA: u32 = 0x202020CC;
+    /// Status bar background (transparent inside ModernShellPage card)
+    pub const BG_STATUS_BAR_RGBA: u32 = 0x00000000;
 
-    /// Inactive pane dimming
-    pub const BG_INACTIVE_PANE_RGBA: u32 = 0x00000018;
+    /// Omnibar / Breadcrumb pill (`ControlFillColorDefaultBrush` = `#FFFFFF0F`)
+    pub const BG_BREADCRUMB_RGBA: u32 = 0xFFFFFF0F;
+    /// Omnibar unfocused stroke (`CircleElevationBorderBrush` = `#FFFFFF18`)
+    pub const BORDER_OMNIBAR_RGBA: u32 = 0xFFFFFF18;
+
+    /// Inactive pane dimming (`CardBackgroundFillColorSecondary`)
+    pub const BG_INACTIVE_PANE_RGBA: u32 = 0xFFFFFF06;
 
     /// Item hover: SubtleFillColorSecondary (~6% white)
     pub const BG_ITEM_HOVER_RGBA: u32 = 0xFFFFFF0F;

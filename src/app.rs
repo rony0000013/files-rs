@@ -13,8 +13,6 @@ use crate::ui::components::dialogs::{DialogType, DialogsView, SettingsTab};
 use crate::ui::components::navigation_bar::{
     build_breadcrumb_dropdown, build_suggestions_dropdown, NavigationBarState, NavigationBarView,
 };
-#[cfg(windows)]
-use crate::ui::components::sidebar::{SidebarSplitter, SidebarView};
 use crate::ui::components::sidebar_state::SidebarItemId;
 use crate::ui::components::sidebar_state::SidebarState;
 use crate::ui::components::splash_screen::SplashState;

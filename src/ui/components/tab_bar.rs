@@ -445,12 +445,13 @@ impl TabBarView {
                 rgba(UiConstants::TEXT_SECONDARY_RGBA)
             };
 
-            // WinUI 3 TabView surface colors: active tab matches NavigationBar background
-            // so it visually merges into the toolbar area below.
+            // WinUI 3 TabView surface colors (`App.xaml` Dark Theme):
+            // `TabViewItemHeaderBackgroundSelected` = `LayerOnMicaBaseAltFillColorDefault` (`BG_NAV_BAR_RGBA`),
+            // so the active tab seamlessly merges into the `NavigationToolbar` below it without a border seam.
             let bg = if is_dragged && !is_dragging_out {
                 rgba(0x0078D41Au32) // subtle recessed drop well while floating pill is above
             } else if is_active {
-                rgba(0x282828FFu32)
+                rgba(UiConstants::BG_NAV_BAR_RGBA)
             } else if is_file_drop_target {
                 rgba(0x0078D42Au32)
             } else {
@@ -506,7 +507,7 @@ impl TabBarView {
                 .border_color(if is_file_drop_target || (is_dragged && !is_dragging_out) {
                     rgba(UiConstants::ACCENT_RGBA)
                 } else if is_active {
-                    rgba(0xFFFFFF22u32)
+                    rgba(UiConstants::CARD_STROKE_RGBA)
                 } else {
                     rgba(0x00000000u32)
                 })
@@ -514,8 +515,8 @@ impl TabBarView {
 
             if !is_active && !is_dragged {
                 t = t.hover(|s| {
-                    s.bg(rgba(0xFFFFFF10u32))
-                        .border_color(rgba(0xFFFFFF14u32))
+                    s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
+                        .border_color(rgba(0xFFFFFF10u32))
                 });
             }
 
@@ -535,11 +536,11 @@ impl TabBarView {
                         .top(px(8.0))
                         .w(px(1.0))
                         .h(px(16.0))
-                        .bg(rgba(0xFFFFFF16u32)),
+                        .bg(rgba(UiConstants::DIVIDER_RGBA)),
                 );
             }
 
-            // WinUI 3 Selected Tab bottom flare ear arcs + bottom accent indicator
+            // WinUI 3 Selected Tab bottom flare ear arcs (seamlessly blending into NavigationToolbar)
             if is_active && !(is_dragged && !is_dragging_out) {
                 // Bottom-left outward flare ear
                 t = t.child(
@@ -549,7 +550,7 @@ impl TabBarView {
                         .bottom(px(0.0))
                         .w(px(4.0))
                         .h(px(4.0))
-                        .bg(rgba(0x282828FFu32)),
+                        .bg(rgba(UiConstants::BG_NAV_BAR_RGBA)),
                 );
                 // Bottom-right outward flare ear
                 t = t.child(
@@ -559,18 +560,7 @@ impl TabBarView {
                         .bottom(px(0.0))
                         .w(px(4.0))
                         .h(px(4.0))
-                        .bg(rgba(0x282828FFu32)),
-                );
-                // Bottom accent indicator pill
-                t = t.child(
-                    div()
-                        .absolute()
-                        .bottom(px(0.0))
-                        .left(px(10.0))
-                        .right(px(10.0))
-                        .h(px(2.5))
-                        .rounded(px(1.5))
-                        .bg(rgb(UiConstants::ACCENT_COLOR_RGB)),
+                        .bg(rgba(UiConstants::BG_NAV_BAR_RGBA)),
                 );
             }
 
@@ -1039,8 +1029,6 @@ impl TabBarView {
                 .w_full()
                 .overflow_hidden()
                 .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
-                .border_b(px(1.0))
-                .border_color(rgba(UiConstants::DIVIDER_RGBA))
                 .on_mouse_move(move |ev, win, cx| {
                     let p = ev.position;
                     let win_w: f32 = win.bounds().size.width.into();

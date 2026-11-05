@@ -52,11 +52,15 @@ pub struct SidebarView;
 impl SidebarView {
     pub fn build(
         state: &SidebarState,
-        _app_state: &AppState,
+        app_state: &AppState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let collapsed = state.collapsed;
         let reorder_mode = state.reorder_mode;
+        let is_home_active = matches!(
+            app_state.main_view.target,
+            crate::ui::views::types::ViewTarget::Home
+        );
         let width = if collapsed {
             px(UiConstants::SIDEBAR_WIDTH_COLLAPSED_RAW as f32)
         } else {
@@ -111,13 +115,12 @@ impl SidebarView {
             .id("sidebar")
             .w(width)
             .h_full()
+            .pt(px(4.0))
             .flex()
             .flex_col()
             .flex_shrink_0() // Prevent sidebar from shrinking when content needs space
             .overflow_hidden() // Clip content to explicit width
-            .bg(rgba(UiConstants::BG_MICA_CHROME_RGBA))
-            .border_r(px(1.0))
-            .border_color(rgba(UiConstants::DIVIDER_RGBA))
+            .bg(rgba(UiConstants::BG_TRANSPARENT_RGBA))
             .relative() // For absolute-positioned tooltip
             .on_mouse_down(MouseButton::Right, {
                 let view = view.clone();
@@ -156,10 +159,13 @@ impl SidebarView {
                     });
                 }
             })
-            // Collapse toggle at top
-            .child(Self::render_collapse_toggle(state, view.clone()))
-            // Home item
-            .child(Self::render_home_item(collapsed, state, view.clone()))
+            // Home item (top of navigation pane; Hamburger toggle is in NavigationToolbar per Files-community)
+            .child(Self::render_home_item(
+                collapsed,
+                is_home_active,
+                state,
+                view.clone(),
+            ))
             // Scrollable sections area
             .child(
                 div()
@@ -262,51 +268,11 @@ impl SidebarView {
         sidebar_el
     }
 
-    fn render_collapse_toggle(
-        state: &SidebarState,
-        view: Entity<crate::app::AppWindow>,
-    ) -> impl IntoElement {
-        let v = view.clone();
-        let collapsed = state.collapsed;
-        let reorder_mode = state.reorder_mode;
-
-        let mut toggle = div()
-            .id("sidebar-collapse-toggle")
-            .h(px(40.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(if collapsed { 0.0 } else { 12.0 }))
-            .w_full()
-            .child(
-                div()
-                    .text_size(px(16.0))
-                    .font_family(UiConstants::FONT_ICONS)
-                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                    .child("\u{E700}"), // Hamburger
-            );
-
-        if reorder_mode {
-            toggle = toggle.opacity(0.4).cursor_not_allowed();
-        } else {
-            toggle = toggle
-                .cursor_pointer()
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
-                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                    v.update(cx, |this, cx| {
-                        this.state.sidebar.toggle_collapsed();
-                        cx.notify();
-                    });
-                });
-        }
-
-        toggle
-    }
-
     // ─── Home item ────────────────────────────────────────────────────────
 
     fn render_home_item(
         collapsed: bool,
+        is_active: bool,
         state: &SidebarState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
@@ -319,21 +285,32 @@ impl SidebarView {
             div()
                 .id("sidebar-home")
                 .h(px(COLLAPSED_SECTION_ICON_SIZE))
+                .mx(px(6.0))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(4.0))
+                .bg(if is_active {
+                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
                 .child(
                     div()
                         .text_size(px(16.0))
                         .font_family(UiConstants::FONT_MDL2)
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .text_color(if is_active {
+                            rgb(0x60CDFF)
+                        } else {
+                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                        })
                         .child(icon),
                 )
         } else {
-            // Icon + text
+            // Icon + text + WinUI 3 3px active selection indicator pill
             div()
                 .id("sidebar-home")
+                .relative()
                 .h(px(SECTION_ITEM_HEIGHT))
                 .mx(px(8.0))
                 .flex()
@@ -341,6 +318,25 @@ impl SidebarView {
                 .px(px(8.0))
                 .gap(px(12.0))
                 .rounded(px(4.0))
+                .bg(if is_active {
+                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
+                } else {
+                    rgba(0x00000000u32)
+                })
+                .children(if is_active {
+                    Some(
+                        div()
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(7.0))
+                            .w(px(3.0))
+                            .h(px(16.0))
+                            .rounded(px(1.5))
+                            .bg(rgb(UiConstants::ACCENT_COLOR_RGB)),
+                    )
+                } else {
+                    None
+                })
                 .child(
                     div()
                         .w(px(20.0))
@@ -350,7 +346,11 @@ impl SidebarView {
                         .justify_center()
                         .text_size(px(16.0))
                         .font_family(UiConstants::FONT_MDL2)
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .text_color(if is_active {
+                            rgb(0x60CDFF)
+                        } else {
+                            rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                        })
                         .child(icon),
                 )
                 .child(
@@ -358,7 +358,11 @@ impl SidebarView {
                         .flex_grow()
                         .overflow_hidden()
                         .text_size(px(UiConstants::ITEM_FONT_SIZE_RAW as f32))
-                        .font_weight(FontWeight(600.0))
+                        .font_weight(if is_active {
+                            FontWeight(600.0)
+                        } else {
+                            FontWeight(400.0)
+                        })
                         .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                         .child("Home"),
                 )
@@ -1196,12 +1200,12 @@ pub fn compute_sidebar_content_height(sidebar: &SidebarState) -> f32 {
 }
 
 /// Compute the exact visible viewport height of the sidebar's scrollable container.
-/// Subtracts TabBar (40) + NavBar (44) + CollapseToggle (40) + Home (30/36) + Settings (40).
+/// Subtracts TabBar (40) + NavBar (46) + Home (30/36) + Settings (40).
 pub fn compute_sidebar_viewport_height(win_h: f32, collapsed: bool) -> f32 {
     let home_h = if collapsed {
         COLLAPSED_SECTION_ICON_SIZE
     } else {
         SECTION_ITEM_HEIGHT
     };
-    (win_h - 40.0 - 44.0 - 40.0 - home_h - 40.0).max(60.0)
+    (win_h - 40.0 - 46.0 - home_h - 40.0).max(60.0)
 }

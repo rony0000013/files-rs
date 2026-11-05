@@ -380,6 +380,7 @@ impl MainView {
             settings_data,
             content_w,
             224.0,
+            None,
         )
     }
 
@@ -393,6 +394,7 @@ impl MainView {
         settings_data: Option<crate::ui::components::dialogs::SettingsPreReadData>,
         content_w: f32,
         base_left_x: f32,
+        status_bar: Option<AnyElement>,
     ) -> impl IntoElement {
         let has_side_pane = state.side_pane != SidePaneMode::None
             && !matches!(state.target, ViewTarget::Settings);
@@ -400,18 +402,21 @@ impl MainView {
         let v2 = view.clone();
         let v3 = view.clone();
         let content_w = if has_side_pane {
-            content_w - state.side_pane_width.unwrap_or(300.0) - 4.0
+            content_w - state.side_pane_width.unwrap_or(300.0) - 6.0
         } else {
             content_w
         };
 
+        // MainPage.xaml ContentGrid + ModernShellPage.xaml RootGrid:
+        // Left child is the ModernShellPage floating rounded card (FileArea + Shelf + StatusBar),
+        // Right child (when active) is the sibling InfoPane rounded card separated by the splitter.
         div()
             .flex()
             .flex_row()
             .flex_grow()
             .w_full()
             .h_full()
-            .bg(rgba(UiConstants::BG_MICA_CONTENT_RGBA))
+            .min_h(px(0.0))
             .child(
                 div()
                     .flex()
@@ -419,6 +424,12 @@ impl MainView {
                     .flex_grow()
                     .w_full()
                     .h_full()
+                    .min_h(px(0.0))
+                    .rounded(px(8.0))
+                    .border(px(1.0))
+                    .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+                    .bg(rgba(UiConstants::BG_MAIN_RGBA))
+                    .overflow_hidden()
                     .child(Self::render_panes(
                         state,
                         file_items,
@@ -433,7 +444,15 @@ impl MainView {
                         vec![Self::render_shelf_pane(state, v2).into_any_element()]
                     } else {
                         vec![]
-                    }),
+                    })
+                    .children(status_bar.map(|sb| {
+                        div()
+                            .flex_shrink_0()
+                            .w_full()
+                            .h(px(UiConstants::STATUS_BAR_HEIGHT_RAW as f32))
+                            .child(sb)
+                            .into_any_element()
+                    })),
             )
             .children(if has_side_pane {
                 vec![
@@ -1017,7 +1036,7 @@ impl MainView {
             .flex()
             .flex_col()
             .rounded(px(8.0))
-            .bg(rgba(UiConstants::BG_MAIN_RGBA))
+            .bg(rgba(UiConstants::BG_TOOLBAR_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
             .overflow_hidden()
@@ -1284,12 +1303,10 @@ impl MainView {
             .flex_grow()
             .h_full()
             .w_full()
-            .rounded(px(8.0))
-            .border(px(1.0))
-            .border_color(rgba(UiConstants::CARD_STROKE_RGBA))
+            .min_h(px(0.0))
             .overflow_hidden()
             .bg(if is_active {
-                rgba(UiConstants::BG_MAIN_RGBA)
+                rgba(UiConstants::BG_TRANSPARENT_RGBA)
             } else {
                 rgba(UiConstants::BG_INACTIVE_PANE_RGBA)
             })
