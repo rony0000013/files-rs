@@ -69,6 +69,12 @@ impl crate::ui::components::dialogs::DialogsView {
         let menu_top: f32 = position.y.into();
         #[allow(unused_variables)]
         let menu_left: f32 = position.x.into();
+        let (win_w, win_h) = {
+            let s = view.read(cx).state.last_window_size;
+            let w = f32::from(s.width);
+            let h = f32::from(s.height);
+            (if w > 100.0 { w } else { 1280.0 }, if h > 100.0 { h } else { 800.0 })
+        };
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
@@ -482,6 +488,8 @@ impl crate::ui::components::dialogs::DialogsView {
                         menu_top,
                         menu_left,
                         showmore_off,
+                        win_w,
+                        win_h,
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -510,9 +518,11 @@ impl crate::ui::components::dialogs::DialogsView {
                                 sel_paths.clone(),
                                 cur_dir.clone(),
                                 &mut next_id,
-                                flip,
-                                menu_top + showmore_off,
                                 menu_left,
+                                menu_top + showmore_off,
+                                284.0,
+                                win_w,
+                                win_h,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -703,6 +713,8 @@ impl crate::ui::components::dialogs::DialogsView {
                         menu_top,
                         menu_left,
                         showmore_off,
+                        win_w,
+                        win_h,
                     ),
                     view.clone(),
                     move |_, _, cx| {
@@ -731,9 +743,11 @@ impl crate::ui::components::dialogs::DialogsView {
                                 Vec::new(),
                                 cur_dir.clone(),
                                 &mut next_id,
-                                flip,
-                                menu_top + showmore_off,
                                 menu_left,
+                                menu_top + showmore_off,
+                                284.0,
+                                win_w,
+                                win_h,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -2096,12 +2110,16 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
-        let left = if flip { -216.0 } else { 280.0 };
+        // 8px overlap into parent menu on right; 6px overlap on left
+        let left = if flip { -214.0 } else { 276.0 };
         let mut panel = div()
+            .id(("ctx-panel", kind as usize))
             .absolute()
             .top(px(-4.0))
             .left(px(left))
             .w(px(220.0))
+            .max_h(px(520.0))
+            .overflow_scroll()
             .flex_col()
             .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
@@ -2109,7 +2127,6 @@ impl crate::ui::components::dialogs::DialogsView {
             .rounded(px(8.0))
             .shadow_lg()
             .py(px(4.0))
-            .id(("ctx-panel", kind as usize))
             .on_hover(move |hovering: &bool, _, cx| {
                 // Re-assert while the cursor travels the panel; grace-close
                 // once it truly leaves, so diagonal entry never kills it.
@@ -2152,25 +2169,52 @@ impl crate::ui::components::dialogs::DialogsView {
         menu_top: f32,
         menu_left: f32,
         row_off: f32,
+        win_w: f32,
+        win_h: f32,
     ) -> gpui::Stateful<Div> {
-        // Bottom-anchored: grows UP from the ShowMore row, so a 30-item
-        // flyout can never spill past the window bottom. Capped so it never
-        // passes the window top either; overflow scrolls inside.
-        let row_bottom = menu_top + row_off + 29.0;
+        let row_abs_y = menu_top + row_off;
         let mut fly_h = 8.0f32;
         if let Some(ref entries) = classic {
             for e in entries.iter() {
                 fly_h += if e.separator { 9.0 } else { 29.0 };
             }
         }
-        let max_h = (row_bottom - 24.0).max(87.0);
-        let panel_top = row_bottom - fly_h.min(max_h);
+        let panel_w = 260.0f32;
+        let fits_right = menu_left + 284.0 + panel_w <= win_w - 16.0;
+        let (rel_left, panel_abs_x) = if fits_right && !flip {
+            (276.0f32, menu_left + 276.0)
+        } else {
+            (-254.0f32, menu_left - 254.0)
+        };
+
+        // Natural WinUI 3 placement: align top with invoking row (-4px),
+        // smoothly shift up if extending below window bottom.
+        let mut adjusted_top = -4.0f32;
+        let max_h = (win_h - 32.0).max(120.0);
+        let scroll = fly_h > max_h;
+
+        if row_abs_y - 4.0 + fly_h > win_h - 16.0 {
+            let overflow = (row_abs_y - 4.0 + fly_h) - (win_h - 16.0);
+            adjusted_top = (-4.0 - overflow).max(16.0 - row_abs_y);
+        }
+        let panel_abs_top = row_abs_y + adjusted_top;
+
         let rows: Vec<gpui::Stateful<Div>> = match classic {
             Some(entries) if !entries.is_empty() => {
                 let mut next_id: usize = 0;
                 Self::classic_rows(
-                    &entries, &open, &[], view.clone(), paths, dir, &mut next_id,
-                    flip, panel_top, menu_left,
+                    &entries,
+                    &open,
+                    &[],
+                    view.clone(),
+                    paths,
+                    dir,
+                    &mut next_id,
+                    panel_abs_x,
+                    panel_abs_top,
+                    panel_w,
+                    win_w,
+                    win_h,
                 )
             }
             Some(_) => {
@@ -2179,26 +2223,22 @@ impl crate::ui::components::dialogs::DialogsView {
             None if loading => vec![Self::classic_note_row("Loading\u{2026}", &mut 0usize)],
             None => vec![Self::classic_note_row("(Unavailable)", &mut 0usize)],
         };
-        let left = if flip { -256.0 } else { 280.0 };
-        let scroll = fly_h > max_h;
+
         let mut panel = div()
             .absolute()
-            .bottom(px(4.0))
-            .left(px(left))
-            .w(px(260.0))
+            .top(px(adjusted_top))
+            .left(px(rel_left))
+            .w(px(panel_w))
             .flex_col()
             .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
             .border(px(1.0))
             .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
             .rounded(px(8.0))
             .shadow_lg()
-            .py(px(4.0));
+            .py(px(4.0))
+            .id(("ctx-panel", SubmenuKind::ShowMore as usize));
         if scroll {
-            panel = panel.max_h(px(max_h));
-        }
-        let mut panel = panel.id(("ctx-panel", SubmenuKind::ShowMore as usize));
-        if scroll {
-            panel = panel.overflow_scroll();
+            panel = panel.max_h(px(max_h)).overflow_scroll();
         }
         panel = panel
             .on_hover({
@@ -2338,9 +2378,11 @@ impl crate::ui::components::dialogs::DialogsView {
         paths: Vec<std::path::PathBuf>,
         dir: std::path::PathBuf,
         next_id: &mut usize,
-        flip: bool,
-        panel_top: f32,
-        menu_left: f32,
+        panel_abs_x: f32,
+        panel_abs_top: f32,
+        panel_w: f32,
+        win_w: f32,
+        win_h: f32,
     ) -> Vec<gpui::Stateful<Div>> {
         let mut rows = Vec::new();
         let mut acc_h = 0.0f32;
@@ -2421,6 +2463,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 .relative()
                 .id(("classic", id));
             let hover_path = path.clone();
+            let row_abs_y = panel_abs_top + row_off;
             wrapper = wrapper
                 .on_hover(
                     move |hovering: &bool, window: &mut Window, cx: &mut App| {
@@ -2429,6 +2472,8 @@ impl crate::ui::components::dialogs::DialogsView {
                             let tip = tip.clone();
                             let path = hover_path.clone();
                             v_hover.update(cx, |this, cx| {
+                                this.submenu_row_hovered = true;
+                                this.submenu_grace_cancel();
                                 this.set_classic_open_intent(path, cx);
                                 this.menu_tip = Some((tip, pos));
                             });
@@ -2436,8 +2481,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             let mut parent = hover_path.clone();
                             parent.pop();
                             v_hover.update(cx, |this, cx| {
-                                // Diagonal travel into the nested panel gets
-                                // the same grace as top-level flyouts.
+                                this.submenu_row_hovered = false;
                                 this.submenu_grace_close(
                                     move |this, cx| this.set_classic_open(parent, cx),
                                     cx,
@@ -2470,22 +2514,35 @@ impl crate::ui::components::dialogs::DialogsView {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             }
             if show_kids {
-                // Nested panel: same bottom-anchor treatment, positioned
-                // from this row's absolute offset inside the parent panel.
-                let nested_row_bottom = panel_top + row_off + 29.0;
+                // Nested panel geometry: cascade with collision detection & WinUI 3 placement
+                let child_w = 240.0f32;
+                let fits_right = panel_abs_x + panel_w + child_w <= win_w - 16.0;
+                let (child_rel_left, child_abs_x) = if fits_right {
+                    (panel_w - 6.0, panel_abs_x + panel_w - 6.0)
+                } else {
+                    let left_abs = panel_abs_x - child_w + 6.0;
+                    if left_abs >= 16.0 {
+                        (-child_w + 6.0, left_abs)
+                    } else {
+                        let clamped_rel = (16.0 - panel_abs_x).min(panel_w - 6.0);
+                        (clamped_rel, panel_abs_x + clamped_rel)
+                    }
+                };
+
                 let mut nested_h = 8.0f32;
                 for e in entry.children.iter() {
                     nested_h += if e.separator { 9.0 } else { 29.0 };
                 }
-                let nested_max = (nested_row_bottom - 16.0).max(87.0);
-                let nested_top = nested_row_bottom - nested_h.min(nested_max);
-                // Flipped panels open left — unless the menu itself hugs the
-                // left edge, in which case opening right avoids clipping.
-                let nested_left = if flip && menu_left > 250.0 {
-                    -242.0
-                } else {
-                    258.0
-                };
+                let mut adjusted_top = -4.0f32;
+                let max_h = (win_h - 32.0).max(120.0);
+                let nested_scroll = nested_h > max_h;
+
+                if row_abs_y - 4.0 + nested_h > win_h - 16.0 {
+                    let overflow = (row_abs_y - 4.0 + nested_h) - (win_h - 16.0);
+                    adjusted_top = (-4.0 - overflow).max(16.0 - row_abs_y);
+                }
+                let child_abs_top = row_abs_y + adjusted_top;
+
                 let mut nid = *next_id;
                 let kids = Self::classic_rows(
                     &entry.children,
@@ -2495,30 +2552,28 @@ impl crate::ui::components::dialogs::DialogsView {
                     paths.clone(),
                     dir.clone(),
                     &mut nid,
-                    flip,
-                    nested_top,
-                    menu_left,
+                    child_abs_x,
+                    child_abs_top,
+                    child_w,
+                    win_w,
+                    win_h,
                 );
                 *next_id = nid;
                 let mut nested = div()
                     .absolute()
-                    .bottom(px(4.0))
-                    .left(px(nested_left))
-                    .w(px(240.0))
+                    .top(px(adjusted_top))
+                    .left(px(child_rel_left))
+                    .w(px(child_w))
                     .flex_col()
                     .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
                     .border(px(1.0))
                     .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
                     .rounded(px(8.0))
                     .shadow_lg()
-                    .py(px(4.0));
-                let nested_scroll = nested_h > nested_max;
+                    .py(px(4.0))
+                    .id(("ctx-nested", id));
                 if nested_scroll {
-                    nested = nested.max_h(px(nested_max));
-                }
-                let mut nested = nested.id(("ctx-nested", id));
-                if nested_scroll {
-                    nested = nested.overflow_scroll();
+                    nested = nested.max_h(px(max_h)).overflow_scroll();
                 }
                 nested = nested
                     .on_hover({
@@ -2549,9 +2604,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
-                if nested_h > nested_max {
-                    nested = nested.max_h(px(nested_max)).overflow_scroll();
-                }
+
                 for row in kids {
                     nested = nested.child(row);
                 }

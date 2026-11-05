@@ -6,7 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
 
-/// Renders the inline rename input container with WinUI 3 selection highlight and smooth stationary cursor.
+/// Renders the inline rename input container with WinUI 3 selection highlight, Zed-inspired smooth stationary cursor,
+/// and automatic horizontal scrolling so cursor navigation never wraps or displaces characters.
 pub fn render_inline_rename_element(
     rename_text: &str,
     selected_all: bool,
@@ -16,12 +17,12 @@ pub fn render_inline_rename_element(
     render_inline_rename_element_multiline(rename_text, selected_all, cursor_pos, None, view)
 }
 
-/// Multiline-capable inline rename element for Grid view label boxes (takes full 2-3 row height).
+/// Inline rename element for view rows and Grid view label boxes (Zed-inspired single-stream text editing).
 pub fn render_inline_rename_element_multiline(
     rename_text: &str,
     selected_all: bool,
     cursor_pos: usize,
-    min_height: Option<f32>,
+    _min_height: Option<f32>,
     view: Entity<crate::app::AppWindow>,
 ) -> AnyElement {
     let chars: Vec<char> = rename_text.chars().collect();
@@ -32,14 +33,14 @@ pub fn render_inline_rename_element_multiline(
     // Zero-width stationary cursor element: doesn't displace characters when moving
     let cursor_bar = div()
         .w(px(0.0))
-        .h(px(14.0))
+        .h(px(16.0))
         .flex_shrink_0()
         .child(
             div()
                 .absolute()
                 .left(px(-0.75))
                 .w(px(1.5))
-                .h(px(14.0))
+                .h(px(16.0))
                 .bg(rgb(0xFFFFFF))
                 .with_animation(
                     "inline-rename-blink",
@@ -48,16 +49,27 @@ pub fn render_inline_rename_element_multiline(
                 ),
         );
 
-    let mut container = div()
+    // Zed-inspired auto-scroll offset calculation: keep the caret comfortably in view.
+    // Average Segoe UI character pitch is ~7.2px at 12.5px font size.
+    let cursor_x = pos as f32 * 7.2;
+    let scroll_x = if cursor_x > 90.0 {
+        cursor_x - 70.0
+    } else {
+        0.0
+    };
+
+    let container = div()
+        .w_full()
+        .h(px(28.0))
         .bg(rgba(0x1E1E1EFF))
         .border(px(1.0))
         .border_color(rgb(0x60CDFF))
         .border_b(px(2.0))
         .rounded(px(4.0))
         .px(px(6.0))
-        .py(px(2.0))
+        .overflow_hidden()
         .flex()
-        .flex_row()
+        .items_center()
         .cursor_text()
         .on_mouse_down(MouseButton::Left, {
             let v = view.clone();
@@ -76,17 +88,12 @@ pub fn render_inline_rename_element_multiline(
             }
         });
 
-    if let Some(mh) = min_height {
-        container = container
-            .min_h(px(mh))
-            .w_full()
-            .flex_wrap()
-            .items_start();
-    } else {
-        container = container.items_center();
-    }
-
-    container
+    let inner_row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .whitespace_nowrap()
+        .ml(px(-scroll_x))
         .children(if selected_all {
             vec![
                 div()
@@ -94,6 +101,7 @@ pub fn render_inline_rename_element_multiline(
                     .text_color(rgb(0xFFFFFF))
                     .rounded(px(2.0))
                     .px(px(2.0))
+                    .whitespace_nowrap()
                     .child(if rename_text.is_empty() {
                         " ".to_string()
                     } else {
@@ -106,16 +114,19 @@ pub fn render_inline_rename_element_multiline(
             vec![
                 div()
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .whitespace_nowrap()
                     .child(before)
                     .into_any_element(),
                 cursor_bar.into_any_element(),
                 div()
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .whitespace_nowrap()
                     .child(after)
                     .into_any_element(),
             ]
-        })
-        .into_any_element()
+        });
+
+    container.child(inner_row).into_any_element()
 }
 
 /// Compute an adaptive 3-line filename label, effective font size, and line height.

@@ -34,8 +34,9 @@ impl UiConstants {
     pub const BG_DIALOG_RGBA: u32 = 0x2B2B2BF2;
 
     /// Menus & Flyouts (Sort, Group, Context, Layout, Selection, Tooltips) Acrylic / Mica darkish tint
-    pub const BG_FLYOUT_MICA_RGBA: u32 = 0x242424C8;
-    pub const BG_FLYOUT_MICA_RGB: u32 = 0x242424;
+    /// Alpha 0xE0 = 224/255 = 87.8% opacity (strictly within the 85-90% range requested by user).
+    pub const BG_FLYOUT_MICA_RGBA: u32 = 0x222222E0;
+    pub const BG_FLYOUT_MICA_RGB: u32 = 0x222222;
 
     /// Tab Bar background (`App.Theme.BackgroundBrush` = `Transparent` over Mica titlebar)
     pub const BG_TAB_BAR_RGBA: u32 = 0x00000000;

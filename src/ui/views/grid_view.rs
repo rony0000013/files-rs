@@ -1082,7 +1082,23 @@ impl MainViewState {
                     .h(px(thumb_height))
                     .child(visual_el),
             )
-            .child(
+            .child(if renaming_index == Some(index) {
+                div()
+                    .w_full()
+                    .h(px(label_box_h))
+                    .px(px(4.0))
+                    .mt(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::ui::views::helpers::render_inline_rename_element(
+                        rename_text,
+                        rename_selected_all,
+                        rename_cursor_pos,
+                        view.clone(),
+                    ))
+                    .into_any_element()
+            } else {
                 div()
                     .w_full()
                     .h(px(label_box_h))
@@ -1096,18 +1112,9 @@ impl MainViewState {
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
                     .line_clamp(3)
                     .text_ellipsis()
-                    .child(if renaming_index == Some(index) {
-                        crate::ui::views::helpers::render_inline_rename_element_multiline(
-                            rename_text,
-                            rename_selected_all,
-                            rename_cursor_pos,
-                            Some(label_box_h),
-                            view.clone(),
-                        )
-                    } else {
-                        display_label.into_any_element()
-                    }),
-            )
+                    .child(display_label)
+                    .into_any_element()
+            })
     }
 }
 
