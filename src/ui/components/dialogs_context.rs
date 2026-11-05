@@ -521,6 +521,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 284.0,
                                 win_w,
                                 win_h,
+                                flip,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -746,6 +747,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                 284.0,
                                 win_w,
                                 win_h,
+                                flip,
                             );
                             for row in inline {
                                 menu = menu.child(row);
@@ -2087,10 +2089,10 @@ impl crate::ui::components::dialogs::DialogsView {
         }
         let panel_w = 260.0f32;
         let fits_right = menu_left + 284.0 + panel_w <= win_w - 16.0;
-        let (rel_left, panel_abs_x) = if fits_right && !flip {
-            (276.0f32, menu_left + 276.0)
+        let (rel_left, panel_abs_x, flipped_left) = if fits_right && !flip {
+            (276.0f32, menu_left + 276.0, false)
         } else {
-            (-254.0f32, menu_left - 254.0)
+            (-254.0f32, menu_left - 254.0, true)
         };
 
         // Natural WinUI 3 placement: align top with invoking row (-4px),
@@ -2121,6 +2123,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     panel_w,
                     win_w,
                     win_h,
+                    flipped_left,
                 )
             }
             Some(_) => {
@@ -2289,6 +2292,7 @@ impl crate::ui::components::dialogs::DialogsView {
         panel_w: f32,
         win_w: f32,
         win_h: f32,
+        flipped_left: bool,
     ) -> Vec<gpui::Stateful<Div>> {
         let mut rows = Vec::new();
         let mut acc_h = 0.0f32;
@@ -2422,8 +2426,14 @@ impl crate::ui::components::dialogs::DialogsView {
             if show_kids {
                 // Nested panel geometry: cascade with collision detection & WinUI 3 placement
                 let child_w = 240.0f32;
-                let fits_right = panel_abs_x + panel_w + child_w <= win_w - 16.0;
-                let (child_rel_left, child_abs_x) = if fits_right {
+                let child_flipped_left = if flipped_left {
+                    let left_abs = panel_abs_x - child_w + 6.0;
+                    left_abs >= 16.0
+                } else {
+                    let fits_right = panel_abs_x + panel_w + child_w <= win_w - 16.0;
+                    !fits_right
+                };
+                let (child_rel_left, child_abs_x) = if !child_flipped_left {
                     (panel_w - 6.0, panel_abs_x + panel_w - 6.0)
                 } else {
                     let left_abs = panel_abs_x - child_w + 6.0;
@@ -2463,6 +2473,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     child_w,
                     win_w,
                     win_h,
+                    child_flipped_left,
                 );
                 *next_id = nid;
                 let mut nested = div()
@@ -2471,7 +2482,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     .left(px(child_rel_left))
                     .w(px(child_w))
                     .flex_col()
-                    .bg(rgba(UiConstants::BG_FLYOUT_MICA_RGBA))
+                    .bg(rgba(0x202020FE))
                     .border(px(1.0))
                     .border_color(rgba(UiConstants::SURFACE_STROKE_FLYOUT_RGBA))
                     .rounded(px(8.0))

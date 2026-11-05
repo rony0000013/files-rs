@@ -90,45 +90,66 @@ pub fn render_inline_rename_element_multiline(
             }
         });
 
-    let inner_row = div()
+    let (visible_text, cursor_overlay) = if selected_all {
+        (
+            div()
+                .bg(rgb(0x0078D4))
+                .text_color(rgb(0xFFFFFF))
+                .rounded(px(2.0))
+                .px(px(2.0))
+                .font_family(UiConstants::FONT_MAIN)
+                .whitespace_nowrap()
+                .child(if rename_text.is_empty() {
+                    " ".to_string()
+                } else {
+                    rename_text.to_string()
+                }),
+            None,
+        )
+    } else {
+        (
+            div()
+                .font_family(UiConstants::FONT_MAIN)
+                .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                .whitespace_nowrap()
+                .child(if rename_text.is_empty() {
+                    " ".to_string()
+                } else {
+                    rename_text.to_string()
+                }),
+            Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .bottom_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .opacity(0.0)
+                            .font_family(UiConstants::FONT_MAIN)
+                            .whitespace_nowrap()
+                            .child(before),
+                    )
+                    .child(cursor_bar),
+            ),
+        )
+    };
+
+    let mut inner_row = div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
         .whitespace_nowrap()
         .ml(px(-scroll_x))
-        .children(if selected_all {
-            vec![
-                div()
-                    .bg(rgb(0x0078D4))
-                    .text_color(rgb(0xFFFFFF))
-                    .rounded(px(2.0))
-                    .px(px(2.0))
-                    .whitespace_nowrap()
-                    .child(if rename_text.is_empty() {
-                        " ".to_string()
-                    } else {
-                        rename_text.to_string()
-                    })
-                    .into_any_element(),
-                cursor_bar.into_any_element(),
-            ]
-        } else {
-            vec![
-                div()
-                    .font_family(UiConstants::FONT_MAIN)
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .whitespace_nowrap()
-                    .child(before)
-                    .into_any_element(),
-                cursor_bar.into_any_element(),
-                div()
-                    .font_family(UiConstants::FONT_MAIN)
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .whitespace_nowrap()
-                    .child(after)
-                    .into_any_element(),
-            ]
-        });
+        .child(visible_text);
+
+    if let Some(overlay) = cursor_overlay {
+        inner_row = inner_row.child(overlay);
+    }
 
     container.child(inner_row).into_any_element()
 }
@@ -285,6 +306,12 @@ pub fn render_inline_rename_grid(
         let is_active_line = clamped_pos >= line.start_char_idx
             && (clamped_pos < line.end_char_idx || (is_last_line && clamped_pos >= line.end_char_idx));
 
+        let line_content = if line.text.is_empty() {
+            " ".to_string()
+        } else {
+            line.text.clone()
+        };
+
         if selected_all {
             container = container.child(
                 div()
@@ -302,91 +329,137 @@ pub fn render_inline_rename_grid(
                             .line_height(px(line_h))
                             .font_family(UiConstants::FONT_MAIN)
                             .whitespace_nowrap()
-                            .child(if line.text.is_empty() {
-                                " ".to_string()
-                            } else {
-                                line.text.clone()
-                            }),
-                    ),
-            );
-        } else if is_active_line {
-            let line_chars: Vec<char> = line.text.chars().collect();
-            let col = clamped_pos.saturating_sub(line.start_char_idx).min(line_chars.len());
-            let before: String = line_chars[..col].iter().collect();
-            let after: String = line_chars[col..].iter().collect();
-
-            let cursor_bar = div()
-                .w(px(0.0))
-                .min_w(px(0.0))
-                .h(px(line_h.max(14.0)))
-                .flex_shrink_0()
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(-0.75))
-                        .w(px(1.5))
-                        .h(px(line_h.max(14.0)))
-                        .bg(rgb(0xFFFFFF))
-                        .with_animation(
-                            "inline-rename-grid-blink",
-                            Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                            |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                        ),
-                );
-
-            container = container.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .justify_center()
-                    .items_center()
-                    .whitespace_nowrap()
-                    .child(
-                        div()
-                            .text_size(px(font_size))
-                            .line_height(px(line_h))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .whitespace_nowrap()
-                            .child(before),
-                    )
-                    .child(cursor_bar)
-                    .child(
-                        div()
-                            .text_size(px(font_size))
-                            .line_height(px(line_h))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .whitespace_nowrap()
-                            .child(after),
+                            .child(line_content),
                     ),
             );
         } else {
+            // Unbroken text layer: shapes line.text as a single continuous string.
+            // Preserves 100% of font kerning and layout bounds so characters never shift.
+            let visible_text = div()
+                .text_size(px(font_size))
+                .line_height(px(line_h))
+                .font_family(UiConstants::FONT_MAIN)
+                .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                .whitespace_nowrap()
+                .child(line_content);
+
+            let mut text_block = div()
+                .relative()
+                .flex()
+                .items_center()
+                .whitespace_nowrap()
+                .child(visible_text);
+
+            if is_active_line {
+                let line_chars: Vec<char> = line.text.chars().collect();
+                let col = clamped_pos.saturating_sub(line.start_char_idx).min(line_chars.len());
+                let before: String = line_chars[..col].iter().collect();
+
+                let cursor_bar = div()
+                    .w(px(0.0))
+                    .min_w(px(0.0))
+                    .h(px(line_h.max(14.0)))
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-0.75))
+                            .w(px(1.5))
+                            .h(px(line_h.max(14.0)))
+                            .bg(rgb(0xFFFFFF))
+                            .with_animation(
+                                "inline-rename-grid-blink",
+                                Animation::new(std::time::Duration::from_millis(500)).repeat(),
+                                |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
+                            ),
+                    );
+
+                let cursor_overlay = div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .bottom_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .opacity(0.0)
+                            .text_size(px(font_size))
+                            .line_height(px(line_h))
+                            .font_family(UiConstants::FONT_MAIN)
+                            .whitespace_nowrap()
+                            .child(before),
+                    )
+                    .child(cursor_bar);
+
+                text_block = text_block.child(cursor_overlay);
+            }
+
             container = container.child(
                 div()
                     .w_full()
                     .flex()
                     .justify_center()
                     .items_center()
-                    .child(
-                        div()
-                            .text_size(px(font_size))
-                            .line_height(px(line_h))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                            .whitespace_nowrap()
-                            .child(if line.text.is_empty() {
-                                " ".to_string()
-                            } else {
-                                line.text.clone()
-                            }),
-                    ),
+                    .child(text_block),
             );
         }
     }
 
     container.into_any_element()
+}
+
+/// Move cursor vertically up or down across wrapped multiline rename text.
+pub fn rename_cursor_move_vertical(text: &str, cur_pos: usize, move_up: bool) -> usize {
+    let total_len = text.chars().count();
+    if total_len == 0 {
+        return 0;
+    }
+    // Match grid tile wrapped width (~18 characters per line)
+    let chars_per_line = 18;
+    let lines = wrap_rename_text(text, chars_per_line, 3);
+    if lines.is_empty() {
+        return if move_up { 0 } else { total_len };
+    }
+
+    let clamped_pos = cur_pos.min(total_len);
+    let num_lines = lines.len();
+
+    // Find current line index
+    let mut cur_line_idx = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let is_last = i == num_lines - 1;
+        if clamped_pos >= line.start_char_idx
+            && (clamped_pos < line.end_char_idx || (is_last && clamped_pos >= line.end_char_idx))
+        {
+            cur_line_idx = i;
+            break;
+        }
+    }
+
+    let cur_line = &lines[cur_line_idx];
+    let col = clamped_pos.saturating_sub(cur_line.start_char_idx);
+
+    if move_up {
+        if cur_line_idx > 0 {
+            let prev_line = &lines[cur_line_idx - 1];
+            let prev_len = prev_line.text.chars().count();
+            let target_col = col.min(prev_len);
+            prev_line.start_char_idx + target_col
+        } else {
+            0
+        }
+    } else {
+        if cur_line_idx + 1 < num_lines {
+            let next_line = &lines[cur_line_idx + 1];
+            let next_len = next_line.text.chars().count();
+            let target_col = col.min(next_len);
+            next_line.start_char_idx + target_col
+        } else {
+            total_len
+        }
+    }
 }
 
 /// Compute an adaptive 3-line filename label, effective font size, and line height.
@@ -799,5 +872,20 @@ mod tests {
         assert_eq!(joined, text);
         assert_eq!(lines[0].start_char_idx, 0);
         assert_eq!(lines.last().unwrap().end_char_idx, text.chars().count());
+    }
+
+    #[test]
+    fn test_rename_cursor_move_vertical() {
+        let text = "Verity.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv";
+        // From start, up arrow stays at 0
+        assert_eq!(rename_cursor_move_vertical(text, 0, true), 0);
+        // Down arrow from start moves down to next line
+        let down1 = rename_cursor_move_vertical(text, 0, false);
+        assert!(down1 > 0);
+        // Up arrow from next line moves back up to 0
+        assert_eq!(rename_cursor_move_vertical(text, down1, true), 0);
+        // Down arrow from end of text stays at end of text
+        let total = text.chars().count();
+        assert_eq!(rename_cursor_move_vertical(text, total, false), total);
     }
 }

@@ -1485,6 +1485,34 @@ impl AppWindow {
                     }
                     cx.notify();
                 }
+                "up" | "Up" => {
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = 0;
+                    } else {
+                        view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
+                            &view.rename_text,
+                            view.rename_cursor_pos,
+                            true,
+                        );
+                    }
+                    cx.notify();
+                }
+                "down" | "Down" => {
+                    let view = self.state.active_view_mut();
+                    if view.rename_selected_all {
+                        view.rename_selected_all = false;
+                        view.rename_cursor_pos = view.rename_text.chars().count();
+                    } else {
+                        view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
+                            &view.rename_text,
+                            view.rename_cursor_pos,
+                            false,
+                        );
+                    }
+                    cx.notify();
+                }
                 "home" | "Home" => {
                     let view = self.state.active_view_mut();
                     view.rename_selected_all = false;
