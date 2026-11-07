@@ -43,7 +43,12 @@ impl FileActionService {
     pub async fn edit_in_notepad(path: &FilesPath) -> Result<()> {
         #[cfg(windows)]
         {
-            Command::new("notepad.exe").arg(path.as_path()).spawn()?;
+            Command::new("notepad.exe")
+                .arg(path.as_path())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
         }
         #[cfg(not(windows))]
         {
@@ -122,6 +127,9 @@ impl FileActionService {
                     "Start-Process '{}' -Verb runAs",
                     path.as_path().to_string_lossy()
                 ))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()?;
         }
         #[cfg(not(windows))]

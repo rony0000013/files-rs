@@ -121,6 +121,7 @@ impl AppWindow {
 
         let active_tab = self.state.navigation.read(cx).tabs.active_tab().clone();
         let settings_model = self.state.settings.read(cx);
+        let has_custom_prefs = settings_model.config().has_folder_preferences(&path);
         let prefs = settings_model.config().get_folder_preferences(&path);
         let app_prefs = settings_model.config().preferences.clone();
         let calc_folder_sizes = settings_model.config().view.calculate_folder_sizes;
@@ -133,7 +134,8 @@ impl AppWindow {
                 &mut self.state.main_view
             };
 
-            if target_view.view_lock_enabled {
+            target_view.view_lock_enabled = has_custom_prefs;
+            if has_custom_prefs {
                 target_view.view_mode = prefs.view_mode.clone();
                 target_view.zoom_level = prefs.zoom_level;
             } else {
@@ -743,12 +745,18 @@ impl AppWindow {
                     {
                         let _ = std::process::Command::new("open")
                             .arg(item.path.as_path())
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
                             .spawn();
                     }
                     #[cfg(all(unix, not(target_os = "macos")))]
                     {
                         let _ = std::process::Command::new("xdg-open")
                             .arg(item.path.as_path())
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
                             .spawn();
                     }
                 }

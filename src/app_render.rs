@@ -1168,12 +1168,22 @@ impl Render for AppWindow {
             let win_bounds = window.bounds();
             let win_w = win_bounds.size.width;
             let win_h = win_bounds.size.height;
-            let mut tx = pos.x + px(4.0);
-            let mut ty = pos.y + px(24.0);
 
-            if tx + px(200.0) > win_w {
-                tx = (win_w - px(210.0)).max(px(8.0));
+            // Dynamically calculate estimated tooltip width based on label text + shortcut
+            let text_len = tip.text.len() + tip.shortcut.as_ref().map_or(0, |s| s.len() + 2);
+            let est_w = (text_len as f32 * 7.2 + 24.0).clamp(70.0, 420.0);
+
+            // Center horizontally on the mouse cursor / icon
+            let mut tx = pos.x - px(est_w / 2.0);
+            if tx + px(est_w) > win_w - px(10.0) {
+                tx = (win_w - px(est_w + 10.0)).max(px(8.0));
             }
+            if tx < px(8.0) {
+                tx = px(8.0);
+            }
+
+            // Vertical: if hovering near bottom (status bar), float above; otherwise below
+            let mut ty = pos.y + px(22.0);
             if ty + px(36.0) > win_h {
                 ty = (pos.y - px(34.0)).max(px(8.0));
             }

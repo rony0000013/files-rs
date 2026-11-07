@@ -793,7 +793,7 @@ pub fn view_mode_for_zoom(zoom: f32) -> ViewMode {
 pub fn zoom_mode_label(mode: &ViewMode) -> (&'static str, &'static str) {
     match mode {
         ViewMode::Details => ("\u{E8FD}", "Details"),
-        ViewMode::List => ("\u{E8EF}", "List"),
+        ViewMode::List => ("\u{EA37}", "List"),
         ViewMode::Cards => ("\u{E8A9}", "Cards"),
         ViewMode::Columns => ("\u{E8F1}", "Columns"),
         ViewMode::Grid => ("\u{E80A}", "Grid"),

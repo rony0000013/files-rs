@@ -24,11 +24,11 @@ pub(crate) fn flyout_card_shell(
 ) -> Div {
     let mut shell = div()
         .relative()
+        .flex_col()
         .w(px(w))
         .h(px(h))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation());
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
 
     let mut bg_card = div()
         .absolute()
@@ -91,6 +91,12 @@ impl crate::ui::components::dialogs::DialogsView {
         max_h: f32,
         win_w: f32,
         win_h: f32,
+        scroll_offset: f32,
+        current_sort: crate::config::config::SortBy,
+        current_group: crate::config::config::GroupColumn,
+        is_pinned_to_sidebar: bool,
+        available_tags: Vec<crate::config::config::TagDefinition>,
+        item_tags: Vec<String>,
         view: Entity<crate::app::AppWindow>,
         cx: &mut Context<crate::app::AppWindow>,
         mica_geo: Option<crate::wallpaper_mica::MicaGeo>,
@@ -111,32 +117,32 @@ impl crate::ui::components::dialogs::DialogsView {
 
         #[allow(unused_mut)]
         let mut showmore_off = 0.0f32;
+        let mut active_child_panel: Option<gpui::Stateful<Div>> = None;
         let menu_top: f32 = position.y.into();
         let menu_left: f32 = position.x.into();
         let win_w = if win_w > 100.0 { win_w } else { 1280.0 };
         let win_h = if win_h > 100.0 { win_h } else { 800.0 };
 
-        let mut menu = div()
-            .relative()
-            .flex_col()
-            .w_full()
-            .py(px(4.0));
-        // Running content height + the ShowMore row offset (for flyout
-        // geometry: bottom-anchored tall panels + on-screen caps). Starts
-        // with chrome: py(4) top + toolbar(~34 incl. separator) on item
-        // menus, py(4) top on background menus — so the viewport cap below
-        // compares against the true height, not just the rows.
-        let mut menu_h = if has_selection { 47.0 } else { 4.0 }; // +4 bottom py at cap time
+        let sel_paths: Vec<std::path::PathBuf> = if has_selection {
+            selected_paths.clone()
+        } else {
+            Vec::new()
+        };
+        let cur_dir: std::path::PathBuf = current_dir.clone();
+
+        let mut items: Vec<gpui::AnyElement> = Vec::new();
+        let mut submenu_offsets: std::collections::HashMap<SubmenuKind, f32> =
+            std::collections::HashMap::new();
+        let mut items_acc_h = 0.0f32;
+
+        let fixed_header: Option<Div>;
+        let fixed_header_h: f32;
 
         if has_selection {
             // ═══════════════════════════════════════════════════════════
             // FILES LAYOUT — file/folder/multi-select context menu
             // ═══════════════════════════════════════════════════════════
             let v_sub = view.clone();
-            let v_open2 = v_open.clone();
-            // Pre-read selection paths + current dir for the classic menu.
-            let sel_paths: Vec<std::path::PathBuf> = selected_paths.clone();
-            let cur_dir: std::path::PathBuf = current_dir.clone();
 
             // ── TOP ICON TOOLBAR (Cut/Copy/Paste/Rename/Share/Delete/Props)
             {
@@ -223,26 +229,31 @@ impl crate::ui::components::dialogs::DialogsView {
                     }
                     v.update(cx, |this, cx| this.close_dialog(cx));
                 });
-                menu = menu.child(Self::context_menu_toolbar(
-                    vec![
-                        ("\u{E8C6}", "Cut \u{2014} Ctrl+X", cut_btn),
-                        ("\u{E8C8}", "Copy \u{2014} Ctrl+C", copy_btn),
-                        ("\u{E77F}", "Paste \u{2014} Ctrl+V", paste_btn),
-                        ("\u{E8AC}", "Rename \u{2014} F2", rename_btn),
-                        ("\u{E72D}", "Share", share_btn),
-                        ("\u{E74D}", "Delete \u{2014} Del", delete_btn),
-                        ("\u{E946}", "Properties \u{2014} Alt+Enter", props_btn),
-                    ],
-                    view.clone(),
-                ));
-                menu_h += 34.0;
-                menu = menu.child(Self::context_menu_separator());
-                menu_h += 9.0;
+                fixed_header = Some(
+                    div()
+                        .relative()
+                        .w_full()
+                        .pt(px(4.0))
+                        .child(Self::context_menu_toolbar(
+                            vec![
+                                ("\u{E8C6}", "Cut \u{2014} Ctrl+X", cut_btn),
+                                ("\u{E8C8}", "Copy \u{2014} Ctrl+C", copy_btn),
+                                ("\u{E77F}", "Paste \u{2014} Ctrl+V", paste_btn),
+                                ("\u{E8AC}", "Rename \u{2014} F2", rename_btn),
+                                ("\u{E72D}", "Share", share_btn),
+                                ("\u{E74D}", "Delete \u{2014} Del", delete_btn),
+                                ("\u{E713}", "Properties \u{2014} Alt+Enter", props_btn),
+                            ],
+                            view.clone(),
+                        ))
+                        .child(Self::context_menu_separator()),
+                );
+                fixed_header_h = 45.0f32;
             }
 
             // Open (single selection only)
             if !is_multi {
-                menu = menu.child(Self::context_menu_row("\u{E8DA}", "Open", MenuTrailing::None, {
+                items.push(Self::context_menu_row("\u{E197}", "Open", MenuTrailing::None, {
                     let path = selected_path.clone();
                     move |_, _, cx| {
                         if let Some(ref p) = path {
@@ -253,92 +264,48 @@ impl crate::ui::components::dialogs::DialogsView {
                             });
                         }
                     }
-                }));
-                menu_h += 29.0;
+                }).into_any_element());
+                items_acc_h += 32.0;
             }
 
-            // Open with › (file, single): flyout + default fires Open-As.
+            // Open with › (file, single)
             if !is_multi && !is_dir {
-                let ow_open = open_submenu == Some(SubmenuKind::OpenWith);
-                let ow_path = selected_path.clone();
-                let ow_path2 = selected_path.clone();
-                let v_ow = v_sub.clone();
-                let mut ow_rows = vec![Self::context_menu_item(
-                    "\u{E8DA}",
-                    "Default app",
-                    {
-                        let path = ow_path.clone();
-                        move |_, _, cx| {
-                            if let Some(ref p) = path {
-                                let path = p.clone();
-                                v_open2.update(cx, |this, cx| {
-                                    this.navigate(path, cx);
-                                    this.close_dialog(cx);
-                                });
-                            }
-                        }
-                    },
-                )];
-                ow_rows.push(Self::context_menu_item(
-                    "\u{E8A5}",
-                    "Choose another app...",
-                    {
-                        let path = ow_path2.clone();
-                        move |_, _, cx| {
-                            if let Some(ref p) = path {
-                                let path_str = p.to_string_lossy().to_string();
-                                let _ = std::process::Command::new("rundll32")
-                                    .args(["shell32.dll,OpenAs_RunDLL", &path_str])
-                                    .spawn();
-                            }
-                            v_ow.update(cx, |this, cx| this.close_dialog(cx));
-                        }
-                    },
-                ));
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::OpenWith, row_y);
                 let v_fire = v_sub.clone();
                 let path = selected_path.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E8DA}",
+                items.push(Self::submenu_row(
+                    "\u{E7AC}",
                     "Open With",
                     SubmenuKind::OpenWith,
-                    ow_open,
-                    Self::submenu_panel(
-                        ow_rows,
-                        SubmenuKind::OpenWith,
-                        v_sub.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         if let Some(ref p) = path {
                             let path_str = p.to_string_lossy().to_string();
                             let _ = std::process::Command::new("rundll32")
                                 .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
                                 .spawn();
                         }
                         v_fire.update(cx, |this, cx| this.close_dialog(cx));
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Paste shortcut (from clipboard files)
-            menu = menu.child(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
+            items.push(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
                 let v = v_paste.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| this.paste_as_shortcut(cx));
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
             // Copy item path (Ctrl+Shift+C)
-            menu = menu.child(Self::context_menu_row("\u{E8C8}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
+            items.push(Self::context_menu_row("\u{F413}", "Copy item path", MenuTrailing::Hint("Ctrl+Shift+C"), {
                 let v = v_copypath.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -346,21 +313,21 @@ impl crate::ui::components::dialogs::DialogsView {
                         this.close_dialog(cx);
                     });
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
             // Create folder with selection
-            menu = menu.child(Self::context_menu_row("\u{E8F4}", "Create folder with selection", MenuTrailing::None, {
+            items.push(Self::context_menu_row("\u{E8F4}", "Create folder with selection", MenuTrailing::None, {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| this.create_folder_with_selection(cx));
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
             // Create Shortcut (single selection only)
             if !is_multi {
-                menu = menu.child(Self::context_menu_row(
+                items.push(Self::context_menu_row(
                     "\u{E71B}",
                     "Create Shortcut",
                     MenuTrailing::None,
@@ -390,212 +357,114 @@ impl crate::ui::components::dialogs::DialogsView {
                             });
                         }
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Compress › (ZIP creation + conditional Extract Here)
             {
-                let c_open = open_submenu == Some(SubmenuKind::Compress);
-                let is_archive = selected_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|name| {
-                        let name = name.to_string_lossy().to_lowercase();
-                        name.ends_with(".zip")
-                            || name.ends_with(".7z")
-                            || name.ends_with(".tar")
-                            || name.ends_with(".tar.gz")
-                            || name.ends_with(".rar")
-                    })
-                    .unwrap_or(false);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::Compress, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E8B7}",
+                items.push(Self::submenu_row(
+                    "\u{F012}",
                     "Compress",
                     SubmenuKind::Compress,
-                    c_open,
-                    Self::compress_submenu(
-                        view.clone(),
-                        flip,
-                        is_archive,
-                        selected_path.clone(),
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::Compress), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Send to › (Windows SendTo folder)
             {
-                let s_open = open_submenu == Some(SubmenuKind::SendTo);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::SendTo, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E8B7}",
+                items.push(Self::submenu_row(
+                    "",
                     "Send to",
                     SubmenuKind::SendTo,
-                    s_open,
-                    Self::sendto_submenu(
-                        view.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::SendTo), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
-            menu = menu.child(Self::context_menu_separator());
-                menu_h += 9.0;
-
-            // ── PIN SECTION ──
-            menu = menu.child(Self::context_menu_item(
-                "\u{E718}",
-                "Pin to Quick Access",
-                {
-                    let v = v_close.clone();
-                    let path = selected_path.clone();
+            // Edit file tags ›
+            {
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::FileTags, row_y);
+                let v_fire = v_sub.clone();
+                items.push(Self::submenu_row(
+                    "\u{E1CB}",
+                    "Edit file tags",
+                    SubmenuKind::FileTags,
+                    v_sub.clone(),
                     move |_, _, cx| {
-                        if let Some(ref p) = path {
-                            let path_str = p.to_string_lossy().to_string();
-                            tracing::info!("Pin to Quick Access: {}", path_str);
-                        }
-                        v.update(cx, |this, cx| this.close_dialog(cx));
-                    }
-                },
-            ));
-                menu_h += 29.0;
-            menu = menu.child(Self::context_menu_item("\u{E77E}", "Pin to Start", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        tracing::info!("Pin to Start: {}", path_str);
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
-                menu_h += 29.0;
+                        v_fire.update(cx, |this, cx| {
+                            this.set_open_submenu(Some(SubmenuKind::FileTags), cx);
+                        });
+                    },
+                ).into_any_element());
+                items_acc_h += 32.0;
+            }
 
-            menu = menu.child(Self::context_menu_separator());
-                menu_h += 9.0;
-
-            // ── EXTRAS (app-specific actions) ──
-            menu = menu.child(Self::context_menu_item("\u{E8A7}", "Open in VS Code", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| {
-                        this.open_in_ide(path.clone(), cx);
-                        this.close_dialog(cx);
-                    });
-                }
-            }));
-                menu_h += 29.0;
-            menu = menu.child(Self::context_menu_item("\u{E896}", "Git Status", {
-                let v = v_close.clone();
-                let path = selected_path.clone();
-                move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let path_str = p.to_string_lossy().to_string();
-                        let dir = std::path::Path::new(&path_str)
-                            .parent()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|| path_str.clone());
-                        let _ = std::process::Command::new("cmd")
-                            .args([
-                                "/C",
-                                "start",
-                                "cmd",
-                                "/K",
-                                &format!("cd /d {} && git status", dir),
-                            ])
-                            .spawn();
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
-                }
-            }));
-                menu_h += 29.0;
-            menu = menu.child(Self::context_menu_item("\u{E74D}", "Delete Permanently", {
-                let v = v_close.clone();
-                move |_, _, cx| {
-                    v.update(cx, |this, cx| this.delete_permanently(cx));
-                }
-            }));
-                menu_h += 29.0;
+            items.push(Self::context_menu_separator().into_any_element());
+            items_acc_h += 7.0;
 
             // Show more options › — the real classic shell items (WinRAR,
             // Kaspersky, ...) expand inline on hover (Files parity). Windows
             // only: other platforms have no classic provider yet.
             #[cfg(target_os = "windows")]
             {
-                showmore_off = menu_h;
+                let row_y = items_acc_h;
+                showmore_off = row_y;
                 if !expanded {
-                let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
-                let v_click = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E10C}",
-                    "Show more options",
-                    SubmenuKind::ShowMore,
-                    sm_open,
-                    Self::classic_submenu(
-                        classic.clone(),
-                        classic_loading,
-                        classic_open.clone(),
+                    submenu_offsets.insert(SubmenuKind::ShowMore, row_y);
+                    let v_click = v_sub.clone();
+                    items.push(Self::submenu_row(
+                        "\u{E712}",
+                        "Show more options",
+                        SubmenuKind::ShowMore,
                         view.clone(),
-                        sel_paths.clone(),
-                        cur_dir.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        showmore_off,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
-                    view.clone(),
-                    move |_, _, cx| {
-                        v_click.update(cx, |this, cx| {
-                            this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
-                        });
-                    },
-                ));
-                menu_h += 29.0;
+                        move |_, _, cx| {
+                            v_click.update(cx, |this, cx| {
+                                this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
+                            });
+                        },
+                    ).into_any_element());
+                    items_acc_h += 32.0;
                 } else {
                     // Expanded style: every classic item is inlined below the
                     // app rows - no hover needed. Nested verbs keep flyouts.
-                    menu = menu.child(Self::context_menu_separator());
-                    menu_h += 9.0;
+                    items.push(Self::context_menu_separator().into_any_element());
+                    items_acc_h += 7.0;
                     match classic.as_ref() {
                         Some(entries) if !entries.is_empty() => {
+                            let filtered: Vec<ClassicMenuEntry> = entries
+                                .iter()
+                                .filter(|e| {
+                                    let l = e.label.to_lowercase();
+                                    !l.contains("send to") && !l.contains("open with")
+                                })
+                                .cloned()
+                                .collect();
                             let mut next_id: usize = 0;
-                            for e in entries.iter() {
-                                menu_h += if e.separator { 9.0 } else { 29.0 };
+                            for e in filtered.iter() {
+                                items_acc_h += if e.separator { 7.0 } else { 32.0 };
                             }
+                            let cur_scroll = scroll_offset;
                             let (inline, child_panel) = Self::classic_rows(
-                                entries,
+                                &filtered,
                                 &classic_open,
                                 &[],
                                 view.clone(),
@@ -603,7 +472,8 @@ impl crate::ui::components::dialogs::DialogsView {
                                 cur_dir.clone(),
                                 &mut next_id,
                                 menu_left,
-                                menu_top + showmore_off,
+                                menu_top + fixed_header_h + showmore_off - cur_scroll,
+                                fixed_header_h + showmore_off - cur_scroll,
                                 284.0,
                                 win_w,
                                 win_h,
@@ -611,19 +481,19 @@ impl crate::ui::components::dialogs::DialogsView {
                                 mica_geo.as_ref(),
                             );
                             for row in inline {
-                                menu = menu.child(row);
+                                items.push(row.into_any_element());
                             }
                             if let Some(child) = child_panel {
-                                menu = menu.child(child);
+                                active_child_panel = Some(child);
                             }
                         }
                         Some(_) => {
                             let mut nid = 0usize;
-                            menu = menu.child(Self::classic_note_row(
+                            items.push(Self::classic_note_row(
                                 "(No extended options)",
                                 &mut nid,
-                            ));
-                            menu_h += 29.0;
+                            ).into_any_element());
+                            items_acc_h += 32.0;
                         }
                         None => {
                             let mut nid = 0usize;
@@ -632,8 +502,8 @@ impl crate::ui::components::dialogs::DialogsView {
                             } else {
                                 "(Unavailable)"
                             };
-                            menu = menu.child(Self::classic_note_row(txt, &mut nid));
-                            menu_h += 29.0;
+                            items.push(Self::classic_note_row(txt, &mut nid).into_any_element());
+                            items_acc_h += 32.0;
                         }
                     }
                 }
@@ -642,98 +512,69 @@ impl crate::ui::components::dialogs::DialogsView {
             // ═══════════════════════════════════════════════════════════
             // FILES LAYOUT — background (empty space) context menu
             // ═══════════════════════════════════════════════════════════
+            fixed_header = None;
+            fixed_header_h = 0.0f32;
             let v_sub = view.clone();
-            let cur_dir: std::path::PathBuf = current_dir.clone();
 
             // Layout ›
             {
-                let l_open = open_submenu == Some(SubmenuKind::Layout);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::Layout, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E8A1}",
+                items.push(Self::submenu_row(
+                    "\u{F0E2}",
                     "Layout",
                     SubmenuKind::Layout,
-                    l_open,
-                    Self::layout_submenu(
-                        view.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::Layout), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Sort by ›
             {
-                let s_open = open_submenu == Some(SubmenuKind::SortBy);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::SortBy, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E2C7}",
+                items.push(Self::submenu_row(
+                    "\u{E8CB}",
                     "Sort by",
                     SubmenuKind::SortBy,
-                    s_open,
-                    Self::sort_submenu(
-                        view.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::SortBy), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Group by ›
             {
-                let g_open = open_submenu == Some(SubmenuKind::GroupBy);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::GroupBy, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E2C7}",
+                items.push(Self::submenu_row(
+                    "\u{F168}",
                     "Group by",
                     SubmenuKind::GroupBy,
-                    g_open,
-                    Self::group_submenu(
-                        view.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::GroupBy), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Refresh (Ctrl+R)
-            menu = menu.child(Self::context_menu_row("\u{E72C}", "Refresh", MenuTrailing::Hint("Ctrl+R"), {
+            items.push(Self::context_menu_row("\u{E72C}", "Refresh", MenuTrailing::Hint("Ctrl+R"), {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -741,69 +582,73 @@ impl crate::ui::components::dialogs::DialogsView {
                         this.close_dialog(cx);
                     });
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
-            menu = menu.child(Self::context_menu_separator());
-                menu_h += 9.0;
+            items.push(Self::context_menu_separator().into_any_element());
+            items_acc_h += 7.0;
 
             // New ›
             {
-                let n_open = open_submenu == Some(SubmenuKind::New);
+                let row_y = items_acc_h;
+                submenu_offsets.insert(SubmenuKind::New, row_y);
                 let v_fire = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E8F4}",
+                items.push(Self::submenu_row(
+                    "\u{E710}",
                     "New",
                     SubmenuKind::New,
-                    n_open,
-                    Self::new_submenu(
-                        view.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        menu_h,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
                     v_sub.clone(),
                     move |_, _, cx| {
                         v_fire.update(cx, |this, cx| {
                             this.set_open_submenu(Some(SubmenuKind::New), cx);
                         });
                     },
-                ));
-                menu_h += 29.0;
+                ).into_any_element());
+                items_acc_h += 32.0;
             }
 
             // Paste shortcut (clipboard files pasted as shortcuts here)
-            menu = menu.child(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
+            items.push(Self::context_menu_row("\u{E77F}", "Paste shortcut", MenuTrailing::None, {
                 let v = v_sub.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| this.paste_as_shortcut(cx));
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
-            // Pin to Sidebar (current folder)
-            menu = menu.child(Self::context_menu_item(
-                "\u{E718}",
-                "Pin to Sidebar",
+            // Pin / Unpin from Sidebar (current folder)
+            let (pin_glyph, pin_label) = if is_pinned_to_sidebar {
+                ("\u{E77A}", "Unpin from Sidebar")
+            } else {
+                ("\u{E718}", "Pin to Sidebar")
+            };
+            items.push(Self::context_menu_item(
+                pin_glyph,
+                pin_label,
                 {
                     let v = v_close.clone();
                     let dir = cur_dir.clone();
+                    let is_pinned = is_pinned_to_sidebar;
                     move |_, _, cx| {
-                        tracing::info!("Pin to Sidebar: {:?}", dir);
-                        v.update(cx, |this, cx| this.close_dialog(cx));
+                        let fp = crate::core::path_util::FilesPath::from(dir.clone());
+                        v.update(cx, |this, cx| {
+                            if is_pinned {
+                                this.unpin_folder(fp, cx);
+                            } else {
+                                this.pin_folder(fp, cx);
+                            }
+                            this.close_dialog(cx);
+                        });
                     }
                 },
-            ));
-                menu_h += 29.0;
-            menu = menu.child(Self::context_menu_separator());
-                menu_h += 9.0;
+            ).into_any_element());
+            items_acc_h += 32.0;
+
+            items.push(Self::context_menu_separator().into_any_element());
+            items_acc_h += 7.0;
 
             // Open in Windows Terminal (Ctrl+`)
-            menu = menu.child(Self::context_menu_row("\u{E756}", "Open in Windows Terminal", MenuTrailing::Hint("Ctrl+`"), {
+            items.push(Self::context_menu_row("\u{E756}", "Open in Windows Terminal", MenuTrailing::Hint("Ctrl+`"), {
                 let v = v_close.clone();
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
@@ -811,56 +656,42 @@ impl crate::ui::components::dialogs::DialogsView {
                         this.close_dialog(cx);
                     });
                 }
-            }));
-                menu_h += 29.0;
+            }).into_any_element());
+            items_acc_h += 32.0;
 
             // Show more options › — the real classic shell items expand
             // inline on hover (Files parity). Windows only.
             #[cfg(target_os = "windows")]
             {
-                showmore_off = menu_h;
+                let row_y = items_acc_h;
+                showmore_off = row_y;
                 if !expanded {
-                let sm_open = open_submenu == Some(SubmenuKind::ShowMore);
-                let v_click = v_sub.clone();
-                menu = menu.child(Self::submenu_row(
-                    "\u{E10C}",
-                    "Show more options",
-                    SubmenuKind::ShowMore,
-                    sm_open,
-                    Self::classic_submenu(
-                        classic.clone(),
-                        classic_loading,
-                        classic_open.clone(),
+                    submenu_offsets.insert(SubmenuKind::ShowMore, row_y);
+                    let v_click = v_sub.clone();
+                    items.push(Self::submenu_row(
+                        "\u{E712}",
+                        "Show more options",
+                        SubmenuKind::ShowMore,
                         view.clone(),
-                        Vec::new(),
-                        cur_dir.clone(),
-                        flip,
-                        menu_top,
-                        menu_left,
-                        showmore_off,
-                        win_w,
-                        win_h,
-                        mica_geo.as_ref(),
-                    ),
-                    view.clone(),
-                    move |_, _, cx| {
-                        v_click.update(cx, |this, cx| {
-                            this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
-                        });
-                    },
-                ));
-                menu_h += 29.0;
+                        move |_, _, cx| {
+                            v_click.update(cx, |this, cx| {
+                                this.set_open_submenu(Some(SubmenuKind::ShowMore), cx)
+                            });
+                        },
+                    ).into_any_element());
+                    items_acc_h += 32.0;
                 } else {
                     // Expanded style: every classic item is inlined below the
                     // app rows - no hover needed. Nested verbs keep flyouts.
-                    menu = menu.child(Self::context_menu_separator());
-                    menu_h += 9.0;
+                    items.push(Self::context_menu_separator().into_any_element());
+                    items_acc_h += 7.0;
                     match classic.as_ref() {
                         Some(entries) if !entries.is_empty() => {
                             let mut next_id: usize = 0;
                             for e in entries.iter() {
-                                menu_h += if e.separator { 9.0 } else { 29.0 };
+                                items_acc_h += if e.separator { 7.0 } else { 32.0 };
                             }
+                            let cur_scroll = scroll_offset;
                             let (inline, child_panel) = Self::classic_rows(
                                 entries,
                                 &classic_open,
@@ -870,7 +701,8 @@ impl crate::ui::components::dialogs::DialogsView {
                                 cur_dir.clone(),
                                 &mut next_id,
                                 menu_left,
-                                menu_top + showmore_off,
+                                menu_top + fixed_header_h + showmore_off - cur_scroll,
+                                fixed_header_h + showmore_off - cur_scroll,
                                 284.0,
                                 win_w,
                                 win_h,
@@ -878,19 +710,19 @@ impl crate::ui::components::dialogs::DialogsView {
                                 mica_geo.as_ref(),
                             );
                             for row in inline {
-                                menu = menu.child(row);
+                                items.push(row.into_any_element());
                             }
                             if let Some(child) = child_panel {
-                                menu = menu.child(child);
+                                active_child_panel = Some(child);
                             }
                         }
                         Some(_) => {
                             let mut nid = 0usize;
-                            menu = menu.child(Self::classic_note_row(
+                            items.push(Self::classic_note_row(
                                 "(No extended options)",
                                 &mut nid,
-                            ));
-                            menu_h += 29.0;
+                            ).into_any_element());
+                            items_acc_h += 32.0;
                         }
                         None => {
                             let mut nid = 0usize;
@@ -899,25 +731,278 @@ impl crate::ui::components::dialogs::DialogsView {
                             } else {
                                 "(Unavailable)"
                             };
-                            menu = menu.child(Self::classic_note_row(txt, &mut nid));
-                            menu_h += 29.0;
+                            items.push(Self::classic_note_row(txt, &mut nid).into_any_element());
+                            items_acc_h += 32.0;
                         }
                     }
                 }
             }
         }
-        // Viewport cap: clamp menu inside window bounds (above status bar win_h - 36px)
+
+        let total_items_h = items_acc_h + 4.0;
+        let total_menu_h = fixed_header_h + total_items_h;
         let bottom_limit = (win_h - 36.0).max(100.0);
         let available_h = (bottom_limit - menu_top).max(160.0);
-        let card_h = if menu_h > available_h { available_h } else { menu_h };
-        let mut card = flyout_card_shell(menu_left, menu_top, 284.0, card_h, mica_geo.as_ref());
-        let menu = menu.id(("ctx-menu", 0_usize));
-        let menu = if menu_h > available_h {
-            menu.max_h(px(available_h)).overflow_scroll()
+        let card_h = if total_menu_h > available_h {
+            available_h
         } else {
-            menu.h(px(card_h))
+            total_menu_h
         };
-        card.child(menu).with_animation(
+        let available_items_h = (card_h - fixed_header_h).max(40.0);
+        let max_scroll = (total_items_h - available_items_h).max(0.0);
+        let current_scroll = scroll_offset.clamp(0.0, max_scroll);
+
+        // Build active submenu if open (attached to card shell, unclipped)
+        let mut active_submenu_card: Option<gpui::Stateful<Div>> = active_child_panel;
+        if active_submenu_card.is_none() {
+            if let Some(kind) = open_submenu {
+                if let Some(&row_y) = submenu_offsets.get(&kind) {
+                    let header_or_pad_h = if has_selection { fixed_header_h } else { 4.0 };
+                    let row_card_y = header_or_pad_h + row_y - current_scroll;
+                    active_submenu_card = match kind {
+                        SubmenuKind::Layout => Some(Self::layout_submenu(
+                            view.clone(),
+                            flip,
+                            menu_top,
+                            menu_left,
+                            row_card_y,
+                            win_w,
+                            win_h,
+                            mica_geo.as_ref(),
+                        )),
+                        SubmenuKind::SortBy => Some(Self::sort_submenu(
+                            view.clone(),
+                            &current_sort,
+                            flip,
+                            menu_top,
+                            menu_left,
+                            row_card_y,
+                            win_w,
+                            win_h,
+                            mica_geo.as_ref(),
+                        )),
+                        SubmenuKind::GroupBy => Some(Self::group_submenu(
+                            view.clone(),
+                            &current_group,
+                            flip,
+                            menu_top,
+                            menu_left,
+                            row_card_y,
+                            win_w,
+                            win_h,
+                            mica_geo.as_ref(),
+                        )),
+                        SubmenuKind::New => Some(Self::new_submenu(
+                            view.clone(),
+                            flip,
+                            menu_top,
+                            menu_left,
+                            row_card_y,
+                            win_w,
+                            win_h,
+                            mica_geo.as_ref(),
+                        )),
+                        SubmenuKind::OpenWith => {
+                            let openwith_entry = classic.as_ref().and_then(|entries| {
+                                entries.iter().find(|e| {
+                                    let l = e.label.to_lowercase();
+                                    l.contains("open with") || l.contains("openwith")
+                                })
+                            });
+                            let openwith_children = openwith_entry.map(|e| e.children.as_slice());
+                            Some(Self::openwith_submenu(
+                                openwith_children,
+                                selected_path.clone(),
+                                sel_paths.clone(),
+                                cur_dir.clone(),
+                                view.clone(),
+                                flip,
+                                menu_top,
+                                menu_left,
+                                row_card_y,
+                                win_w,
+                                win_h,
+                                mica_geo.as_ref(),
+                            ))
+                        }
+                        SubmenuKind::Compress => {
+                            let is_archive = selected_path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|name| {
+                                    let name = name.to_string_lossy().to_lowercase();
+                                    name.ends_with(".zip")
+                                        || name.ends_with(".7z")
+                                        || name.ends_with(".tar")
+                                        || name.ends_with(".tar.gz")
+                                        || name.ends_with(".rar")
+                                })
+                                .unwrap_or(false);
+                            Some(Self::compress_submenu(
+                                view.clone(),
+                                flip,
+                                is_archive,
+                                selected_path.clone(),
+                                menu_top,
+                                menu_left,
+                                row_card_y,
+                                win_w,
+                                win_h,
+                                mica_geo.as_ref(),
+                            ))
+                        }
+                        SubmenuKind::SendTo => {
+                            let sendto_entry = classic.as_ref().and_then(|entries| {
+                                entries.iter().find(|e| {
+                                    let l = e.label.to_lowercase();
+                                    l.contains("send to") || l.contains("sendto")
+                                })
+                            });
+                            let sendto_children = sendto_entry.map(|e| e.children.as_slice());
+                            Some(Self::sendto_submenu(
+                                sendto_children,
+                                sel_paths.clone(),
+                                cur_dir.clone(),
+                                view.clone(),
+                                flip,
+                                menu_top,
+                                menu_left,
+                                row_card_y,
+                                win_w,
+                                win_h,
+                                mica_geo.as_ref(),
+                            ))
+                        }
+                        SubmenuKind::FileTags => Some(Self::file_tags_submenu(
+                            view.clone(),
+                            &available_tags,
+                            &item_tags,
+                            flip,
+                            menu_top,
+                            menu_left,
+                            row_card_y,
+                            win_w,
+                            win_h,
+                            mica_geo.as_ref(),
+                        )),
+                        SubmenuKind::ShowMore => {
+                            #[cfg(target_os = "windows")]
+                            {
+                                let filtered_classic = classic.map(|entries| {
+                                    entries
+                                        .into_iter()
+                                        .filter(|e| {
+                                            let l = e.label.to_lowercase();
+                                            !l.contains("send to") && !l.contains("open with")
+                                        })
+                                        .collect()
+                                });
+                                Some(Self::classic_submenu(
+                                    filtered_classic,
+                                    classic_loading,
+                                    classic_open.clone(),
+                                    view.clone(),
+                                    sel_paths.clone(),
+                                    cur_dir.clone(),
+                                    flip,
+                                    menu_top,
+                                    menu_left,
+                                    row_card_y,
+                                    win_w,
+                                    win_h,
+                                    mica_geo.as_ref(),
+                                ))
+                            }
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                None
+                            }
+                        }
+                    };
+                }
+            }
+        }
+
+        let mut card = flyout_card_shell(menu_left, menu_top, 284.0, card_h, mica_geo.as_ref())
+            .id("ctx-menu-card");
+
+        // 1. Fixed Header (Toolbar + separator, stays anchored at top when scrolled)
+        if let Some(header) = fixed_header {
+            card = card.child(header);
+        }
+
+        // 2. Scrollable Items Viewport
+        let mut items_inner = div()
+            .relative()
+            .w_full()
+            .flex_col()
+            .top(px(-current_scroll));
+        if !has_selection {
+            items_inner = items_inner.pt(px(4.0));
+        }
+        for row in items {
+            items_inner = items_inner.child(row);
+        }
+        items_inner = items_inner.pb(px(4.0));
+
+        let mut items_viewport = div()
+            .id("ctx-items-viewport")
+            .relative()
+            .w_full()
+            .h(px(available_items_h))
+            .overflow_hidden()
+            .child(items_inner);
+
+        // 3. Sleek Windows 11 Fluent Scrollbar Thumb (visible when scrollable)
+        if max_scroll > 1.0 {
+            let scroll_ratio = (current_scroll / max_scroll).clamp(0.0, 1.0);
+            let thumb_h = (available_items_h * (available_items_h / total_items_h))
+                .clamp(28.0, (available_items_h - 8.0).max(28.0));
+            let thumb_travel = (available_items_h - thumb_h).max(0.0);
+            let thumb_top = scroll_ratio * thumb_travel;
+
+            let thumb = div()
+                .absolute()
+                .right(px(3.0))
+                .top(px(fixed_header_h + thumb_top))
+                .w(px(3.0))
+                .h(px(thumb_h))
+                .rounded(px(1.5))
+                .bg(rgba(0xFFFFFF40u32));
+            card = card.child(thumb);
+        }
+
+        // 4. Mouse Wheel Scroll Handler (closes open submenus on scroll like WinUI 3)
+        let v_wheel = view.clone();
+        let wheel_handler = move |event: &ScrollWheelEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            let dy: f32 = event.delta.pixel_delta(px(24.0)).y.into();
+            v_wheel.update(cx, |this, cx| {
+                if let Some(crate::ui::components::dialogs::DialogType::ContextMenu {
+                    scroll_offset,
+                    open_submenu,
+                    ..
+                }) = this.state.active_dialog.as_mut() {
+                    *open_submenu = None;
+                    let max_s = (total_items_h - available_items_h).max(0.0);
+                    if max_s > 0.0 {
+                        *scroll_offset = (*scroll_offset - dy).clamp(0.0, max_s);
+                        cx.notify();
+                    }
+                }
+            });
+        };
+        card = card.on_scroll_wheel(wheel_handler.clone());
+        items_viewport = items_viewport.on_scroll_wheel(wheel_handler);
+
+        card = card.child(items_viewport);
+
+        // 5. Active Submenu Flyout (attached directly to card shell, unclipped)
+        if let Some(sub) = active_submenu_card {
+            card = card.child(sub);
+        }
+
+        card.with_animation(
             "ctx-menu-entrance",
             Animation::new(std::time::Duration::from_millis(120)),
             |elem, delta| elem.opacity(delta),
@@ -958,6 +1043,104 @@ impl crate::ui::components::dialogs::DialogsView {
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(label.into()),
             )
+    }
+
+    pub(crate) fn context_menu_item_with_icon(
+        icon_el: impl IntoElement,
+        label: impl Into<String>,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, on_click)
+            .child(
+                div()
+                    .w(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon_el),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_family(UiConstants::FONT_MAIN)
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .child(label.into()),
+            )
+    }
+
+    pub(crate) fn context_menu_item_full(
+        icon_el: impl IntoElement,
+        label: impl Into<String>,
+        trailing: MenuTrailing,
+        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Div {
+        let mut item = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+            .on_mouse_down(MouseButton::Left, on_click);
+
+        let left = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .w(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon_el),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_family(UiConstants::FONT_MAIN)
+                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                    .child(label.into()),
+            );
+
+        item = item.child(left);
+
+        match trailing {
+            MenuTrailing::None => {}
+            MenuTrailing::Hint(hint) => {
+                item = item.child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_family(UiConstants::FONT_MAIN)
+                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                        .child(hint),
+                );
+            }
+            MenuTrailing::Chevron => {
+                item = item.child(
+                    div()
+                        .text_size(px(10.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                        .child("\u{E76C}"),
+                );
+            }
+        }
+
+        item
     }
 
     /// 48px tall context menu item (for primary items like Open, New Folder, etc.)
@@ -1116,7 +1299,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .h(px(1.0))
             .bg(rgba(UiConstants::DIVIDER_RGBA))
             .mx(px(8.0))
-            .my(px(4.0))
+            .my(px(3.0))
     }
 
     /// Section header label for grouped context menu sections (e.g. "Sort By", "View")
@@ -2098,23 +2281,20 @@ impl crate::ui::components::dialogs::DialogsView {
 
 impl crate::ui::components::dialogs::DialogsView {
     /// Chevron row that opens a hover flyout submenu (Files parity).
-    /// The submenu panel is a child of the row wrapper, so hover stays
-    /// engaged while the cursor moves into the flyout.
     pub(crate) fn submenu_row(
         glyph: &str,
         label: &str,
         kind: SubmenuKind,
-        is_open: bool,
-        submenu: impl IntoElement,
         view: Entity<crate::app::AppWindow>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> gpui::Stateful<Div> {
         let v_hover = view.clone();
         let stateful = div()
             .relative()
+            .w_full()
             .child(Self::context_menu_row(glyph, label, MenuTrailing::Chevron, on_click))
             .id(("ctx-submenu", kind as usize));
-        let mut wrapper = stateful.on_hover(move |hovering: &bool, _, cx| {
+        stateful.on_hover(move |hovering: &bool, _, cx| {
             // Flyout panels live outside the row bounds, so an immediate
             // close on leave would kill the panel mid-travel (including
             // diagonal cursor paths). Grace-close instead; entering the
@@ -2123,7 +2303,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 v_hover.update(cx, |this, cx| {
                     this.submenu_row_hovered = true;
                     this.submenu_grace_cancel();
-                    this.set_open_submenu_intent(kind, cx);
+                    this.set_open_submenu(Some(kind), cx);
                 });
             } else {
                 let v = v_hover.clone();
@@ -2135,11 +2315,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     )
                 });
             }
-        });
-        if is_open {
-            wrapper = wrapper.child(submenu);
-        }
-        wrapper
+        })
     }
 
     /// Flyout panel anchored to the right of its parent row (or left if flipped).
@@ -2150,7 +2326,7 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
@@ -2161,12 +2337,13 @@ impl crate::ui::components::dialogs::DialogsView {
         let (rel_left, panel_abs_x) = if fits_right && !flip {
             (276.0f32, menu_left + 276.0)
         } else {
-            (-214.0f32, menu_left - 214.0)
+            let abs_x = (menu_left - panel_w + 8.0).max(8.0);
+            (abs_x - menu_left, abs_x)
         };
 
-        let row_abs_y = menu_top + row_off;
+        let row_abs_y = menu_top + row_card_y;
         let bottom_limit = (win_h - 36.0).max(100.0);
-        let fly_h = rows.len() as f32 * 29.0 + 8.0;
+        let fly_h = rows.len() as f32 * 32.0 + 8.0;
         let mut adjusted_top = -4.0f32;
         if row_abs_y - 4.0 + fly_h > bottom_limit {
             let overflow = (row_abs_y - 4.0 + fly_h) - bottom_limit;
@@ -2178,7 +2355,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let card_h = if scroll { available_h } else { fly_h };
 
         let mut card = flyout_card_shell(panel_abs_x, panel_abs_top, panel_w, card_h, mica_geo);
-        card = card.absolute().top(px(adjusted_top)).left(px(rel_left));
+        card = card.absolute().top(px(row_card_y + adjusted_top)).left(px(rel_left));
 
         let mut content = div()
             .relative()
@@ -2192,7 +2369,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let content = if scroll {
             content.max_h(px(available_h)).overflow_scroll()
         } else {
-            content.h(px(card_h))
+            content.h(px(card_h)).overflow_hidden()
         };
         card = card.child(content);
 
@@ -2233,16 +2410,21 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
-        let row_abs_y = menu_top + row_off;
+        let row_abs_y = menu_top + row_card_y;
         let mut fly_h = 8.0f32;
-        if let Some(ref entries) = classic {
-            for e in entries.iter() {
-                fly_h += if e.separator { 9.0 } else { 29.0 };
+        match classic.as_ref() {
+            Some(entries) if !entries.is_empty() => {
+                for e in entries.iter() {
+                    fly_h += if e.separator { 7.0 } else { 32.0 };
+                }
+            }
+            _ => {
+                fly_h += 32.0;
             }
         }
         let panel_w = 260.0f32;
@@ -2250,7 +2432,8 @@ impl crate::ui::components::dialogs::DialogsView {
         let (rel_left, panel_abs_x, flipped_left) = if fits_right && !flip {
             (276.0f32, menu_left + 276.0, false)
         } else {
-            (-254.0f32, menu_left - 254.0, true)
+            let abs_x = (menu_left - panel_w + 8.0).max(8.0);
+            (abs_x - menu_left, abs_x, true)
         };
 
         // Natural WinUI 3 placement: align top with invoking row (-4px),
@@ -2279,6 +2462,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     &mut next_id,
                     panel_abs_x,
                     panel_abs_top,
+                    0.0,
                     panel_w,
                     win_w,
                     win_h,
@@ -2294,7 +2478,7 @@ impl crate::ui::components::dialogs::DialogsView {
         };
 
         let mut card = flyout_card_shell(panel_abs_x, panel_abs_top, panel_w, card_h, mica_geo);
-        card = card.absolute().top(px(adjusted_top)).left(px(rel_left));
+        card = card.absolute().top(px(row_card_y + adjusted_top)).left(px(rel_left));
 
         let mut content = div()
             .relative()
@@ -2308,7 +2492,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let content = if scroll {
             content.max_h(px(available_h)).overflow_scroll()
         } else {
-            content.h(px(card_h))
+            content.h(px(card_h)).overflow_hidden()
         };
         card = card.child(content);
         if let Some(child) = child_panel {
@@ -2350,12 +2534,14 @@ impl crate::ui::components::dialogs::DialogsView {
         div()
             .flex()
             .items_center()
-            .px(px(12.0))
-            .py(px(5.0))
+            .mx(px(4.0))
+            .px(px(8.0))
+            .h(px(32.0))
+            .rounded(px(4.0))
             .id(("classic", id))
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(13.0))
                     .text_color(rgba(0xFFFFFF60u32))
                     .child(label.to_string()),
             )
@@ -2453,6 +2639,7 @@ impl crate::ui::components::dialogs::DialogsView {
         next_id: &mut usize,
         panel_abs_x: f32,
         panel_abs_top: f32,
+        panel_card_top: f32,
         panel_w: f32,
         win_w: f32,
         win_h: f32,
@@ -2464,7 +2651,7 @@ impl crate::ui::components::dialogs::DialogsView {
         let mut acc_h = 0.0f32;
         for (i, entry) in entries.iter().enumerate() {
             let row_off = acc_h;
-            acc_h += if entry.separator { 9.0 } else { 29.0 };
+            acc_h += if entry.separator { 7.0 } else { 32.0 };
             let id = *next_id;
             *next_id += 1;
             let mut path = prefix.to_vec();
@@ -2508,11 +2695,13 @@ impl crate::ui::components::dialogs::DialogsView {
             let mut inner = div()
                 .flex()
                 .items_center()
-                .gap(px(12.0))
-                .px(px(12.0))
-                .py(px(5.0));
+                .gap(px(10.0))
+                .mx(px(4.0))
+                .px(px(8.0))
+                .h(px(32.0))
+                .rounded(px(4.0));
             if entry.enabled {
-                inner = inner.cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF15u32)));
+                inner = inner.cursor_pointer().hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
             }
             inner = inner.child(icon_el);
             inner = inner.child(
@@ -2550,7 +2739,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             v_hover.update(cx, |this, cx| {
                                 this.submenu_row_hovered = true;
                                 this.submenu_grace_cancel();
-                                this.set_classic_open_intent(path, cx);
+                                this.set_classic_open(path, cx);
                                 this.menu_tip = Some((tip, pos));
                             });
                         } else {
@@ -2615,7 +2804,7 @@ impl crate::ui::components::dialogs::DialogsView {
 
                 let mut nested_h = 8.0f32;
                 for e in entry.children.iter() {
-                    nested_h += if e.separator { 9.0 } else { 29.0 };
+                    nested_h += if e.separator { 7.0 } else { 32.0 };
                 }
                 let bottom_limit = (win_h - 36.0).max(100.0);
                 let mut adjusted_top = -4.0f32;
@@ -2639,6 +2828,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     &mut nid,
                     child_abs_x,
                     child_abs_top,
+                    0.0,
                     child_w,
                     win_w,
                     win_h,
@@ -2649,7 +2839,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 let mut card = flyout_card_shell(child_abs_x, child_abs_top, child_w, card_h, mica_geo);
                 card = card
                     .absolute()
-                    .top(px(row_off + adjusted_top))
+                    .top(px(panel_card_top + row_off + adjusted_top))
                     .left(px(child_rel_left));
 
                 let mut content = div()
@@ -2664,7 +2854,7 @@ impl crate::ui::components::dialogs::DialogsView {
                 let content = if nested_scroll {
                     content.max_h(px(available_h)).overflow_scroll()
                 } else {
-                    content.h(px(card_h))
+                    content.h(px(card_h)).overflow_hidden()
                 };
                 card = card.child(content);
                 if let Some(grandchild) = grandchild_panel {
@@ -2713,14 +2903,14 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let modes = [
             ("\u{E8FD}", "Details", crate::config::config::ViewMode::Details),
-            ("\u{E8EF}", "List", crate::config::config::ViewMode::List),
+            ("\u{EA37}", "List", crate::config::config::ViewMode::List),
             ("\u{E8A9}", "Cards", crate::config::config::ViewMode::Cards),
             ("\u{E80A}", "Grid", crate::config::config::ViewMode::Grid),
             ("\u{E8F1}", "Columns", crate::config::config::ViewMode::Columns),
@@ -2746,7 +2936,7 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
@@ -2756,23 +2946,29 @@ impl crate::ui::components::dialogs::DialogsView {
     /// Sort by › flyout.
     pub(crate) fn sort_submenu(
         view: Entity<crate::app::AppWindow>,
+        current_sort: &crate::config::config::SortBy,
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let cols = [
-            ("\u{E2C7}", "Name", crate::config::config::SortBy::Name),
-            ("\u{E2C7}", "Date modified", crate::config::config::SortBy::DateModified),
-            ("\u{E2C7}", "Date created", crate::config::config::SortBy::DateCreated),
-            ("\u{E2C7}", "Type", crate::config::config::SortBy::Type),
-            ("\u{E2C7}", "Size", crate::config::config::SortBy::Size),
+            ("Name", crate::config::config::SortBy::Name),
+            ("Date modified", crate::config::config::SortBy::DateModified),
+            ("Date created", crate::config::config::SortBy::DateCreated),
+            ("Type", crate::config::config::SortBy::Type),
+            ("Size", crate::config::config::SortBy::Size),
         ];
         let mut rows = Vec::new();
-        for (glyph, label, col) in cols {
+        for (label, col) in cols {
+            let glyph = if &col == current_sort {
+                "\u{E73E}" // Fluent checkmark
+            } else {
+                ""
+            };
             let v = view.clone();
             rows.push(Self::context_menu_item(
                 glyph,
@@ -2792,7 +2988,7 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
@@ -2802,24 +2998,30 @@ impl crate::ui::components::dialogs::DialogsView {
     /// Group by › flyout.
     pub(crate) fn group_submenu(
         view: Entity<crate::app::AppWindow>,
+        current_group: &crate::config::config::GroupColumn,
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let groups = [
-            ("\u{E2C7}", "None", crate::config::config::GroupColumn::None),
-            ("\u{E2C7}", "Name", crate::config::config::GroupColumn::Name),
-            ("\u{E2C7}", "Date modified", crate::config::config::GroupColumn::DateModified),
-            ("\u{E2C7}", "Date created", crate::config::config::GroupColumn::DateCreated),
-            ("\u{E2C7}", "Size", crate::config::config::GroupColumn::Size),
-            ("\u{E2C7}", "Type", crate::config::config::GroupColumn::FileType),
+            ("None", crate::config::config::GroupColumn::None),
+            ("Name", crate::config::config::GroupColumn::Name),
+            ("Date modified", crate::config::config::GroupColumn::DateModified),
+            ("Date created", crate::config::config::GroupColumn::DateCreated),
+            ("Size", crate::config::config::GroupColumn::Size),
+            ("Type", crate::config::config::GroupColumn::FileType),
         ];
         let mut rows = Vec::new();
-        for (glyph, label, col) in groups {
+        for (label, col) in groups {
+            let glyph = if &col == current_group {
+                "\u{E73E}" // Fluent checkmark
+            } else {
+                ""
+            };
             let v = view.clone();
             rows.push(Self::context_menu_item(
                 glyph,
@@ -2841,7 +3043,7 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
@@ -2854,20 +3056,36 @@ impl crate::ui::components::dialogs::DialogsView {
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let v1 = view.clone();
         let v2 = view.clone();
+        let v3 = view.clone();
         Self::submenu_panel(
             vec![
-                Self::context_menu_item("\u{E8F4}", "New Folder", move |_, _, cx| {
+                Self::context_menu_item("\u{E8F4}", "Folder", move |_, _, cx| {
                     v1.update(cx, |this, cx| this.create_new_folder(cx));
                 }),
-                Self::context_menu_item("\u{E7C3}", "New Text Document", move |_, _, cx| {
+                Self::context_menu_item("\u{E7C3}", "Text Document", move |_, _, cx| {
                     v2.update(cx, |this, cx| this.create_new_text_document(cx));
+                }),
+                Self::context_menu_item("\u{E71B}", "Shortcut", move |_, _, cx| {
+                    v3.update(cx, |this, cx| {
+                        let current_dir = this.state.main_view.primary_path.as_path().to_path_buf();
+                        this.state.active_dialog = Some(DialogType::CreateShortcut {
+                            state: Box::new(
+                                crate::ui::dialog_services::shortcut_dialog::CreateShortcutState::new(
+                                    current_dir.clone(),
+                                    current_dir,
+                                    "New Shortcut".to_string(),
+                                )
+                            ),
+                        });
+                        cx.notify();
+                    });
                 }),
             ],
             SubmenuKind::New,
@@ -2875,7 +3093,101 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
+            win_w,
+            win_h,
+            mica_geo,
+        )
+    }
+
+    /// Open With › flyout
+    pub(crate) fn openwith_submenu(
+        openwith_children: Option<&[ClassicMenuEntry]>,
+        selected_path: Option<crate::core::path_util::FilesPath>,
+        sel_paths: Vec<std::path::PathBuf>,
+        cur_dir: std::path::PathBuf,
+        view: Entity<crate::app::AppWindow>,
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_card_y: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
+        let mut rows = Vec::new();
+        if let Some(children) = openwith_children {
+            for e in children {
+                if e.separator {
+                    rows.push(Self::context_menu_separator());
+                    continue;
+                }
+                let v = view.clone();
+                let paths = sel_paths.clone();
+                let dir = cur_dir.clone();
+                let offset = e.offset;
+                let label = e.label.clone();
+                let icon_el = if let Some(ref icon) = e.icon {
+                    div()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .child(img(icon.clone()).w(px(16.0)).h(px(16.0)))
+                } else {
+                    div()
+                        .text_size(px(14.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child("\u{E7AC}")
+                };
+                rows.push(Self::context_menu_item_with_icon(
+                    icon_el,
+                    e.label.clone(),
+                    move |_, _, cx| {
+                        let paths = paths.clone();
+                        let dir = dir.clone();
+                        let label = label.clone();
+                        cx.background_executor().spawn(async move {
+                            let _ = crate::platform::windows::classic_menu::invoke_classic_verb(
+                                &paths, &dir, offset, &label,
+                            );
+                        }).detach();
+                        v.update(cx, |this, cx| this.close_dialog(cx));
+                    },
+                ));
+            }
+        }
+
+        if !rows.is_empty() {
+            rows.push(Self::context_menu_separator());
+        }
+
+        let ow_path = selected_path.clone();
+        let v_ow = view.clone();
+        rows.push(Self::context_menu_item(
+            "\u{E7AC}",
+            "Choose another app...",
+            move |_, _, cx| {
+                if let Some(ref p) = ow_path {
+                    let path_str = p.to_string_lossy().to_string();
+                    let _ = std::process::Command::new("rundll32")
+                        .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
+                v_ow.update(cx, |this, cx| this.close_dialog(cx));
+            },
+        ));
+
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::OpenWith,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
@@ -2890,14 +3202,14 @@ impl crate::ui::components::dialogs::DialogsView {
         archive_path: Option<crate::core::path_util::FilesPath>,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let v = view.clone();
         let mut rows = vec![Self::context_menu_item(
-            "\u{E8B7}",
+            "\u{F012}",
             "Compress to ZIP archive",
             move |_, _, cx| {
                 v.update(cx, |this, cx| {
@@ -2934,7 +3246,7 @@ impl crate::ui::components::dialogs::DialogsView {
             if let Some(path) = archive_path {
                 let v2 = view.clone();
                 rows.push(Self::context_menu_item(
-                    "\u{E8B7}",
+                    "\u{F012}",
                     "Extract Here",
                     move |_, _, cx| {
                         let archive_path = path.as_path().to_path_buf();
@@ -2962,62 +3274,111 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
         )
     }
 
-    /// Send to › flyout, populated live from the Windows SendTo folder.
-    /// Non-Windows builds show a single disabled row (native provider hook).
+    /// Send to › flyout, populated from shell classic entry if available,
+    /// or from the Windows SendTo folder with authentic icons.
     pub(crate) fn sendto_submenu(
+        sendto_children: Option<&[ClassicMenuEntry]>,
+        sel_paths: Vec<std::path::PathBuf>,
+        cur_dir: std::path::PathBuf,
         view: Entity<crate::app::AppWindow>,
         flip: bool,
         menu_top: f32,
         menu_left: f32,
-        row_off: f32,
+        row_card_y: f32,
         win_w: f32,
         win_h: f32,
         mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
     ) -> gpui::Stateful<Div> {
         let mut rows = Vec::new();
-        #[cfg(windows)]
-        {
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                let sendto = std::path::Path::new(&appdata).join("Microsoft/Windows/SendTo");
-                if let Ok(entries) = std::fs::read_dir(&sendto) {
-                    let mut names: Vec<(String, std::path::PathBuf)> = entries
-                        .filter_map(|e| e.ok())
-                        .map(|e| {
-                            let p = e.path();
-                            let stem = p
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            (stem, p)
-                        })
-                        .filter(|(s, _)| !s.is_empty())
-                        .collect();
-                    names.sort();
-                    for (stem, target) in names.into_iter().take(24) {
-                        let v = view.clone();
-                        let glyph = if target.is_dir() { "\u{E8B7}" } else { "\u{E8A5}" };
-                        rows.push(Self::context_menu_item(
-                            glyph,
-                            stem,
-                            move |_, _, cx| {
-                                let target = target.clone();
-                                v.update(cx, |this, cx| this.send_to_target(target, cx));
-                            },
-                        ));
+        if let Some(children) = sendto_children {
+            for e in children {
+                if e.separator {
+                    rows.push(Self::context_menu_separator());
+                    continue;
+                }
+                let v = view.clone();
+                let paths = sel_paths.clone();
+                let dir = cur_dir.clone();
+                let offset = e.offset;
+                let label = e.label.clone();
+                let icon_el = if let Some(ref icon) = e.icon {
+                    div()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .child(img(icon.clone()).w(px(16.0)).h(px(16.0)))
+                } else {
+                    let glyph = Self::guess_sendto_glyph(&e.label);
+                    div()
+                        .text_size(px(14.0))
+                        .font_family(UiConstants::FONT_MDL2)
+                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                        .child(glyph)
+                };
+                rows.push(Self::context_menu_item_with_icon(
+                    icon_el,
+                    e.label.clone(),
+                    move |_, _, cx| {
+                        let paths = paths.clone();
+                        let dir = dir.clone();
+                        let label = label.clone();
+                        cx.background_executor().spawn(async move {
+                            let _ = crate::platform::windows::classic_menu::invoke_classic_verb(
+                                &paths, &dir, offset, &label,
+                            );
+                        }).detach();
+                        v.update(cx, |this, cx| this.close_dialog(cx));
+                    },
+                ));
+            }
+        }
+
+        if rows.is_empty() {
+            #[cfg(windows)]
+            {
+                if let Ok(appdata) = std::env::var("APPDATA") {
+                    let sendto = std::path::Path::new(&appdata).join("Microsoft/Windows/SendTo");
+                    if let Ok(entries) = std::fs::read_dir(&sendto) {
+                        let mut names: Vec<(String, std::path::PathBuf)> = entries
+                            .filter_map(|e| e.ok())
+                            .map(|e| {
+                                let p = e.path();
+                                let stem = p
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                (stem, p)
+                            })
+                            .filter(|(s, _)| !s.is_empty())
+                            .collect();
+                        names.sort();
+                        for (stem, target) in names.into_iter().take(24) {
+                            let v = view.clone();
+                            let glyph = Self::guess_sendto_glyph(&stem);
+                            rows.push(Self::context_menu_item(
+                                glyph,
+                                stem,
+                                move |_, _, cx| {
+                                    let target = target.clone();
+                                    v.update(cx, |this, cx| this.send_to_target(target, cx));
+                                },
+                            ));
+                        }
                     }
                 }
             }
         }
+
         if rows.is_empty() {
             rows.push(Self::context_menu_item("\u{E8A5}", "(No targets)", |_, _, _| {}));
         }
+
         Self::submenu_panel(
             rows,
             SubmenuKind::SendTo,
@@ -3025,10 +3386,109 @@ impl crate::ui::components::dialogs::DialogsView {
             flip,
             menu_top,
             menu_left,
-            row_off,
+            row_card_y,
             win_w,
             win_h,
             mica_geo,
         )
+    }
+
+    /// Edit file tags › flyout (Files-community FileTagsContextMenu parity).
+    pub(crate) fn file_tags_submenu(
+        view: Entity<crate::app::AppWindow>,
+        available_tags: &[crate::config::config::TagDefinition],
+        item_tags: &[String],
+        flip: bool,
+        menu_top: f32,
+        menu_left: f32,
+        row_card_y: f32,
+        win_w: f32,
+        win_h: f32,
+        mica_geo: Option<&crate::wallpaper_mica::MicaGeo>,
+    ) -> gpui::Stateful<Div> {
+        let mut rows = Vec::new();
+        for tag in available_tags {
+            let v = view.clone();
+            let tag_name = tag.name.clone();
+            let is_tagged = item_tags.iter().any(|t| t == &tag.name || t == &tag.id);
+            let hex = tag.color.trim_start_matches('#');
+            let color_rgb = u32::from_str_radix(hex, 16).unwrap_or(0x3B82F6);
+            let dot = div()
+                .w(px(12.0))
+                .h(px(12.0))
+                .rounded(px(6.0))
+                .bg(rgb(color_rgb));
+            let trailing = if is_tagged {
+                MenuTrailing::Hint("\u{E73E}")
+            } else {
+                MenuTrailing::None
+            };
+            rows.push(Self::context_menu_item_full(
+                dot,
+                tag.name.clone(),
+                trailing,
+                move |_, _, cx| {
+                    let name = tag_name.clone();
+                    v.update(cx, |this, cx| {
+                        if is_tagged {
+                            this.remove_tag_from_selected(&name, cx);
+                        } else {
+                            this.add_tag_to_selected(name, cx);
+                        }
+                        this.close_dialog(cx);
+                    });
+                },
+            ));
+        }
+
+        if !available_tags.is_empty() {
+            rows.push(Self::context_menu_separator());
+        }
+
+        let v_clear = view.clone();
+        rows.push(Self::context_menu_item(
+            "\u{E74D}",
+            "Remove tags",
+            move |_, _, cx| {
+                v_clear.update(cx, |this, cx| {
+                    this.clear_tags_from_selected(cx);
+                    this.close_dialog(cx);
+                });
+            },
+        ));
+
+        Self::submenu_panel(
+            rows,
+            SubmenuKind::FileTags,
+            view.clone(),
+            flip,
+            menu_top,
+            menu_left,
+            row_card_y,
+            win_w,
+            win_h,
+            mica_geo,
+        )
+    }
+
+    fn guess_sendto_glyph(label: &str) -> &'static str {
+        let lower = label.to_lowercase();
+        if lower.contains("bluetooth") {
+            "\u{E702}" // Bluetooth
+        } else if lower.contains("compressed") || lower.contains("zip") {
+            "\u{F012}" // Zip archive
+        } else if lower.contains("desktop") {
+            "\u{E7F4}" // Desktop
+        } else if lower.contains("document") {
+            "\u{E8A5}" // Documents
+        } else if lower.contains("mail") {
+            "\u{E715}" // Mail
+        } else if lower.contains("drive") || lower.contains("hdd") || lower.contains("ssd") || lower.contains(":\\") || lower.contains("(:)") || lower.ends_with(")") {
+            "\u{EDA2}" // Hard disk / drive
+        } else if lower.contains("shortcut") {
+            "\u{E71B}" // Shortcut
+        } else {
+            "\u{E7AC}" // General app
+        }
     }
 }

@@ -926,6 +926,18 @@ impl AppConfig {
         self.folder_preferences.insert(key, prefs);
     }
 
+    /// Remove saved layout preferences for a specific folder (unlocking it).
+    pub fn remove_folder_preferences(&mut self, path: &FilesPath) {
+        let key = path.to_string_lossy().into_owned();
+        self.folder_preferences.remove(&key);
+    }
+
+    /// Check if a specific folder has locked layout preferences.
+    pub fn has_folder_preferences(&self, path: &FilesPath) -> bool {
+        let key = path.to_string_lossy().into_owned();
+        self.folder_preferences.contains_key(&key)
+    }
+
     /// Load settings from disk, or return default if not found.
     pub fn load() -> Self {
         let path = Self::config_path();

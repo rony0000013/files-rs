@@ -68,6 +68,14 @@ impl RunAsAnotherUserService {
         if let Some(cwd) = working_directory {
             cmd.current_dir(cwd);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
+        }
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
 
         tracing::info!("Launching as different user: {} {:?}", path_str, arguments);
 

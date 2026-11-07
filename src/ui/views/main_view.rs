@@ -191,6 +191,7 @@ impl MainViewState {
             sort_col_discriminant: sort_discriminant,
             sort_ascending: self.sort.ascending,
             folders_first: self.sort.folders_first,
+            files_first: self.sort.files_first,
             group_col_discriminant: group_discriminant,
             group_ascending: self.group_ascending,
             filter_text: self.filter_text.clone(),
@@ -251,6 +252,16 @@ impl MainViewState {
                         std::cmp::Ordering::Greater
                     };
                 }
+            } else if self.sort.files_first {
+                let af = matches!(ia.file_type, FileType::Directory);
+                let bf = matches!(ib.file_type, FileType::Directory);
+                if af != bf {
+                    return if af {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        std::cmp::Ordering::Less
+                    };
+                }
             }
             let ord = match self.sort.column {
                 SortBy::Name => natural_cmp(&ia.name, &ib.name),
@@ -261,10 +272,20 @@ impl MainViewState {
                     if dir_a && dir_b {
                         natural_cmp(&ia.name, &ib.name)
                     } else if dir_a != dir_b {
-                        if dir_a {
-                            std::cmp::Ordering::Less
+                        if self.sort.files_first {
+                            if dir_a {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                std::cmp::Ordering::Less
+                            }
+                        } else if self.sort.folders_first {
+                            if dir_a {
+                                std::cmp::Ordering::Less
+                            } else {
+                                std::cmp::Ordering::Greater
+                            }
                         } else {
-                            std::cmp::Ordering::Greater
+                            ext_cmp(&ia.name, &ib.name)
                         }
                     } else {
                         ext_cmp(&ia.name, &ib.name)
@@ -2370,5 +2391,72 @@ mod tests {
         for _ in 0..1_000 {
             assert!(std::rc::Rc::ptr_eq(&rc3, &st.visible_items_rc()));
         }
+    }
+
+    #[test]
+    fn test_three_state_sort_priority_folders_files_interleaved() {
+        let mut st = MainViewState::new(FilesPath::new("/tmp"), ViewMode::Details);
+        st.items = vec![
+            FileItem {
+                name: "b_file.txt".to_string(),
+                path: FilesPath::new("/tmp/b_file.txt"),
+                file_type: FileType::File,
+                size: 100,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+                tags: Vec::new(),
+            },
+            FileItem {
+                name: "c_folder".to_string(),
+                path: FilesPath::new("/tmp/c_folder"),
+                file_type: FileType::Directory,
+                size: 0,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+                tags: Vec::new(),
+            },
+            FileItem {
+                name: "a_folder".to_string(),
+                path: FilesPath::new("/tmp/a_folder"),
+                file_type: FileType::Directory,
+                size: 0,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+                tags: Vec::new(),
+            },
+            FileItem {
+                name: "d_file.txt".to_string(),
+                path: FilesPath::new("/tmp/d_file.txt"),
+                file_type: FileType::File,
+                size: 200,
+                is_hidden: false,
+                is_system: false,
+                modified: None,
+                created: None,
+                tags: Vec::new(),
+            },
+        ];
+        st.bump_items_revision();
+
+        // State 1: Folders first -> a_folder (2), c_folder (1), b_file.txt (0), d_file.txt (3)
+        st.sort.folders_first = true;
+        st.sort.files_first = false;
+        assert_eq!(*st.visible_items_rc(), vec![2, 1, 0, 3]);
+
+        // State 2: Files first -> b_file.txt (0), d_file.txt (3), a_folder (2), c_folder (1)
+        st.sort.folders_first = false;
+        st.sort.files_first = true;
+        assert_eq!(*st.visible_items_rc(), vec![0, 3, 2, 1]);
+
+        // State 3: Interleaved -> a_folder (2), b_file.txt (0), c_folder (1), d_file.txt (3)
+        st.sort.folders_first = false;
+        st.sort.files_first = false;
+        assert_eq!(*st.visible_items_rc(), vec![2, 0, 1, 3]);
     }
 }

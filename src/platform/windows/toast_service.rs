@@ -73,10 +73,15 @@ impl ToastService {
             message.replace("'", "''")
         );
 
-        // Run PowerShell in background (non-blocking)
-        let _child = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
-            .spawn();
+        // Run PowerShell in background (non-blocking, detached stdio, no window)
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _child = cmd.spawn();
 
         Ok(())
     }

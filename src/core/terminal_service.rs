@@ -35,6 +35,186 @@ impl std::fmt::Display for TerminalType {
 pub struct TerminalService;
 
 impl TerminalService {
+    /// Launches the given terminal emulator at `path`.
+    /// Handles virtual paths (falling back to user home directory) and platform fallbacks.
+    pub fn open_terminal(terminal: &TerminalType, path: &Path) -> Result<(), String> {
+        let working_dir = if path.is_dir() {
+            path.to_path_buf()
+        } else if path.is_file() {
+            path.parent().unwrap_or(path).to_path_buf()
+        } else if let Some(home) = dirs::home_dir() {
+            home
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        };
+
+        #[cfg(windows)]
+        {
+            Self::launch_windows(terminal, &working_dir)
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            Self::launch_macos(&working_dir)
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Self::launch_linux(&working_dir)
+        }
+    }
+
+    #[cfg(windows)]
+    fn launch_windows(terminal: &TerminalType, working_dir: &Path) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+        let path_str = working_dir.to_string_lossy().to_string();
+
+        let try_spawn = |cmd_name: &str, args: &[&str], needs_console: bool| -> bool {
+            let mut cmd = Command::new(cmd_name);
+            cmd.args(args);
+            cmd.current_dir(working_dir);
+            if needs_console {
+                cmd.creation_flags(CREATE_NEW_CONSOLE);
+            }
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match cmd.spawn() {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!("Failed to launch terminal {}: {}", cmd_name, e);
+                    false
+                }
+            }
+        };
+
+        let success = match terminal {
+            TerminalType::WindowsTerminal => {
+                if try_spawn("wt.exe", &["-d", &path_str], false) {
+                    true
+                } else {
+                    try_spawn("cmd.exe", &["/C", "start", "wt.exe", "-d", &path_str], false)
+                }
+            }
+            TerminalType::PowerShell => {
+                let cmd_arg = format!("Set-Location -LiteralPath '{}'", path_str.replace('\'', "''"));
+                try_spawn("powershell.exe", &["-NoExit", "-Command", &cmd_arg], true)
+            }
+            TerminalType::PowerShell7Core => {
+                let cmd_arg = format!("Set-Location -LiteralPath '{}'", path_str.replace('\'', "''"));
+                try_spawn("pwsh.exe", &["-NoExit", "-Command", &cmd_arg], true)
+            }
+            TerminalType::Cmd | TerminalType::CommandPrompt => {
+                let cmd_arg = format!("cd /d \"{}\"", path_str);
+                try_spawn("cmd.exe", &["/K", &cmd_arg], true)
+            }
+            TerminalType::GitBash => {
+                let git_bash = std::path::Path::new(r"C:\Program Files\Git\bin\bash.exe");
+                let exe = if git_bash.exists() {
+                    r"C:\Program Files\Git\bin\bash.exe"
+                } else {
+                    "bash.exe"
+                };
+                try_spawn(exe, &["--cd", &path_str], true)
+            }
+            TerminalType::Wsl => {
+                try_spawn("wsl.exe", &["--cd", &path_str], true)
+            }
+        };
+
+        if success {
+            return Ok(());
+        }
+
+        // Automatic fallback cascade: wt -> powershell -> cmd
+        if try_spawn("wt.exe", &["-d", &path_str], false) {
+            return Ok(());
+        }
+        let ps_arg = format!("Set-Location -LiteralPath '{}'", path_str.replace('\'', "''"));
+        if try_spawn("powershell.exe", &["-NoExit", "-Command", &ps_arg], true) {
+            return Ok(());
+        }
+        let cmd_arg = format!("cd /d \"{}\"", path_str);
+        if try_spawn("cmd.exe", &["/K", &cmd_arg], true) {
+            return Ok(());
+        }
+
+        Err("Could not open any terminal application on Windows".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn launch_macos(working_dir: &Path) -> Result<(), String> {
+        let path_str = working_dir.to_string_lossy();
+        let mut cmd = std::process::Command::new("open");
+        cmd.args(["-a", "Terminal", path_str.as_ref()]);
+        cmd.current_dir(working_dir);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+        let mut fallback = std::process::Command::new("open");
+        fallback.arg(path_str.as_ref());
+        fallback.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        fallback.spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn launch_linux(working_dir: &Path) -> Result<(), String> {
+        let path_str = working_dir.to_string_lossy().to_string();
+        let term_env = std::env::var("TERMINAL").ok();
+
+        let mut candidates = Vec::new();
+        if let Some(t) = term_env {
+            candidates.push(t);
+        }
+        candidates.extend([
+            "x-terminal-emulator".to_string(),
+            "gnome-terminal".to_string(),
+            "konsole".to_string(),
+            "xfce4-terminal".to_string(),
+            "alacritty".to_string(),
+            "kitty".to_string(),
+            "xterm".to_string(),
+        ]);
+
+        for cand in &candidates {
+            let mut cmd = std::process::Command::new(cand);
+            cmd.current_dir(working_dir);
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match cand.as_str() {
+                "gnome-terminal" | "xfce4-terminal" => {
+                    cmd.arg(format!("--working-directory={}", path_str));
+                }
+                "konsole" => {
+                    cmd.args(["--workdir", &path_str]);
+                }
+                "kitty" => {
+                    cmd.args(["--directory", &path_str]);
+                }
+                "alacritty" | "x-terminal-emulator" => {
+                    cmd.args(["--working-directory", &path_str]);
+                }
+                _ => {
+                    cmd.args(["-e", &format!("cd '{}' && exec $SHELL", path_str.replace('\'', "'\\''"))]);
+                }
+            }
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+
+        Err("No terminal emulator found on Linux".to_string())
+    }
+
     /// Creates a new TerminalService instance.
     pub fn new() -> Self {
         Self

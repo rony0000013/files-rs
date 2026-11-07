@@ -83,19 +83,27 @@ impl SystemTrayManager {
             std::fs::write(&script_path, &script)
                 .map_err(|e| format!("Failed to write tray script: {}", e))?;
 
-            // Launch PowerShell with the tray script (non-blocking)
-            let result = std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    &script_path.to_string_lossy(),
-                ])
-                .spawn();
+            // Launch PowerShell with the tray script (non-blocking, detached stdio, no window)
+            let mut cmd = std::process::Command::new("powershell");
+            cmd.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script_path.to_string_lossy(),
+            ]);
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            let result = cmd.spawn();
 
             match result {
                 Ok(child) => {

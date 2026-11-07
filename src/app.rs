@@ -2117,7 +2117,12 @@ impl AppWindow {
         }
         #[cfg(not(windows))]
         {
-            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            let _ = std::process::Command::new("xdg-open")
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
         }
     }
 
@@ -6373,95 +6378,61 @@ impl AppWindow {
     // ═══════════════════════════════════════════════════════════════
 
     /// Open a terminal at the specified path
-    #[cfg(windows)]
     pub fn open_terminal_here(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
-        use std::process::Command;
-
-        // Read terminal preference from config, or detect if not explicitly set
         let terminal_type = {
             let settings = self.state.settings.read(cx);
             settings.config().terminal_app.clone()
         };
 
-        let path_buf = path.as_path().to_path_buf();
-        let (cmd, args) =
-            crate::core::terminal_service::TerminalService::get_command(&terminal_type, &path_buf);
-
-        let result = Command::new(&cmd).args(&args).spawn();
-
-        match result {
-            Ok(_) => {
-                tracing::info!("Opened terminal ({}) at: {:?}", cmd, path);
-            }
-            Err(e) => {
-                tracing::error!("Failed to open terminal: {}", e);
-            }
+        if let Err(e) = crate::core::terminal_service::TerminalService::open_terminal(
+            &terminal_type,
+            path.as_path(),
+        ) {
+            tracing::error!("Failed to open terminal at {:?}: {}", path, e);
         }
     }
 
     /// Open a terminal as administrator at the specified path
     #[cfg(windows)]
     pub fn open_terminal_as_admin(&mut self, path: &FilesPath, _cx: &mut Context<Self>) {
+        use std::os::windows::process::CommandExt;
         use std::process::Command;
 
-        let path_str = path.as_path().to_string_lossy();
+        let working_dir = if path.as_path().is_dir() {
+            path.as_path().to_path_buf()
+        } else if let Some(home) = dirs::home_dir() {
+            home
+        } else {
+            std::path::PathBuf::from("C:\\")
+        };
+        let path_str = working_dir.to_string_lossy();
 
         // Use PowerShell's Start-Process with -Verb RunAs to elevate
         let ps_command = format!(
-            "Start-Process powershell.exe -ArgumentList '-NoExit','cd \\'{}\\'' -Verb RunAs",
+            "Start-Process wt.exe -ArgumentList '-d \"{}\"' -Verb RunAs -ErrorAction SilentlyContinue; if (!$?) {{ Start-Process powershell.exe -ArgumentList '-NoExit','Set-Location -LiteralPath \\'{}\\' ' -Verb RunAs }}",
+            path_str.replace('"', "\\\""),
             path_str.replace('\'', "''")
         );
 
-        let result = Command::new("powershell")
-            .args(["-Command", &ps_command])
-            .spawn();
-
-        match result {
-            Ok(_) => {
-                tracing::info!("Opened elevated terminal at: {}", path_str);
-            }
-            Err(e) => {
-                tracing::error!("Failed to open elevated terminal: {}", e);
-            }
-        }
-    }
-
-    /// Open terminal at the current primary path
-    #[cfg(windows)]
-    pub fn open_terminal_at_current(&mut self, cx: &mut Context<Self>) {
-        let path = self.state.main_view.primary_path.clone();
-        self.open_terminal_here(&path, cx);
-    }
-
-    #[cfg(not(windows))]
-    pub fn open_terminal_here(&mut self, path: &FilesPath, cx: &mut Context<Self>) {
-        use std::process::Command;
-
-        // Read terminal preference from config
-        let terminal_type = {
-            let settings = self.state.settings.read(cx);
-            settings.config().terminal_app.clone()
-        };
-
-        let path_buf = path.as_path().to_path_buf();
-        let (cmd, args) =
-            crate::core::terminal_service::TerminalService::get_command(&terminal_type, &path_buf);
-
-        let result = Command::new(&cmd).args(&args).spawn();
-
-        match result {
-            Ok(_) => {
-                tracing::info!("Opened terminal ({}) at: {:?}", cmd, path);
-            }
-            Err(e) => {
-                tracing::error!("Failed to open terminal: {}", e);
-            }
-        }
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-Command", &ps_command]);
+        cmd.current_dir(&working_dir);
+        cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = cmd.spawn();
     }
 
     #[cfg(not(windows))]
     pub fn open_terminal_as_admin(&mut self, _path: &FilesPath, _cx: &mut Context<Self>) {
         tracing::warn!("Open elevated terminal not implemented for this platform");
+    }
+
+    /// Open terminal at the current primary path
+    pub fn open_terminal_at_current(&mut self, cx: &mut Context<Self>) {
+        let path = self.state.main_view.primary_path.clone();
+        self.open_terminal_here(&path, cx);
     }
 
     /// Load preview content for a file based on its type.
@@ -6509,14 +6480,20 @@ impl AppWindow {
 
     pub fn open_zoom_slider(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
         use crate::ui::components::dialogs::DialogType;
+        if matches!(self.state.active_dialog, Some(DialogType::ZoomSlider { .. })) {
+            self.close_dialog(cx);
+            return;
+        }
         // Reset any stale drag state from a previous incomplete drag
         self.zoom_drag_start = None;
         let current_zoom = self.state.main_view.zoom_level;
         let current_mode = self.state.main_view.view_mode.clone();
+        let is_locked = self.state.main_view.view_lock_enabled;
         self.state.active_dialog = Some(DialogType::ZoomSlider {
             position,
             current_zoom,
             current_mode,
+            is_locked,
         });
         cx.notify();
     }
@@ -7398,6 +7375,9 @@ impl AppWindow {
                 {
                     let _ = std::process::Command::new("cmd")
                         .args(["/C", "start", "ms-settings:storagesense"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
                         .spawn();
                 }
             }

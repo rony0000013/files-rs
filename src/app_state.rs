@@ -168,6 +168,15 @@ impl AppState {
     ) -> Self {
         let config = settings.read(cx);
         let default_view_mode = config.config().view.default_view_mode.clone();
+        let sort_prio = config.config().view.sort_priority.as_str();
+        let folders_first = sort_prio == "folders_first";
+        let files_first = sort_prio == "files_first";
+        let mut main_view = MainViewState::new(root.clone(), default_view_mode.clone());
+        main_view.sort.folders_first = folders_first;
+        main_view.sort.files_first = files_first;
+        let mut secondary_view = MainViewState::new(root.clone(), default_view_mode);
+        secondary_view.sort.folders_first = folders_first;
+        secondary_view.sort.files_first = files_first;
 
         Self {
             window_id: crate::ui::components::tab_interactions::next_window_id(),
@@ -175,9 +184,9 @@ impl AppState {
             settings,
             localization,
             navigation,
-            main_view: MainViewState::new(root.clone(), default_view_mode.clone()),
+            main_view,
             file_items: file_items.clone(),
-            secondary_view: MainViewState::new(root.clone(), default_view_mode),
+            secondary_view,
             secondary_file_items: file_items,
             nav_bar: NavigationBarState::new(root),
             sidebar: SidebarState::new(),

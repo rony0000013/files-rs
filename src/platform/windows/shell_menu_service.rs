@@ -120,9 +120,15 @@ fn show_classic_menu_impl(paths: &[PathBuf], dir: &Path, x: i32, y: i32) -> anyh
             }
 
             let hwnd: HWND = GetForegroundWindow();
-            let cm: IContextMenu = folder
-                .GetUIObjectOf(hwnd, &child_pidls, None)
-                .map_err(|e| anyhow::anyhow!("GetUIObjectOf: {e}"))?;
+            let cm: IContextMenu = if child_pidls.is_empty() {
+                parent
+                    .GetUIObjectOf(hwnd, &[last_rel], None)
+                    .map_err(|e| anyhow::anyhow!("GetUIObjectOf dir: {e}"))?
+            } else {
+                folder
+                    .GetUIObjectOf(hwnd, &child_pidls, None)
+                    .map_err(|e| anyhow::anyhow!("GetUIObjectOf: {e}"))?
+            };
 
             let hmenu =
                 CreatePopupMenu().map_err(|e| anyhow::anyhow!("CreatePopupMenu: {e}"))?;

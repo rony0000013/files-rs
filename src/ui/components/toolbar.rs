@@ -681,7 +681,7 @@ impl ToolbarView {
             let layout_open = active_flyout == Some("layout");
             let (layout_icon, layout_label) = match view_mode {
                 ViewMode::Details => ("\u{E8FD}", "Details"),
-                ViewMode::List => ("\u{E8EF}", "List"),
+                ViewMode::List => ("\u{EA37}", "List"),
                 ViewMode::Cards => ("\u{E8A9}", "Cards"),
                 ViewMode::Grid => ("\u{E80A}", "Grid"),
                 ViewMode::Columns => ("\u{E8F1}", "Columns"),
@@ -1235,7 +1235,7 @@ impl ToolbarView {
 
         let modes = [
             (ViewMode::Details, "\u{E8FD}", "Details", "Ctrl+Shift+1"),
-            (ViewMode::List, "\u{E8EF}", "List", "Ctrl+Shift+2"),
+            (ViewMode::List, "\u{EA37}", "List", "Ctrl+Shift+2"),
             (ViewMode::Cards, "\u{E8A9}", "Cards (Tiles)", "Ctrl+Shift+3"),
             (ViewMode::Grid, "\u{E80A}", "Grid (Icons)", "Ctrl+Shift+4"),
             (ViewMode::Columns, "\u{E8F1}", "Columns", "Ctrl+Shift+5"),

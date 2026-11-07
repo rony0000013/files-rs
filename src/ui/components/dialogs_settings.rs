@@ -1777,8 +1777,6 @@ impl crate::ui::components::dialogs::DialogsView {
                             let v = view.clone();
                             move |_, _, cx| {
                                 v.update(cx, |this, cx| {
-                                    this.state.main_view.sort.folders_first = true;
-                                    this.state.main_view.bump_items_revision();
                                     this.set_string_setting(
                                         "sort_priority",
                                         "folders_first".to_string(),
@@ -1795,8 +1793,6 @@ impl crate::ui::components::dialogs::DialogsView {
                             let v = view.clone();
                             move |_, _, cx| {
                                 v.update(cx, |this, cx| {
-                                    this.state.main_view.sort.folders_first = false;
-                                    this.state.main_view.bump_items_revision();
                                     this.set_string_setting(
                                         "sort_priority",
                                         "files_first".to_string(),
@@ -1813,8 +1809,6 @@ impl crate::ui::components::dialogs::DialogsView {
                             let v = view.clone();
                             move |_, _, cx| {
                                 v.update(cx, |this, cx| {
-                                    this.state.main_view.sort.folders_first = false;
-                                    this.state.main_view.bump_items_revision();
                                     this.set_string_setting(
                                         "sort_priority",
                                         "together".to_string(),
@@ -3639,11 +3633,11 @@ impl crate::ui::components::dialogs::DialogsView {
             }
 
             let preset_names = ["Project", "Review", "Urgent", "Design", "Client", "Reference"];
-            let mut name_Cycle = div().flex().flex_row().gap(px(4.0));
+            let mut name_cycle = div().flex().flex_row().gap(px(4.0));
             for pn in preset_names {
                 let v = view.clone();
                 let pn_s = pn.to_string();
-                name_Cycle = name_Cycle.child(Self::build_compact_btn(
+                name_cycle = name_cycle.child(Self::build_compact_btn(
                     pn,
                     cur_name == pn,
                     move |_, _, cx| {
@@ -3706,7 +3700,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                     })),
                             ),
                     )
-                    .child(name_Cycle)
+                    .child(name_cycle)
                     .into_any_element(),
             );
         }

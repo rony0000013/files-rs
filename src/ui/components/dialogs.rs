@@ -15,7 +15,7 @@ pub enum SidebarMenuTarget {
     Background,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Which flyout submenu is open inside a context menu (Files-community
 /// parity: Layout / Sort by / Group by / New / Open with / Compress / Send
 /// to expand as hover flyouts instead of flat sections).
@@ -27,6 +27,7 @@ pub enum SubmenuKind {
     OpenWith,
     Compress,
     SendTo,
+    FileTags,
     ShowMore,
 }
 
@@ -79,6 +80,13 @@ pub enum DialogType {
         win_w: f32,
         /// Pre-read window height to avoid view.read(cx) crash during render
         win_h: f32,
+        /// Scroll offset for the items viewport
+        scroll_offset: f32,
+        current_sort: crate::config::config::SortBy,
+        current_group: crate::config::config::GroupColumn,
+        is_pinned_to_sidebar: bool,
+        available_tags: Vec<crate::config::config::TagDefinition>,
+        item_tags: Vec<String>,
     },
     /// Sidebar context menu with target details
     SidebarContextMenu {
@@ -160,6 +168,8 @@ pub enum DialogType {
         current_zoom: f32,
         /// Snapshot of view_mode at creation time
         current_mode: crate::config::config::ViewMode,
+        /// Whether folder view lock is enabled
+        is_locked: bool,
     },
     /// Restore Crashed Session Dialog
     RestoreCrashedSession {
@@ -172,7 +182,7 @@ pub enum DialogType {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingsTab {
     General,
     Appearance,
@@ -447,6 +457,12 @@ impl DialogsView {
                 max_h,
                 win_w,
                 win_h,
+                scroll_offset,
+                current_sort,
+                current_group,
+                is_pinned_to_sidebar,
+                available_tags,
+                item_tags,
             } => Self::build_context_menu_dialog(
                 *item_index,
                 *position,
@@ -465,6 +481,12 @@ impl DialogsView {
                 *max_h,
                 *win_w,
                 *win_h,
+                *scroll_offset,
+                current_sort.clone(),
+                current_group.clone(),
+                *is_pinned_to_sidebar,
+                available_tags.clone(),
+                item_tags.clone(),
                 view.clone(),
                 cx,
                 mica_geo.clone(),
@@ -545,8 +567,9 @@ impl DialogsView {
             DialogType::ZoomSlider {
                 current_zoom,
                 current_mode,
+                is_locked,
                 ..
-            } => Self::build_zoom_slider(*current_zoom, *current_mode, view.clone(), cx)
+            } => Self::build_zoom_slider(*current_zoom, *current_mode, *is_locked, view.clone(), cx)
                 .into_any_element(),
             DialogType::RestoreCrashedSession {
                 crash_count,
@@ -568,6 +591,7 @@ impl DialogsView {
                 | DialogType::SidebarContextMenu { .. }
                 | DialogType::ColumnVisibilityMenu { .. }
                 | DialogType::SiblingDropdown { .. }
+                | DialogType::ZoomSlider { .. }
         );
         let v_overlay_close = view.clone();
 
@@ -581,9 +605,7 @@ impl DialogsView {
             .justify_center();
 
         if is_zoom {
-            // Subtle backdrop for modal feel
-            overlay = overlay.bg(rgba(0x00000020u32));
-            let thumb_travel_total = 140.0; // matches dialog_ht - 20 - 20 = track thumb travel
+            let thumb_travel_total = 120.0;
             let v_drag = view.clone();
             overlay = overlay
                 .on_mouse_down(MouseButton::Left, {
@@ -625,8 +647,7 @@ impl DialogsView {
                             this.close_dialog(cx);
                         });
                     }
-                })
-                .on_mouse_move(|_, _, cx| cx.stop_propagation());
+                });
         }
 
         let mut container = div()
@@ -645,6 +666,11 @@ impl DialogsView {
                         | DialogType::TabActionsDropdown { position, .. }
                         | DialogType::ColumnVisibilityMenu { position } => {
                             (f32::from(position.x), f32::from(position.y))
+                        }
+                        DialogType::ZoomSlider { .. } => {
+                            let win_w = mica_geo.as_ref().map_or(1000.0, |g| g.w);
+                            let win_h = mica_geo.as_ref().map_or(700.0, |g| g.h);
+                            (win_w - 10.0 - 180.0, win_h - 48.0 - 168.0)
                         }
                         DialogType::SidebarContextMenu { position, bottom_y, .. } => {
                             let y = if *bottom_y > 0.0 { f32::from(position.y) - *bottom_y } else { f32::from(position.y) };
@@ -689,11 +715,6 @@ impl DialogsView {
 
         container = container.child(content);
 
-        // For ZoomSlider, let mouse_move pass through so the drag handler can receive it.
-        if !is_zoom {
-            container = container.on_mouse_move(|_, _, cx| cx.stop_propagation());
-        }
-
         match dialog {
             DialogType::ContextMenu { position, .. } => {
                 // Exactly the menu width: the inner menu paints its own
@@ -732,12 +753,12 @@ impl DialogsView {
                 }
             }
             DialogType::ZoomSlider { .. } => {
-                // Anchor to bottom-right above the status bar
+                // Anchor to bottom-right clearly floating above the status bar with a 12px gap
                 container = container
                     .absolute()
-                    .bottom(px(40.0))
-                    .right(px(8.0))
-                    .w(px(220.0));
+                    .bottom(px(48.0))
+                    .right(px(10.0))
+                    .w(px(180.0));
             }
             DialogType::StatusCenter { .. } => {
                 container = container
@@ -2715,118 +2736,119 @@ impl DialogsView {
         btn.child(label.to_string())
     }
 
-    /// Build zoom slider / view mode switcher popover
+    /// Build zoom slider / view mode switcher popover (WinUI 3 Fluent + File Pilot inspired)
     fn build_zoom_slider(
         current_zoom: f32,
         current_mode: crate::config::config::ViewMode,
+        is_locked: bool,
         view: Entity<crate::app::AppWindow>,
-        cx: &mut Context<crate::app::AppWindow>,
+        _cx: &mut Context<crate::app::AppWindow>,
     ) -> impl IntoElement {
         use crate::config::config::ViewMode;
-        use crate::ui::views::main_view::{zoom_mode_icon, zoom_mode_name};
 
         struct MenuItem {
             name: &'static str,
             icon: &'static str,
             mode: ViewMode,
-            /// Vertical padding
-            item_py: f32,
-            /// Icon font size
-            icon_size: f32,
-            /// Text font size
-            text_size: f32,
-            /// Whether to show a divider after
+            is_active: bool,
             divider_after: bool,
         }
 
         let items = vec![
             MenuItem {
-                name: "Details",
-                icon: "\u{E783}",
-                mode: ViewMode::Details,
-                item_py: 6.0,
-                icon_size: 16.0,
-                text_size: 12.0,
-                divider_after: true,
-            },
-            MenuItem {
-                name: "List",
-                icon: "\u{E77B}",
-                mode: ViewMode::List,
-                item_py: 5.0,
-                icon_size: 15.0,
-                text_size: 12.0,
-                divider_after: true,
+                name: "Icons",
+                icon: "\u{E80A}",
+                mode: ViewMode::Grid,
+                is_active: matches!(current_mode, ViewMode::Grid),
+                divider_after: false,
             },
             MenuItem {
                 name: "Cards",
                 icon: "\u{E8A9}",
                 mode: ViewMode::Cards,
-                item_py: 5.0,
-                icon_size: 15.0,
-                text_size: 12.0,
-                divider_after: true,
+                is_active: matches!(current_mode, ViewMode::Cards),
+                divider_after: false,
             },
             MenuItem {
                 name: "Columns",
-                icon: "\u{E8A8}",
+                icon: "\u{E8F1}",
                 mode: ViewMode::Columns,
-                item_py: 6.0,
-                icon_size: 16.0,
-                text_size: 12.0,
-                divider_after: true,
+                is_active: matches!(current_mode, ViewMode::Columns),
+                divider_after: false,
             },
             MenuItem {
-                name: "Grid",
-                icon: "\u{E80A}",
-                mode: ViewMode::Grid,
-                item_py: 6.0,
-                icon_size: 16.0,
-                text_size: 12.0,
+                name: "List",
+                icon: "\u{EA37}",
+                mode: ViewMode::List,
+                is_active: matches!(current_mode, ViewMode::List),
+                divider_after: false,
+            },
+            MenuItem {
+                name: "Details",
+                icon: "\u{E8FD}",
+                mode: ViewMode::Details,
+                is_active: matches!(current_mode, ViewMode::Details),
                 divider_after: false,
             },
         ];
 
-        // Fixed dialog height
-        let dialog_ht = 180.0;
+        // Fixed dialog height for 5 view mode items
+        let dialog_ht = 168.0;
+        let pad_y = 8.0;
+        let inner_ht = dialog_ht - pad_y * 2.0; // 152.0
+        let track_h = 136.0;
+        let thumb_travel = track_h - 16.0; // 120.0
+        let clamped_zoom = current_zoom.clamp(0.0, 1.0);
+        let thumb_pos_ratio = 1.0 - clamped_zoom;
+        let v_wheel = view.clone();
 
         div()
+            .id("zoom-slider-flyout")
             .flex()
             .flex_row()
             .w_full()
             .h(px(dialog_ht))
+            .p(px(pad_y))
+            .gap(px(6.0))
+            .on_scroll_wheel(move |event, _win, cx| {
+                cx.stop_propagation();
+                let delta = event.delta.pixel_delta(px(22.0));
+                let delta_y: f32 = delta.y.into();
+                if delta_y.abs() < 0.25 {
+                    return;
+                }
+                let step = if delta_y > 0.0 { 0.05 } else { -0.05 };
+                v_wheel.update(cx, |this, cx| {
+                    let next = (this.state.main_view.zoom_level + step).clamp(0.0, 1.0);
+                    this.set_zoom_level(next, cx);
+                });
+            })
             .child(
-                // LEFT: Mode list — compact
+                // LEFT: 5 View mode items
                 div()
+                    .flex()
                     .flex_col()
+                    .justify_between()
                     .flex_grow()
-                    .py(px(4.0))
-                    .children(items.iter().map(|item| {
-                        let is_active = match item.name {
-                            "Details" => matches!(current_mode, ViewMode::Details),
-                            "List" => matches!(current_mode, ViewMode::List),
-                            "Cards" => matches!(current_mode, ViewMode::Cards),
-                            "Columns" => matches!(current_mode, ViewMode::Columns),
-                            "Grid" => matches!(current_mode, ViewMode::Grid),
-                            _ => false,
-                        };
+                    .h(px(inner_ht))
+                    .children(items.into_iter().map(|item| {
+                        let is_active = item.is_active;
                         let v_btn = view.clone();
-                        let mode = item.mode.clone();
-                        let item_py = item.item_py;
-                        let icon_size = item.icon_size;
-                        let text_size = item.text_size;
+                        let mode = item.mode;
                         let divider_after = item.divider_after;
 
                         div()
+                            .flex()
                             .flex_col()
                             .child(
                                 div()
                                     .flex()
+                                    .flex_row()
                                     .items_center()
                                     .gap(px(10.0))
                                     .px(px(8.0))
-                                    .py(px(item_py))
-                                    .rounded(px(4.0))
+                                    .py(px(4.0))
+                                    .rounded(px(5.0))
                                     .bg(if is_active {
                                         rgba(UiConstants::ACCENT_RGBA)
                                     } else {
@@ -2837,42 +2859,38 @@ impl DialogsView {
                                         s.bg(if is_active {
                                             rgba(UiConstants::ACCENT_RGBA)
                                         } else {
-                                            rgba(0xFFFFFF10u32)
+                                            rgba(0xFFFFFF12u32)
                                         })
                                     })
-                                    .on_mouse_down(MouseButton::Left, {
-                                        let v_btn = v_btn.clone();
-                                        move |_, _, cx| {
-                                            let mode = mode.clone();
-                                            v_btn.update(cx, |this, cx| {
-                                                this.set_view_mode(mode.clone(), cx);
-                                                this.close_dialog(cx);
-                                            });
-                                        }
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        let mode = mode.clone();
+                                        v_btn.update(cx, |this, cx| {
+                                            this.set_view_mode(mode, cx);
+                                        });
                                     })
                                     .child(
                                         div()
-                                            .text_size(px(icon_size))
-                                            .font_family(UiConstants::FONT_MDL2)
+                                            .text_size(px(13.5))
+                                            .font_family(UiConstants::FONT_ICONS)
                                             .text_color(if is_active {
                                                 rgb(0xFFFFFF)
                                             } else {
-                                                rgba(UiConstants::TEXT_SECONDARY_RGBA)
+                                                rgba(UiConstants::TEXT_SECONDARY_RGBA).into()
                                             })
                                             .child(item.icon),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(text_size))
+                                            .text_size(px(12.0))
                                             .font_weight(if is_active {
                                                 FontWeight(600.0)
                                             } else {
-                                                FontWeight::default()
+                                                FontWeight(400.0)
                                             })
                                             .text_color(if is_active {
                                                 rgb(0xFFFFFF)
                                             } else {
-                                                rgba(UiConstants::TEXT_PRIMARY_RGBA)
+                                                rgba(UiConstants::TEXT_PRIMARY_RGBA).into()
                                             })
                                             .child(item.name),
                                     ),
@@ -2881,9 +2899,9 @@ impl DialogsView {
                                 Some(
                                     div()
                                         .h(px(1.0))
-                                        .bg(rgba(UiConstants::DIVIDER_RGBA))
-                                        .mx(px(8.0))
-                                        .my(px(2.0)),
+                                        .bg(rgba(0xFFFFFF10u32))
+                                        .mx(px(6.0))
+                                        .my(px(1.0)),
                                 )
                             } else {
                                 None
@@ -2891,27 +2909,24 @@ impl DialogsView {
                     })),
             )
             .child(
-                // RIGHT: Vertical slider — whole 30px column is clickable
+                // RIGHT: Vertical slider — track + vibrant WinUI 3 blue active fill bar + circular thumb
                 div()
-                    .w(px(30.0))
+                    .relative()
+                    .w(px(28.0))
+                    .h(px(inner_ht))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .py(px(10.0))
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, {
                         let v = view.clone();
                         move |event, win, cx| {
                             let click_y: f32 = event.position.y.into();
                             let win_h: f32 = win.viewport_size().height.into();
-                            // Dialog: bottom(40), height dialog_ht (180), column py(10)
-                            let track_top = win_h - 40.0 - dialog_ht + 10.0;
+                            let track_top = win_h - 48.0 - dialog_ht + 16.0;
                             let rel_y = click_y - track_top;
-                            // thumb_travel = dialog_ht - py*2 - thumb_h = 180 - 20 - 20 = 140
-                            let tt = dialog_ht - 20.0 - 20.0;
-                            // Center the 20px thumb on the click position
-                            let thumb_top = (rel_y - 10.0).clamp(0.0, tt);
-                            let snapped_zoom = 1.0 - thumb_top / tt;
+                            let thumb_top = (rel_y - 8.0).clamp(0.0, thumb_travel);
+                            let snapped_zoom = (1.0 - thumb_top / thumb_travel).clamp(0.0, 1.0);
                             v.update(cx, |this, cx| {
                                 this.set_zoom_level(snapped_zoom, cx);
                                 this.zoom_drag_start = Some((click_y, snapped_zoom));
@@ -2919,27 +2934,40 @@ impl DialogsView {
                         }
                     })
                     .child(
-                        // Visual track (4px line) — not the hitbox
+                        // Pill track (6px wide, centered)
                         div()
                             .relative()
-                            .w(px(4.0))
-                            .h_full()
-                            .bg(rgba(0xFFFFFF15u32))
-                            .rounded(px(2.0))
-                            .child({
-                                let thumb_travel = dialog_ht - 20.0 - 20.0;
-                                let thumb_pos_ratio = 1.0 - current_zoom;
+                            .w(px(6.0))
+                            .h(px(track_h))
+                            .bg(rgba(0xFFFFFF25u32))
+                            .rounded(px(3.0))
+                            .overflow_hidden()
+                            .child(
+                                // Vibrant solid blue active fill bar filling from bottom up
                                 div()
                                     .absolute()
-                                    .top(px(thumb_pos_ratio * thumb_travel))
-                                    .left(px(-8.0))
-                                    .w(px(20.0))
-                                    .h(px(20.0))
-                                    .rounded(px(10.0))
-                                    .bg(rgba(UiConstants::ACCENT_RGBA))
-                                    .shadow_md()
-                                    .cursor_pointer()
-                            }),
+                                    .bottom_0()
+                                    .left_0()
+                                    .right_0()
+                                    .h(px((clamped_zoom * thumb_travel + 8.0).min(track_h)))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(0x0078D4)),
+                            ),
+                    )
+                    .child(
+                        // Circular accent thumb (16px) sitting directly over the track
+                        div()
+                            .absolute()
+                            .top(px(thumb_pos_ratio * thumb_travel + 8.0))
+                            .left(px(6.0))
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .rounded(px(8.0))
+                            .bg(rgb(0x0078D4))
+                            .border(px(2.0))
+                            .border_color(rgb(0xFFFFFF))
+                            .shadow_md()
+                            .cursor_pointer(),
                     ),
             )
     }

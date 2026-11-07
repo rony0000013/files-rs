@@ -152,6 +152,28 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Clear all tags from selected items
+    pub fn clear_tags_from_selected(&mut self, cx: &mut Context<Self>) {
+        let active_view = self.state.active_view();
+        let paths: Vec<FilesPath> = active_view
+            .selected_indices
+            .iter()
+            .filter_map(|&idx| active_view.items.get(idx).map(|it| it.path.clone()))
+            .collect();
+        for path in paths {
+            let tags = self.get_file_tags(&path);
+            for tag in tags {
+                let _ = self
+                    .state
+                    .tag_service
+                    .remove_tag(path.as_path().to_string_lossy().as_ref(), &tag);
+            }
+        }
+        self.sync_directory_tags(cx);
+        self.refresh_home_tags_cache(cx);
+        cx.notify();
+    }
+
     /// Add a tag to a specific file
     pub fn add_tag_to_file(&mut self, path: &FilesPath, tag: String, cx: &mut Context<Self>) {
         if let Err(e) = self
@@ -214,7 +236,12 @@ impl AppWindow {
                     {
                         use std::process::Command;
                         let path_s = path.as_path().to_string_lossy();
-                        let _ = Command::new("xdg-open").arg(path_s.as_ref()).spawn();
+                        let _ = Command::new("xdg-open")
+                            .arg(path_s.as_ref())
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
                     }
                 }
             }
@@ -1838,7 +1865,13 @@ impl AppWindow {
         match handler {
             ThirdPartyHandler::Peek => {
                 // PowerToys Peek
-                match Command::new("peek.exe").arg(&path_str).spawn() {
+                match Command::new("peek.exe")
+                    .arg(&path_str)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
                     Ok(_) => {
                         tracing::info!("Invoked PowerToys Peek for: {}", path_str);
                     }
@@ -1853,7 +1886,13 @@ impl AppWindow {
             }
             ThirdPartyHandler::QuickLook => {
                 // QuickLook (Windows)
-                match Command::new("quicklook.exe").arg(&path_str).spawn() {
+                match Command::new("quicklook.exe")
+                    .arg(&path_str)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
                     Ok(_) => {
                         tracing::info!("Invoked QuickLook for: {}", path_str);
                     }
@@ -1868,7 +1907,13 @@ impl AppWindow {
             }
             ThirdPartyHandler::SeerPro => {
                 // SeerPro
-                match Command::new("seer.exe").arg(&path_str).spawn() {
+                match Command::new("seer.exe")
+                    .arg(&path_str)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
                     Ok(_) => {
                         tracing::info!("Invoked SeerPro for: {}", path_str);
                     }
@@ -2070,15 +2115,20 @@ impl AppWindow {
         cx.notify();
     }
     pub fn toggle_view_lock(&mut self, cx: &mut Context<Self>) {
-        self.state.main_view.view_lock_enabled = !self.state.main_view.view_lock_enabled;
+        let active_pane = self.state.active_pane_focus();
+        let was_locked = self.state.pane_view(active_pane).view_lock_enabled;
+        let new_locked = !was_locked;
 
-        // If enabling the lock, save current directory's prefs immediately
-        if self.state.main_view.view_lock_enabled {
-            let path = self.state.main_view.primary_path.clone();
-            let view_mode = self.state.main_view.view_mode.clone();
-            let zoom_level = self.state.main_view.zoom_level;
-            let settings = self.state.settings.clone();
-            settings.update(cx, move |s, _cx| {
+        self.state.main_view.view_lock_enabled = new_locked;
+        self.state.secondary_view.view_lock_enabled = new_locked;
+
+        let path = self.state.pane_view(active_pane).primary_path.clone();
+        let view_mode = self.state.pane_view(active_pane).view_mode.clone();
+        let zoom_level = self.state.pane_view(active_pane).zoom_level;
+        let settings = self.state.settings.clone();
+
+        settings.update(cx, move |s, _cx| {
+            if new_locked {
                 s.config.set_folder_preferences(
                     &path,
                     crate::config::config::FolderPreferences {
@@ -2090,7 +2140,18 @@ impl AppWindow {
                         group_by: s.config.view.group_by,
                     },
                 );
-            });
+            } else {
+                s.config.remove_folder_preferences(&path);
+            }
+            let _ = s.config.save();
+        });
+
+        if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider {
+            ref mut is_locked,
+            ..
+        }) = self.state.active_dialog
+        {
+            *is_locked = new_locked;
         }
 
         cx.notify();
@@ -2278,6 +2339,11 @@ impl AppWindow {
                 }
                 "folder_on_top" => {
                     s.config.view.folder_on_top = !s.config.view.folder_on_top;
+                    s.config.view.sort_priority = if s.config.view.folder_on_top {
+                        "folders_first".to_string()
+                    } else {
+                        "together".to_string()
+                    };
                     needs_resort = true;
                 }
                 "sort_descending" => {
@@ -2379,13 +2445,14 @@ impl AppWindow {
         });
 
         // Sync column visibility flags with MainViewState
-        let (show_hidden, show_dot, show_sys, folder_on_top, sort_asc, show_date, show_type, show_size) = {
+        let (show_hidden, show_dot, show_sys, folder_on_top, files_first, sort_asc, show_date, show_type, show_size) = {
             let cfg = &self.state.settings.read(cx).config;
             (
                 cfg.preferences.show_hidden_files,
                 cfg.preferences.show_dot_files,
                 cfg.preferences.show_system_files,
-                cfg.view.folder_on_top,
+                cfg.view.sort_priority == "folders_first" || (cfg.view.folder_on_top && cfg.view.sort_priority != "files_first" && cfg.view.sort_priority != "together"),
+                cfg.view.sort_priority == "files_first",
                 cfg.view.sort_ascending,
                 cfg.view.show_date_column,
                 cfg.view.show_type_column,
@@ -2396,6 +2463,7 @@ impl AppWindow {
         self.state.main_view.show_dot_files = show_dot;
         self.state.main_view.show_system_files = show_sys;
         self.state.main_view.sort.folders_first = folder_on_top;
+        self.state.main_view.sort.files_first = files_first;
         self.state.main_view.sort.ascending = sort_asc;
         self.state.main_view.column_visibility.date = show_date;
         self.state.main_view.column_visibility.type_col = show_type;
@@ -2404,6 +2472,7 @@ impl AppWindow {
         self.state.secondary_view.show_dot_files = show_dot;
         self.state.secondary_view.show_system_files = show_sys;
         self.state.secondary_view.sort.folders_first = folder_on_top;
+        self.state.secondary_view.sort.files_first = files_first;
         self.state.secondary_view.sort.ascending = sort_asc;
 
         let show_chk = self.state.settings.read(cx).config.preferences.show_checkboxes_when_selecting;
@@ -3018,6 +3087,32 @@ impl AppWindow {
             }
         }
 
+        let current_sort = self.state.main_view.sort.column.clone();
+        let current_group = self.state.main_view.group_by.clone();
+        let is_pinned_to_sidebar = selected_path.as_ref().map_or(false, |p| {
+            self.state.sidebar.sections.iter().any(|sec| {
+                sec.items.iter().any(|item| {
+                    if let crate::ui::components::sidebar_state::SidebarItemId::Pinned(ref path) = item.id {
+                        path == p
+                    } else {
+                        false
+                    }
+                })
+            })
+        });
+        let available_tags = self.state.settings.read(cx).config.tag_definitions.clone();
+        let item_tags: Vec<String> = if let Some(idx) = item_index {
+            self.state
+                .main_view
+                .items
+                .get(idx)
+                .and_then(|item| self.state.main_view.item_tags(item))
+                .map(|t| t.to_vec())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         self.state.active_dialog = Some(crate::ui::components::dialogs::DialogType::ContextMenu {
             item_index,
             position,
@@ -3036,6 +3131,12 @@ impl AppWindow {
             max_h,
             win_w: vpw,
             win_h: vph,
+            scroll_offset: 0.0,
+            current_sort,
+            current_group,
+            is_pinned_to_sidebar,
+            available_tags,
+            item_tags,
         });
         // Preload the classic items the moment the menu opens (all styles):
         // phase 1 (labels) lands in ~50ms so the flyout renders instantly on
@@ -3572,6 +3673,16 @@ impl AppWindow {
         self.state.secondary_view.view_mode = mode.clone();
         self.state.secondary_view.zoom_level = new_zoom;
 
+        if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider {
+            ref mut current_zoom,
+            ref mut current_mode,
+            ..
+        }) = self.state.active_dialog
+        {
+            *current_zoom = new_zoom;
+            *current_mode = mode.clone();
+        }
+
         // Save last used view mode (always) + per-directory preferences if lock is enabled
         let path = self.state.main_view.primary_path.clone();
         let zoom_level = self.state.main_view.zoom_level;
@@ -3854,10 +3965,13 @@ impl AppWindow {
 
         if let Some(prio) = new_sort_priority {
             let ff = prio == "folders_first";
+            let files_first = prio == "files_first";
             self.state.main_view.sort.folders_first = ff;
+            self.state.main_view.sort.files_first = files_first;
             self.state.main_view.apply_sort();
             self.state.main_view.bump_items_revision();
             self.state.secondary_view.sort.folders_first = ff;
+            self.state.secondary_view.sort.files_first = files_first;
             self.state.secondary_view.apply_sort();
             self.state.secondary_view.bump_items_revision();
             self.sync_pane_selection_model(crate::core::navigation_manager::PaneFocus::Primary, cx);
@@ -3865,6 +3979,24 @@ impl AppWindow {
         }
 
         cx.notify();
+    }
+
+    /// Cycle through the 3 folder/file sort placement states:
+    /// `"folders_first"` -> `"files_first"` -> `"together"` -> `"folders_first"`.
+    pub fn cycle_sort_priority(&mut self, cx: &mut Context<Self>) {
+        let current = if self.state.main_view.sort.folders_first {
+            "folders_first"
+        } else if self.state.main_view.sort.files_first {
+            "files_first"
+        } else {
+            "together"
+        };
+        let next = match current {
+            "folders_first" => "files_first",
+            "files_first" => "together",
+            _ => "folders_first",
+        };
+        self.set_string_setting("sort_priority", next.to_string(), cx);
     }
 
     pub fn set_backdrop_material(&mut self, material: String, cx: &mut Context<Self>) {

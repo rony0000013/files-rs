@@ -44,6 +44,8 @@ pub struct SortState {
     pub column: SortBy,
     pub ascending: bool,
     pub folders_first: bool,
+    #[serde(default)]
+    pub files_first: bool,
 }
 
 impl Default for SortState {
@@ -52,6 +54,7 @@ impl Default for SortState {
             column: SortBy::Name,
             ascending: true,
             folders_first: true,
+            files_first: false,
         }
     }
 }
@@ -1048,6 +1051,7 @@ pub struct VisibleCacheKey {
     pub sort_col_discriminant: usize,
     pub sort_ascending: bool,
     pub folders_first: bool,
+    pub files_first: bool,
     pub group_col_discriminant: usize,
     pub group_ascending: bool,
     pub filter_text: String,

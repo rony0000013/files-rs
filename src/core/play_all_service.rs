@@ -144,6 +144,9 @@ impl PlayAllService {
                 }
                 cmd.arg("--playlist-enqueue");
                 cmd.arg(playlist_path.as_path());
+                cmd.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
 
                 match cmd.spawn() {
                     Ok(_) => {

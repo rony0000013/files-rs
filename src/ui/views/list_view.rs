@@ -510,8 +510,8 @@ impl MainViewState {
                         let compact = main_state.compact_mode;
                         let (cols, col_w, row_h, gap, padding) =
                             Self::list_layout_metrics(pane_w, zoom, compact);
-                        let icon_size = (18.0 + zoom * 10.0).clamp(18.0, 28.0);
-                        let text_size = (11.0 + zoom * 2.5).clamp(11.0, 13.5);
+                        let icon_size = (15.0 + zoom * 33.0).clamp(14.0, 50.0);
+                        let text_size = (10.0 + zoom * 4.5).clamp(10.0, 15.0);
                         let is_checkbox = main_state.selection_mode == SelectionMode::Checkbox;
                         let is_hover_select =
                             main_state.selection_mode == SelectionMode::HoverSelect;
@@ -608,8 +608,8 @@ impl MainViewState {
         let (cols, col_w, row_h, gap, padding) = Self::list_layout_metrics(pane_w, zoom, compact);
         let flattened = self.flatten_grouped_grid_items(visible, cols.max(1));
         let header_h = if compact { 28.0 } else { 32.0 };
-        let icon_size = (18.0 + zoom * 10.0).clamp(18.0, 28.0);
-        let text_size = (11.0 + zoom * 2.5).clamp(11.0, 13.5);
+        let icon_size = (15.0 + zoom * 33.0).clamp(14.0, 50.0);
+        let text_size = (10.0 + zoom * 4.5).clamp(10.0, 15.0);
         let is_checkbox = self.selection_mode == SelectionMode::Checkbox;
         let is_hover_select = self.selection_mode == SelectionMode::HoverSelect;
         let hovered_drop_folder = self.drag_state.hovered_target_folder.clone();
@@ -1265,10 +1265,10 @@ impl MainViewState {
             .and_then(|t| t.first())
             .cloned();
 
-        let card_h = (row_h - 6.0).max(58.0);
-        let badge_box = (card_h - 18.0).clamp(36.0, 54.0);
-        let title_size = (11.5 + zoom * 2.0).clamp(11.5, 13.5);
-        let sub_size = (10.0 + zoom * 1.5).clamp(10.0, 11.5);
+        let card_h = (row_h - 6.0).max(42.0);
+        let badge_box = (card_h * 0.78).clamp(32.0, 116.0);
+        let title_size = (10.5 + zoom * 5.0).clamp(10.5, 16.0);
+        let sub_size = (9.0 + zoom * 3.0).clamp(9.0, 13.0);
         let avail_title_w = (col_w
             - badge_box
             - 36.0

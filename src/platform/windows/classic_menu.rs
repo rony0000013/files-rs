@@ -172,9 +172,15 @@ fn query_shell_menu(
             }
 
             let hwnd: HWND = GetForegroundWindow();
-            let cm: IContextMenu = folder
-                .GetUIObjectOf(hwnd, &child_pidls, None)
-                .map_err(|e| anyhow::anyhow!("GetUIObjectOf: {e}"))?;
+            let cm: IContextMenu = if child_pidls.is_empty() {
+                parent
+                    .GetUIObjectOf(hwnd, &[last_rel], None)
+                    .map_err(|e| anyhow::anyhow!("GetUIObjectOf dir: {e}"))?
+            } else {
+                folder
+                    .GetUIObjectOf(hwnd, &child_pidls, None)
+                    .map_err(|e| anyhow::anyhow!("GetUIObjectOf: {e}"))?
+            };
             for pidl in child_pidls {
                 windows::Win32::System::Com::CoTaskMemFree(Some(pidl as *const _ as _));
             }
@@ -184,7 +190,7 @@ fn query_shell_menu(
             // IDs 1..=0x6FFF; offsets (wID - 1) are stable per query.
             let hr = cm.QueryContextMenu(hmenu, 0, 1, 0x6FFF, CMF_NORMAL);
             if hr.0 < 0 {
-                windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
                 anyhow::bail!("QueryContextMenu failed");
             }
             Ok((cm, hmenu))
@@ -202,10 +208,10 @@ fn enumerate_classic_menu_impl(
     load_icons: bool,
 ) -> anyhow::Result<Vec<ClassicMenuEntry>> {
     with_sta(|| {
-        let (_cm, hmenu) = query_shell_menu(paths, dir)?;
-        let entries = unsafe { read_menu_level(hmenu, 1, 0, load_icons) };
+        let (cm, hmenu) = query_shell_menu(paths, dir)?;
+        let entries = unsafe { read_menu_level(Some(&cm), hmenu, 1, 0, load_icons) };
         unsafe {
-            windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
         }
         Ok(entries)
     })
@@ -223,7 +229,7 @@ fn invoke_classic_verb_impl(
         let (cm, hmenu) = query_shell_menu(paths, dir)?;
         let result = unsafe {
             // Label guard: never fire a stale offset at the wrong command.
-            let entries = read_menu_level(hmenu, 1, 0, true);
+            let entries = read_menu_level(Some(&cm), hmenu, 1, 0, true);
             let mut found: Option<(u32, String)> = None;
             let mut stack = entries;
             while let Some(e) = stack.pop() {
@@ -253,7 +259,7 @@ fn invoke_classic_verb_impl(
             }
         };
         unsafe {
-            windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyMenu(hmenu);
         }
         result
     })
@@ -263,6 +269,7 @@ fn invoke_classic_verb_impl(
 /// base (1); offsets are `wID - id_first`. Recursion capped for safety.
 #[cfg(windows)]
 unsafe fn read_menu_level(
+    cm: Option<&windows::Win32::UI::Shell::IContextMenu>,
     hmenu: windows::Win32::UI::WindowsAndMessaging::HMENU,
     id_first: u32,
     depth: u32,
@@ -308,8 +315,35 @@ unsafe fn read_menu_level(
         if label.is_empty() && mii.hSubMenu.0.is_null() {
             continue;
         }
+
+        // Initialize submenus so dynamic handlers (Send to, Open with, WinRAR, etc.) populate items and icons
+        if !mii.hSubMenu.0.is_null() {
+            if let Some(cm_ref) = cm {
+                use windows::core::Interface;
+                use windows::Win32::UI::Shell::{IContextMenu2, IContextMenu3};
+                use windows::Win32::UI::WindowsAndMessaging::WM_INITMENUPOPUP;
+                use windows::Win32::Foundation::{WPARAM, LPARAM, LRESULT};
+
+                if let Ok(cm3) = cm_ref.cast::<IContextMenu3>() {
+                    let mut lres = LRESULT(0);
+                    let _ = cm3.HandleMenuMsg2(
+                        WM_INITMENUPOPUP,
+                        WPARAM(mii.hSubMenu.0 as usize),
+                        LPARAM(i as isize),
+                        Some(&mut lres),
+                    );
+                } else if let Ok(cm2) = cm_ref.cast::<IContextMenu2>() {
+                    let _ = cm2.HandleMenuMsg(
+                        WM_INITMENUPOPUP,
+                        WPARAM(mii.hSubMenu.0 as usize),
+                        LPARAM(i as isize),
+                    );
+                }
+            }
+        }
+
         let children = if !mii.hSubMenu.0.is_null() && depth < 4 {
-            read_menu_level(mii.hSubMenu, id_first, depth + 1, load_icons)
+            read_menu_level(cm, mii.hSubMenu, id_first, depth + 1, load_icons)
         } else {
             Vec::new()
         };

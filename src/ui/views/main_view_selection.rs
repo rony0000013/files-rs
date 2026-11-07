@@ -240,40 +240,48 @@ impl MainViewState {
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
-        let text_size = (11.0 + zoom * 2.5).clamp(11.0, 13.5);
-        let line_h = (text_size * 1.24).ceil();
-        let row_h = (line_h * 3.0 + if compact { 8.0 } else { 12.0 }).round();
+        let z = zoom.clamp(0.0, 1.0);
+        let text_size = (10.0 + z * 5.0).clamp(10.0, 15.5);
+        let line_h = (text_size * 1.25).ceil();
+        let row_h = if compact {
+            (line_h + 6.0 + z * 36.0).round()
+        } else {
+            (line_h * 1.5 + 8.0 + z * 44.0).round()
+        };
         let padding = 10.0;
-        let gap = 6.0;
-        let min_col_w = (180.0 + zoom * 110.0).clamp(170.0, 300.0);
+        let gap = (4.0 + z * 8.0).round();
+        let min_col_w = (130.0 + z * 280.0).clamp(120.0, 480.0);
         let avail = (pane_w - padding * 2.0).max(min_col_w);
         let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 8);
         let col_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .floor()
-            .max(150.0);
+            .max(120.0);
         (cols, col_w, row_h, gap, padding)
     }
 
     /// `Files-community` Cards (Tiles) view layout metrics.
-    /// Reserves height for up to 3 lines of title + 1 line of subtitle without overlapping.
+    /// Reserves height for title + metadata subtitle across a wide dynamic zoom range (0% to 100%).
     /// Returns `(cols, card_width, row_height, gap, horizontal_padding)`.
     pub fn cards_layout_metrics(
         pane_w: f32,
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
-        let title_size = (11.5 + zoom * 2.0).clamp(11.5, 13.5);
-        let title_line_h = (title_size * 1.24).ceil();
-        let sub_line_h = 15.0;
-        let row_h = (title_line_h * 3.0 + sub_line_h + if compact { 16.0 } else { 22.0 }).round();
+        let z = zoom.clamp(0.0, 1.0);
+        let title_size = (10.5 + z * 5.0).clamp(10.5, 16.0);
+        let title_line_h = (title_size * 1.25).ceil();
+        let sub_size = (9.0 + z * 3.5).clamp(9.0, 13.0);
+        let sub_line_h = (sub_size * 1.25).ceil();
+        let padding_vert = if compact { 8.0 + z * 10.0 } else { 12.0 + z * 24.0 };
+        let row_h = (title_line_h * 2.0 + sub_line_h + padding_vert + z * 56.0).round().clamp(48.0, 150.0);
         let padding = 12.0;
-        let gap = 8.0;
-        let min_card_w = (230.0 + zoom * 85.0).clamp(220.0, 330.0);
+        let gap = (6.0 + z * 10.0).round();
+        let min_card_w = (170.0 + z * 290.0).clamp(160.0, 520.0);
         let avail = (pane_w - padding * 2.0).max(min_card_w);
-        let cols = (((avail + gap) / (min_card_w + gap)).floor() as usize).clamp(1, 6);
+        let cols = (((avail + gap) / (min_card_w + gap)).floor() as usize).clamp(1, 8);
         let card_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .floor()
-            .max(200.0);
+            .max(150.0);
         (cols, card_w, row_h, gap, padding)
     }
 

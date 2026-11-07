@@ -108,7 +108,13 @@ $path = '{}'
             })
         } else {
             // Try alternative approach using explorer
-            let explorer_result = Command::new("explorer").args([&drive_path]).spawn();
+            let mut explorer_cmd = Command::new("explorer");
+            explorer_cmd.args([&drive_path]);
+            explorer_cmd
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let explorer_result = explorer_cmd.spawn();
 
             match explorer_result {
                 Ok(_) => Ok(FormatDriveResult {

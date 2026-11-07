@@ -331,7 +331,7 @@ impl MainViewState {
                                 .hovered_target_folder
                                 .clone();
                             let is_dragging_any = app_state.state.main_view.drag_state.is_dragging;
-                            let lod_fast = zoom < 0.22;
+                            let lod_fast = zoom < 0.08;
 
                             range
                                 .map(|row_idx| {
@@ -443,7 +443,7 @@ impl MainViewState {
         let show_extensions = self.show_extensions;
         let hovered_drop_folder = self.drag_state.hovered_target_folder.clone();
         let is_dragging_any = self.drag_state.is_dragging;
-        let lod_fast = zoom < 0.22;
+        let lod_fast = zoom < 0.08;
 
         let scroll_list = MainView::render_virtualized_grouped_list(
             match pane_focus {
@@ -704,7 +704,7 @@ impl MainViewState {
             (text_size - 2.2).max(8.5),
         );
 
-        // ── High-Density >120 FPS LOD Fast-Path (when zoom < 0.22) ──
+        // ── High-Density >120 FPS LOD Fast-Path (when zoom < 0.08) ──
         if lod_fast {
             let v_click = view.clone();
             let v_move = view.clone();

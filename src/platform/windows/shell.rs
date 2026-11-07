@@ -156,7 +156,12 @@ impl ContextMenuHost {
     fn do_open(&self, path: &FilesPath) -> Result<()> {
         use std::process::Command;
         let path_str = path.as_path().to_string_lossy();
-        Command::new("explorer").arg(path_str.as_ref()).spawn()?;
+        Command::new("explorer")
+            .arg(path_str.as_ref())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
         tracing::info!("Opened: {:?}", path);
         Ok(())
     }
@@ -244,6 +249,9 @@ impl ContextMenuHost {
         let path_str = path.as_path().to_string_lossy();
         Command::new("rundll32")
             .args(["shell32.dll,OpenAs_RunDLL", &path_str])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()?;
         tracing::info!("Open As dialog for: {:?}", path);
         Ok(())
