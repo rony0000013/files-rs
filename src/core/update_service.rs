@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 /// Information about a GitHub release.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReleaseInfo {
     /// Tag name like "v0.1.0"
     pub tag_name: String,
@@ -41,6 +41,8 @@ impl ReleaseInfo {
 
     /// Compare two semantic versions (simple dot-separated comparison).
     pub fn compare_versions(a: &str, b: &str) -> Ordering {
+        let a = a.strip_prefix('v').or_else(|| a.strip_prefix('V')).unwrap_or(a);
+        let b = b.strip_prefix('v').or_else(|| b.strip_prefix('V')).unwrap_or(b);
         let a_parts: Vec<u64> = a.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
         let b_parts: Vec<u64> = b.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
 
@@ -128,6 +130,10 @@ impl AppUpdateService {
         let output = std::process::Command::new("curl")
             .args([
                 "-sS",
+                "--connect-timeout",
+                "2",
+                "-m",
+                "3",
                 "-H",
                 "Accept: application/vnd.github+json",
                 "-H",

@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_remove_icon_when_not_visible() {
-        let mgr = SystemTrayManager::new();
+        let mut mgr = SystemTrayManager::new();
         // Should succeed even when icon is not visible
         assert!(mgr.remove_icon().is_ok());
     }

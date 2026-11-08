@@ -1861,6 +1861,7 @@ impl MainView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
     use crate::core::path_util::FilesPath;
     use crate::domain::metadata::FileItem;
     use crate::storage::storage::FileType;
@@ -2369,6 +2370,7 @@ mod tests {
                 is_system: false,
                 modified: None,
                 created: None,
+                tags: Vec::new(),
             },
         ];
         st.bump_items_revision();

@@ -5429,12 +5429,20 @@ impl AppWindow {
         // 2. Check if cursor is dragging out of the window boundary -> launch native OS drag-and-drop!
         let win_w = f32::from(self.state.last_window_size.width).max(400.0);
         let win_h = f32::from(self.state.last_window_size.height).max(300.0);
-        let near_outside =
-            pos.x <= 8.0 || pos.y <= 8.0 || pos.x >= win_w - 8.0 || pos.y >= win_h - 8.0;
+        let near_outside = pos.x <= 28.0
+            || pos.y <= 28.0
+            || pos.x >= win_w - 28.0
+            || pos.y >= win_h - 28.0
+            || pos.x < 0.0
+            || pos.y < 0.0
+            || pos.x > win_w
+            || pos.y > win_h;
         if near_outside && !self.state.main_view.drag_state.os_drag_dispatched {
             self.state.main_view.drag_state.os_drag_dispatched = true;
             let paths = self.state.main_view.drag_state.paths.clone();
-            crate::platform::windows::shell::start_native_os_file_drag(&paths, is_copy);
+            let hwnd = self.state.window_hwnd;
+            crate::platform::windows::shell::start_native_os_file_drag(&paths, is_copy, hwnd);
+            self.state.main_view.drag_state = crate::ui::views::types::DragState::default();
         }
 
         cx.notify();

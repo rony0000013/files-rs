@@ -813,6 +813,7 @@ pub fn zoom_mode_name(mode: &ViewMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
     use std::time::Duration;
 
     #[test]

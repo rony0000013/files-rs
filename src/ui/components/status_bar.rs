@@ -783,6 +783,7 @@ impl StatusBarView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
 
     #[test]
     fn test_status_bar_format_size() {

@@ -5,13 +5,58 @@ use std::process::Command;
 pub struct ClipboardService;
 
 impl ClipboardService {
+    pub fn copy_files(paths: &[FilesPath]) -> Result<()> {
+        #[cfg(windows)]
+        {
+            crate::platform::windows::shell::stage_hdrop_clipboard_files(paths, false)?;
+        }
+        #[cfg(not(windows))]
+        {
+            let text = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = Self::set_clipboard_text(&text);
+        }
+        Ok(())
+    }
+
+    pub fn cut_files(paths: &[FilesPath]) -> Result<()> {
+        #[cfg(windows)]
+        {
+            crate::platform::windows::shell::stage_hdrop_clipboard_files(paths, true)?;
+        }
+        #[cfg(not(windows))]
+        {
+            let text = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = Self::set_clipboard_text(&text);
+        }
+        Ok(())
+    }
+
+    pub fn get_clipboard_files() -> Option<(Vec<std::path::PathBuf>, bool)> {
+        #[cfg(windows)]
+        {
+            crate::platform::windows::shell::get_hdrop_clipboard_files()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     pub fn copy_path(path: &FilesPath) -> Result<()> {
-        Self::set_clipboard_text(&path.as_path().to_string_lossy());
+        let _ = Self::set_clipboard_text(&path.as_path().to_string_lossy());
         Ok(())
     }
 
     pub fn copy_path_quoted(path: &FilesPath) -> Result<()> {
-        Self::set_clipboard_text(&format!("\"{}\"", path.as_path().to_string_lossy()));
+        let _ = Self::set_clipboard_text(&format!("\"{}\"", path.as_path().to_string_lossy()));
         Ok(())
     }
 

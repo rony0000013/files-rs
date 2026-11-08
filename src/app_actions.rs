@@ -490,14 +490,14 @@ impl AppWindow {
             .iter()
             .copied()
             .collect();
-        let items: Vec<ClipboardItem> = indices
+        let paths: Vec<FilesPath> = indices
             .iter()
-            .filter_map(|&idx| {
-                active_view
-                    .items
-                    .get(idx)
-                    .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
-            })
+            .filter_map(|&idx| active_view.items.get(idx))
+            .map(|item| item.path.clone())
+            .collect();
+        let items: Vec<ClipboardItem> = paths
+            .iter()
+            .map(|p| ClipboardItem::new(p.as_path().to_path_buf()))
             .collect();
 
         if !items.is_empty() {
@@ -506,7 +506,17 @@ impl AppWindow {
             self.state.main_view.cut_paths = cut_set.clone();
             self.state.secondary_view.cut_paths = cut_set;
             self.state.clipboard = ClipboardState::Cut(items.clone());
-            tracing::info!("Cut {} items to clipboard", items.len());
+
+            // Stage cut files onto the system OS clipboard (CF_HDROP with DROPEFFECT_MOVE + CF_UNICODETEXT)
+            let _ = crate::core::clipboard_service::ClipboardService::cut_files(&paths);
+            let text_paths = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text_paths));
+
+            tracing::info!("Cut {} items to system clipboard", items.len());
         }
         cx.notify();
     }
@@ -520,19 +530,29 @@ impl AppWindow {
             .iter()
             .copied()
             .collect();
-        let items: Vec<ClipboardItem> = indices
+        let paths: Vec<FilesPath> = indices
             .iter()
-            .filter_map(|&idx| {
-                active_view
-                    .items
-                    .get(idx)
-                    .map(|item| ClipboardItem::new(item.path.as_path().to_path_buf()))
-            })
+            .filter_map(|&idx| active_view.items.get(idx))
+            .map(|item| item.path.clone())
+            .collect();
+        let items: Vec<ClipboardItem> = paths
+            .iter()
+            .map(|p| ClipboardItem::new(p.as_path().to_path_buf()))
             .collect();
 
         if !items.is_empty() {
             self.state.clipboard = ClipboardState::Copy(items.clone());
-            tracing::info!("Copied {} items to clipboard", items.len());
+
+            // Stage copy files onto the system OS clipboard (CF_HDROP with DROPEFFECT_COPY + CF_UNICODETEXT)
+            let _ = crate::core::clipboard_service::ClipboardService::copy_files(&paths);
+            let text_paths = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text_paths));
+
+            tracing::info!("Copied {} items to system clipboard", items.len());
         }
         cx.notify();
     }
@@ -636,6 +656,23 @@ impl AppWindow {
     }
 
     pub fn paste(&mut self, cx: &mut Context<Self>) {
+        // Query the OS clipboard first (supports items copied from Explorer, browsers, etc.)
+        if let Some((os_paths, is_move)) =
+            crate::core::clipboard_service::ClipboardService::get_clipboard_files()
+        {
+            if !os_paths.is_empty() {
+                let items: Vec<ClipboardItem> = os_paths
+                    .into_iter()
+                    .map(ClipboardItem::new)
+                    .collect();
+                self.state.clipboard = if is_move {
+                    ClipboardState::Cut(items)
+                } else {
+                    ClipboardState::Copy(items)
+                };
+            }
+        }
+
         let target_dir = self.state.active_view().primary_path.clone();
         let target_path = target_dir.as_path().to_path_buf();
 

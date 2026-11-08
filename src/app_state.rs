@@ -555,6 +555,7 @@ pub struct AppWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
 
     #[test]
     fn test_icon_cache_lru_cap_bounds_session_growth() {

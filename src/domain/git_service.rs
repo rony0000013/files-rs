@@ -486,7 +486,7 @@ mod tests {
         // Create an initial commit so we have a HEAD with a branch
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
         let tree_id = {
-            let index = repo.index().unwrap();
+            let mut index = repo.index().unwrap();
             let oid = index.write_tree().unwrap();
             repo.find_tree(oid).unwrap().id()
         };

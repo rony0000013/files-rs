@@ -767,6 +767,7 @@ impl StatusCenterToastView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
 
     fn sample_job(name: &str, status: OperationStatus) -> FileOperationJob {
         FileOperationJob {

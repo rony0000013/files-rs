@@ -150,6 +150,9 @@ impl NetworkLocationsService {
     /// Enumerate SMB shares using Windows APIs
     #[cfg(windows)]
     fn enumerate_smb_shares(&mut self) {
+        #[cfg(test)]
+        return;
+
         use std::process::Command;
 
         // Use net view to enumerate shares on the local network

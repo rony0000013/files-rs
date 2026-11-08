@@ -133,7 +133,7 @@ mod tests {
         let paths = vec![FilesPath::new(tmp.path().join("subdir"))];
         let results = batch_load_metadata(&paths);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1.unwrap().file_type, FileType::Directory);
+        assert_eq!(results[0].1.as_ref().unwrap().file_type, FileType::Directory);
     }
 
     #[test]

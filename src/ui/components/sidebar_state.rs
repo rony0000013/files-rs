@@ -1388,6 +1388,7 @@ mod tests {
             active_item: None,
             collapsed: false,
             width: 250.0,
+            ..Default::default()
         };
 
         // Test toggle section

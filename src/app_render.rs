@@ -17,7 +17,7 @@ use crate::ui::views::main_view::{ColumnWidths, MainView, MainViewState};
 use gpui::*;
 
 impl Render for AppWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Keep maximize/restore state synced with the actual OS window state
         // across Aero Snap, titlebar drag-down restore, and double-click maximize.
         if let Some(os_maximized) = crate::wallpaper_mica::is_main_hwnd_maximized() {
@@ -49,6 +49,39 @@ impl Render for AppWindow {
         self.state.last_window_size = live_size;
         self.state.last_window_origin = win_bounds.origin;
         self.state.last_scale_factor = window.scale_factor().max(0.5);
+
+        #[cfg(windows)]
+        if self.state.main_view.drag_state.is_dragging
+            && !self.state.main_view.drag_state.os_drag_dispatched
+            && self.state.window_hwnd != 0
+        {
+            if let Some((local, _screen, lbutton_down)) =
+                crate::ui::components::tab_interactions::query_os_cursor_and_lbutton(
+                    self.state.window_hwnd,
+                    window.scale_factor(),
+                )
+            {
+                if !lbutton_down {
+                    self.state.main_view.drag_state =
+                        crate::ui::views::types::DragState::default();
+                } else {
+                    let win_w = f32::from(live_size.width);
+                    let win_h = f32::from(live_size.height);
+                    let (x, y) = local;
+                    if x <= 28.0 || y <= 28.0 || x >= win_w - 28.0 || y >= win_h - 28.0 {
+                        self.state.main_view.drag_state.os_drag_dispatched = true;
+                        let paths = self.state.main_view.drag_state.paths.clone();
+                        let is_copy = self.state.main_view.drag_state.is_copy;
+                        let hwnd = self.state.window_hwnd;
+                        crate::platform::windows::shell::start_native_os_file_drag(
+                            &paths, is_copy, hwnd,
+                        );
+                        self.state.main_view.drag_state =
+                            crate::ui::views::types::DragState::default();
+                    }
+                }
+            }
+        }
         {
             let nav_read = self.state.navigation.read(cx);
             let tc = nav_read.tabs.tabs.len();
@@ -669,6 +702,7 @@ impl Render for AppWindow {
             && state.sidebar.anim_start_time.unwrap().elapsed()
                 < std::time::Duration::from_millis(200))
             || state.tab_drag.is_dragging
+            || state.main_view.drag_state.is_dragging
             || state.sidebar.bouncy_scroll.animating
             || state.main_view.bouncy_scroll.animating
             || state.secondary_view.bouncy_scroll.animating
@@ -1314,6 +1348,6 @@ impl Render for AppWindow {
             );
         }
 
-        base
+        base.into_any_element()
     }
 }

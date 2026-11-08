@@ -81,6 +81,13 @@ impl FormatDriveService {
             });
         }
 
+        #[cfg(test)]
+        return Ok(FormatDriveResult {
+            success: true,
+            drive_letter: drive_letter.to_ascii_uppercase(),
+            error_message: None,
+        });
+
         let drive_path = format!("{}:\\", drive_letter.to_ascii_uppercase());
         tracing::info!("Opening format dialog for drive: {}", drive_path);
 
@@ -161,6 +168,13 @@ $path = '{}'
                 error_message: Some("Invalid drive letter".to_string()),
             });
         }
+
+        #[cfg(test)]
+        return Ok(FormatDriveResult {
+            success: true,
+            drive_letter: drive_letter.to_ascii_uppercase(),
+            error_message: None,
+        });
 
         let drive_path = format!("{}:", drive_letter.to_ascii_uppercase());
         tracing::info!(

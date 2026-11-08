@@ -115,7 +115,7 @@ mod tests {
     fn test_mmap_read_at() {
         let tmp = TempDir::new().unwrap();
         let f = tmp.path().join("data.bin");
-        let content = (0..2000u8).collect::<Vec<_>>();
+        let content = (0..2000usize).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
         std::fs::write(&f, &content).unwrap();
         let reader = MmapPreviewReader::open(&f).unwrap();
         let slice = reader.read_at(10, 5);

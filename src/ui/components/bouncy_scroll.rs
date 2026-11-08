@@ -909,6 +909,7 @@ pub fn fluent_exit_ease(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
 
     #[test]
     fn test_fluent_cubic_bezier_curves() {
