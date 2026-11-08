@@ -527,6 +527,9 @@ pub struct UserPreferences {
     /// Show informative tooltips with shortcuts when hovering over buttons and commands
     #[serde(default = "default_true")]
     pub show_button_tooltips: bool,
+    /// When true, revert back to the original Windows classic Properties dialog instead of the modern redesigned Files properties panel.
+    #[serde(default)]
+    pub use_classic_properties_dialog: bool,
 }
 
 impl Default for UserPreferences {
@@ -562,6 +565,7 @@ impl Default for UserPreferences {
             enable_smooth_scrolling: true,
             reverse_tab_scroll_direction: false,
             show_button_tooltips: true,
+            use_classic_properties_dialog: false,
         }
     }
 }

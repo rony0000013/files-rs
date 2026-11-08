@@ -768,6 +768,9 @@ impl DialogsView {
                     .w(px(412.0))
                     .p(px(12.0));
             }
+            DialogType::CustomProperties { .. } => {
+                container = container.p(px(0.0)).overflow_hidden();
+            }
             _ => {
                 container = container
                     .w(px(400.0))

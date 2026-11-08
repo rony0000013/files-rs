@@ -21,6 +21,15 @@ impl ShellService {
         path: &FilesPath,
         hwnd: Option<isize>,
     ) -> Result<()> {
+        Self::open_properties_page_with_hwnd(path, None, hwnd)
+    }
+
+    /// Open properties targeting a specific parent HWND and optional property sheet tab name (e.g. "Security").
+    pub fn open_properties_page_with_hwnd(
+        path: &FilesPath,
+        page_name: Option<&str>,
+        hwnd: Option<isize>,
+    ) -> Result<()> {
         #[cfg(windows)]
         {
             let wide_path: Vec<u16> = path
@@ -29,6 +38,10 @@ impl ShellService {
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
+
+            let wide_page: Option<Vec<u16>> = page_name.map(|p| {
+                p.encode_utf16().chain(std::iter::once(0)).collect()
+            });
 
             let target_hwnd = hwnd
                 .filter(|&h| h != 0)
@@ -49,7 +62,10 @@ impl ShellService {
                     opt_hwnd,
                     windows::Win32::UI::Shell::SHOP_FILEPATH,
                     PCWSTR(wide_path.as_ptr()),
-                    PCWSTR::null(),
+                    wide_page
+                        .as_ref()
+                        .map(|w| PCWSTR(w.as_ptr()))
+                        .unwrap_or(PCWSTR::null()),
                 )
             };
 
@@ -67,6 +83,9 @@ impl ShellService {
                     sei.hwnd = target_hwnd;
                     sei.lpVerb = PCWSTR(wide_op.as_ptr());
                     sei.lpFile = PCWSTR(wide_path.as_ptr());
+                    if let Some(ref wp) = wide_page {
+                        sei.lpParameters = PCWSTR(wp.as_ptr());
+                    }
                     sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
 
                     let _ = ShellExecuteExW(&mut sei);
@@ -75,8 +94,180 @@ impl ShellService {
         }
         #[cfg(not(windows))]
         {
-            let _ = (path, hwnd);
+            let _ = (path, page_name, hwnd);
             tracing::warn!("open_properties is only implemented for Windows");
+        }
+        Ok(())
+    }
+
+    /// Open the native Windows Properties dialog for one or multiple selected files/folders.
+    /// When multiple items are provided, uses `IShellFolder::GetUIObjectOf::<IDataObject>` + `SHMultiFileProperties`.
+    pub fn open_multi_properties_with_hwnd(
+        paths: &[FilesPath],
+        hwnd: Option<isize>,
+    ) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        if paths.len() == 1 {
+            return Self::open_properties_with_hwnd(&paths[0], hwnd);
+        }
+
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Com::{
+                CoInitializeEx, CoTaskMemFree, CoUninitialize, IDataObject,
+                COINIT_APARTMENTTHREADED,
+            };
+            use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+            use windows::Win32::UI::Shell::{
+                ILClone, ILFindLastID, IShellFolder, SHBindToParent, SHMultiFileProperties,
+                SHParseDisplayName,
+            };
+
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                let mut opened = false;
+                if let Some(first) = paths.first() {
+                    if let Some(parent_dir) = first.as_path().parent() {
+                        let dir_w: Vec<u16> = parent_dir
+                            .as_os_str()
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let mut dir_pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+                        if SHParseDisplayName(PCWSTR(dir_w.as_ptr()), None, &mut dir_pidl, 0, None)
+                            .is_ok()
+                            && !dir_pidl.is_null()
+                        {
+                            let mut last_rel: *mut ITEMIDLIST = std::ptr::null_mut();
+                            if let Ok(parent_sf) =
+                                SHBindToParent::<IShellFolder>(dir_pidl, Some(&mut last_rel))
+                            {
+                                if let Ok(folder) =
+                                    parent_sf.BindToObject::<_, IShellFolder>(last_rel, None)
+                                {
+                                    let mut child_pidls: Vec<*const ITEMIDLIST> = Vec::new();
+                                    for p in paths {
+                                        if p.as_path().parent() != Some(parent_dir) {
+                                            continue;
+                                        }
+                                        let pw: Vec<u16> = p
+                                            .as_path()
+                                            .as_os_str()
+                                            .encode_wide()
+                                            .chain(std::iter::once(0))
+                                            .collect();
+                                        let mut full: *mut ITEMIDLIST = std::ptr::null_mut();
+                                        if SHParseDisplayName(
+                                            PCWSTR(pw.as_ptr()),
+                                            None,
+                                            &mut full,
+                                            0,
+                                            None,
+                                        )
+                                        .is_ok()
+                                            && !full.is_null()
+                                        {
+                                            let rel = ILFindLastID(full);
+                                            if !rel.is_null() {
+                                                let owned = ILClone(rel);
+                                                if !owned.is_null() {
+                                                    child_pidls.push(owned);
+                                                }
+                                            }
+                                            CoTaskMemFree(Some(full as *const _ as _));
+                                        }
+                                    }
+                                    if !child_pidls.is_empty() {
+                                        let target_hwnd = hwnd
+                                            .filter(|&h| h != 0)
+                                            .map(|h| windows::Win32::Foundation::HWND(h as *mut _))
+                                            .unwrap_or_else(|| {
+                                                windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                                            });
+                                        if let Ok(data_obj) = folder
+                                            .GetUIObjectOf::<IDataObject>(
+                                                target_hwnd,
+                                                &child_pidls,
+                                                None,
+                                            )
+                                        {
+                                            opened = SHMultiFileProperties(&data_obj, 0).is_ok();
+                                        }
+                                    }
+                                    for pidl in child_pidls {
+                                        CoTaskMemFree(Some(pidl as *const _ as _));
+                                    }
+                                }
+                            }
+                            CoTaskMemFree(Some(dir_pidl as *const _ as _));
+                        }
+                    }
+                }
+                CoUninitialize();
+                if !opened {
+                    let _ = Self::open_properties_with_hwnd(&paths[0], hwnd);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (paths, hwnd);
+        }
+        Ok(())
+    }
+
+    /// Open the native Windows "Open With" application picker dialog (`Change...` in General properties).
+    pub fn open_with_dialog(path: &FilesPath, hwnd: Option<isize>) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let wide_file: Vec<u16> = "rundll32.exe"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let params = format!(
+                "shell32.dll,OpenAs_RunDLL {}",
+                path.as_path().to_string_lossy()
+            );
+            let wide_params: Vec<u16> = params
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let target_hwnd = hwnd
+                .filter(|&h| h != 0)
+                .map(|h| windows::Win32::Foundation::HWND(h as *mut _))
+                .unwrap_or_default();
+
+            unsafe {
+                let mut sei = SHELLEXECUTEINFOW::default();
+                sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+                sei.hwnd = target_hwnd;
+                sei.lpFile = PCWSTR(wide_file.as_ptr());
+                sei.lpParameters = PCWSTR(wide_params.as_ptr());
+                sei.nShow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0;
+                let _ = ShellExecuteExW(&mut sei);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (path, hwnd);
+        }
+        Ok(())
+    }
+
+    /// Launch Windows Disk Cleanup (`cleanmgr.exe`) for a given drive root (e.g. `C:\`).
+    pub fn cleanup_drive(drive_root: &str) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let letter = drive_root.chars().next().unwrap_or('C');
+            let _ = std::process::Command::new("cleanmgr.exe")
+                .args(["/d", &format!("{}:", letter)])
+                .spawn();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = drive_root;
         }
         Ok(())
     }

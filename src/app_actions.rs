@@ -2170,6 +2170,20 @@ impl AppWindow {
         });
     }
 
+    /// Switch between the modern redesigned Files Properties panel and the original Windows classic Properties dialog.
+    pub fn set_use_classic_properties_dialog(
+        &mut self,
+        use_classic: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = self.state.settings.clone();
+        settings.update(cx, |s, _cx| {
+            s.config.preferences.use_classic_properties_dialog = use_classic;
+            let _ = s.config.save();
+        });
+        cx.notify();
+    }
+
     pub fn toggle_setting(&mut self, key: &str, cx: &mut Context<Self>) {
         // Handle toolbar button visibility toggles (stored in main_view, not config)
         if key.starts_with("toolbar_") {
@@ -2296,6 +2310,10 @@ impl AppWindow {
                 "show_button_tooltips" => {
                     s.config.preferences.show_button_tooltips =
                         !s.config.preferences.show_button_tooltips
+                }
+                "use_classic_properties_dialog" => {
+                    s.config.preferences.use_classic_properties_dialog =
+                        !s.config.preferences.use_classic_properties_dialog
                 }
                 "show_file_extension_warning" => {
                     s.config.preferences.show_file_extension_warning =

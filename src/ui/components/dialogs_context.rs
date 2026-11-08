@@ -220,14 +220,13 @@ impl crate::ui::components::dialogs::DialogsView {
                     });
                 });
                 let v = v_props.clone();
-                let path = selected_path.clone();
                 let props_btn: Box<
                     dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
                 > = Box::new(move |_, _, cx| {
-                    if let Some(ref p) = path {
-                        let _ = crate::platform::windows::shell_service::ShellService::open_properties_sync(p);
-                    }
-                    v.update(cx, |this, cx| this.close_dialog(cx));
+                    v.update(cx, |this, cx| {
+                        this.close_dialog(cx);
+                        this.open_properties_for_selected(cx);
+                    });
                 });
                 fixed_header = Some(
                     div()
@@ -654,6 +653,18 @@ impl crate::ui::components::dialogs::DialogsView {
                     v.update(cx, |this, cx| {
                         this.open_terminal_at_current(cx);
                         this.close_dialog(cx);
+                    });
+                }
+            }).into_any_element());
+            items_acc_h += 32.0;
+
+            // Properties (Alt+Enter) for current folder
+            items.push(Self::context_menu_row("\u{E713}", "Properties", MenuTrailing::Hint("Alt+Enter"), {
+                let v = v_close.clone();
+                move |_, _, cx| {
+                    v.update(cx, |this, cx| {
+                        this.close_dialog(cx);
+                        this.open_properties_for_selected(cx);
                     });
                 }
             }).into_any_element());
@@ -1556,6 +1567,23 @@ impl crate::ui::components::dialogs::DialogsView {
                                     this.state.sidebar.enter_reorder_mode();
                                     this.close_dialog(cx);
                                 });
+                            },
+                        ))
+                        .child(Self::context_menu_item(
+                            "\u{E713}",
+                            "Properties",
+                            {
+                                let v_props = view.clone();
+                                let p_props = path.clone();
+                                move |_, _, cx| {
+                                    if let Some(ref p) = p_props {
+                                        let path_buf = std::path::PathBuf::from(p);
+                                        v_props.update(cx, |this, cx| {
+                                            this.close_dialog(cx);
+                                            this.open_properties_for_paths(vec![path_buf], cx);
+                                        });
+                                    }
+                                }
                             },
                         ));
                 }

@@ -555,6 +555,7 @@ impl crate::ui::components::dialogs::DialogsView {
             ("Widgets (Quick Access, Drives, Tags, Recent Files)", "General › Widgets", SettingsTab::General, Some("general_widgets")),
             ("Dual pane mode & split direction", "General › Dual Pane", SettingsTab::General, None),
             ("Right-click context menu options", "General › Context Menu", SettingsTab::General, Some("general_context_menu")),
+            ("Properties dialog style (Files modern vs Windows classic)", "General › Properties dialog", SettingsTab::General, None),
             ("Smooth scrolling & tab wheel direction", "General › Scrolling", SettingsTab::General, None),
             ("Theme (Dark, Light, System)", "Appearance › Theme", SettingsTab::Appearance, None),
             ("Backdrop material (Mica Alt, Mica, Acrylic)", "Appearance › Backdrop material", SettingsTab::Appearance, None),
@@ -979,7 +980,7 @@ impl crate::ui::components::dialogs::DialogsView {
             .into_any_element(),
         ];
 
-        div()
+        let mut page = div()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -1034,7 +1035,9 @@ impl crate::ui::components::dialogs::DialogsView {
                 None,
                 widgets_items,
                 view.clone(),
-            ))
+            ));
+
+        page = page
             // Dual Pane
             .child(Self::settings_section_heading("Dual Pane"))
             .child(Self::settings_card(
@@ -1091,7 +1094,9 @@ impl crate::ui::components::dialogs::DialogsView {
                             }
                         },
                     )),
-            ))
+            ));
+
+        page
             // Right-Click Menu
             .child(Self::settings_section_heading("Right-click menu"))
             .child(Self::settings_card(
@@ -1161,6 +1166,41 @@ impl crate::ui::components::dialogs::DialogsView {
                     "move_shell_extensions_to_submenu",
                     view.clone(),
                 ),
+            ))
+            // Properties Dialog
+            .child(Self::settings_section_heading("Properties dialog"))
+            .child(Self::settings_card(
+                Some("\u{E946}"),
+                "Properties dialog style",
+                Some("Choose between the modern redesigned Files properties panel or revert to the original Windows properties dialog"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(4.0))
+                    .child(Self::build_compact_btn(
+                        "Files modern",
+                        !config.preferences.use_classic_properties_dialog,
+                        {
+                            let v = view.clone();
+                            move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    this.set_use_classic_properties_dialog(false, cx);
+                                });
+                            }
+                        },
+                    ))
+                    .child(Self::build_compact_btn(
+                        "Windows classic (Original)",
+                        config.preferences.use_classic_properties_dialog,
+                        {
+                            let v = view.clone();
+                            move |_, _, cx| {
+                                v.update(cx, |this, cx| {
+                                    this.set_use_classic_properties_dialog(true, cx);
+                                });
+                            }
+                        },
+                    )),
             ))
             // Scrolling
             .child(Self::settings_section_heading("Scrolling"))

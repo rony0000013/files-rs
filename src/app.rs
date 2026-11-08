@@ -1221,6 +1221,133 @@ impl AppWindow {
             }
         }
 
+        // Intercept CustomProperties dialog input typing & keyboard shortcuts
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::CustomProperties { .. })
+        ) {
+            let key = keystroke.key.as_str();
+            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+            if key == "escape" || key == "Escape" {
+                let mut had_focus = false;
+                if let Some(DialogType::CustomProperties { ref mut state }) =
+                    self.state.active_dialog
+                {
+                    if state.focused_input.is_some() {
+                        state.focused_input = None;
+                        had_focus = true;
+                    }
+                }
+                if had_focus {
+                    cx.notify();
+                } else {
+                    self.close_dialog(cx);
+                }
+                return;
+            }
+
+            if key == "enter" || key == "return" || key == "Enter" || key == "Return" {
+                let in_hash_compare = matches!(
+                    self.state.active_dialog,
+                    Some(DialogType::CustomProperties { ref state })
+                        if state.focused_input
+                            == Some(crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField::HashCompare)
+                );
+                if !in_hash_compare {
+                    self.save_and_close_properties_dialog(cx);
+                }
+                return;
+            }
+
+            if let Some(DialogType::CustomProperties { ref mut state }) =
+                self.state.active_dialog
+            {
+                if let Some(field) = state.focused_input {
+                    use crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField;
+
+                    let buf: &mut String = match field {
+                        PropertiesInputField::ItemName => &mut state.edited_name,
+                        PropertiesInputField::HashCompare => &mut state.hash_compare_input,
+                        PropertiesInputField::ShortcutTarget => &mut state.shortcut.target_path,
+                        PropertiesInputField::ShortcutArgs => &mut state.shortcut.arguments,
+                        PropertiesInputField::ShortcutWorkingDir => &mut state.shortcut.working_dir,
+                        PropertiesInputField::ShortcutComment => &mut state.shortcut.comment,
+                        PropertiesInputField::CustomIconPath => {
+                            state
+                                .customization
+                                .folder_icon_path
+                                .get_or_insert_with(String::new)
+                        }
+                    };
+
+                    if is_ctrl {
+                        match key {
+                            "c" | "C" => {
+                                if !buf.is_empty() {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        buf.clone(),
+                                    ));
+                                }
+                            }
+                            "v" | "V" => {
+                                if let Some(clip) =
+                                    cx.read_from_clipboard().and_then(|c| c.text())
+                                {
+                                    let clean: String = clip
+                                        .chars()
+                                        .filter(|c| !['\r', '\n'].contains(c))
+                                        .collect();
+                                    buf.push_str(&clean);
+                                    cx.notify();
+                                }
+                            }
+                            "u" | "U" => {
+                                buf.clear();
+                                cx.notify();
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
+
+                    match key {
+                        "backspace" | "Backspace" => {
+                            buf.pop();
+                            cx.notify();
+                            return;
+                        }
+                        "space" | "Space" => {
+                            buf.push(' ');
+                            cx.notify();
+                            return;
+                        }
+                        _ => {
+                            let ch_str = keystroke.key_char.as_deref().unwrap_or(key);
+                            if !keystroke.modifiers.control
+                                && !keystroke.modifiers.alt
+                                && !keystroke.modifiers.platform
+                                && ch_str.chars().count() == 1
+                            {
+                                let ch = ch_str.chars().next().unwrap_or('\0');
+                                if !ch.is_control() {
+                                    if field == PropertiesInputField::ItemName
+                                        && ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+                                            .contains(&ch)
+                                    {
+                                        return;
+                                    }
+                                    buf.push(ch);
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Intercept AddItem dialog input typing
         if let Some(DialogType::AddItem {
             ref mut name,
@@ -1984,32 +2111,223 @@ impl AppWindow {
         }
     }
 
-    /// Open the Properties dialog for the currently selected item (Alt+Enter).
+    /// Open the Properties dialog for the currently selected item(s) or current folder (Alt+Enter).
     pub fn open_properties_for_selected(&mut self, cx: &mut Context<Self>) {
         let pane_focus = self.state.active_pane_focus();
-        let item_opt = self
+        let mut indices: Vec<usize> = self
             .state
             .pane_view(pane_focus)
             .selected_indices
             .iter()
-            .next()
-            .and_then(|&idx| self.state.pane_view(pane_focus).items.get(idx))
-            .cloned();
-        if let Some(item) = item_opt {
+            .copied()
+            .collect();
+        indices.sort_unstable();
+
+        let paths: Vec<std::path::PathBuf> = if indices.is_empty() {
+            vec![
+                self.state
+                    .pane_view(pane_focus)
+                    .primary_path
+                    .as_path()
+                    .to_path_buf(),
+            ]
+        } else {
+            let items = &self.state.pane_view(pane_focus).items;
+            indices
+                .into_iter()
+                .filter_map(|idx| items.get(idx).map(|it| it.path.as_path().to_path_buf()))
+                .collect()
+        };
+
+        if !paths.is_empty() {
+            self.open_properties_for_paths(paths, cx);
+        }
+    }
+
+    /// Open Properties for a specific list of file/folder paths, respecting the user's
+    /// `use_classic_properties_dialog` preference and supporting both single and multi-item selection.
+    pub fn open_properties_for_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let use_classic = self
+            .state
+            .settings
+            .read(cx)
+            .config()
+            .preferences
+            .use_classic_properties_dialog;
+
+        if use_classic {
             #[cfg(windows)]
             {
-                let path = item.path.clone();
+                let files_paths: Vec<FilesPath> =
+                    paths.iter().map(FilesPath::new).collect();
                 let hwnd = self.state.window_hwnd;
                 cx.background_executor()
                     .spawn(async move {
-                        let _ = crate::platform::windows::shell_service::ShellService::open_properties_with_hwnd(&path, Some(hwnd));
+                        let _ = crate::platform::windows::shell_service::ShellService::open_multi_properties_with_hwnd(
+                            &files_paths,
+                            Some(hwnd),
+                        );
+                    })
+                    .detach();
+                return;
+            }
+        }
+
+        self.open_modern_properties_for_paths(paths, cx);
+    }
+
+    /// Open the modern redesigned Files-community Properties dialog for one or more paths,
+    /// spawning non-blocking background tasks for recursive folder size and streaming file hashes.
+    pub fn open_modern_properties_for_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::ui::dialog_services::custom_properties_dialog::{
+            CustomPropertiesState, build_details_sections_multi, build_details_sections_single,
+            compute_file_hashes, compute_selection_sizes,
+        };
+
+        let mut prop_state = CustomPropertiesState::from_paths(paths.clone());
+
+        if paths.len() == 1 && !prop_state.is_dir && !prop_state.is_drive {
+            let fp = FilesPath::new(&prop_state.path);
+            if let Ok(mut cache) = self.state.icon_cache.lock() {
+                prop_state.thumbnail_path = cache.get(&fp).cloned();
+            }
+            if prop_state.thumbnail_path.is_none() {
+                prop_state.thumbnail_path = self.state.thumbnail_cache.get(&fp);
+            }
+        }
+
+        let need_size = prop_state.calculating_size;
+        let need_hashes = prop_state.loading_hashes;
+        let primary_path = prop_state.path.clone();
+
+        self.state.active_dialog = Some(DialogType::CustomProperties {
+            state: Box::new(prop_state),
+        });
+        cx.notify();
+
+        if need_size {
+            let paths_for_size = paths.clone();
+            cx.spawn(async move |this, cx| {
+                let (total_size, total_disk, files_count, folders_count) = cx
+                    .background_executor()
+                    .spawn(async move { compute_selection_sizes(&paths_for_size) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(DialogType::CustomProperties { ref mut state }) =
+                        this.state.active_dialog
+                    {
+                        if state.paths == paths {
+                            state.size = total_size;
+                            state.size_on_disk = total_disk;
+                            state.files_count = files_count;
+                            state.folders_count = folders_count;
+                            state.calculating_size = false;
+                            state.details_sections = if state.is_multi() {
+                                build_details_sections_multi(state)
+                            } else {
+                                build_details_sections_single(state)
+                            };
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
+
+        if need_hashes {
+            let path_for_hash = primary_path.clone();
+            cx.spawn(async move |this, cx| {
+                let hashes_res = cx
+                    .background_executor()
+                    .spawn(async move { compute_file_hashes(&path_for_hash) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(DialogType::CustomProperties { ref mut state }) =
+                        this.state.active_dialog
+                    {
+                        if state.path == primary_path {
+                            match hashes_res {
+                                Ok(hashes) => state.hashes = hashes,
+                                Err(err) => state.error = Some(err),
+                            }
+                            state.loading_hashes = false;
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Apply any pending edits in the modern Properties dialog (rename, attributes, shortcut,
+    /// folder icon, compatibility flags) and close the dialog.
+    pub fn save_and_close_properties_dialog(&mut self, cx: &mut Context<Self>) {
+        let apply_res = if let Some(DialogType::CustomProperties { ref state }) =
+            self.state.active_dialog
+        {
+            Some(state.apply_changes())
+        } else {
+            None
+        };
+
+        if let Some(res) = apply_res {
+            if let Err(err_msg) = res {
+                if let Some(DialogType::CustomProperties { ref mut state }) =
+                    self.state.active_dialog
+                {
+                    state.error = Some(err_msg);
+                    cx.notify();
+                }
+                return;
+            }
+            self.close_dialog(cx);
+            self.refresh(cx);
+        }
+    }
+
+    /// Switch from the modern Properties dialog directly to the classic Windows Properties dialog
+    /// for the same single or multi-item selection.
+    pub fn open_classic_properties_from_dialog(&mut self, cx: &mut Context<Self>) {
+        let paths_opt = if let Some(DialogType::CustomProperties { ref state }) =
+            self.state.active_dialog
+        {
+            Some(state.paths.clone())
+        } else {
+            None
+        };
+
+        if let Some(paths) = paths_opt {
+            self.close_dialog(cx);
+            #[cfg(windows)]
+            {
+                let files_paths: Vec<FilesPath> =
+                    paths.iter().map(FilesPath::new).collect();
+                let hwnd = self.state.window_hwnd;
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = crate::platform::windows::shell_service::ShellService::open_multi_properties_with_hwnd(
+                            &files_paths,
+                            Some(hwnd),
+                        );
                     })
                     .detach();
             }
             #[cfg(not(windows))]
             {
-                self.state.active_dialog = Some(DialogType::Properties { item });
-                cx.notify();
+                let _ = paths;
             }
         }
     }
@@ -6202,43 +6520,7 @@ impl AppWindow {
                 this.state.nav_bar.omnibar_mode = OmnibarMode::Path;
 
                 if alt {
-                    let md = std::fs::metadata(path.as_path()).ok();
-                    let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                    let size = if is_dir {
-                        0
-                    } else {
-                        md.as_ref().map(|m| m.len()).unwrap_or(0)
-                    };
-                    let item = FileItem {
-                        name: NavigationBarState::crumb_display_name(&path),
-                        path: path.clone(),
-                        file_type: if is_dir {
-                            FileType::Directory
-                        } else {
-                            FileType::File
-                        },
-                        size,
-                        is_hidden: false,
-                        is_system: false,
-                        modified: md.as_ref().and_then(|m| m.modified().ok()),
-                        created: md.as_ref().and_then(|m| m.created().ok()),
-                        tags: Vec::new(),
-                    };
-                    #[cfg(windows)]
-                    {
-                        let hwnd = this.state.window_hwnd;
-                        cx.background_executor()
-                            .spawn(async move {
-                                let _ = crate::platform::windows::shell_service::ShellService::open_properties_with_hwnd(&path, Some(hwnd));
-                            })
-                            .detach();
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        this.state.active_dialog =
-                            Some(crate::ui::components::dialogs::DialogType::Properties { item });
-                        cx.notify();
-                    }
+                    this.open_properties_for_paths(vec![path.as_path().to_path_buf()], cx);
                 } else if shift {
                     let dir = if path.as_path().is_file() {
                         path.parent().unwrap_or_else(|| path.clone())
