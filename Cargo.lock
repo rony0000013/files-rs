@@ -2611,6 +2611,7 @@ dependencies = [
  "walkdir",
  "window-vibrancy",
  "windows 0.62.2",
+ "windows-core 0.62.2",
  "winreg",
  "zip 9.0.5",
 ]

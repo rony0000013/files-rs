@@ -367,6 +367,7 @@ impl AppWindow {
         self.state.sidebar.resize_start_width = None;
         self.state.sidebar.drag_section_idx = None;
         self.state.sidebar.drag_item = None;
+        self.state.main_view.drag_state = crate::ui::views::types::DragState::default();
         // Tab strip drag: preserve scroll position, drop the drag and clear cross-window previews.
         self.clear_external_drop_preview_on_target(cx);
         self.state.tab_drag.clear_drag_only();
@@ -5429,23 +5430,57 @@ impl AppWindow {
         // 2. Check if cursor is dragging out of the window boundary -> launch native OS drag-and-drop!
         let win_w = f32::from(self.state.last_window_size.width).max(400.0);
         let win_h = f32::from(self.state.last_window_size.height).max(300.0);
-        let near_outside = pos.x <= 28.0
-            || pos.y <= 28.0
-            || pos.x >= win_w - 28.0
-            || pos.y >= win_h - 28.0
-            || pos.x < 0.0
-            || pos.y < 0.0
-            || pos.x > win_w
-            || pos.y > win_h;
+        let near_outside = pos.x <= 8.0
+            || pos.y <= 8.0
+            || pos.x >= win_w - 8.0
+            || pos.y >= win_h - 8.0;
         if near_outside && !self.state.main_view.drag_state.os_drag_dispatched {
-            self.state.main_view.drag_state.os_drag_dispatched = true;
-            let paths = self.state.main_view.drag_state.paths.clone();
-            let hwnd = self.state.window_hwnd;
-            crate::platform::windows::shell::start_native_os_file_drag(&paths, is_copy, hwnd);
-            self.state.main_view.drag_state = crate::ui::views::types::DragState::default();
+            self.dispatch_native_os_file_drag(cx);
+            return;
         }
 
         cx.notify();
+    }
+
+    /// Defer native OS drag-and-drop (`SHDoDragDrop`) onto the next main-thread message loop turn
+    /// so all GPUI `AppCell`, `Window`, and `WindowsWindowInner` borrows have completely unwound
+    /// before the modal OLE drag loop runs.
+    pub fn dispatch_native_os_file_drag(&mut self, cx: &mut Context<Self>) {
+        if self.state.main_view.drag_state.os_drag_dispatched {
+            return;
+        }
+        let paths = self.state.main_view.drag_state.paths.clone();
+        if paths.is_empty() {
+            return;
+        }
+        let is_copy = self.state.main_view.drag_state.is_copy;
+        let hwnd = self.state.window_hwnd;
+
+        self.state.main_view.drag_state = crate::ui::views::types::DragState::default();
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let dropped = crate::platform::windows::shell::start_native_os_file_drag(
+                &paths, is_copy, hwnd,
+            );
+            let elevated = !dropped && crate::platform::windows::shell::is_process_elevated();
+            let _ = this.update(cx, |this, cx| {
+                if dropped {
+                    this.refresh(cx);
+                } else {
+                    if elevated {
+                        this.state.status_center.push_notification(
+                            "Drag & Drop Blocked by Admin Mode".to_string(),
+                            "Files is running as Administrator. Windows UIPI blocks drag-and-drop to standard apps (Explorer, Taskbar, Browsers). Restart without Admin privileges.".to_string(),
+                            crate::ui::components::status_center::ToastSeverity::Warning,
+                            None,
+                        );
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Execute a file/folder transfer (Copy, Move, or Shortcut) from drag-and-drop or external drop.

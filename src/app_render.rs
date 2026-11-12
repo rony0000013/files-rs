@@ -51,7 +51,9 @@ impl Render for AppWindow {
         self.state.last_scale_factor = window.scale_factor().max(0.5);
 
         #[cfg(windows)]
-        if self.state.main_view.drag_state.is_dragging
+        if (self.state.main_view.drag_state.is_dragging
+            || self.state.main_view.drag_state.pending_candidate.is_some()
+            || self.state.main_view.drag_state.pending_path_candidate.is_some())
             && !self.state.main_view.drag_state.os_drag_dispatched
             && self.state.window_hwnd != 0
         {
@@ -65,19 +67,23 @@ impl Render for AppWindow {
                     self.state.main_view.drag_state =
                         crate::ui::views::types::DragState::default();
                 } else {
-                    let win_w = f32::from(live_size.width);
-                    let win_h = f32::from(live_size.height);
-                    let (x, y) = local;
-                    if x <= 28.0 || y <= 28.0 || x >= win_w - 28.0 || y >= win_h - 28.0 {
-                        self.state.main_view.drag_state.os_drag_dispatched = true;
-                        let paths = self.state.main_view.drag_state.paths.clone();
-                        let is_copy = self.state.main_view.drag_state.is_copy;
-                        let hwnd = self.state.window_hwnd;
-                        crate::platform::windows::shell::start_native_os_file_drag(
-                            &paths, is_copy, hwnd,
+                    if !self.state.main_view.drag_state.is_dragging {
+                        self.update_file_drag_move(
+                            gpui::point(local.0, local.1),
+                            gpui::Modifiers::default(),
+                            None,
+                            cx,
                         );
-                        self.state.main_view.drag_state =
-                            crate::ui::views::types::DragState::default();
+                    }
+                    if self.state.main_view.drag_state.is_dragging
+                        && !self.state.main_view.drag_state.os_drag_dispatched
+                    {
+                        let win_w = f32::from(live_size.width);
+                        let win_h = f32::from(live_size.height);
+                        let (x, y) = local;
+                        if x <= 8.0 || y <= 8.0 || x >= win_w - 8.0 || y >= win_h - 8.0 {
+                            self.dispatch_native_os_file_drag(cx);
+                        }
                     }
                 }
             }
@@ -498,17 +504,6 @@ impl Render for AppWindow {
                                                             this.update_column_resize(x);
                                                             cx.notify();
                                                         }
-                                                        // Track file drag movement & out-of-window OS drag handoff
-                                                        if this.state.main_view.drag_state.is_dragging
-                                                            || this.state.main_view.drag_state.pending_candidate.is_some()
-                                                            || this.state.main_view.drag_state.pending_path_candidate.is_some()
-                                                        {
-                                                            let pos = gpui::point(
-                                                                event.position.x.into(),
-                                                                event.position.y.into(),
-                                                            );
-                                                            this.update_file_drag_move(pos, event.modifiers, None, cx);
-                                                        }
                                                     });
                                                 }
                                             })
@@ -732,11 +727,24 @@ impl Render for AppWindow {
 
         let mut base = {
             let view_drop = cx.entity();
+            let view_drag_move = cx.entity();
             div()
                 .id("app-root-drop-surface")
                 .relative()
                 .w(live_size.width)
                 .h(live_size.height)
+                .on_mouse_move(move |event, _win, cx| {
+                    let pos = gpui::point(event.position.x.into(), event.position.y.into());
+                    let mods = event.modifiers;
+                    view_drag_move.update(cx, |this, cx| {
+                        if this.state.main_view.drag_state.is_dragging
+                            || this.state.main_view.drag_state.pending_candidate.is_some()
+                            || this.state.main_view.drag_state.pending_path_candidate.is_some()
+                        {
+                            this.update_file_drag_move(pos, mods, None, cx);
+                        }
+                    });
+                })
                 .on_drop(move |paths: &gpui::ExternalPaths, _win, cx| {
                     let dropped: Vec<std::path::PathBuf> = paths.paths().to_vec();
                     view_drop.update(cx, |this, cx| {

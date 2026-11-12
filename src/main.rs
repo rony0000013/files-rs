@@ -9,7 +9,7 @@ use gpui::*;
 use std::sync::Arc;
 
 fn main() {
-    files_rs::core::logger::Logger::init();
+    let _logger = files_rs::core::logger::Logger::init();
 
     let db_path = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -89,33 +89,36 @@ fn main() {
 
         cx.open_window(opts, move |window, cx| {
             #[cfg(windows)]
-            if mica_enabled {
-                if mica_alt {
-                    if let Err(e) = window_vibrancy::apply_tabbed(&*window, Some(true)) {
-                        tracing::error!("apply_tabbed (MicaAlt) failed: {:?}", e);
-                    } else {
-                        tracing::info!("apply_tabbed (MicaAlt) applied");
-                    }
-                } else if let Err(e) = window_vibrancy::apply_mica(&*window, Some(true)) {
-                    tracing::error!("apply_mica failed: {:?}", e);
-                } else {
-                    tracing::info!("apply_mica applied");
-                }
-                // In-app Mica: last run's blurred wallpaper shows instantly;
-                // a background thread keeps it fresh on wallpaper change.
-                // Position tracking is free: the renderer slides the blur
-                // per-frame from the live window bounds (zero regen).
-                files_rs::wallpaper_mica::prime();
-                std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
-                std::thread::spawn(files_rs::wallpaper_mica::watch_source);
-                // Remember the HWND for out-of-band OS repaint requests.
-                {
-                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                    if let Ok(h) = window.window_handle() {
-                        if let RawWindowHandle::Win32(w) = h.as_raw() {
-                            files_rs::wallpaper_mica::set_main_hwnd(w.hwnd.get() as isize);
+            {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                if let Ok(h) = window.window_handle() {
+                    if let RawWindowHandle::Win32(w) = h.as_raw() {
+                        let hwnd_raw = w.hwnd.get() as isize;
+                        files_rs::platform::windows::shell::apply_window_icon(hwnd_raw);
+                        if mica_enabled {
+                            files_rs::wallpaper_mica::set_main_hwnd(hwnd_raw);
                         }
                     }
+                }
+                if mica_enabled {
+                    if mica_alt {
+                        if let Err(e) = window_vibrancy::apply_tabbed(&*window, Some(true)) {
+                            tracing::error!("apply_tabbed (MicaAlt) failed: {:?}", e);
+                        } else {
+                            tracing::info!("apply_tabbed (MicaAlt) applied");
+                        }
+                    } else if let Err(e) = window_vibrancy::apply_mica(&*window, Some(true)) {
+                        tracing::error!("apply_mica failed: {:?}", e);
+                    } else {
+                        tracing::info!("apply_mica applied");
+                    }
+                    // In-app Mica: last run's blurred wallpaper shows instantly;
+                    // a background thread keeps it fresh on wallpaper change.
+                    // Position tracking is free: the renderer slides the blur
+                    // per-frame from the live window bounds (zero regen).
+                    files_rs::wallpaper_mica::prime();
+                    std::thread::spawn(files_rs::wallpaper_mica::ensure_async);
+                    std::thread::spawn(files_rs::wallpaper_mica::watch_source);
                 }
             }
             let rx = progress.subscribe();

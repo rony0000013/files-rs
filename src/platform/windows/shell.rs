@@ -319,50 +319,43 @@ impl ContextMenuHost {
     }
 }
 
-/// Shared CF_HDROP clipboard staging for cut/copy and native OS drag.
+/// Build a `CF_HDROP` (`DROPFILES` + UTF-16 null-separated paths + double null terminator)
+/// `HGLOBAL` suitable for clipboard or OLE `IDataObject` transfer.
 #[cfg(windows)]
-pub fn stage_hdrop_clipboard_files(paths: &[FilesPath], is_move: bool) -> Result<()> {
+unsafe fn build_hdrop_hglobal(paths: &[std::path::PathBuf]) -> Result<windows::Win32::Foundation::HGLOBAL> {
     use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Foundation::{GlobalFree, HANDLE};
     use windows::core::BOOL;
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
-        SetClipboardData,
-    };
     use windows::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
     };
     use windows::Win32::UI::Shell::DROPFILES;
 
-    const CF_HDROP: u32 = 15;
-    const CF_UNICODETEXT: u32 = 13;
+    let wide_paths: Vec<Vec<u16>> = paths
+        .iter()
+        .map(|p| {
+            let simplified = dunce::simplified(p);
+            simplified
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        })
+        .collect();
 
-    if paths.is_empty() {
-        return Ok(());
+    let mut total_size = std::mem::size_of::<DROPFILES>();
+    for wp in &wide_paths {
+        total_size += wp.len() * 2;
+    }
+    total_size += 4; // double null terminator (u16)
+
+    let hmem = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total_size)? };
+    let ptr = unsafe { GlobalLock(hmem) };
+    if ptr.is_null() {
+        let _ = unsafe { windows::Win32::Foundation::GlobalFree(Some(hmem)) };
+        anyhow::bail!("GlobalLock failed for CF_HDROP");
     }
 
     unsafe {
-        let wide_paths: Vec<Vec<u16>> = paths
-            .iter()
-            .map(|p| {
-                p.as_path()
-                    .as_os_str()
-                    .to_os_string()
-                    .encode_wide()
-                    .chain(std::iter::once(0))
-                    .collect()
-            })
-            .collect();
-
-        let mut total_size = std::mem::size_of::<DROPFILES>();
-        for wp in &wide_paths {
-            total_size += wp.len() * 2;
-        }
-        total_size += 4; // double null terminator (u16)
-
-        let hmem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total_size)?;
-        let ptr = GlobalLock(hmem);
-
         let dropfiles = ptr as *mut DROPFILES;
         (*dropfiles).pFiles = std::mem::size_of::<DROPFILES>() as u32;
         (*dropfiles).fWide = BOOL::from(true);
@@ -381,6 +374,35 @@ pub fn stage_hdrop_clipboard_files(paths: &[FilesPath], is_move: bool) -> Result
         *(ptr as *mut u16).add(offset / 2 + 1) = 0;
 
         let _ = GlobalUnlock(hmem);
+    }
+
+    Ok(hmem)
+}
+
+/// Shared CF_HDROP clipboard staging for cut/copy and native OS drag.
+#[cfg(windows)]
+pub fn stage_hdrop_clipboard_files(paths: &[FilesPath], is_move: bool) -> Result<()> {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
+        SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
+    };
+
+    const CF_HDROP: u32 = 15;
+    const CF_UNICODETEXT: u32 = 13;
+
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let path_bufs: Vec<std::path::PathBuf> =
+        paths.iter().map(|p| p.as_path().to_path_buf()).collect();
+
+    unsafe {
+        let hmem = build_hdrop_hglobal(&path_bufs)?;
 
         // Open clipboard with retry (up to 10 attempts with 10ms delay)
         let mut opened = false;
@@ -1059,92 +1081,588 @@ impl ShellProperties {
 }
 
 
-/// Initiate a cross-platform native OS Drag-and-Drop operation when the user drags files
-/// out of the `files-rs` window toward another application (Explorer, Desktop, Discord, Browser, VS Code, etc.).
-/// - On Windows: Stages `CF_HDROP` (`DROPFILES`) and invokes `shell32.dll!SHDoDragDrop` with a real
-///   Shell `IDataObject` (`SHCreateDataObject`) supporting `DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK`.
-/// - On Linux / macOS: Launches `dragon-drop` / `ripdrag` if installed and stages `text/uri-list` (`file:///...`).
-pub fn start_native_os_file_drag(paths: &[FilesPath], is_copy: bool, hwnd_raw: isize) {
-    if paths.is_empty() {
-        return;
+#[cfg(windows)]
+#[windows::core::implement(
+    windows::Win32::System::Com::IDataObject,
+    windows::Win32::UI::Shell::IDataObjectAsyncCapability
+)]
+struct DraggableShellDataObject {
+    inner: windows::Win32::System::Com::IDataObject,
+    paths: Vec<std::path::PathBuf>,
+}
+
+#[cfg(windows)]
+impl DraggableShellDataObject {
+    fn is_hdrop_format(pformatetc: *const windows::Win32::System::Com::FORMATETC) -> bool {
+        use windows::Win32::System::Com::{DVASPECT_CONTENT, TYMED_HGLOBAL};
+        const CF_HDROP: u16 = 15;
+        if pformatetc.is_null() {
+            return false;
+        }
+        let fmt = unsafe { *pformatetc };
+        fmt.cfFormat == CF_HDROP
+            && (fmt.tymed & (TYMED_HGLOBAL.0 as u32)) != 0
+            && fmt.dwAspect == DVASPECT_CONTENT.0
+            && fmt.lindex == -1
     }
-    let paths_owned: Vec<std::path::PathBuf> =
-        paths.iter().map(|p| p.as_path().to_path_buf()).collect();
+}
 
-    #[cfg(windows)]
-    {
-        let files_paths: Vec<FilesPath> = paths.to_vec();
-        let _ = stage_hdrop_clipboard_files(&files_paths, !is_copy);
+#[cfg(windows)]
+#[allow(non_snake_case)]
+impl windows::Win32::System::Com::IDataObject_Impl for DraggableShellDataObject_Impl {
+    fn GetData(
+        &self,
+        pformatetcin: *const windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::Result<windows::Win32::System::Com::STGMEDIUM> {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY};
+        use windows::Win32::System::Com::{STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 
-        use std::os::windows::ffi::OsStrExt;
-        use windows::core::PCWSTR;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::System::Com::{
-            CoInitializeEx, CoTaskMemFree, CoUninitialize, IDataObject,
-            COINIT_APARTMENTTHREADED,
-        };
-        use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-        use windows::Win32::UI::Shell::{
-            SHCreateDataObject, SHDoDragDrop, SHParseDisplayName,
-        };
-        use windows::Win32::System::Ole::{
-            DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE,
-        };
+        if pformatetcin.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        if DraggableShellDataObject::is_hdrop_format(pformatetcin) {
+            // Always return a GMEM_MOVEABLE HGLOBAL for CF_HDROP:
+            // SHCreateDataObject returns GMEM_FIXED by default, which causes
+            // gpui 0.2.2's `*(hGlobal.0 as *mut HDROP)` in WindowsDragDropHandler::DragEnter
+            // to pass DROPFILES.pFiles (0x14) to DragQueryFileW and segfault (0xc0000005).
+            let hmem = unsafe { build_hdrop_hglobal(&self.paths) }
+                .map_err(|_| windows::core::Error::from(E_OUTOFMEMORY))?;
+            return Ok(STGMEDIUM {
+                tymed: TYMED_HGLOBAL.0 as u32,
+                u: STGMEDIUM_0 { hGlobal: hmem },
+                pUnkForRelease: ManuallyDrop::new(None),
+            });
+        }
+        unsafe { self.inner.GetData(pformatetcin) }
+    }
 
-        let hwnd = if hwnd_raw != 0 {
-            HWND(hwnd_raw as *mut core::ffi::c_void)
-        } else {
-            unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
-        };
+    fn GetDataHere(
+        &self,
+        pformatetc: *const windows::Win32::System::Com::FORMATETC,
+        pmedium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> windows::core::Result<()> {
+        unsafe { self.inner.GetDataHere(pformatetc, pmedium) }
+    }
 
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    fn QueryGetData(
+        &self,
+        pformatetc: *const windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::HRESULT {
+        use windows::Win32::Foundation::{E_INVALIDARG, S_OK};
+        if pformatetc.is_null() {
+            return E_INVALIDARG;
+        }
+        if DraggableShellDataObject::is_hdrop_format(pformatetc) {
+            return S_OK;
+        }
+        unsafe { self.inner.QueryGetData(pformatetc) }
+    }
 
-            let mut child_pidls: Vec<*const ITEMIDLIST> = Vec::new();
-            for p in &paths_owned {
+    fn GetCanonicalFormatEtc(
+        &self,
+        pformatectin: *const windows::Win32::System::Com::FORMATETC,
+        pformatetcout: *mut windows::Win32::System::Com::FORMATETC,
+    ) -> windows::core::HRESULT {
+        unsafe { self.inner.GetCanonicalFormatEtc(pformatectin, pformatetcout) }
+    }
+
+    fn SetData(
+        &self,
+        pformatetc: *const windows::Win32::System::Com::FORMATETC,
+        pmedium: *const windows::Win32::System::Com::STGMEDIUM,
+        frelease: windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        unsafe { self.inner.SetData(pformatetc, pmedium, frelease.as_bool()) }
+    }
+
+    fn EnumFormatEtc(
+        &self,
+        dwdirection: u32,
+    ) -> windows::core::Result<windows::Win32::System::Com::IEnumFORMATETC> {
+        unsafe { self.inner.EnumFormatEtc(dwdirection) }
+    }
+
+    fn DAdvise(
+        &self,
+        pformatetc: *const windows::Win32::System::Com::FORMATETC,
+        advf: u32,
+        padvsink: windows::core::Ref<windows::Win32::System::Com::IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        unsafe { self.inner.DAdvise(pformatetc, advf, padvsink.as_ref()) }
+    }
+
+    fn DUnadvise(&self, dwconnection: u32) -> windows::core::Result<()> {
+        unsafe { self.inner.DUnadvise(dwconnection) }
+    }
+
+    fn EnumDAdvise(&self) -> windows::core::Result<windows::Win32::System::Com::IEnumSTATDATA> {
+        unsafe { self.inner.EnumDAdvise() }
+    }
+}
+
+#[cfg(windows)]
+#[allow(non_snake_case)]
+impl windows::Win32::UI::Shell::IDataObjectAsyncCapability_Impl for DraggableShellDataObject_Impl {
+    fn SetAsyncMode(&self, fdoopasync: windows::core::BOOL) -> windows::core::Result<()> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+        let async_cap: IDataObjectAsyncCapability = self.inner.cast()?;
+        unsafe { async_cap.SetAsyncMode(fdoopasync.as_bool()) }
+    }
+
+    fn GetAsyncMode(&self) -> windows::core::Result<windows::core::BOOL> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+        let async_cap: IDataObjectAsyncCapability = self.inner.cast()?;
+        unsafe { async_cap.GetAsyncMode() }
+    }
+
+    fn StartOperation(
+        &self,
+        pbcreserved: windows::core::Ref<windows::Win32::System::Com::IBindCtx>,
+    ) -> windows::core::Result<()> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+        let async_cap: IDataObjectAsyncCapability = self.inner.cast()?;
+        unsafe { async_cap.StartOperation(pbcreserved.as_ref()) }
+    }
+
+    fn InOperation(&self) -> windows::core::Result<windows::core::BOOL> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+        let async_cap: IDataObjectAsyncCapability = self.inner.cast()?;
+        unsafe { async_cap.InOperation() }
+    }
+
+    fn EndOperation(
+        &self,
+        hresult: windows::core::HRESULT,
+        pbcreserved: windows::core::Ref<windows::Win32::System::Com::IBindCtx>,
+        dweffects: u32,
+    ) -> windows::core::Result<()> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+        let async_cap: IDataObjectAsyncCapability = self.inner.cast()?;
+        unsafe { async_cap.EndOperation(hresult, pbcreserved.as_ref(), dweffects) }
+    }
+}
+
+/// Create a Windows Shell `IDataObject` for the given filesystem paths, containing `CF_HDROP`
+/// (`GMEM_MOVEABLE`) and Shell IDList Array / rich Shell handlers wrapped for safe in-process
+/// and cross-process OLE drag-and-drop.
+#[cfg(windows)]
+unsafe fn create_shell_data_object(
+    paths: &[std::path::PathBuf],
+    is_copy: bool,
+) -> Result<windows::Win32::System::Com::IDataObject> {
+    use std::mem::ManuallyDrop;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GlobalFree, S_OK};
+    use windows::Win32::System::Com::{
+        CoTaskMemFree, IDataObject, DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0,
+        TYMED_HGLOBAL,
+    };
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
+    };
+    use windows::Win32::System::Ole::DROPEFFECT_COPY;
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{
+        ILClone, ILFindLastID, SHCreateDataObject, SHGetDesktopFolder, SHGetIDListFromObject,
+        SHParseDisplayName,
+    };
+
+    const CF_HDROP: u16 = 15;
+
+    let normalized: Vec<std::path::PathBuf> = paths
+        .iter()
+        .map(|p| dunce::simplified(p).to_path_buf())
+        .collect();
+    if normalized.is_empty() {
+        anyhow::bail!("Cannot create Shell IDataObject for empty path list");
+    }
+
+    let first_parent = normalized[0].parent().filter(|p| !p.as_os_str().is_empty());
+    let same_parent = first_parent.filter(|parent| {
+        normalized
+            .iter()
+            .all(|p| p.parent() == Some(*parent))
+    });
+
+    let mut data_obj_opt: Option<IDataObject> = None;
+
+    // 1. Common-parent path (canonical Shell drag path: SHCreateDataObject(dir_pidl, &child_pidls))
+    if let Some(parent_dir) = same_parent {
+        let dir_w: Vec<u16> = parent_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut dir_pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        if unsafe { SHParseDisplayName(PCWSTR(dir_w.as_ptr()), None, &mut dir_pidl, 0, None) }
+            .is_ok()
+            && !dir_pidl.is_null()
+        {
+            let mut child_pidls: Vec<*const ITEMIDLIST> = Vec::with_capacity(normalized.len());
+            for p in &normalized {
                 let pw: Vec<u16> = p
                     .as_os_str()
                     .encode_wide()
                     .chain(std::iter::once(0))
                     .collect();
                 let mut full: *mut ITEMIDLIST = std::ptr::null_mut();
-                if SHParseDisplayName(
-                    PCWSTR(pw.as_ptr()),
-                    None,
-                    &mut full,
-                    0,
-                    None,
-                )
-                .is_ok()
+                if unsafe { SHParseDisplayName(PCWSTR(pw.as_ptr()), None, &mut full, 0, None) }
+                    .is_ok()
                     && !full.is_null()
                 {
-                    child_pidls.push(full);
+                    let rel = unsafe { ILFindLastID(full) };
+                    if !rel.is_null() {
+                        let cloned = unsafe { ILClone(rel) };
+                        if !cloned.is_null() {
+                            child_pidls.push(cloned as *const ITEMIDLIST);
+                        }
+                    }
+                    unsafe { CoTaskMemFree(Some(full as *const _ as _)) };
                 }
             }
-
             if !child_pidls.is_empty() {
-                if let Ok(data_obj) =
-                    SHCreateDataObject::<_, IDataObject>(None, Some(&child_pidls), None)
-                {
+                match unsafe {
+                    SHCreateDataObject::<_, IDataObject>(
+                        Some(dir_pidl as *const ITEMIDLIST),
+                        Some(&child_pidls),
+                        None,
+                    )
+                } {
+                    Ok(obj) => data_obj_opt = Some(obj),
+                    Err(err) => {
+                        tracing::warn!(
+                            "SHCreateDataObject (common parent) failed for {:?}: {:?}",
+                            parent_dir,
+                            err
+                        );
+                    }
+                }
+            }
+            for pidl in child_pidls {
+                unsafe { CoTaskMemFree(Some(pidl as *const _ as _)) };
+            }
+            unsafe { CoTaskMemFree(Some(dir_pidl as *const _ as _)) };
+        }
+    }
+
+    // 2. Multi-folder or fallback path: Desktop PIDL + full PIDLs (or empty Shell DataObject + SetData CF_HDROP)
+    if data_obj_opt.is_none() {
+        if let Ok(desktop) = unsafe { SHGetDesktopFolder() } {
+            if let Ok(desktop_pidl) = unsafe { SHGetIDListFromObject(&desktop) } {
+                let mut full_pidls: Vec<*const ITEMIDLIST> = Vec::with_capacity(normalized.len());
+                for p in &normalized {
+                    let pw: Vec<u16> = p
+                        .as_os_str()
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    let mut full: *mut ITEMIDLIST = std::ptr::null_mut();
+                    if unsafe { SHParseDisplayName(PCWSTR(pw.as_ptr()), None, &mut full, 0, None) }
+                        .is_ok()
+                        && !full.is_null()
+                    {
+                        full_pidls.push(full as *const ITEMIDLIST);
+                    }
+                }
+                if !full_pidls.is_empty() {
+                    if let Ok(obj) = unsafe {
+                        SHCreateDataObject::<_, IDataObject>(
+                            Some(desktop_pidl as *const ITEMIDLIST),
+                            Some(&full_pidls),
+                            None,
+                        )
+                    } {
+                        data_obj_opt = Some(obj);
+                    }
+                }
+                if data_obj_opt.is_none() {
+                    if let Ok(obj) = unsafe {
+                        SHCreateDataObject::<_, IDataObject>(
+                            Some(desktop_pidl as *const ITEMIDLIST),
+                            None,
+                            None,
+                        )
+                    } {
+                        data_obj_opt = Some(obj);
+                    }
+                }
+                for pidl in full_pidls {
+                    unsafe { CoTaskMemFree(Some(pidl as *const _ as _)) };
+                }
+                unsafe { CoTaskMemFree(Some(desktop_pidl as *const _ as _)) };
+            }
+        }
+    }
+
+    let inner =
+        data_obj_opt.ok_or_else(|| anyhow!("SHCreateDataObject failed to create IDataObject"))?;
+
+    // 3. Ensure CF_HDROP appears in EnumFormatEtc on the inner object when fallback lacked it
+    let hdrop_fmt = FORMATETC {
+        cfFormat: CF_HDROP,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+    if unsafe { inner.QueryGetData(&hdrop_fmt) } != S_OK {
+        let hmem = unsafe { build_hdrop_hglobal(&normalized)? };
+        let medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: STGMEDIUM_0 { hGlobal: hmem },
+            pUnkForRelease: ManuallyDrop::new(None),
+        };
+        if let Err(err) = unsafe { inner.SetData(&hdrop_fmt, &medium, true) } {
+            let _ = unsafe { GlobalFree(Some(hmem)) };
+            return Err(anyhow!("IDataObject::SetData(CF_HDROP) failed: {:?}", err));
+        }
+    }
+
+    // 4. Honor explicit copy modifier (Ctrl+drag) via Preferred DropEffect
+    if is_copy {
+        let format_name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
+        let cf_drop_effect = unsafe { RegisterClipboardFormatW(PCWSTR(format_name.as_ptr())) };
+        if cf_drop_effect != 0 {
+            if let Ok(effect_hmem) =
+                unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, std::mem::size_of::<u32>()) }
+            {
+                let effect_ptr = unsafe { GlobalLock(effect_hmem) } as *mut u32;
+                if !effect_ptr.is_null() {
+                    unsafe {
+                        *effect_ptr = DROPEFFECT_COPY.0;
+                        let _ = GlobalUnlock(effect_hmem);
+                    }
+                    let effect_fmt = FORMATETC {
+                        cfFormat: cf_drop_effect as u16,
+                        ptd: std::ptr::null_mut(),
+                        dwAspect: DVASPECT_CONTENT.0,
+                        lindex: -1,
+                        tymed: TYMED_HGLOBAL.0 as u32,
+                    };
+                    let effect_med = STGMEDIUM {
+                        tymed: TYMED_HGLOBAL.0 as u32,
+                        u: STGMEDIUM_0 { hGlobal: effect_hmem },
+                        pUnkForRelease: ManuallyDrop::new(None),
+                    };
+                    if unsafe { inner.SetData(&effect_fmt, &effect_med, true) }.is_err() {
+                        let _ = unsafe { GlobalFree(Some(effect_hmem)) };
+                    }
+                } else {
+                    let _ = unsafe { GlobalFree(Some(effect_hmem)) };
+                }
+            }
+        }
+    }
+
+    let wrapped: IDataObject = DraggableShellDataObject {
+        inner,
+        paths: normalized,
+    }
+    .into();
+    Ok(wrapped)
+}
+
+/// Applies the embedded application icon (`assets/app_icon.png`) to the given window handle
+/// (`WM_SETICON` for `ICON_BIG` and `ICON_SMALL`) so the live title bar, Alt+Tab, and taskbar
+/// display the custom icon crisply even when launched via `cargo run`.
+pub fn apply_window_icon(hwnd_raw: isize) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateIconFromResourceEx, GetSystemMetrics, SendMessageW, ICON_BIG, ICON_SMALL,
+            LR_DEFAULTCOLOR, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, WM_SETICON,
+        };
+
+        if hwnd_raw == 0 {
+            return;
+        }
+        const ICON_PNG: &[u8] = include_bytes!("../../../assets/app_icon.png");
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+        unsafe {
+            let cx_big = GetSystemMetrics(SM_CXICON).max(32);
+            let cy_big = GetSystemMetrics(SM_CYICON).max(32);
+            let cx_small = GetSystemMetrics(SM_CXSMICON).max(16);
+            let cy_small = GetSystemMetrics(SM_CYSMICON).max(16);
+
+            if let Ok(hbig) = CreateIconFromResourceEx(
+                ICON_PNG,
+                true,
+                0x0003_0000,
+                cx_big,
+                cy_big,
+                LR_DEFAULTCOLOR,
+            ) {
+                let _ = SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(ICON_BIG as usize)),
+                    Some(LPARAM(hbig.0 as isize)),
+                );
+            }
+            if let Ok(hsmall) = CreateIconFromResourceEx(
+                ICON_PNG,
+                true,
+                0x0003_0000,
+                cx_small,
+                cy_small,
+                LR_DEFAULTCOLOR,
+            ) {
+                let _ = SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(ICON_SMALL as usize)),
+                    Some(LPARAM(hsmall.0 as isize)),
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd_raw;
+    }
+}
+
+/// Returns `true` when the current process is running with elevated (Administrator) privileges.
+/// On Windows, UIPI blocks OLE drag-and-drop between elevated processes and standard
+/// (medium-integrity) applications such as Explorer, the Desktop, Taskbar, and web browsers.
+pub fn is_process_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+                return false;
+            }
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut ret_len = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut _ as *mut core::ffi::c_void),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut ret_len,
+            )
+            .is_ok();
+            let _ = CloseHandle(token);
+            ok && elevation.TokenIsElevated != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Initiate a cross-platform native OS Drag-and-Drop operation when the user drags files
+/// out of the `files-rs` window toward another application (Explorer, Desktop, Discord, Browser, VS Code, etc.).
+/// - On Windows: Releases GPUI mouse capture, creates a real Shell `IDataObject` (`SHCreateDataObject` + `GMEM_MOVEABLE` `CF_HDROP`),
+///   and invokes `shell32.dll!SHDoDragDrop` supporting `DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK`.
+///   Must be called on the UI thread with no GPUI `AppCell` / `Window` borrows held on the stack.
+/// - On Linux / macOS: Launches `dragon-drop` / `ripdrag` if installed and stages `text/uri-list` (`file:///...`).
+///
+/// Returns `true` if a native drop completed with a non-zero drop effect.
+pub fn start_native_os_file_drag(paths: &[FilesPath], is_copy: bool, hwnd_raw: isize) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    let paths_owned: Vec<std::path::PathBuf> =
+        paths.iter().map(|p| p.as_path().to_path_buf()).collect();
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Ole::{
+            OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK,
+            DROPEFFECT_MOVE,
+        };
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, ReleaseCapture, VK_LBUTTON,
+        };
+        use windows::Win32::UI::Shell::SHDoDragDrop;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetSystemMetrics, IsWindow, SM_SWAPBUTTON,
+        };
+
+        unsafe {
+            let swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+            let vk = if swapped { 0x02i32 } else { VK_LBUTTON.0 as i32 };
+            let lbutton_down = (GetAsyncKeyState(vk) as u16 & 0x8000) != 0;
+            if !lbutton_down {
+                tracing::debug!("Skipping SHDoDragDrop: primary mouse button already released");
+                return false;
+            }
+
+            // Release GPUI's WM_LBUTTONDOWN capture so SHDoDragDrop can own drag capture cleanly
+            let _ = ReleaseCapture();
+
+            let candidate_hwnd = if hwnd_raw != 0 {
+                HWND(hwnd_raw as *mut core::ffi::c_void)
+            } else {
+                GetForegroundWindow()
+            };
+            let hwnd = if !candidate_hwnd.is_invalid() && IsWindow(Some(candidate_hwnd)).as_bool() {
+                Some(candidate_hwnd)
+            } else {
+                None
+            };
+
+            let ole_ok = OleInitialize(None).is_ok();
+            let mut dropped = false;
+
+            match create_shell_data_object(&paths_owned, is_copy) {
+                Ok(data_obj) => {
                     let allowed_effects =
                         DROPEFFECT_COPY.0 | DROPEFFECT_MOVE.0 | DROPEFFECT_LINK.0;
+                    if is_process_elevated() {
+                        tracing::warn!(
+                            "Process is running elevated (Administrator): Windows UIPI blocks drag-and-drop onto standard (medium-integrity) applications such as Explorer, Taskbar, and web browsers."
+                        );
+                    }
                     tracing::info!(
-                        "Initiating native SHDoDragDrop with {} items (copy={})",
-                        child_pidls.len(),
-                        is_copy
+                        "Initiating native SHDoDragDrop with {} items (copy={}, hwnd={:?})",
+                        paths_owned.len(),
+                        is_copy,
+                        hwnd
                     );
-                    let _ = SHDoDragDrop(
-                        Some(hwnd),
+                    match SHDoDragDrop(
+                        hwnd,
                         &data_obj,
                         None,
                         DROPEFFECT(allowed_effects),
-                    );
+                    ) {
+                        Ok(effect) => {
+                            tracing::info!("SHDoDragDrop finished with effect={:?}", effect);
+                            dropped = effect.0 != 0;
+                        }
+                        Err(err) => {
+                            tracing::warn!("SHDoDragDrop failed: {:?}", err);
+                        }
+                    }
                 }
-                for pidl in child_pidls {
-                    CoTaskMemFree(Some(pidl as *const _ as _));
+                Err(err) => {
+                    tracing::warn!("create_shell_data_object failed: {:?}", err);
                 }
             }
-            CoUninitialize();
+
+            if ole_ok {
+                OleUninitialize();
+            }
+            dropped
         }
     }
 
@@ -1211,6 +1729,7 @@ pub fn start_native_os_file_drag(paths: &[FilesPath], is_copy: bool, hwnd_raw: i
                 let _ = child.wait();
             }
         });
+        false
     }
 }
 
@@ -1312,5 +1831,271 @@ mod shell_property_tests {
         let path = std::env::temp_dir();
         let props = ShellProperties::get_all_properties(&path);
         assert!(props.contains_key("System.ItemNameDisplay"));
+    }
+
+    #[cfg(windows)]
+    unsafe fn extract_hdrop_paths_from_data_object(
+        data_obj: &windows::Win32::System::Com::IDataObject,
+    ) -> Vec<std::path::PathBuf> {
+        use windows::Win32::Foundation::S_OK;
+        use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+        use windows::Win32::System::Memory::{GlobalFlags, GlobalLock, GlobalUnlock};
+        use windows::Win32::System::Ole::ReleaseStgMedium;
+        use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+        let fmt = FORMATETC {
+            cfFormat: 15, // CF_HDROP
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        };
+        assert_eq!(unsafe { data_obj.QueryGetData(&fmt) }, S_OK);
+        let mut medium = unsafe { data_obj.GetData(&fmt).expect("GetData(CF_HDROP) failed") };
+
+        // Must be GMEM_MOVEABLE (so locking increments GlobalFlags lock count and locked != handle)
+        // so gpui-0.2.2's `*(hGlobal.0 as *mut HDROP)` in WindowsDragDropHandler::DragEnter
+        // never passes DROPFILES.pFiles (0x14) to DragQueryFileW and segfaults.
+        let locked = unsafe { GlobalLock(medium.u.hGlobal) };
+        assert!(!locked.is_null(), "GlobalLock(CF_HDROP) returned null");
+        let lock_flags = unsafe { GlobalFlags(medium.u.hGlobal) };
+        let _ = unsafe { GlobalUnlock(medium.u.hGlobal) };
+        assert_ne!(
+            lock_flags, 0,
+            "CF_HDROP HGLOBAL must be GMEM_MOVEABLE (lock count > 0 when locked), not GMEM_FIXED"
+        );
+        assert_ne!(
+            locked,
+            medium.u.hGlobal.0,
+            "GMEM_MOVEABLE HGLOBAL handle must differ from its locked pointer"
+        );
+
+        let hdrop = HDROP(unsafe { medium.u.hGlobal.0 });
+        let count = unsafe { DragQueryFileW(hdrop, 0xFFFFFFFF, None) };
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let len = unsafe { DragQueryFileW(hdrop, i, None) };
+            let mut buf = vec![0u16; len as usize + 1];
+            unsafe { DragQueryFileW(hdrop, i, Some(&mut buf)) };
+            if let Some(end) = buf.iter().position(|&c| c == 0) {
+                out.push(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..end])));
+            }
+        }
+
+        // Also simulate gpui-0.2.2's exact `*hdrop` dereference in WindowsDragDropHandler::DragEnter
+        let deref_hdrop = unsafe { *(medium.u.hGlobal.0 as *const HDROP) };
+        let deref_count = unsafe { DragQueryFileW(deref_hdrop, 0xFFFFFFFF, None) };
+        assert_eq!(deref_count, count);
+
+        unsafe { ReleaseStgMedium(&mut medium) };
+        out
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_create_shell_data_object_single_and_multi_same_parent() {
+        use windows::core::Interface;
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+        use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("alpha.txt");
+        let file_b = dir.path().join("beta.txt");
+        std::fs::write(&file_a, b"a").unwrap();
+        std::fs::write(&file_b, b"b").unwrap();
+
+        unsafe {
+            let ole_ok = OleInitialize(None).is_ok();
+
+            let obj_single = create_shell_data_object(&[file_a.clone()], false)
+                .expect("single file IDataObject failed");
+            let got_single = extract_hdrop_paths_from_data_object(&obj_single);
+            assert_eq!(got_single, vec![dunce::simplified(&file_a).to_path_buf()]);
+
+            // Async capability forwarding should succeed
+            let async_cap: IDataObjectAsyncCapability = obj_single
+                .cast()
+                .expect("DraggableShellDataObject should expose IDataObjectAsyncCapability");
+            assert!(async_cap.GetAsyncMode().is_ok());
+
+            let obj_multi = create_shell_data_object(&[file_a.clone(), file_b.clone()], true)
+                .expect("multi-file same-parent IDataObject failed");
+            let got_multi = extract_hdrop_paths_from_data_object(&obj_multi);
+            assert_eq!(
+                got_multi,
+                vec![
+                    dunce::simplified(&file_a).to_path_buf(),
+                    dunce::simplified(&file_b).to_path_buf(),
+                ]
+            );
+
+            if ole_ok {
+                OleUninitialize();
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_create_shell_data_object_mixed_parents() {
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+
+        let dir = tempfile::tempdir().unwrap();
+        let sub1 = dir.path().join("sub1");
+        let sub2 = dir.path().join("sub2");
+        std::fs::create_dir_all(&sub1).unwrap();
+        std::fs::create_dir_all(&sub2).unwrap();
+        let file_a = sub1.join("one.txt");
+        let file_b = sub2.join("two.txt");
+        std::fs::write(&file_a, b"1").unwrap();
+        std::fs::write(&file_b, b"2").unwrap();
+
+        unsafe {
+            let ole_ok = OleInitialize(None).is_ok();
+
+            let obj = create_shell_data_object(&[file_a.clone(), file_b.clone()], false)
+                .expect("mixed-parent IDataObject failed");
+            let got = extract_hdrop_paths_from_data_object(&obj);
+            assert_eq!(
+                got,
+                vec![
+                    dunce::simplified(&file_a).to_path_buf(),
+                    dunce::simplified(&file_b).to_path_buf(),
+                ]
+            );
+
+            if ole_ok {
+                OleUninitialize();
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_explorer_drop_target_accepts_shell_data_object() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{Interface, PCWSTR};
+        use windows::Win32::Foundation::{HWND, POINTL};
+        use windows::Win32::System::Com::{CoTaskMemFree, DATADIR_GET, FORMATETC};
+        use windows::Win32::System::DataExchange::GetClipboardFormatNameW;
+        use windows::Win32::System::Ole::{
+            IDropTarget, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY,
+            DROPEFFECT_LINK, DROPEFFECT_MOVE,
+        };
+        use windows::Win32::System::SystemServices::MK_LBUTTON;
+        use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+        use windows::Win32::UI::Shell::{IShellFolder, SHBindToObject, SHParseDisplayName};
+
+        let src_dir = tempfile::tempdir().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let file_a = src_dir.path().join("drag_me.txt");
+        std::fs::write(&file_a, b"hello drag").unwrap();
+
+        unsafe {
+            let ole_ok = OleInitialize(None).is_ok();
+
+            let data_obj =
+                create_shell_data_object(&[file_a.clone()], false).expect("create_shell_data_object failed");
+
+            // 1. Verify EnumFormatEtc lists CF_HDROP (15)
+            let enum_fmt = data_obj
+                .EnumFormatEtc(DATADIR_GET.0 as u32)
+                .expect("EnumFormatEtc(DATADIR_GET) failed");
+            let mut formats = [FORMATETC::default(); 32];
+            let mut fetched = 0u32;
+            let _ = enum_fmt.Next(&mut formats, Some(&mut fetched));
+            let mut found_hdrop = false;
+            for fmt in &formats[..fetched as usize] {
+                let mut name_buf = [0u16; 128];
+                let nlen = GetClipboardFormatNameW(fmt.cfFormat as u32, &mut name_buf);
+                let fname = if nlen > 0 {
+                    String::from_utf16_lossy(&name_buf[..nlen as usize])
+                } else {
+                    format!("std:{}", fmt.cfFormat)
+                };
+                eprintln!(
+                    "  enum format: cf={} ({}) tymed={} aspect={} lindex={}",
+                    fmt.cfFormat, fname, fmt.tymed, fmt.dwAspect, fmt.lindex
+                );
+                if fmt.cfFormat == 15 {
+                    found_hdrop = true;
+                }
+            }
+            assert!(found_hdrop, "EnumFormatEtc(DATADIR_GET) must enumerate CF_HDROP");
+
+            // 2. Bind real Windows Shell folder IDropTarget for dst_dir and invoke DragEnter
+            let dst_w: Vec<u16> = dunce::simplified(dst_dir.path())
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut dst_pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+            SHParseDisplayName(PCWSTR(dst_w.as_ptr()), None, &mut dst_pidl, 0, None)
+                .expect("SHParseDisplayName(dst_dir) failed");
+            assert!(!dst_pidl.is_null());
+
+            let folder: IShellFolder = SHBindToObject(None, dst_pidl, None)
+                .expect("SHBindToObject(IShellFolder) failed");
+            CoTaskMemFree(Some(dst_pidl as *const _ as _));
+
+            let drop_target: IDropTarget = folder
+                .CreateViewObject(HWND::default())
+                .expect("IShellFolder::CreateViewObject(IDropTarget) failed");
+
+            let mut effect = DROPEFFECT(DROPEFFECT_COPY.0 | DROPEFFECT_MOVE.0 | DROPEFFECT_LINK.0);
+            drop_target
+                .DragEnter(&data_obj, MK_LBUTTON, POINTL { x: 10, y: 10 }, &mut effect)
+                .expect("IDropTarget::DragEnter failed");
+            eprintln!("  Explorer IDropTarget::DragEnter returned effect = {:?}", effect);
+            assert_ne!(
+                effect.0, 0,
+                "Windows Shell folder IDropTarget rejected our IDataObject (DROPEFFECT_NONE)"
+            );
+            let _ = drop_target.DragLeave();
+
+            // 3. Verify standard COM cross-apartment marshaling (proxy/stub path used across processes)
+            use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
+            use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
+            use windows::Win32::System::Com::IDataObject;
+            let stream = CoMarshalInterThreadInterfaceInStream(&IDataObject::IID, &data_obj)
+                .expect("CoMarshalInterThreadInterfaceInStream(IDataObject) failed");
+            let stream_raw = windows::core::Interface::into_raw(stream) as usize;
+
+            let join = std::thread::spawn(move || unsafe {
+                let ole2 = OleInitialize(None).is_ok();
+                let stream: std::mem::ManuallyDrop<windows::Win32::System::Com::IStream> =
+                    std::mem::ManuallyDrop::new(windows::core::Interface::from_raw(
+                        stream_raw as *mut _,
+                    ));
+                let proxy: IDataObject = CoGetInterfaceAndReleaseStream(&*stream)
+                    .expect("CoGetInterfaceAndReleaseStream(IDataObject) failed");
+                let got = extract_hdrop_paths_from_data_object(&proxy);
+                drop(proxy);
+                if ole2 {
+                    OleUninitialize();
+                }
+                got
+            });
+
+            // Pump STA messages while the worker STA thread calls back through the COM proxy!
+            use windows::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+            };
+            let start = std::time::Instant::now();
+            while !join.is_finished() && start.elapsed() < std::time::Duration::from_secs(5) {
+                let mut msg = MSG::default();
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let marshaled_paths = join.join().expect("COM marshaling thread panicked");
+            assert_eq!(marshaled_paths, vec![dunce::simplified(&file_a).to_path_buf()]);
+
+            if ole_ok {
+                OleUninitialize();
+            }
+        }
     }
 }
