@@ -91,6 +91,15 @@ impl ThumbnailCache {
         &self.cache_dir
     }
 
+    /// Resize the in-memory LRU capacity dynamically.
+    pub fn set_capacity(&self, capacity: usize) {
+        if let Ok(mut cache) = self.cache.lock() {
+            if let Some(cap) = NonZeroUsize::new(capacity.max(1)) {
+                cache.resize(cap);
+            }
+        }
+    }
+
     /// Get a thumbnail if it exists and is still valid (hash matches)
     pub fn get(&self, path: &FilesPath) -> Option<PathBuf> {
         let key = path.as_path().to_string_lossy().to_string();

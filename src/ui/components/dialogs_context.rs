@@ -839,14 +839,10 @@ impl crate::ui::components::dialogs::DialogsView {
                         SubmenuKind::Compress => {
                             let is_archive = selected_path
                                 .as_ref()
-                                .and_then(|p| p.file_name())
-                                .map(|name| {
-                                    let name = name.to_string_lossy().to_lowercase();
-                                    name.ends_with(".zip")
-                                        || name.ends_with(".7z")
-                                        || name.ends_with(".tar")
-                                        || name.ends_with(".tar.gz")
-                                        || name.ends_with(".rar")
+                                .map(|p| {
+                                    crate::storage::archive_service::ArchiveService::is_supported_archive(
+                                        p.as_path(),
+                                    )
                                 })
                                 .unwrap_or(false);
                             Some(Self::compress_submenu(
@@ -3275,21 +3271,13 @@ impl crate::ui::components::dialogs::DialogsView {
                 let v2 = view.clone();
                 rows.push(Self::context_menu_item(
                     "\u{F012}",
-                    "Extract Here",
+                    "Extract...",
                     move |_, _, cx| {
                         let archive_path = path.as_path().to_path_buf();
                         v2.update(cx, |this, cx| {
                             let current_dir =
                                 this.state.main_view.primary_path.as_path().to_path_buf();
-                            this.state.active_dialog = Some(DialogType::DecompressArchive {
-                                state: Box::new(
-                                    crate::ui::dialog_services::decompress_dialog::DecompressState::new(
-                                        archive_path,
-                                        current_dir,
-                                    ),
-                                ),
-                            });
-                            cx.notify();
+                            this.open_decompress_dialog_for_path(archive_path, current_dir, cx);
                         });
                     },
                 ));

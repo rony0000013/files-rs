@@ -74,10 +74,19 @@ impl ToolbarView {
         let has_clipboard = !matches!(state.clipboard, ClipboardState::Empty);
 
         // Detect contextual selection type (Archive or Image)
-        let mut selected_is_archive = false;
+        let mut selected_is_archive =
+            crate::storage::archive_service::ArchiveService::split_archive_path(
+                mv.primary_path.as_path(),
+            )
+            .is_some();
         let mut selected_is_image = false;
         if let Some(&first_idx) = mv.selected_indices.iter().next() {
             if let Some(item) = mv.items.get(first_idx) {
+                if crate::storage::archive_service::ArchiveService::is_supported_archive(
+                    item.path.as_path(),
+                ) {
+                    selected_is_archive = true;
+                }
                 let ext = item
                     .path
                     .as_path()
@@ -85,8 +94,6 @@ impl ToolbarView {
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                selected_is_archive =
-                    matches!(ext.as_str(), "zip" | "7z" | "tar" | "gz" | "tgz" | "rar" | "bz2" | "xz");
                 selected_is_image =
                     matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff");
             }

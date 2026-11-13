@@ -55,10 +55,68 @@ pub fn disk_cache_key(path: &crate::core::path_util::FilesPath) -> String {
     format!("{}_{:016x}", stem, h.finish())
 }
 
-/// Maximum icon temp-path entries retained in RAM (LRU-evicted beyond this).
-/// Bounds the per-batch full-cache clones in `load_icons` to a small constant
-/// instead of one entry per file ever seen this session.
-pub const MAX_ICON_CACHE_ENTRIES: usize = 4_096;
+/// Disk cache filename for a path's extracted thumbnail/icon PNG incorporating
+/// file size + mtime so newer/modified files automatically invalidate stale caches.
+pub fn thumbnail_disk_cache_key(
+    path: &crate::core::path_util::FilesPath,
+    size: u64,
+    mtime_secs: u64,
+) -> String {
+    format!("{}_{:x}_{:x}", disk_cache_key(path), size, mtime_secs)
+}
+
+/// Count and total size (in bytes) of cached PNG files in `icons_cache_dir()`.
+pub fn cached_icon_disk_stats() -> (usize, u64) {
+    let dir = icons_cache_dir();
+    let mut count = 0usize;
+    let mut total_bytes = 0u64;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    count += 1;
+                    total_bytes = total_bytes.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    (count, total_bytes)
+}
+
+/// Prune oldest cached PNG files on disk when exceeding `max_files`.
+pub fn prune_disk_thumbnail_cache(max_files: usize) {
+    let dir = icons_cache_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("png") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                let mtime = meta
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                entries.push((p, mtime));
+            }
+        }
+    }
+    if entries.len() <= max_files {
+        return;
+    }
+    entries.sort_unstable_by_key(|(_, t)| *t);
+    let remove_count = entries.len().saturating_sub(max_files);
+    for (p, _) in entries.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Default maximum icon temp-path entries retained in RAM (LRU-evicted beyond this).
+/// Scales up/down dynamically with `config.experimental.thumbnail_cache_size_limit`.
+pub const MAX_ICON_CACHE_ENTRIES: usize = 8_192;
 
 /// Collects only the cached icon paths belonging to `dir` (children whose
 /// parent is `dir`), so `MainViewState::icon_paths` stays proportional to the
@@ -122,9 +180,11 @@ pub struct AppState {
     /// `None` = timeline simulation (audio files, ffmpeg-backend fallback).
     pub video_player: Option<MfPlayer>,
     /// Cache of extracted icon temp file paths, keyed by FilesPath.
-    /// LRU-bounded at MAX_ICON_CACHE_ENTRIES so session-long browsing
-    /// cannot grow icon RAM without limit.
+    /// LRU-bounded (configured via `thumbnail_cache_size_limit`) so session-long
+    /// browsing remembers many thumbnails without unbounded RAM growth.
     pub icon_cache: Arc<Mutex<lru::LruCache<FilesPath, std::path::PathBuf>>>,
+    /// In-flight thumbnail extractions currently queued or running (prevents duplicate work).
+    pub in_flight_thumbnails: Arc<Mutex<std::collections::HashSet<FilesPath>>>,
     /// Bounded GPU image cache entity for file-view thumbnails
     pub image_cache: Option<Entity<crate::ui::components::bounded_image_cache::BoundedImageCache>>,
     /// Cache of tab folder thumbnail paths, keyed by FilesPath
@@ -167,6 +227,8 @@ impl AppState {
         cx: &gpui::App,
     ) -> Self {
         let config = settings.read(cx);
+        let thumb_limit = (config.config().experimental.thumbnail_cache_size_limit as usize)
+            .clamp(512, 50_000);
         let default_view_mode = config.config().view.default_view_mode.clone();
         let sort_prio = config.config().view.sort_priority.as_str();
         let folders_first = sort_prio == "folders_first";
@@ -217,15 +279,18 @@ impl AppState {
             thumbnail_service: Arc::new(ThumbnailService::new()),
             video_player: None,
             icon_cache: Arc::new(Mutex::new(lru::LruCache::new(
-                NonZeroUsize::new(MAX_ICON_CACHE_ENTRIES).unwrap(),
+                NonZeroUsize::new(thumb_limit).unwrap(),
             ))),
+            in_flight_thumbnails: Arc::new(Mutex::new(std::collections::HashSet::new())),
             tab_thumbnail_cache: Arc::new(Mutex::new(HashMap::new())),
             image_cache: None,
             undo_redo: UndoRedoManager::new(),
             tab_drag: TabDragState::default(),
             main_focus: None,
             is_maximized: false,
-            thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::new(),
+            thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::with_capacity(
+                thumb_limit,
+            ),
             nav_cancel_guard: crate::core::perf::cancellable_load::CancelGuard::new(),
             nav_cancel_guard_secondary: crate::core::perf::cancellable_load::CancelGuard::new(),
             last_window_size: gpui::size(gpui::px(1280.0), gpui::px(800.0)),
@@ -564,7 +629,7 @@ mod tests {
         )));
         {
             let mut guard = cache.lock().unwrap();
-            for i in 0..5_000 {
+            for i in 0..(MAX_ICON_CACHE_ENTRIES + 1_000) {
                 guard.put(
                     FilesPath::new(format!("C:/dir/file_{:05}.txt", i)),
                     std::path::PathBuf::from(format!("C:/tmp/{}.png", i)),

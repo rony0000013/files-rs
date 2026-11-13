@@ -2561,10 +2561,12 @@ dependencies = [
  "betteroffice-pptx",
  "betteroffice-xlsx",
  "bytesize",
+ "bzip2",
  "chrono",
  "directories",
  "dirs 7.0.0",
  "dunce",
+ "flate2",
  "fluent",
  "fluent-bundle",
  "futures",
@@ -2578,6 +2580,7 @@ dependencies = [
  "lopdf",
  "lru",
  "lucide-rs",
+ "lzma-rust2",
  "memmap2",
  "mime_guess",
  "notify",
@@ -2614,6 +2617,7 @@ dependencies = [
  "windows-core 0.62.2",
  "winreg",
  "zip 9.0.5",
+ "zstd",
 ]
 
 [[package]]

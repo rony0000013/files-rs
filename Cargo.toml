@@ -45,6 +45,10 @@ uuid = { version = "1.28.0", features = ["v4"] }
 open = "5"
 zip = "9.0.3"
 sevenz-rust = "0.6.1"
+flate2 = "1.1"
+bzip2 = "0.6"
+zstd = "0.14"
+lzma-rust2 = "0.22"
 git2 = { version = "0.21.0", features = ["vendored-libgit2", "vendored-openssl"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rexif = "0.7.6"

@@ -228,6 +228,10 @@ pub struct SettingsUiState {
     pub edit_ide_name: String,
     pub edit_ide_path: String,
     pub ide_focused_field: Option<String>,
+    pub disk_thumb_count: usize,
+    pub disk_thumb_bytes: u64,
+    pub thumb_slider_dragging: bool,
+    pub thumb_slider_track_bounds: std::sync::Arc<std::sync::Mutex<(f32, f32)>>,
 }
 
 impl Default for SettingsUiState {
@@ -281,6 +285,10 @@ impl Default for SettingsUiState {
             edit_ide_name: "Visual Studio Code".to_string(),
             edit_ide_path: "code".to_string(),
             ide_focused_field: None,
+            disk_thumb_count: 0,
+            disk_thumb_bytes: 0,
+            thumb_slider_dragging: false,
+            thumb_slider_track_bounds: std::sync::Arc::new(std::sync::Mutex::new((0.0, 0.0))),
         }
     }
 }
@@ -318,6 +326,10 @@ pub struct SettingsPreReadData {
     pub ui_state: SettingsUiState,
     pub tag_counts: std::collections::HashMap<String, i64>,
     pub cached_icon_count: usize,
+    pub disk_thumb_count: usize,
+    pub disk_thumb_bytes: u64,
+    pub gpu_thumb_cap: usize,
+    pub ram_thumb_cap: usize,
     pub toolbar_new_folder: bool,
     pub toolbar_new_file: bool,
     pub toolbar_cut: bool,
@@ -354,6 +366,10 @@ impl DialogsView {
             .lock()
             .map(|c| c.len())
             .unwrap_or(0);
+        let ram_thumb_cap = config.experimental.thumbnail_cache_size_limit as usize;
+        let gpu_thumb_cap = crate::ui::components::bounded_image_cache::gpu_cache_capacity_for_limit(
+            config.experimental.thumbnail_cache_size_limit,
+        );
         SettingsPreReadData {
             active_tab: state.active_settings_tab,
             config,
@@ -362,6 +378,10 @@ impl DialogsView {
             ui_state: state.settings_ui.clone(),
             tag_counts,
             cached_icon_count,
+            disk_thumb_count: state.settings_ui.disk_thumb_count,
+            disk_thumb_bytes: state.settings_ui.disk_thumb_bytes,
+            gpu_thumb_cap,
+            ram_thumb_cap,
             toolbar_new_folder: tb.is_visible("new_folder"),
             toolbar_new_file: tb.is_visible("new_file"),
             toolbar_cut: tb.is_visible("cut"),
@@ -1168,54 +1188,632 @@ impl DialogsView {
         state: &crate::ui::dialog_services::decompress_dialog::DecompressState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
+        use crate::ui::dialog_services::decompress_dialog::DecompressInputField;
+
         let v_cancel = view.clone();
         let v_ok = view.clone();
+        let v_browse = view.clone();
+        let v_dest_focus = view.clone();
+        let v_pwd_focus = view.clone();
+        let v_pwd_show = view.clone();
+        let v_sel_all = view.clone();
+        let v_desel_all = view.clone();
+        let v_sub = view.clone();
+        let v_overwrite = view.clone();
+        let v_open_dest = view.clone();
+
         let archive_name = state
             .archive_path
             .file_name()
-            .map_or("Unknown", |s| s.to_str().unwrap_or("Unknown"));
+            .map_or("Unknown".to_string(), |s| s.to_string_lossy().to_string());
+        let badge = if state.format_badge.is_empty() {
+            "ARCHIVE".to_string()
+        } else {
+            state.format_badge.clone()
+        };
+
+        let dest_focused = state.focused_field == Some(DecompressInputField::Destination);
+        let pwd_focused = state.focused_field == Some(DecompressInputField::Password);
+        let dest_display = if state.destination_text.is_empty() {
+            state.destination.to_string_lossy().to_string()
+        } else {
+            state.destination_text.clone()
+        };
+        let resolved_preview = state.effective_destination_preview();
+
+        let total_entries = state.contents.len();
+        let selected_count = state.selected_count();
+        let selected_size_str =
+            crate::ui::components::status_bar::format_size(state.selected_size());
+        let compressed_str = if state.compressed_size > 0 {
+            crate::ui::components::status_bar::format_size(state.compressed_size)
+        } else {
+            "—".to_string()
+        };
+        let summary_text = if state.loading {
+            "Scanning archive entries...".to_string()
+        } else {
+            format!(
+                "{} / {} items • Uncompressed: {} (Compressed: {})",
+                selected_count, total_entries, selected_size_str, compressed_str
+            )
+        };
+
+        let raw_pwd = state.password.as_deref().unwrap_or("");
+        let pwd_display = if state.show_password {
+            raw_pwd.to_string()
+        } else {
+            "•".repeat(raw_pwd.chars().count())
+        };
+
+        let render_checkbox = |id_str: &'static str,
+                               checked: bool,
+                               label: &'static str,
+                               on_click: Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static>| {
+            div()
+                .id(SharedString::from(id_str))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .py(px(3.0))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, on_click)
+                .child(
+                    div()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(if checked {
+                            rgb(UiConstants::ACCENT_COLOR_RGB)
+                        } else {
+                            rgba(0xFFFFFF10u32).into()
+                        })
+                        .border_1()
+                        .border_color(if checked {
+                            rgb(UiConstants::ACCENT_COLOR_RGB)
+                        } else {
+                            rgba(0xFFFFFF30u32).into()
+                        })
+                        .children(if checked {
+                            Some(
+                                div()
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("\u{E73E}"),
+                            )
+                        } else {
+                            None
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                        .child(label),
+                )
+        };
+
+        // Preview first 120 entries in scrollable list to keep dialog fast even on 10k-entry archives
+        let visible_limit = 120usize;
+        let truncated_entries = total_entries.saturating_sub(visible_limit);
 
         div()
+            .flex()
             .flex_col()
-            .gap(px(16.0))
+            .w(px(520.0))
+            .gap(px(12.0))
+            // Header + Format Pill
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(18.0)))
-                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                    .font_weight(FontWeight(600.0))
-                    .child("Extract Archive"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_size(px(18.0))
+                                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    .child("\u{F012}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(AbsoluteLength::Pixels(px(18.0)))
+                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                                    .font_weight(FontWeight(600.0))
+                                    .child("Extract Archive"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(4.0))
+                            .bg(rgba(0x4CC2FF22u32))
+                            .border_1()
+                            .border_color(rgba(0x4CC2FF55u32))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgb(0x4CC2FF))
+                            .child(badge),
+                    ),
             )
+            // Archive metadata summary bar
             .child(
                 div()
+                    .flex()
                     .flex_col()
-                    .gap(px(8.0))
-                    .child(Self::build_settings_row("Archive", archive_name))
-                    .child(Self::build_settings_row(
-                        "Selected Items",
-                        &format!("{} items", state.selected_count()),
+                    .gap(px(4.0))
+                    .p(px(10.0))
+                    .rounded(px(6.0))
+                    .bg(rgba(0xFFFFFF08u32))
+                    .border_1()
+                    .border_color(rgba(0xFFFFFF12u32))
+                    .child(Self::build_settings_row("Archive", &archive_name))
+                    .child(Self::build_settings_row("Selection", &summary_text)),
+            )
+            // Scrollable entry checklist
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                    .child("Files to extract"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(6.0))
+                                    .child(Self::build_compact_btn(
+                                        "Select All",
+                                        false,
+                                        move |_, _, cx| {
+                                            v_sel_all.update(cx, |this, cx| {
+                                                if let Some(DialogType::DecompressArchive {
+                                                    ref mut state,
+                                                }) = this.state.active_dialog
+                                                {
+                                                    state.select_all();
+                                                }
+                                                cx.notify();
+                                            });
+                                        },
+                                    ))
+                                    .child(Self::build_compact_btn(
+                                        "Deselect All",
+                                        false,
+                                        move |_, _, cx| {
+                                            v_desel_all.update(cx, |this, cx| {
+                                                if let Some(DialogType::DecompressArchive {
+                                                    ref mut state,
+                                                }) = this.state.active_dialog
+                                                {
+                                                    state.deselect_all();
+                                                }
+                                                cx.notify();
+                                            });
+                                        },
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("decompress-entries-scroll")
+                            .flex()
+                            .flex_col()
+                            .max_h(px(150.0))
+                            .overflow_y_scroll()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF12u32))
+                            .bg(rgba(0x00000028u32))
+                            .p(px(4.0))
+                            .gap(px(2.0))
+                            .children(if state.loading {
+                                vec![div()
+                                    .p(px(12.0))
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                    .child("Reading archive index safely...")
+                                    .into_any_element()]
+                            } else if state.contents.is_empty() {
+                                vec![div()
+                                    .p(px(12.0))
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                    .child("Archive contains no extractable entries.")
+                                    .into_any_element()]
+                            } else {
+                                let mut rows: Vec<AnyElement> = state
+                                    .contents
+                                    .iter()
+                                    .take(visible_limit)
+                                    .map(|entry| {
+                                        let idx = entry.index;
+                                        let checked = state.selected_entries.contains(&idx);
+                                        let v_row = view.clone();
+                                        let size_lbl = if entry.is_dir {
+                                            "Folder".to_string()
+                                        } else {
+                                            crate::ui::components::status_bar::format_size(entry.size)
+                                        };
+                                        div()
+                                            .id(SharedString::from(format!("decomp-entry-{}", idx)))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .justify_between()
+                                            .px(px(6.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(rgba(0xFFFFFF0Fu32)))
+                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                                v_row.update(cx, |this, cx| {
+                                                    if let Some(DialogType::DecompressArchive {
+                                                        ref mut state,
+                                                    }) = this.state.active_dialog
+                                                    {
+                                                        state.toggle_entry(idx);
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .min_w_0()
+                                                    .child(
+                                                        div()
+                                                            .w(px(14.0))
+                                                            .h(px(14.0))
+                                                            .rounded(px(3.0))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .bg(if checked {
+                                                                rgb(UiConstants::ACCENT_COLOR_RGB)
+                                                            } else {
+                                                                rgba(0xFFFFFF10u32).into()
+                                                            })
+                                                            .border_1()
+                                                            .border_color(rgba(0xFFFFFF2Cu32))
+                                                            .children(if checked {
+                                                                Some(
+                                                                    div()
+                                                                        .font_family(
+                                                                            UiConstants::FONT_ICONS,
+                                                                        )
+                                                                        .text_size(px(9.0))
+                                                                        .text_color(rgb(0xFFFFFF))
+                                                                        .child("\u{E73E}"),
+                                                                )
+                                                            } else {
+                                                                None
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .font_family(UiConstants::FONT_ICONS)
+                                                            .text_size(px(12.0))
+                                                            .text_color(if entry.is_dir {
+                                                                rgb(0xF5C242)
+                                                            } else {
+                                                                rgb(UiConstants::TEXT_MUTED_RGB)
+                                                            })
+                                                            .child(if entry.is_dir {
+                                                                "\u{E8B7}"
+                                                            } else {
+                                                                "\u{E7C3}"
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.0))
+                                                            .text_color(rgb(
+                                                                UiConstants::TEXT_PRIMARY_RGB,
+                                                            ))
+                                                            .truncate()
+                                                            .child(entry.path.clone()),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                                    .pl(px(8.0))
+                                                    .child(size_lbl),
+                                            )
+                                            .into_any_element()
+                                    })
+                                    .collect();
+                                if truncated_entries > 0 {
+                                    rows.push(
+                                        div()
+                                            .px(px(6.0))
+                                            .py(px(4.0))
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                                            .child(format!(
+                                                "... and {} more entries (included when selected)",
+                                                truncated_entries
+                                            ))
+                                            .into_any_element(),
+                                    );
+                                }
+                                rows
+                            }),
+                    ),
+            )
+            // Destination folder path + Browse button
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                            .child("Destination folder"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .id("decomp-dest-input")
+                                    .flex_1()
+                                    .h(px(32.0))
+                                    .px(px(10.0))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.0))
+                                    .bg(rgba(0x00000038u32))
+                                    .border_1()
+                                    .border_color(if dest_focused {
+                                        rgb(UiConstants::ACCENT_COLOR_RGB).into()
+                                    } else {
+                                        rgba(0xFFFFFF22u32)
+                                    })
+                                    .cursor_text()
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        v_dest_focus.update(cx, |this, cx| {
+                                            if let Some(DialogType::DecompressArchive {
+                                                ref mut state,
+                                            }) = this.state.active_dialog
+                                            {
+                                                state.focused_field =
+                                                    Some(DecompressInputField::Destination);
+                                            }
+                                            cx.notify();
+                                        });
+                                    })
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                                            .truncate()
+                                            .child(if dest_display.is_empty() {
+                                                "Enter destination path...".to_string()
+                                            } else if dest_focused {
+                                                format!("{}|", dest_display)
+                                            } else {
+                                                dest_display
+                                            }),
+                                    ),
+                            )
+                            .child(Self::build_button(
+                                "Browse...",
+                                false,
+                                move |_, _, cx| {
+                                    v_browse.update(cx, |this, cx| {
+                                        this.browse_decompress_destination(cx);
+                                    });
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                            .truncate()
+                            .child(format!("Output path: {}", resolved_preview.display())),
+                    ),
+            )
+            // Options checkboxes + optional Password row
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(render_checkbox(
+                        "decomp-opt-subfolder",
+                        state.create_subfolder,
+                        "Extract files into archive subfolder",
+                        Box::new(move |_, _, cx| {
+                            v_sub.update(cx, |this, cx| {
+                                if let Some(DialogType::DecompressArchive { ref mut state }) =
+                                    this.state.active_dialog
+                                {
+                                    state.create_subfolder = !state.create_subfolder;
+                                }
+                                cx.notify();
+                            });
+                        }),
                     ))
-                    .child(Self::build_settings_row(
-                        "Size",
-                        &crate::ui::components::status_bar::format_size(state.selected_size()),
+                    .child(render_checkbox(
+                        "decomp-opt-overwrite",
+                        state.overwrite,
+                        "Overwrite existing files without prompting",
+                        Box::new(move |_, _, cx| {
+                            v_overwrite.update(cx, |this, cx| {
+                                if let Some(DialogType::DecompressArchive { ref mut state }) =
+                                    this.state.active_dialog
+                                {
+                                    state.toggle_overwrite();
+                                }
+                                cx.notify();
+                            });
+                        }),
+                    ))
+                    .child(render_checkbox(
+                        "decomp-opt-open-dest",
+                        state.open_destination,
+                        "Show extracted files when complete",
+                        Box::new(move |_, _, cx| {
+                            v_open_dest.update(cx, |this, cx| {
+                                if let Some(DialogType::DecompressArchive { ref mut state }) =
+                                    this.state.active_dialog
+                                {
+                                    state.open_destination = !state.open_destination;
+                                }
+                                cx.notify();
+                            });
+                        }),
                     )),
             )
+            // Password row (always accessible for encrypted zips/7z)
             .child(
                 div()
-                    .text_size(AbsoluteLength::Pixels(px(12.0)))
-                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                    .child(format!("Destination: {}", state.destination.display())),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(80.0))
+                            .text_size(px(12.0))
+                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
+                            .child(if state.is_encrypted {
+                                "Password *:"
+                            } else {
+                                "Password:"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("decomp-pwd-input")
+                            .flex_1()
+                            .h(px(30.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(5.0))
+                            .bg(rgba(0x00000038u32))
+                            .border_1()
+                            .border_color(if pwd_focused {
+                                rgb(UiConstants::ACCENT_COLOR_RGB).into()
+                            } else {
+                                rgba(0xFFFFFF20u32)
+                            })
+                            .cursor_text()
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                v_pwd_focus.update(cx, |this, cx| {
+                                    if let Some(DialogType::DecompressArchive { ref mut state }) =
+                                        this.state.active_dialog
+                                    {
+                                        state.focused_field =
+                                            Some(DecompressInputField::Password);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(px(12.0))
+                                    .text_color(if raw_pwd.is_empty() && !pwd_focused {
+                                        rgb(UiConstants::TEXT_MUTED_RGB)
+                                    } else {
+                                        rgb(UiConstants::TEXT_PRIMARY_RGB)
+                                    })
+                                    .truncate()
+                                    .child(if raw_pwd.is_empty() {
+                                        if pwd_focused {
+                                            "|".to_string()
+                                        } else if state.is_encrypted {
+                                            "Required for encrypted entries".to_string()
+                                        } else {
+                                            "Optional (only if archive is encrypted)".to_string()
+                                        }
+                                    } else if pwd_focused {
+                                        format!("{}|", pwd_display)
+                                    } else {
+                                        pwd_display
+                                    }),
+                            ),
+                    )
+                    .child(Self::build_compact_btn(
+                        if state.show_password { "Hide" } else { "Show" },
+                        state.show_password,
+                        move |_, _, cx| {
+                            v_pwd_show.update(cx, |this, cx| {
+                                if let Some(DialogType::DecompressArchive { ref mut state }) =
+                                    this.state.active_dialog
+                                {
+                                    state.toggle_password();
+                                }
+                                cx.notify();
+                            });
+                        },
+                    )),
             )
+            // Error banner if validation or scan failed
+            .children(state.error.as_ref().map(|err| {
+                div()
+                    .p(px(8.0))
+                    .rounded(px(5.0))
+                    .bg(rgba(0xC42B1C28u32))
+                    .border_1()
+                    .border_color(rgba(0xFF6B6B55u32))
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xFF8E8E))
+                    .child(err.clone())
+            }))
+            // Action buttons
             .child(
                 div()
                     .flex()
                     .justify_end()
                     .gap(px(8.0))
-                    .mt(px(8.0))
+                    .mt(px(4.0))
                     .child(Self::build_button("Cancel", false, move |_, _, cx| {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     }))
                     .child(Self::build_button("Extract", true, move |_, _, cx| {
-                        v_ok.update(cx, |this, cx| this.close_dialog(cx));
+                        v_ok.update(cx, |this, cx| this.execute_decompress_dialog(cx));
                     })),
             )
     }

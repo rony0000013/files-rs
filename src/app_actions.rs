@@ -791,6 +791,69 @@ impl AppWindow {
             return;
         }
 
+        // If `path` is a virtual entry inside an archive, handle folder vs single-file preview
+        if !path.as_path().exists() {
+            if let Some((arch_path, inner_rel)) =
+                crate::storage::archive_service::ArchiveService::split_archive_path(path.as_path())
+            {
+                if !inner_rel.is_empty() {
+                    let is_virtual_dir = self
+                        .state
+                        .main_view
+                        .items
+                        .iter()
+                        .find(|i| i.path == path)
+                        .map(|i| matches!(i.file_type, crate::storage::storage::FileType::Directory))
+                        .unwrap_or(false);
+                    if is_virtual_dir {
+                        self.state.main_view.preview_content = PreviewContent::None;
+                        self.state.main_view.preview_text =
+                            Some(format!("Folder inside archive: {}", inner_rel));
+                        cx.notify();
+                        return;
+                    }
+                    self.state.main_view.preview_request_id =
+                        self.state.main_view.preview_request_id.wrapping_add(1);
+                    let req_id = self.state.main_view.preview_request_id;
+                    self.state.main_view.preview_text =
+                        Some("Extracting entry for preview...".to_string());
+                    let weak = cx.weak_entity();
+                    let mut async_cx = cx.to_async();
+                    let bg = cx.background_executor().spawn(async move {
+                        crate::storage::archive_service::ArchiveService::extract_single_entry_to_temp(
+                            &arch_path,
+                            &inner_rel,
+                            32 * 1024 * 1024,
+                            None,
+                        )
+                    });
+                    cx.foreground_executor()
+                        .spawn(async move {
+                            let res = bg.await;
+                            let _ = weak.update(&mut async_cx, |this, cx| {
+                                if this.state.main_view.preview_request_id != req_id {
+                                    return;
+                                }
+                                match res {
+                                    Ok(temp_path) => {
+                                        this.load_preview_content(FilesPath::new(temp_path), cx);
+                                    }
+                                    Err(e) => {
+                                        this.state.main_view.preview_content =
+                                            PreviewContent::None;
+                                        this.state.main_view.preview_text =
+                                            Some(format!("Cannot preview entry: {}", e));
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        })
+                        .detach();
+                    return;
+                }
+            }
+        }
+
         self.state.main_view.preview_request_id =
             self.state.main_view.preview_request_id.wrapping_add(1);
         let req_id = self.state.main_view.preview_request_id;
@@ -818,6 +881,11 @@ impl AppWindow {
                 self.load_text_preview(path, req_id, true, cx);
                 return;
             }
+        }
+
+        if crate::storage::archive_service::ArchiveService::is_supported_archive(path.as_path()) {
+            self.load_archive_preview(path, req_id, cx);
+            return;
         }
 
         match ext.as_str() {
@@ -3775,6 +3843,9 @@ impl AppWindow {
 
     pub fn set_settings_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
         self.state.active_settings_tab = tab;
+        if matches!(tab, SettingsTab::Advanced | SettingsTab::DevTools) {
+            self.refresh_thumbnail_disk_stats(cx);
+        }
         cx.notify();
     }
 
@@ -4286,6 +4357,8 @@ impl AppWindow {
         let cache_dir = crate::app_state::icons_cache_dir();
         let _ = std::fs::remove_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
+        self.state.settings_ui.disk_thumb_count = 0;
+        self.state.settings_ui.disk_thumb_bytes = 0;
         self.state.status_center.push_notification(
             "Thumbnail Cache Cleared".to_string(),
             "All cached thumbnails and icons have been removed.".to_string(),
@@ -4509,22 +4582,290 @@ impl AppWindow {
     }
 
     pub fn extract_selected_archive(&mut self, cx: &mut Context<Self>) {
+        // Check if user selected an archive item first
         if let Some(&idx) = self.state.active_view().selected_indices.iter().next() {
             if let Some(item) = self.state.active_view().items.get(idx) {
-                let archive_path = item.path.as_path().to_path_buf();
-                let current_dir = self.state.active_view().primary_path.as_path().to_path_buf();
-                self.state.active_dialog =
-                    Some(crate::ui::components::dialogs::DialogType::DecompressArchive {
-                        state: Box::new(
-                            crate::ui::dialog_services::decompress_dialog::DecompressState::new(
-                                archive_path,
-                                current_dir,
-                            ),
-                        ),
-                    });
-                cx.notify();
+                if item.path.as_path().is_file()
+                    && crate::storage::archive_service::ArchiveService::is_supported_archive(
+                        item.path.as_path(),
+                    )
+                {
+                    let archive_path = item.path.as_path().to_path_buf();
+                    let current_dir = self.state.active_view().primary_path.as_path().to_path_buf();
+                    self.open_decompress_dialog_for_path(archive_path, current_dir, cx);
+                    return;
+                }
             }
         }
+
+        // Also support clicking Extract while browsing inside an archive
+        let cur_path = self.state.active_view().primary_path.as_path().to_path_buf();
+        if let Some((arch_path, _inner)) =
+            crate::storage::archive_service::ArchiveService::split_archive_path(&cur_path)
+        {
+            let dest_dir = arch_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            self.open_decompress_dialog_for_path(arch_path, dest_dir, cx);
+        }
+    }
+
+    /// Open the Fluent Extract Archive dialog and asynchronously scan entries & safety info.
+    pub fn open_decompress_dialog_for_path(
+        &mut self,
+        archive_path: std::path::PathBuf,
+        destination_dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::ui::components::dialogs::DialogType;
+        use crate::ui::dialog_services::decompress_dialog::{ArchiveEntry, DecompressState};
+
+        let mut init_state = DecompressState::new(archive_path.clone(), destination_dir);
+        init_state.loading = true;
+        init_state.compressed_size = std::fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0);
+
+        self.state.active_dialog = Some(DialogType::DecompressArchive {
+            state: Box::new(init_state),
+        });
+        cx.notify();
+
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let scan_path = archive_path.clone();
+        let bg = cx.background_executor().spawn(async move {
+            crate::storage::archive_service::ArchiveService::list_entries_detailed(
+                &scan_path,
+                None,
+            )
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                let res = bg.await;
+                let _ = weak.update(&mut async_cx, |this, cx| {
+                    if let Some(DialogType::DecompressArchive { ref mut state }) =
+                        this.state.active_dialog
+                    {
+                        if state.archive_path != archive_path {
+                            return;
+                        }
+                        state.loading = false;
+                        match res {
+                            Ok(inv) => {
+                                state.format_badge = inv.format.short_badge().to_string();
+                                state.compressed_size = inv.compressed_size;
+                                state.is_encrypted = inv.is_encrypted;
+
+                                let mut top_names = std::collections::HashSet::new();
+                                let entries: Vec<ArchiveEntry> = inv
+                                    .entries
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(idx, e)| {
+                                        if let Some(top) = e.relative_path.split('/').next() {
+                                            if !top.is_empty() {
+                                                top_names.insert(top.to_string());
+                                            }
+                                        }
+                                        ArchiveEntry {
+                                            index: idx,
+                                            path: e.relative_path.clone(),
+                                            is_dir: e.is_dir,
+                                            size: e.size,
+                                        }
+                                    })
+                                    .collect();
+                                state.set_contents(entries);
+                                // Extract into a subfolder cleanly when archive contains > 1 top-level entry
+                                state.create_subfolder = top_names.len() > 1;
+                                state.error = None;
+                            }
+                            Err(e) => {
+                                state.error = Some(e.to_string());
+                            }
+                        }
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+    }
+
+    /// Open native Windows / OS folder picker to update the Extract dialog destination.
+    pub fn browse_decompress_destination(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::dialogs::DialogType;
+        let current = match &self.state.active_dialog {
+            Some(DialogType::DecompressArchive { state }) => Some(state.destination.clone()),
+            _ => return,
+        };
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx.background_executor().spawn(async move {
+            crate::ui::dialog_services::decompress_dialog::pick_folder_native(current.as_deref())
+        });
+        cx.foreground_executor()
+            .spawn(async move {
+                if let Some(folder) = bg.await {
+                    let _ = weak.update(&mut async_cx, |this, cx| {
+                        if let Some(DialogType::DecompressArchive { ref mut state }) =
+                            this.state.active_dialog
+                        {
+                            state.set_destination_path(folder);
+                            state.error = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
+    }
+
+    /// Validate and execute archive extraction in background with ProgressEngine + zip-bomb protection.
+    pub fn execute_decompress_dialog(&mut self, cx: &mut Context<Self>) {
+        use crate::core::progress::OpKind;
+        use crate::storage::archive_service::{
+            ArchiveSafetyPolicy, ArchiveService, ExtractOptions, ExtractProgress,
+        };
+        use crate::ui::components::dialogs::DialogType;
+        use futures::StreamExt;
+
+        let (archive_path, destination, selected_set, create_subfolder, overwrite, open_dest, password) = {
+            let Some(DialogType::DecompressArchive { ref mut state }) = self.state.active_dialog
+            else {
+                return;
+            };
+            state.sync_destination_from_text();
+            if let Err(err_msg) = state.validate() {
+                state.error = Some(err_msg);
+                cx.notify();
+                return;
+            }
+            let selected_set = if state.selected_entries.len() == state.contents.len()
+                && !state.contents.is_empty()
+            {
+                None
+            } else {
+                let set: std::collections::HashSet<String> = state
+                    .selected_entries
+                    .iter()
+                    .filter_map(|&idx| state.contents.get(idx))
+                    .map(|e| e.path.clone())
+                    .collect();
+                Some(set)
+            };
+            (
+                state.archive_path.clone(),
+                state.destination.clone(),
+                selected_set,
+                state.create_subfolder,
+                state.overwrite,
+                state.open_destination,
+                state.password.clone(),
+            )
+        };
+
+        self.close_dialog(cx);
+
+        let archive_name = archive_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("archive")
+            .to_string();
+        let progress_engine = self.state.progress_engine.clone();
+        let bg_exec = cx.background_executor().clone();
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let job_id = progress_engine
+                    .start_job_with_meta(
+                        format!("Extracting {}", archive_name),
+                        OpKind::Extract,
+                        Some(crate::core::path_util::FilesPath::new(destination.clone())),
+                        0,
+                    )
+                    .await;
+                let cancel_flag = progress_engine.cancel_flag(job_id);
+                let opts = ExtractOptions {
+                    archive_path: archive_path.clone(),
+                    destination: destination.clone(),
+                    selected_entries: selected_set,
+                    create_subfolder,
+                    overwrite,
+                    password,
+                    policy: ArchiveSafetyPolicy::default(),
+                };
+
+                let (prog_tx, mut prog_rx) = futures::channel::mpsc::unbounded::<ExtractProgress>();
+                let bg = bg_exec.spawn(async move {
+                    ArchiveService::extract_archive_with_options(
+                        &opts,
+                        |prog| {
+                            let _ = prog_tx.unbounded_send(prog);
+                        },
+                        &cancel_flag,
+                    )
+                });
+
+                while let Some(prog) = prog_rx.next().await {
+                    progress_engine
+                        .report_with_items(
+                            job_id,
+                            prog.bytes_done,
+                            prog.bytes_total,
+                            prog.entries_done as u64,
+                            prog.entries_total as u64,
+                            &prog.current_item,
+                        )
+                        .await;
+                }
+
+                match bg.await {
+                    Ok(report) => {
+                        progress_engine.complete_job(job_id).await;
+                        let final_dest = report.final_destination.clone();
+                        let count = report.extracted_files;
+                        let _ = weak.update(&mut async_cx, |this, cx| {
+                            this.state.status_center.push_notification(
+                                format!("Extracted {}", archive_name),
+                                format!(
+                                    "{} files extracted to {}",
+                                    count,
+                                    final_dest.display()
+                                ),
+                                crate::ui::components::status_center::ToastSeverity::Success,
+                                None,
+                            );
+                            if open_dest {
+                                let pane = this.state.active_pane_focus();
+                                this.navigate_pane(
+                                    crate::core::path_util::FilesPath::new(final_dest),
+                                    pane,
+                                    cx,
+                                );
+                            } else {
+                                this.refresh(cx);
+                            }
+                            cx.notify();
+                        });
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        progress_engine.fail_job(job_id, msg.clone()).await;
+                        let _ = weak.update(&mut async_cx, |this, cx| {
+                            this.state.status_center.push_notification(
+                                format!("Extraction failed: {}", archive_name),
+                                msg,
+                                crate::ui::components::status_center::ToastSeverity::Error,
+                                None,
+                            );
+                            cx.notify();
+                        });
+                    }
+                }
+            })
+            .detach();
     }
 
     /// Load preview content & details cache for the currently selected item in the active pane.

@@ -343,114 +343,32 @@ pub fn extract_svg_preview(path: &FilesPath) -> Result<SvgPreviewInfo> {
 
 /// Extract archive contents & compression statistics across `.zip`/`.jar`/`.apk`/`.whl`/`.nupkg`,
 /// `.7z` (`sevenz-rust`), and `.tar`/`.tar.gz`/`.tgz` archives.
-pub fn extract_archive_preview(path: &FilesPath, ext: &str) -> Result<ArchivePreviewInfo> {
-    let ext_lower = ext.to_ascii_lowercase();
-    let compressed_file_size = fs::metadata(path.as_path()).map(|m| m.len()).unwrap_or(0);
-
-    match ext_lower.as_str() {
-        "7z" => {
-            let reader = sevenz_rust::SevenZReader::open(
-                path.as_path(),
-                sevenz_rust::Password::empty(),
-            )
-            .map_err(|e| anyhow!("7z error: {}", e))?;
-            let files = &reader.archive().files;
-            let entry_count = files.len();
-            let mut uncompressed_total = 0u64;
-            let mut entries = Vec::with_capacity(entry_count.min(120));
-            for f in files {
-                uncompressed_total = uncompressed_total.saturating_add(f.size());
-                if entries.len() < 120 {
-                    entries.push(f.name().to_string());
-                }
-            }
-            let ratio = if uncompressed_total > 0 {
-                Some(
-                    (1.0 - (compressed_file_size as f32 / uncompressed_total as f32))
-                        .clamp(0.0, 0.99)
-                        * 100.0,
-                )
-            } else {
-                None
-            };
-            Ok(ArchivePreviewInfo {
-                entry_count,
-                entries,
-                uncompressed_size: Some(uncompressed_total),
-                compression_ratio: ratio,
-            })
-        }
-        "tar" => extract_tar_archive_preview(path, compressed_file_size),
-        _ => {
-            let file = File::open(path.as_path())?;
-            let mut archive = zip::ZipArchive::new(file)?;
-            let entry_count = archive.len();
-            let mut uncompressed_total = 0u64;
-            let mut entries = Vec::with_capacity(entry_count.min(120));
-            for i in 0..entry_count {
-                if let Ok(entry) = archive.by_index(i) {
-                    uncompressed_total = uncompressed_total.saturating_add(entry.size());
-                    if entries.len() < 120 {
-                        if let Ok(name) = entry.name() {
-                            entries.push(name.to_string());
-                        }
-                    }
-                }
-            }
-            let ratio = if uncompressed_total > 0 {
-                Some(
-                    (1.0 - (compressed_file_size as f32 / uncompressed_total as f32))
-                        .clamp(0.0, 0.99)
-                        * 100.0,
-                )
-            } else {
-                None
-            };
-            Ok(ArchivePreviewInfo {
-                entry_count,
-                entries,
-                uncompressed_size: Some(uncompressed_total),
-                compression_ratio: ratio,
-            })
-        }
-    }
-}
-
-fn extract_tar_archive_preview(path: &FilesPath, file_size: u64) -> Result<ArchivePreviewInfo> {
-    let mut file = File::open(path.as_path())?;
-    let mut entries = Vec::new();
-    let mut entry_count = 0usize;
-    let mut uncompressed_total = 0u64;
-    let mut block = [0u8; 512];
-
-    while entries.len() < 120 && file.read_exact(&mut block).is_ok() {
-        if block.iter().all(|&b| b == 0) {
-            break;
-        }
-        let name_bytes: Vec<u8> = block[0..100].iter().copied().take_while(|&b| b != 0).collect();
-        if name_bytes.is_empty() {
-            break;
-        }
-        let name = String::from_utf8_lossy(&name_bytes).to_string();
-        let size_octal = String::from_utf8_lossy(&block[124..136])
-            .trim_matches(|c: char| c == '\0' || c.is_whitespace())
-            .to_string();
-        let entry_size = u64::from_str_radix(&size_octal, 8).unwrap_or(0);
-        uncompressed_total = uncompressed_total.saturating_add(entry_size);
-        entry_count += 1;
-        entries.push(name);
-
-        let padded_skip = ((entry_size + 511) / 512) * 512;
-        if padded_skip > 0 && file.seek(SeekFrom::Current(padded_skip as i64)).is_err() {
-            break;
-        }
-    }
-
+pub fn extract_archive_preview(path: &FilesPath, _ext: &str) -> Result<ArchivePreviewInfo> {
+    let inv = crate::storage::archive_service::ArchiveService::list_entries_detailed(
+        path.as_path(),
+        None,
+    )?;
+    let entry_count = inv.entries.len();
+    let entries = inv
+        .entries
+        .iter()
+        .take(120)
+        .map(|e| e.relative_path.clone())
+        .collect();
+    let ratio = if inv.total_uncompressed > 0 {
+        Some(
+            (1.0 - (inv.compressed_size as f32 / inv.total_uncompressed as f32))
+                .clamp(0.0, 0.99)
+                * 100.0,
+        )
+    } else {
+        None
+    };
     Ok(ArchivePreviewInfo {
         entry_count,
         entries,
-        uncompressed_size: Some(uncompressed_total.max(file_size)),
-        compression_ratio: None,
+        uncompressed_size: Some(inv.total_uncompressed),
+        compression_ratio: ratio,
     })
 }
 

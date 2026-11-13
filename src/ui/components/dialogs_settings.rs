@@ -4166,9 +4166,10 @@ impl crate::ui::components::dialogs::DialogsView {
                 Some("\u{E9D9}"),
                 "GPU & Thumbnail Cache Diagnostics",
                 Some(&format!(
-                    "LRU Icon Cache: {} / {} entries • Target: 120–144 FPS (< 6.94 ms frame time)",
+                    "LRU Icon Cache: {} / {} entries • GPU Texture Pool: {} • Target: 120–144 FPS (< 6.94 ms frame time)",
                     data.cached_icon_count,
-                    crate::app_state::MAX_ICON_CACHE_ENTRIES
+                    data.ram_thumb_cap,
+                    data.gpu_thumb_cap
                 )),
                 Self::settings_toggle_switch(
                     config.devtools.show_fps_telemetry,
@@ -4182,6 +4183,34 @@ impl crate::ui::components::dialogs::DialogsView {
     // 9. ADVANCED PAGE (Files-community AdvancedPage.xaml parity)
     // ─────────────────────────────────────────────────────────────────────────
 
+    fn format_cache_bytes(bytes: u64) -> String {
+        const KB: f64 = 1024.0;
+        const MB: f64 = 1024.0 * 1024.0;
+        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let b = bytes as f64;
+        if b >= GB {
+            format!("{:.2} GB", b / GB)
+        } else if b >= MB {
+            format!("{:.0} MB", b / MB)
+        } else if b >= KB {
+            format!("{:.0} KB", b / KB)
+        } else {
+            format!("{} B", bytes)
+        }
+    }
+
+    fn format_count_commas(n: u32) -> String {
+        let s = n.to_string();
+        let mut out = String::with_capacity(s.len() + 2);
+        for (i, ch) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        out.chars().rev().collect()
+    }
+
     fn build_advanced_settings(
         config: &crate::config::config::AppConfig,
         data: &SettingsPreReadData,
@@ -4192,38 +4221,164 @@ impl crate::ui::components::dialogs::DialogsView {
         let v_edit_json = view.clone();
         let v_clear_cache = view.clone();
 
+        const MIN_LIMIT: f32 = 1024.0;
+        const MAX_LIMIT: f32 = 32768.0;
+        const STEP_LIMIT: f32 = 512.0;
+        let current_limit = config.experimental.thumbnail_cache_size_limit.clamp(1024, 32768);
+        let pct = ((current_limit as f32 - MIN_LIMIT) / (MAX_LIMIT - MIN_LIMIT)).clamp(0.0, 1.0);
+        let track_w: f32 = 220.0;
+        let thumb_d: f32 = 16.0;
+        let thumb_left = (pct * (track_w - thumb_d)).clamp(0.0, track_w - thumb_d);
+        let fill_w = (thumb_left + thumb_d * 0.5).clamp(4.0, track_w);
+
+        // Estimate ~40 KB per 256px PNG on disk, 256 KB per GPU texture, plus <= 32 MB bitmap pool
+        let est_disk_bytes = u64::from(current_limit) * 40 * 1024;
+        let gpu_cap = crate::ui::components::bounded_image_cache::gpu_cache_capacity_for_limit(
+            current_limit,
+        );
+        let est_vram_bytes = (gpu_cap as u64) * 256 * 1024;
+        let est_ram_index_bytes = u64::from(current_limit) * 256;
+        let est_total_mem_bytes = est_ram_index_bytes + 32 * 1024 * 1024;
+        let actual_disk_text = if data.disk_thumb_count > 0 || data.disk_thumb_bytes > 0 {
+            format!(
+                "Actual on disk: {} files ({})",
+                Self::format_count_commas(data.disk_thumb_count as u32),
+                Self::format_cache_bytes(data.disk_thumb_bytes),
+            )
+        } else {
+            format!("In-memory index: {} entries", data.cached_icon_count)
+        };
+
+        let track_bounds_for_canvas = data.ui_state.thumb_slider_track_bounds.clone();
+        let track_bounds_for_down = data.ui_state.thumb_slider_track_bounds.clone();
+        let v_slider = view.clone();
+
         let cache_items: Vec<AnyElement> = vec![
             Self::settings_expander_row(
-                "Cache size limit",
-                Some("Maximum number of extracted shell thumbnails held in memory"),
+                "Thumbnail cache capacity",
+                Some(&format!(
+                    "{} thumbnails • Est. disk: ~{} • GPU pool: {} textures (~{}) • RAM cap: ~{}",
+                    Self::format_count_commas(current_limit),
+                    Self::format_cache_bytes(est_disk_bytes),
+                    gpu_cap,
+                    Self::format_cache_bytes(est_vram_bytes),
+                    Self::format_cache_bytes(est_total_mem_bytes),
+                )),
                 div()
                     .flex()
-                    .flex_row()
-                    .gap(px(4.0))
-                    .children([512u32, 1024, 2048, 4096].into_iter().map(|limit| {
-                        let v = view.clone();
-                        let is_sel = config.experimental.thumbnail_cache_size_limit == limit;
-                        Self::build_compact_btn(
-                            format!("{} items", limit),
-                            is_sel,
-                            move |_, _, cx| {
-                                v.update(cx, move |this, cx| {
-                                    this.state.settings.update(cx, |s, _| {
-                                        s.config.experimental.thumbnail_cache_size_limit = limit;
-                                        let _ = s.config.save();
+                    .flex_col()
+                    .items_end()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                                    .child(format!(
+                                        "{} (~{})",
+                                        Self::format_count_commas(current_limit),
+                                        Self::format_cache_bytes(est_disk_bytes),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(track_w))
+                                    .h(px(22.0))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, move |event, _win, cx| {
+                                        let click_x: f32 = event.position.x.into();
+                                        let (left, width) = track_bounds_for_down
+                                            .lock()
+                                            .map(|g| *g)
+                                            .unwrap_or((0.0, track_w));
+                                        let w = if width > 1.0 { width } else { track_w };
+                                        let ratio = ((click_x - left) / w).clamp(0.0, 1.0);
+                                        let raw = MIN_LIMIT + ratio * (MAX_LIMIT - MIN_LIMIT);
+                                        let snapped = ((raw / STEP_LIMIT).round() * STEP_LIMIT)
+                                            .clamp(MIN_LIMIT, MAX_LIMIT) as u32;
+                                        v_slider.update(cx, |this, cx| {
+                                            this.state.settings_ui.thumb_slider_dragging = true;
+                                            this.preview_thumbnail_cache_limit(snapped, cx);
+                                        });
+                                    })
+                                    .child(
+                                        gpui::canvas(
+                                            move |bounds, _, _| {
+                                                if let Ok(mut g) = track_bounds_for_canvas.lock() {
+                                                    *g = (
+                                                        f32::from(bounds.origin.x),
+                                                        f32::from(bounds.size.width),
+                                                    );
+                                                }
+                                            },
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .inset_0(),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(track_w))
+                                            .h(px(4.0))
+                                            .rounded(px(2.0))
+                                            .bg(rgba(0xFFFFFF28u32)),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px(0.0))
+                                            .w(px(fill_w))
+                                            .h(px(4.0))
+                                            .rounded(px(2.0))
+                                            .bg(rgb(0x4CC2FF)),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px(thumb_left))
+                                            .w(px(thumb_d))
+                                            .h(px(thumb_d))
+                                            .rounded(px(thumb_d * 0.5))
+                                            .bg(rgb(0x4CC2FF))
+                                            .border_2()
+                                            .border_color(rgb(0xFFFFFF)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(4.0))
+                            .children([2048u32, 8192, 16384, 32768].into_iter().map(|limit| {
+                                let v = view.clone();
+                                let is_sel = config.experimental.thumbnail_cache_size_limit == limit;
+                                let label = format!("{}k", limit / 1024);
+                                Self::build_compact_btn(label, is_sel, move |_, _, cx| {
+                                    v.update(cx, move |this, cx| {
+                                        this.apply_thumbnail_cache_limit(limit, cx);
                                     });
-                                    cx.notify();
-                                });
-                            },
-                        )
-                    })),
+                                })
+                            })),
+                    ),
             )
             .into_any_element(),
             Self::settings_expander_row(
                 "Clear cached thumbnails",
                 Some(&format!(
-                    "Currently caching {} extracted thumbnails in RAM & disk cache",
-                    data.cached_icon_count
+                    "{} • RAM icon LRU: {} / {}",
+                    actual_disk_text,
+                    data.cached_icon_count,
+                    current_limit
                 )),
                 Self::build_compact_btn("Clear Cache", false, move |_, _, cx| {
                     v_clear_cache.update(cx, |this, cx| {

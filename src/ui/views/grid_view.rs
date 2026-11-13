@@ -957,7 +957,15 @@ impl MainViewState {
 
         let path_clone = item_path.clone();
         let path_for_move = item_path.clone();
-        let visual_el: AnyElement = if is_thumbnail {
+        let can_direct_image_fallback = is_thumbnail
+            && item.size > 0
+            && item.size <= 1_500_000
+            && matches!(
+                extension.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+            )
+            && item_path.as_path().is_file();
+        let visual_el: AnyElement = if is_thumbnail && (cached_icon_path.is_some() || can_direct_image_fallback) {
             img(if let Some(p) = &cached_icon_path {
                 p.clone()
             } else {

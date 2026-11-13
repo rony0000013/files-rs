@@ -2,7 +2,14 @@
 //! State machine for DecompressArchiveDialog.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Focused text input field inside `DecompressArchiveDialog`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecompressInputField {
+    Destination,
+    Password,
+}
 
 /// State for DecompressArchiveDialog
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -15,14 +22,35 @@ pub struct DecompressState {
     pub selected_entries: Vec<usize>,
     /// Destination folder
     pub destination: PathBuf,
+    /// Editable destination text buffer synced with `destination`
+    #[serde(default)]
+    pub destination_text: String,
+    /// Detected archive format badge (e.g. "ZIP", "TAR.GZ", "7Z")
+    #[serde(default)]
+    pub format_badge: String,
+    /// Archive compressed size on disk (bytes)
+    #[serde(default)]
+    pub compressed_size: u64,
     /// Extract with full paths
     pub full_paths: bool,
+    /// Extract into a subfolder named after the archive
+    #[serde(default)]
+    pub create_subfolder: bool,
+    /// Open / navigate to destination folder after extraction finishes
+    #[serde(default)]
+    pub open_destination: bool,
     /// Overwrite existing files
     pub overwrite: bool,
     /// Password for encrypted archives
     pub password: Option<String>,
-    /// Show password field
+    /// Show password field / reveal password characters
     pub show_password: bool,
+    /// Currently focused input field for keyboard typing
+    #[serde(default)]
+    pub focused_field: Option<DecompressInputField>,
+    /// True while background archive inventory scan is running
+    #[serde(default)]
+    pub loading: bool,
     /// Error message
     pub error: Option<String>,
     /// Is the archive password protected
@@ -49,10 +77,17 @@ impl Default for DecompressState {
             contents: Vec::new(),
             selected_entries: Vec::new(),
             destination: PathBuf::new(),
+            destination_text: String::new(),
+            format_badge: String::new(),
+            compressed_size: 0,
             full_paths: false,
+            create_subfolder: false,
+            open_destination: false,
             overwrite: false,
             password: None,
             show_password: false,
+            focused_field: None,
+            loading: false,
             error: None,
             is_encrypted: false,
         }
@@ -62,10 +97,51 @@ impl Default for DecompressState {
 impl DecompressState {
     /// Create a new decompress state
     pub fn new(archive_path: PathBuf, destination: PathBuf) -> Self {
+        let dest_text = destination.to_string_lossy().to_string();
+        let format_badge = crate::storage::archive_service::ArchiveFormat::detect(&archive_path)
+            .map(|f| f.short_badge().to_string())
+            .unwrap_or_else(|| "ARCHIVE".to_string());
         Self {
             archive_path,
             destination,
+            destination_text: dest_text,
+            format_badge,
+            full_paths: true,
+            overwrite: true,
+            create_subfolder: true,
+            open_destination: true,
+            focused_field: Some(DecompressInputField::Destination),
             ..Default::default()
+        }
+    }
+
+    pub fn sync_destination_from_text(&mut self) {
+        let trimmed = self.destination_text.trim();
+        self.destination = if trimmed.is_empty() {
+            PathBuf::new()
+        } else {
+            PathBuf::from(trimmed)
+        };
+    }
+
+    pub fn set_destination_path(&mut self, dest: PathBuf) {
+        self.destination_text = dest.to_string_lossy().to_string();
+        self.destination = dest;
+    }
+
+    pub fn effective_destination_preview(&self) -> PathBuf {
+        let base = if self.destination_text.trim().is_empty() {
+            self.destination.clone()
+        } else {
+            PathBuf::from(self.destination_text.trim())
+        };
+        if self.create_subfolder {
+            let sub = crate::storage::archive_service::ArchiveFormat::suggested_folder_name(
+                &self.archive_path,
+            );
+            base.join(sub)
+        } else {
+            base
         }
     }
 
@@ -163,6 +239,73 @@ impl DecompressState {
         // For now, we check if password was needed
         self.is_encrypted
     }
+}
+
+/// Opens a native OS folder picker dialog (`IFileOpenDialog` with `FOS_PICKFOLDERS` on Windows).
+#[cfg(windows)]
+pub fn pick_folder_native(initial_dir: Option<&Path>) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
+        FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    };
+
+    unsafe {
+        let hr_init = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let did_init = hr_init.is_ok();
+
+        let result = (|| -> Option<PathBuf> {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL).ok()?;
+            if let Ok(mut opts) = dialog.GetOptions() {
+                opts |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM;
+                let _ = dialog.SetOptions(opts);
+            }
+            let title: Vec<u16> = "Select Extraction Folder\0".encode_utf16().collect();
+            let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
+            if let Some(dir) = initial_dir.filter(|p| p.exists()) {
+                let wide: Vec<u16> = dir
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                if let Ok(item) =
+                    SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide.as_ptr()), None)
+                {
+                    let _ = dialog.SetFolder(&item);
+                }
+            }
+            if dialog.Show(None).is_err() {
+                return None;
+            }
+            let item = dialog.GetResult().ok()?;
+            let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let mut len = 0usize;
+            while *pwstr.0.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(pwstr.0, len);
+            let path = PathBuf::from(OsString::from_wide(slice));
+            CoTaskMemFree(Some(pwstr.0 as *const _));
+            Some(path)
+        })();
+
+        if did_init {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+#[cfg(not(windows))]
+pub fn pick_folder_native(initial_dir: Option<&Path>) -> Option<PathBuf> {
+    initial_dir.map(|p| p.to_path_buf())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

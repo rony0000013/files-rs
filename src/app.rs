@@ -95,9 +95,18 @@ impl AppWindow {
 
         // Bounded GPU image cache for file-view thumbnails (replaces GPUI's
         // never-evicting global cache for our tiles; see bounded_image_cache).
+        let thumb_limit = window_view
+            .state
+            .settings
+            .read(cx)
+            .config
+            .experimental
+            .thumbnail_cache_size_limit;
         window_view.state.image_cache = Some(cx.new(|_| {
             crate::ui::components::bounded_image_cache::BoundedImageCache::new(
-                crate::ui::components::bounded_image_cache::MAX_GPU_IMAGE_ENTRIES,
+                crate::ui::components::bounded_image_cache::gpu_cache_capacity_for_limit(
+                    thumb_limit,
+                ),
             )
         }));
 
@@ -1223,6 +1232,120 @@ impl AppWindow {
         }
 
         // Intercept CustomProperties dialog input typing & keyboard shortcuts
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::DecompressArchive { .. })
+        ) {
+            use crate::ui::dialog_services::decompress_dialog::DecompressInputField;
+            let key = keystroke.key.as_str();
+            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+
+            if key == "escape" || key == "Escape" {
+                self.close_dialog(cx);
+                return;
+            }
+            if key == "enter" || key == "return" || key == "Enter" || key == "Return" {
+                self.execute_decompress_dialog(cx);
+                return;
+            }
+
+            if let Some(DialogType::DecompressArchive { ref mut state }) =
+                self.state.active_dialog
+            {
+                if let Some(field) = state.focused_field {
+                    let is_dest = field == DecompressInputField::Destination;
+                    let buf: &mut String = match field {
+                        DecompressInputField::Destination => &mut state.destination_text,
+                        DecompressInputField::Password => {
+                            state.password.get_or_insert_with(String::new)
+                        }
+                    };
+
+                    if is_ctrl {
+                        match key {
+                            "c" | "C" => {
+                                if !buf.is_empty() {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        buf.clone(),
+                                    ));
+                                }
+                            }
+                            "v" | "V" => {
+                                if let Some(clip) =
+                                    cx.read_from_clipboard().and_then(|c| c.text())
+                                {
+                                    let clean: String = clip
+                                        .chars()
+                                        .filter(|c| !['\r', '\n'].contains(c))
+                                        .collect();
+                                    buf.push_str(&clean);
+                                    if is_dest {
+                                        state.sync_destination_from_text();
+                                    }
+                                    cx.notify();
+                                }
+                            }
+                            "u" | "U" => {
+                                buf.clear();
+                                if is_dest {
+                                    state.sync_destination_from_text();
+                                }
+                                cx.notify();
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
+
+                    match key {
+                        "backspace" | "Backspace" => {
+                            buf.pop();
+                            if is_dest {
+                                state.sync_destination_from_text();
+                            }
+                            cx.notify();
+                            return;
+                        }
+                        "space" | "Space" => {
+                            buf.push(' ');
+                            if is_dest {
+                                state.sync_destination_from_text();
+                            }
+                            cx.notify();
+                            return;
+                        }
+                        "tab" | "Tab" => {
+                            state.focused_field = Some(if is_dest {
+                                DecompressInputField::Password
+                            } else {
+                                DecompressInputField::Destination
+                            });
+                            cx.notify();
+                            return;
+                        }
+                        _ => {
+                            let ch_str = keystroke.key_char.as_deref().unwrap_or(key);
+                            if !keystroke.modifiers.control
+                                && !keystroke.modifiers.alt
+                                && !keystroke.modifiers.platform
+                                && ch_str.chars().count() == 1
+                            {
+                                let ch = ch_str.chars().next().unwrap_or('\0');
+                                if !ch.is_control() {
+                                    buf.push(ch);
+                                    if is_dest {
+                                        state.sync_destination_from_text();
+                                    }
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if matches!(
             self.state.active_dialog,
             Some(DialogType::CustomProperties { .. })
@@ -2543,6 +2666,7 @@ impl AppWindow {
             self.save_session(cx);
             cx.notify();
         }
+        self.refresh_thumbnail_disk_stats(cx);
     }
 
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
@@ -4110,7 +4234,7 @@ impl AppWindow {
     /// cx.notify() in render() works: draw() calls set_dirty(false) at its
     /// START, and notify() sets it back to true — the dirty flag persists
     /// past draw() and the next frame callback will re-render.
-    pub fn tick_bouncy_scrolls(&mut self, _window: &Window, cx: &mut Context<Self>) {
+    pub fn tick_bouncy_scrolls(&mut self, _window: &Window, cx: &mut Context<Self>) -> bool {
         // Compute frame-time delta for frame-rate-independent physics
         let dt = if let Some(last) = self.last_render_time {
             let elapsed = std::time::Instant::now()
@@ -4311,6 +4435,9 @@ impl AppWindow {
                     .set_offset(gpui::point(px(0.0), px(offset)));
             }
             cx.notify();
+            true
+        } else {
+            false
         }
     }
 
@@ -5545,6 +5672,7 @@ impl AppWindow {
             crate::ui::components::status_center::ToastSeverity::Info,
             None,
         );
+        cx.notify();
 
         cx.foreground_executor()
             .spawn(async move {
@@ -6905,66 +7033,158 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Load Windows Shell icons for all items in the current directory.
-    /// Extracts icons via ThumbnailService, saves as PNG, caches paths.
+    /// Live-preview a thumbnail cache limit change during slider drag without hitting disk on every pixel.
+    pub fn preview_thumbnail_cache_limit(&mut self, limit: u32, cx: &mut Context<Self>) {
+        let clamped = limit.clamp(1024, 32_768);
+        self.state.settings.update(cx, |s, _| {
+            s.config.experimental.thumbnail_cache_size_limit = clamped;
+        });
+        cx.notify();
+    }
+
+    /// Scan the on-disk thumbnail cache count and total size in a background thread.
+    pub fn refresh_thumbnail_disk_stats(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx
+            .background_executor()
+            .spawn(async move { crate::app_state::cached_icon_disk_stats() });
+        cx.foreground_executor()
+            .spawn(async move {
+                let (count, bytes) = bg.await;
+                let _ = weak.update(&mut async_cx, |app, cx| {
+                    app.state.settings_ui.disk_thumb_count = count;
+                    app.state.settings_ui.disk_thumb_bytes = bytes;
+                    cx.notify();
+                });
+            })
+            .detach();
+    }
+
+    /// Dynamically update the thumbnail cache limits across RAM LRU, GPU texture cache,
+    /// and schedule background disk pruning when reducing the limit.
+    pub fn apply_thumbnail_cache_limit(&mut self, limit: u32, cx: &mut Context<Self>) {
+        let clamped = limit.clamp(512, 50_000);
+        self.state.settings.update(cx, |s, _| {
+            s.config.experimental.thumbnail_cache_size_limit = clamped;
+            let _ = s.config.save();
+        });
+        if let Ok(mut cache) = self.state.icon_cache.lock() {
+            if let Some(nz) = std::num::NonZeroUsize::new(clamped as usize) {
+                cache.resize(nz);
+            }
+        }
+        self.state.thumbnail_cache.set_capacity(clamped as usize);
+        if let Some(img_cache) = self.state.image_cache.clone() {
+            let gpu_cap =
+                crate::ui::components::bounded_image_cache::gpu_cache_capacity_for_limit(clamped);
+            img_cache.update(cx, |c, cx| {
+                c.set_max_entries(gpu_cap, None, cx);
+            });
+        }
+        let max_disk = clamped as usize;
+        cx.background_executor()
+            .spawn(async move {
+                crate::app_state::prune_disk_thumbnail_cache(max_disk);
+            })
+            .detach();
+        cx.notify();
+    }
+
+    /// Compute prioritized item indices visible in a pane's viewport (converting Grid View
+    /// row indices into underlying `items` indices via `items_per_row` and `visible_items_rc()`).
+    fn viewport_item_indices(
+        view_state: &crate::ui::views::main_view::MainViewState,
+        pane_w: f32,
+        lookahead_items: usize,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let visible_rc = view_state.visible_items_rc();
+        let total_vis = visible_rc.len();
+        if total_vis == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let (top_row, bottom_row) = {
+            let base = &view_state.uniform_list_scroll_handle.0.borrow().base_handle;
+            (base.top_item(), base.bottom_item())
+        };
+        let is_grid = view_state.view_mode == crate::config::config::ViewMode::Grid;
+        let cols = if is_grid {
+            crate::ui::views::main_view::MainViewState::grid_columns_for_width(
+                pane_w,
+                view_state.zoom_level,
+            )
+            .max(1)
+        } else {
+            1
+        };
+
+        let (vis_start, vis_end, prio_end) = if bottom_row > top_row || (bottom_row == top_row && is_grid) {
+            let start = (top_row * cols).min(total_vis);
+            let end = ((bottom_row + 1) * cols).min(total_vis);
+            let p_end = (end + lookahead_items.max(cols * 4)).min(total_vis);
+            (start, end, p_end)
+        } else {
+            let initial = total_vis.min(120);
+            (0, initial.min(48), initial)
+        };
+
+        let visible_only: Vec<usize> = visible_rc[vis_start..vis_end].to_vec();
+        let prioritized: Vec<usize> = visible_rc[vis_start..prio_end].to_vec();
+        (visible_only, prioritized)
+    }
+
+    /// Load Windows Shell icons & thumbnails in parallel across the persistent STA worker pool.
+    /// Modeled after Files-community's two-phase + pooled STA extraction pipeline:
+    /// 1. Fast disk/shell-cache lookup with `(size, mtime)` invalidation so newer files refresh.
+    /// 2. Parallel STA extraction for uncached videos/images/files, streaming results back fast.
     pub fn load_icons(&mut self, cx: &mut Context<Self>) {
         #[cfg(windows)]
         {
-            use crate::platform::windows::thumbnail_service::ThumbnailSize;
-            use std::path::PathBuf;
+            use crate::platform::windows::thumbnail_service::{
+                StaThumbnailPool, ThumbnailService, ThumbnailSize,
+            };
+            use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+            use std::time::UNIX_EPOCH;
 
-            // Determine which items are visible in the viewport so we prioritize them
-            let visible_start = self
-                .state
-                .main_view
-                .uniform_list_scroll_handle
-                .0
-                .borrow()
-                .base_handle
-                .top_item();
-            let visible_end = self
-                .state
-                .main_view
-                .uniform_list_scroll_handle
-                .0
-                .borrow()
-                .base_handle
-                .bottom_item();
+            static LAST_DISK_PRUNE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+            let (show_thumbnails, enable_disk_cache, thumb_limit) = {
+                let s = self.state.settings.read(cx);
+                (
+                    s.config.preferences.show_thumbnails,
+                    s.config.experimental.enable_thumbnail_cache,
+                    s.config.experimental.thumbnail_cache_size_limit.max(512) as usize,
+                )
+            };
 
             let icon_dir = icons_cache_dir();
-            // Include items from both panes when Dual-Pane is active so secondary pane thumbnails also extract.
+            let win_w = f32::from(self.state.last_window_size.width).max(900.0);
+            let is_dual = self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
+            let pane_w = if is_dual { (win_w - 260.0) * 0.5 } else { win_w - 240.0 }.max(320.0);
+
             let mut combined_items = self.state.main_view.items.clone();
-            if self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual {
+            let primary_len = combined_items.len();
+            let (_, mut priority_items) =
+                Self::viewport_item_indices(&self.state.main_view, pane_w, 40);
+
+            if is_dual {
+                let (_, sec_prio) =
+                    Self::viewport_item_indices(&self.state.secondary_view, pane_w, 32);
                 combined_items.extend(self.state.secondary_view.items.iter().cloned());
+                priority_items.extend(sec_prio.into_iter().map(|i| primary_len + i));
             }
+
             let items = std::sync::Arc::new(combined_items);
             let thumbnail_service = self.state.thumbnail_service.clone();
             let icon_cache = self.state.icon_cache.clone();
-            // Abort stale extractions when the user navigates away mid-flight.
+            let in_flight = self.state.in_flight_thumbnails.clone();
             let cancel = self.state.nav_cancel_guard.token();
             let weak_entity = cx.weak_entity();
             let mut async_cx = cx.to_async();
 
-            // Viewport-bounded extraction: only the visible window (+ 32-item
-            // lookahead) is queued. The full-directory storm (all 50k items)
-            // saturated CPU/disk and spiked RAM past 800 MB; the persistent
-            // disk cache still warms incrementally as the user scrolls.
-            // Viewport handles report 0..0 before first layout — fall back to
-            // the first 120 items so icons still populate on cold open.
+            // Trickle-fill: append up to 48 uncached items ahead of the cursor so
+            // off-screen items warm in the background while scrolling stays smooth.
             let total = items.len();
-            let mut priority_items: Vec<usize> = if visible_end > visible_start
-                && visible_start < total
-            {
-                let end = (visible_end + 32).min(total).max(visible_start);
-                (visible_start..end).collect()
-            } else {
-                (0..total.min(120)).collect()
-            };
-            // Trickle-fill: append the next uncached chunk (round-robin) so
-            // rows outside any reported viewport still resolve within minutes
-            // instead of waiting on viewport tracking alone. Batches that find
-            // everything cached set no flags and trigger no re-render.
-            // Scan is windowed (<= 4,096 slots/call) to stay off the UI budget.
             if total > 0 {
                 if let Ok(cache) = icon_cache.lock() {
                     let queued: std::collections::HashSet<usize> =
@@ -6972,151 +7192,260 @@ impl AppWindow {
                     let start = TRICKLE_CURSOR.load(Ordering::Relaxed) % total;
                     let mut added = 0usize;
                     let mut scanned = 0usize;
-                    while added < 25 && scanned < 4_096 {
+                    while added < 48 && scanned < 4_096.min(total) {
                         let idx = (start + scanned) % total;
                         scanned += 1;
                         if queued.contains(&idx) {
                             continue;
                         }
-                        match items.get(idx) {
-                            Some(item) if !cache.contains(&item.path) => {
+                        if let Some(item) = items.get(idx) {
+                            if !cache.contains(&item.path) {
                                 priority_items.push(idx);
                                 added += 1;
                             }
-                            _ => {}
                         }
                     }
                     TRICKLE_CURSOR.store(start + scanned, Ordering::Relaxed);
                 }
             }
 
-            let batch_size = 25;
+            // Filter out items already cached or currently in-flight on the STA pool.
+            let mut work_items: Vec<(FilesPath, bool, u64, u64)> = Vec::new();
+            {
+                let cache_guard = icon_cache.lock().ok();
+                let mut flight_guard = in_flight.lock().ok();
+                for idx in priority_items {
+                    let Some(item) = items.get(idx) else {
+                        continue;
+                    };
+                    if let Some(ref cg) = cache_guard {
+                        if cg.contains(&item.path) {
+                            continue;
+                        }
+                    }
+                    if let Some(ref mut fg) = flight_guard {
+                        if !fg.insert(item.path.clone()) {
+                            continue;
+                        }
+                    }
+                    let is_dir = matches!(
+                        item.file_type,
+                        crate::storage::storage::FileType::Directory
+                    );
+                    let mtime_secs = item
+                        .modified
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    work_items.push((item.path.clone(), is_dir, item.size, mtime_secs));
+                    if work_items.len() >= 96 {
+                        break;
+                    }
+                }
+            }
 
-            // Use foreground executor (no Send requirement) that delegates blocking
-            // extraction work to the background executor batch by batch.
+            if work_items.is_empty() {
+                return;
+            }
+
+            // Periodically prune disk cache in background if over user limit (max once per 30s).
+            if enable_disk_cache {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let prev = LAST_DISK_PRUNE_EPOCH.load(AtomicOrdering::Relaxed);
+                if now_secs.saturating_sub(prev) >= 30
+                    && LAST_DISK_PRUNE_EPOCH
+                        .compare_exchange(
+                            prev,
+                            now_secs,
+                            AtomicOrdering::Relaxed,
+                            AtomicOrdering::Relaxed,
+                        )
+                        .is_ok()
+                {
+                    cx.background_executor()
+                        .spawn(async move {
+                            crate::app_state::prune_disk_thumbnail_cache(thumb_limit);
+                        })
+                        .detach();
+                }
+            }
+
+            // Process in parallel waves of 12 across the persistent STA COM worker pool!
             cx.foreground_executor()
                 .spawn(async move {
-                    for chunk in priority_items.chunks(batch_size) {
-                        // Navigated away mid-flight: drop remaining batches.
+                    for chunk in work_items.chunks(12) {
                         if cancel.is_cancelled() {
-                            tracing::debug!(
-                                "load_icons: batch aborted by nav generation change"
-                            );
-                            break;
+                            if let Ok(mut fg) = in_flight.lock() {
+                                for (p, _, _, _) in chunk {
+                                    fg.remove(p);
+                                }
+                            }
+                            continue;
                         }
                         let chunk_vec = chunk.to_vec();
-                        // Clone only Send types for the background task
-                        let items_clone = items.clone();
                         let thumb_clone = thumbnail_service.clone();
                         let cache_clone = icon_cache.clone();
+                        let flight_clone = in_flight.clone();
                         let dir_clone = icon_dir.clone();
-                        // Grid tiles render up to ~220px wide: extract at Large
-                        // (256) so downscaling stays sharp. Medium (96) tiles
-                        // upscaled look washed out next to Files Community.
-                        let size = ThumbnailSize::Large;
+                        let cancel_wave = cancel.clone();
 
-                        // Blocking thumbnail extraction runs on background thread pool
-                        let batch = async_cx
+                        let wave_updated = async_cx
                             .background_executor()
                             .spawn(async move {
-                                let _com_init = unsafe {
-                                    windows::Win32::System::Com::CoInitializeEx(
-                                        None,
-                                        windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                                    )
-                                };
+                                let (tx, rx) =
+                                    std::sync::mpsc::channel::<(FilesPath, Option<std::path::PathBuf>)>();
+                                let total_in_wave = chunk_vec.len();
+                                let pool = StaThumbnailPool::global();
 
-                                let mut batch_extracted = false;
-                                for &idx in &chunk_vec {
-                                    if idx >= items_clone.len() {
-                                        continue;
-                                    }
-                                    let item = &items_clone[idx];
-                                    let path = &item.path;
-
-                                    {
-                                        if let Ok(cache) = cache_clone.lock() {
-                                            if cache.contains(path) {
-                                                continue;
-                                            }
+                                for (path, is_dir, known_size, known_mtime) in chunk_vec {
+                                    let tx = tx.clone();
+                                    let svc = thumb_clone.clone();
+                                    let dir = dir_clone.clone();
+                                    let c_tok = cancel_wave.clone();
+                                    pool.spawn(move || {
+                                        if c_tok.is_cancelled() {
+                                            let _ = tx.send((path, None));
+                                            return;
                                         }
-                                        // Check persistent disk cache — avoids expensive COM
-                                        // re-extraction for items already processed in a
-                                        // previous session. Populates in-memory cache so
-                                        // thumbnails appear instantly on fresh start.
-                                        // Check persistent disk cache (full-path hash key)
-                                        let cached_png = dir_clone.join(format!(
-                                            "{}.png",
-                                            crate::app_state::disk_cache_key(path)
-                                        ));
-                                        if cached_png.exists() {
-                                            if let Ok(mut cache) = cache_clone.lock() {
-                                                cache.put(path.clone(), cached_png);
-                                                batch_extracted = true;
-                                            }
-                                            continue;
-                                        }
-                                    }
 
-                                    if let Ok(thumb) = thumb_clone.extract_thumbnail(path, size) {
-                                        use image::{ImageBuffer, Rgba};
-                                        let w = thumb.width;
-                                        let h = thumb.height;
-                                        if w > 0 && h > 0 && thumb.data.len() as u32 >= w * h * 4 {
-                                            let mut rgba_data = thumb.data.clone();
-                                            for ch in rgba_data.chunks_exact_mut(4) {
-                                                ch.swap(0, 2);
-                                            }
-                                            // Reject blank extractions (single solid color or
-                                            // fully transparent): caching them poisons the
-                                            // disk cache with white/empty tiles forever.
-                                            // Real shell thumbnails always vary + have
-                                            // opaque pixels, so this never fires on good data.
-                                            let mut distinct =
-                                                std::collections::HashSet::new();
-                                            let mut any_opaque = false;
-                                            for px in rgba_data.chunks_exact(4).step_by(64) {
-                                                if px[3] != 0 {
-                                                    any_opaque = true;
+                                        let mut resolved_png: Option<std::path::PathBuf> = None;
+                                        let meta_opt = std::fs::metadata(path.as_path()).ok();
+
+                                        if let Some(meta) = meta_opt {
+                                            let fsize = meta.len();
+                                            let mtime_secs = meta
+                                                .modified()
+                                                .ok()
+                                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                                .map(|d| d.as_secs())
+                                                .unwrap_or(known_mtime);
+                                            let cache_path = dir.join(format!(
+                                                "{}.png",
+                                                crate::app_state::thumbnail_disk_cache_key(
+                                                    &path, fsize, mtime_secs
+                                                )
+                                            ));
+
+                                            if enable_disk_cache && cache_path.exists() {
+                                                resolved_png = Some(cache_path);
+                                            } else if !show_thumbnails && !is_dir {
+                                                let ext = path
+                                                    .as_path()
+                                                    .extension()
+                                                    .and_then(|e| e.to_str())
+                                                    .unwrap_or("")
+                                                    .to_ascii_lowercase();
+                                                let ext_key = if ext.is_empty() {
+                                                    "_noext".to_string()
+                                                } else {
+                                                    ext.clone()
+                                                };
+                                                let ext_png =
+                                                    dir.join(format!("_ext_{}.png", ext_key));
+                                                if enable_disk_cache && ext_png.exists() {
+                                                    resolved_png = Some(ext_png);
+                                                } else if let Some(res) = svc
+                                                    .extract_shell_icon_by_extension(
+                                                        &ext,
+                                                        false,
+                                                        ThumbnailSize::Large,
+                                                    )
+                                                {
+                                                    if ThumbnailService::save_bgra_as_fast_png(
+                                                        &res.data, res.width, res.height, &ext_png,
+                                                    ) {
+                                                        resolved_png = Some(ext_png);
+                                                    }
                                                 }
-                                                distinct.insert((px[0], px[1], px[2], px[3]));
-                                                if distinct.len() > 4 {
-                                                    break;
-                                                }
-                                            }
-                                            if distinct.len() <= 1 || !any_opaque {
-                                                continue;
-                                            }
-                                            if let Some(img) = ImageBuffer::<Rgba<u8>, _>::from_raw(
-                                                w, h, rgba_data,
-                                            ) {
-                                                let cache_path = dir_clone.join(format!(
-                                                    "{}.png",
-                                                    crate::app_state::disk_cache_key(path)
-                                                ));
-                                                if img.save(&cache_path).is_ok() {
-                                                    if let Ok(mut cache) = cache_clone.lock() {
-                                                        cache.put(path.clone(), cache_path);
-                                                        batch_extracted = true;
+                                            } else {
+                                                // Fast probe of Windows thumbcache first, then full extraction.
+                                                let thumb_res =
+                                                    ThumbnailService::extract_cached_shell_thumbnail(
+                                                        &path,
+                                                        ThumbnailSize::Large,
+                                                    )
+                                                    .map(Ok)
+                                                    .unwrap_or_else(|| {
+                                                        svc.extract_thumbnail(
+                                                            &path,
+                                                            ThumbnailSize::Large,
+                                                        )
+                                                    });
+                                                if let Ok(thumb) = thumb_res {
+                                                    if ThumbnailService::save_bgra_as_fast_png(
+                                                        &thumb.data,
+                                                        thumb.width,
+                                                        thumb.height,
+                                                        &cache_path,
+                                                    ) {
+                                                        resolved_png = Some(cache_path);
                                                     }
                                                 }
                                             }
+                                        } else {
+                                            // Virtual item (e.g. inside an archive): resolve crisp per-extension icon!
+                                            let _ = known_size;
+                                            let ext = if is_dir {
+                                                "__folder".to_string()
+                                            } else {
+                                                path.as_path()
+                                                    .extension()
+                                                    .and_then(|e| e.to_str())
+                                                    .unwrap_or("")
+                                                    .to_ascii_lowercase()
+                                            };
+                                            let ext_key = if ext.is_empty() {
+                                                "_noext".to_string()
+                                            } else {
+                                                ext.clone()
+                                            };
+                                            let ext_png =
+                                                dir.join(format!("_ext_{}.png", ext_key));
+                                            if ext_png.exists() {
+                                                resolved_png = Some(ext_png);
+                                            } else if let Some(res) = svc
+                                                .extract_shell_icon_by_extension(
+                                                    &ext,
+                                                    is_dir,
+                                                    ThumbnailSize::Large,
+                                                )
+                                            {
+                                                if ThumbnailService::save_bgra_as_fast_png(
+                                                    &res.data, res.width, res.height, &ext_png,
+                                                ) {
+                                                    resolved_png = Some(ext_png);
+                                                }
+                                            }
+                                        }
+
+                                        let _ = tx.send((path, resolved_png));
+                                    });
+                                }
+                                drop(tx);
+
+                                let mut any_inserted = false;
+                                for _ in 0..total_in_wave {
+                                    let Ok((path, maybe_png)) = rx.recv() else {
+                                        break;
+                                    };
+                                    if let Ok(mut fg) = flight_clone.lock() {
+                                        fg.remove(&path);
+                                    }
+                                    if let Some(png_path) = maybe_png {
+                                        if let Ok(mut cg) = cache_clone.lock() {
+                                            cg.put(path, png_path);
+                                            any_inserted = true;
                                         }
                                     }
                                 }
-
-                                unsafe {
-                                    windows::Win32::System::Com::CoUninitialize();
-                                }
-
-                                batch_extracted
+                                any_inserted
                             })
                             .await;
 
-                        // Back on foreground — publish only this directory's icons.
-                        // The LRU cache spans the session; icon_paths stays
-                        // proportional to the visible folder.
-                        if batch {
+                        if wave_updated {
                             let _ = weak_entity.update(&mut async_cx, |this, cx| {
                                 this.sync_pane_icon_paths();
                                 cx.notify();
@@ -7134,38 +7463,49 @@ impl AppWindow {
 
     /// Check if visible viewport items lack icons, and if so, trigger
     /// icon loading for them. Safe to call repeatedly — already-cached
-    /// icons are skipped.
+    /// icons are skipped and Grid View row-to-item scaling is handled accurately.
     pub fn refresh_icons_for_viewport(&mut self, cx: &mut Context<Self>) {
-        let (top, bottom) = {
-            let scroll = &self.state.main_view.uniform_list_scroll_handle;
-            let base = &scroll.0.borrow().base_handle;
-            (base.top_item(), base.bottom_item())
-        };
+        let win_w = f32::from(self.state.last_window_size.width).max(900.0);
+        let is_dual = self.state.main_view.pane_type == crate::ui::views::main_view::PaneType::Dual;
+        let pane_w = if is_dual { (win_w - 260.0) * 0.5 } else { win_w - 240.0 }.max(320.0);
+
+        let (visible_indices, _) =
+            Self::viewport_item_indices(&self.state.main_view, pane_w, 0);
         let items = &self.state.main_view.items;
         let icon_paths = &self.state.main_view.icon_paths;
-        let limit = bottom.min(items.len().saturating_sub(1));
 
-        // Check if any visible items in the viewport still lack icons
-        let mut needs_reload = (top..=limit).any(|i| {
-            if i >= items.len() {
-                return false;
-            }
-            !icon_paths.contains_key(&items[i].path)
+        let mut needs_reload = visible_indices.iter().any(|&i| {
+            items
+                .get(i)
+                .map_or(false, |it| !icon_paths.contains_key(&it.path))
         });
 
-        // Viewport tracking can report a stale (e.g. 0..0) range even after
-        // scrolling, which would permanently gate all loading behind row 0.
-        // Fall back to a bounded scan of the trickle window: if uncached
-        // items exist anywhere ahead of the cursor, keep pumping. Windowed
-        // (<= 4,096 slots) to stay off the UI budget. Scoped to directories
-        // that fit the LRU cap — beyond it, eviction would make "everything
-        // cached" unreachable and the pump would churn forever.
+        if !needs_reload && is_dual {
+            let (sec_visible, _) =
+                Self::viewport_item_indices(&self.state.secondary_view, pane_w, 0);
+            let sec_items = &self.state.secondary_view.items;
+            let sec_icons = &self.state.secondary_view.icon_paths;
+            needs_reload = sec_visible.iter().any(|&i| {
+                sec_items
+                    .get(i)
+                    .map_or(false, |it| !sec_icons.contains_key(&it.path))
+            });
+        }
+
+        // Fall back to a bounded scan of the trickle window so off-screen items still warm up.
         if !needs_reload {
             let total = items.len();
-            if total > 0 && total <= crate::app_state::MAX_ICON_CACHE_ENTRIES {
+            let cache_cap = self
+                .state
+                .settings
+                .read(cx)
+                .config
+                .experimental
+                .thumbnail_cache_size_limit
+                .max(512) as usize;
+            if total > 0 && total <= cache_cap {
                 if let Ok(cache) = self.state.icon_cache.lock() {
-                    let start =
-                        TRICKLE_CURSOR.load(Ordering::Relaxed) % total;
+                    let start = TRICKLE_CURSOR.load(Ordering::Relaxed) % total;
                     needs_reload = (0..4_096.min(total)).any(|o| {
                         let idx = (start + o) % total;
                         items
@@ -7176,22 +7516,7 @@ impl AppWindow {
             }
         }
 
-        tracing::debug!(
-            "refresh_icons_for_viewport: range {}..{} of {}, cached views {}, reload={}",
-            top,
-            bottom,
-            self.state.main_view.items.len(),
-            self.state.main_view.icon_paths.len(),
-            needs_reload
-        );
-
         if needs_reload {
-            tracing::debug!(
-                "Viewport icons stale (viewport items {}..{}, total items {}), reloading",
-                top,
-                limit,
-                items.len()
-            );
             self.load_icons(cx);
         }
     }

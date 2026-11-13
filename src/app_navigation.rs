@@ -108,15 +108,23 @@ impl AppWindow {
         }
         cx.notify();
 
+        let virtual_archive_target =
+            crate::storage::archive_service::ArchiveService::split_archive_path(path.as_path());
+        let is_virtual_archive = virtual_archive_target.is_some();
+
         // Start watching this folder for changes (only recreate watcher if path changed or not yet watching)
-        if is_secondary {
-            if !same_path_refresh || self.file_watcher_secondary.is_none() {
-                self.stop_file_watcher(true);
-                self.start_file_watcher_secondary(path.clone());
+        if !is_virtual_archive {
+            if is_secondary {
+                if !same_path_refresh || self.file_watcher_secondary.is_none() {
+                    self.stop_file_watcher(true);
+                    self.start_file_watcher_secondary(path.clone());
+                }
+            } else if !same_path_refresh || self.file_watcher.is_none() {
+                self.stop_file_watcher(false);
+                self.start_file_watcher(path.clone());
             }
-        } else if !same_path_refresh || self.file_watcher.is_none() {
-            self.stop_file_watcher(false);
-            self.start_file_watcher(path.clone());
+        } else {
+            self.stop_file_watcher(is_secondary);
         }
 
         let active_tab = self.state.navigation.read(cx).tabs.active_tab().clone();
@@ -181,7 +189,16 @@ impl AppWindow {
                     .background_executor()
                     .spawn({
                         let p = path_clone.clone();
+                        let v_arch = virtual_archive_target.clone();
                         async move {
+                            if let Some((arch_path, inner_dir)) = v_arch {
+                                let v_items = crate::storage::archive_service::ArchiveService::list_virtual_directory(
+                                    &arch_path,
+                                    &inner_dir,
+                                )
+                                .unwrap_or_default();
+                                return (v_items, None);
+                            }
                             let mut items = Vec::new();
                             if let Ok(rd) = std::fs::read_dir(p.as_path()) {
                                 for entry in rd.filter_map(|e| e.ok()) {
@@ -305,7 +322,7 @@ impl AppWindow {
                 // =================================================================
                 // PHASE 2: Enrich items with full metadata in O(1)-indexed batches
                 // =================================================================
-                if !indexed_paths.is_empty() {
+                if !is_virtual_archive && !indexed_paths.is_empty() {
                     let batch_size = 2048;
                     for chunk in indexed_paths.chunks(batch_size) {
                         if cancel_token.is_cancelled() {
@@ -429,7 +446,7 @@ impl AppWindow {
                 // =================================================================
                 // PHASE 2.5: Background Git branch + single-pass status scan
                 // =================================================================
-                if !cancel_token.is_cancelled() {
+                if !is_virtual_archive && !cancel_token.is_cancelled() {
                     let git_path = path_clone.clone();
                     let git_weak = this_weak.clone();
                     let mut git_cx = async_cx.clone();
@@ -481,7 +498,7 @@ impl AppWindow {
                 // =================================================================
                 // PHASE 2.6: Background subfolder size pre-index for current directory
                 // =================================================================
-                if calc_folder_sizes && !cancel_token.is_cancelled() {
+                if !is_virtual_archive && calc_folder_sizes && !cancel_token.is_cancelled() {
                     let dir_target = path_clone.clone();
                     let sz_weak = this_weak.clone();
                     let mut sz_cx = async_cx.clone();
@@ -718,47 +735,59 @@ impl AppWindow {
                     self.navigate_pane(item.path.clone(), pane_focus, cx);
                 }
                 FileType::File => {
-                    #[cfg(windows)]
+                    // Windows Explorer-style: double-clicking an archive opens it as a browsable virtual folder
+                    if item.path.as_path().is_file()
+                        && crate::storage::archive_service::ArchiveService::is_browsable_archive(
+                            item.path.as_path(),
+                        )
                     {
-                        use std::ffi::OsStr;
-                        use std::os::windows::ffi::OsStrExt;
-                        use windows::Win32::UI::Shell::ShellExecuteW;
-                        use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+                        self.navigate_pane(item.path.clone(), pane_focus, cx);
+                        return;
+                    }
 
-                        let path_wide: Vec<u16> = OsStr::new(item.path.as_path())
-                            .encode_wide()
-                            .chain(std::iter::once(0))
-                            .collect();
-
-                        unsafe {
-                            ShellExecuteW(
-                                None,
-                                windows::core::PCWSTR::null(),
-                                windows::core::PCWSTR(path_wide.as_ptr()),
-                                windows::core::PCWSTR::null(),
-                                None,
-                                SW_SHOW,
-                            );
+                    // If opening a file from inside a virtual archive folder, safely extract it to temp first
+                    if let Some((arch_path, inner_rel)) =
+                        crate::storage::archive_service::ArchiveService::split_archive_path(
+                            item.path.as_path(),
+                        )
+                    {
+                        if !inner_rel.is_empty() {
+                            let weak = cx.weak_entity();
+                            let mut async_cx = cx.to_async();
+                            let name = item.name.clone();
+                            let bg = cx.background_executor().spawn(async move {
+                                crate::storage::archive_service::ArchiveService::extract_single_entry_to_temp(
+                                    &arch_path,
+                                    &inner_rel,
+                                    256 * 1024 * 1024,
+                                    None,
+                                )
+                            });
+                            cx.foreground_executor()
+                                .spawn(async move {
+                                    match bg.await {
+                                        Ok(temp_path) => {
+                                            Self::open_os_path(&temp_path);
+                                        }
+                                        Err(e) => {
+                                            let _ = weak.update(&mut async_cx, |this, cx| {
+                                                this.state.status_center.push_notification(
+                                                    format!("Cannot open {}", name),
+                                                    e.to_string(),
+                                                    crate::ui::components::status_center::ToastSeverity::Error,
+                                                    None,
+                                                );
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                })
+                                .detach();
+                            return;
                         }
                     }
-                    #[cfg(target_os = "macos")]
-                    {
-                        let _ = std::process::Command::new("open")
-                            .arg(item.path.as_path())
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                    }
-                    #[cfg(all(unix, not(target_os = "macos")))]
-                    {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(item.path.as_path())
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                    }
+
+                    Self::open_os_path(item.path.as_path());
                 }
                 FileType::Symlink => {
                     if item.path.as_path().is_dir() {
@@ -768,6 +797,50 @@ impl AppWindow {
                     }
                 }
             }
+        }
+    }
+
+    fn open_os_path(path: &std::path::Path) {
+        #[cfg(windows)]
+        {
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+            let path_wide: Vec<u16> = OsStr::new(path)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    windows::core::PCWSTR::null(),
+                    windows::core::PCWSTR(path_wide.as_ptr()),
+                    windows::core::PCWSTR::null(),
+                    None,
+                    SW_SHOW,
+                );
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open")
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
         }
     }
 

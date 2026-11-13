@@ -751,7 +751,7 @@ pub struct FolderPreferences {
 }
 
 fn default_cache_limit() -> u32 {
-    2048
+    8192
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

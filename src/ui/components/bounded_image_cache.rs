@@ -15,8 +15,13 @@ use gpui::{
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-/// Maximum live GPU textures retained (256 × 256 × 4 B ≈ 67 MB worst case).
-pub const MAX_GPU_IMAGE_ENTRIES: usize = 256;
+/// Default maximum live GPU textures retained (512 × 256 × 256 × 4 B ≈ 128 MB worst case).
+pub const MAX_GPU_IMAGE_ENTRIES: usize = 512;
+
+/// Compute GPU texture cache capacity scaled smoothly from the user's thumbnail cache limit.
+pub fn gpu_cache_capacity_for_limit(limit: u32) -> usize {
+    (limit as usize / 8).clamp(512, 2_048)
+}
 
 pub struct BoundedImageCache {
     map: lru::LruCache<u64, ImageCacheItem>,
@@ -27,8 +32,27 @@ impl BoundedImageCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
             map: lru::LruCache::new(NonZeroUsize::new(max_entries.max(1)).unwrap()),
-            max_entries,
+            max_entries: max_entries.max(1),
         }
+    }
+
+    pub fn set_max_entries(&mut self, max_entries: usize, mut window: Option<&mut Window>, cx: &mut App) {
+        let clamped = max_entries.max(1);
+        self.max_entries = clamped;
+        self.map.resize(NonZeroUsize::new(clamped).unwrap());
+        while self.map.len() > clamped {
+            match self.map.pop_lru() {
+                Some((_, ImageCacheItem::Loaded(Ok(image)))) => {
+                    cx.drop_image(image, window.as_deref_mut());
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
     }
 
     pub fn len(&self) -> usize {
@@ -92,11 +116,13 @@ mod tests {
 
     #[test]
     fn test_bounded_cache_evicts_beyond_capacity() {
-        let mut cache = BoundedImageCache::new(4);
+        let cache = BoundedImageCache::new(4);
         assert!(cache.is_empty());
         // Without a Window/App we cannot load real images; assert the bound
         // mechanics directly on the underlying LRU behavior contract.
         assert_eq!(cache.len(), 0);
-        assert_eq!(MAX_GPU_IMAGE_ENTRIES, 256);
+        assert_eq!(MAX_GPU_IMAGE_ENTRIES, 512);
+        assert_eq!(gpu_cache_capacity_for_limit(8_192), 1_024);
+        assert_eq!(gpu_cache_capacity_for_limit(32_768), 2_048);
     }
 }

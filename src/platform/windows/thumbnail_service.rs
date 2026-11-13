@@ -1,9 +1,75 @@
 use crate::core::path_util::FilesPath;
 use anyhow::{anyhow, Result};
-use std::sync::Mutex;
+use std::collections::VecDeque;
+use std::sync::{Condvar, Mutex, OnceLock};
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+
+/// Persistent pool of STA COM worker threads (inspired by Files-community's
+/// `STATask.RunPooled`), eliminating per-batch `CoInitializeEx` overhead and
+/// enabling parallel thumbnail decoding across CPU cores for new files/videos/images.
+pub struct StaThumbnailPool {
+    queue: std::sync::Arc<(Mutex<VecDeque<Box<dyn FnOnce() + Send>>>, Condvar)>,
+}
+
+impl StaThumbnailPool {
+    pub fn global() -> &'static Self {
+        static POOL: OnceLock<StaThumbnailPool> = OnceLock::new();
+        POOL.get_or_init(|| {
+            let count = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(8)
+                .clamp(6, 12);
+            let queue = std::sync::Arc::new((
+                Mutex::new(VecDeque::<Box<dyn FnOnce() + Send>>::new()),
+                Condvar::new(),
+            ));
+            for i in 0..count {
+                let q = queue.clone();
+                let _ = std::thread::Builder::new()
+                    .name(format!("files-thumb-sta-{}", i))
+                    .spawn(move || {
+                        #[cfg(windows)]
+                        let _com = unsafe {
+                            windows::Win32::System::Com::CoInitializeEx(
+                                None,
+                                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                            )
+                        };
+                        loop {
+                            let job = {
+                                let (lock, cvar) = &*q;
+                                let mut guard = match lock.lock() {
+                                    Ok(g) => g,
+                                    Err(p) => p.into_inner(),
+                                };
+                                while guard.is_empty() {
+                                    guard = match cvar.wait(guard) {
+                                        Ok(g) => g,
+                                        Err(p) => p.into_inner(),
+                                    };
+                                }
+                                guard.pop_front()
+                            };
+                            if let Some(task) = job {
+                                task();
+                            }
+                        }
+                    });
+            }
+            StaThumbnailPool { queue }
+        })
+    }
+
+    pub fn spawn<F: FnOnce() + Send + 'static>(&self, job: F) {
+        let (lock, cvar) = &*self.queue;
+        if let Ok(mut guard) = lock.lock() {
+            guard.push_back(Box::new(job));
+            cvar.notify_one();
+        }
+    }
+}
 
 /// Thumbnail size options
 #[derive(Debug, Clone, Copy)]
@@ -378,6 +444,7 @@ impl ThumbnailService {
         };
         use windows::Win32::UI::Shell::{
             IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+            SIIGBF_RESIZETOFIT,
         };
 
         // Create IShellItemImageFactory from the file path
@@ -386,26 +453,18 @@ impl ThumbnailService {
                 .map_err(|e| anyhow!("SHCreateItemFromParsingName failed: {:?}", e))?
         };
 
-        // ALWAYS request 256×256 — this is the native resolution of the Windows
-        // thumbnail cache. SIIGBF_BIGGERSIZEOK ensures we get the best available
-        // (thumbnail cache for images/docs, 256×256 shell icons for everything else).
-        // We then downscale with Lanczos3 to (cx × cy).
-        //
-        // This is EXACTLY what Files Community does: request the maximum resolution,
-        // then scale down. We never accept a small icon and upscale it, which would
-        // create the blurry aliasing the user sees.
-        //
-        // Without SIIGBF_ICONONLY, Windows returns the best available representation:
-        //   - For images: a real content thumbnail (not a generic icon)
-        //   - For .exe/.dll: the 256×256 shell icon (not the small embedded icon)
-        //   - For folders: the standard folder icon
-        let nat_w: i32 = 256;
-        let nat_h: i32 = 256;
+        // Request 256×256 using SIIGBF_RESIZETOFIT so Windows WIC scales directly
+        // to <= 256×256 in hardware/SIMD instead of returning oversized 1024px+
+        // bitmaps that require heavy CPU downscaling.
         let sz = SIZE {
-            cx: nat_w,
-            cy: nat_h,
+            cx: cx as i32,
+            cy: cy as i32,
         };
-        let flags = SIIGBF_BIGGERSIZEOK;
+        let flags = if cx >= 256 {
+            SIIGBF_RESIZETOFIT
+        } else {
+            SIIGBF_BIGGERSIZEOK
+        };
 
         let hbitmap: HBITMAP = unsafe {
             factory
@@ -582,9 +641,9 @@ impl ThumbnailService {
 
         let src_img = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(source_w, source_h, rgba)?;
 
-        // Resize with Lanczos3 to the fitted size
+        // Resize with Triangle (5-8x faster than Lanczos3 for 256px thumbnails)
         let resized = if source_w != scaled_w || source_h != scaled_h {
-            image::imageops::resize(&src_img, scaled_w, scaled_h, FilterType::Lanczos3)
+            image::imageops::resize(&src_img, scaled_w, scaled_h, FilterType::Triangle)
         } else {
             // Convert RGBA back for direct copy
             let mut direct = src_img.into_raw();
@@ -1114,6 +1173,196 @@ impl ThumbnailService {
         {
             None
         }
+    }
+
+    /// Fast probe of the Windows shell thumbnail cache (`SIIGBF_INCACHEONLY`)
+    /// without triggering expensive on-demand decoding.
+    #[cfg(windows)]
+    pub fn extract_cached_shell_thumbnail(
+        path: &FilesPath,
+        size: ThumbnailSize,
+    ) -> Option<ThumbnailResult> {
+        use windows::Win32::Foundation::SIZE;
+        use windows::Win32::Graphics::Gdi::DeleteObject;
+        use windows::Win32::UI::Shell::{
+            IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_INCACHEONLY,
+            SIIGBF_THUMBNAILONLY,
+        };
+
+        let wide_path: Vec<u16> = path
+            .as_path()
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let (cx, cy) = size.dimensions();
+        let factory: IShellItemImageFactory = unsafe {
+            SHCreateItemFromParsingName(windows::core::PCWSTR(wide_path.as_ptr()), None).ok()?
+        };
+        let sz = SIZE {
+            cx: cx as i32,
+            cy: cy as i32,
+        };
+        let hbitmap = unsafe {
+            factory
+                .GetImage(sz, SIIGBF_INCACHEONLY | SIIGBF_THUMBNAILONLY)
+                .ok()?
+        };
+        if hbitmap.is_invalid() {
+            return None;
+        }
+        let pixels = unsafe { Self::read_hbitmap_pixels(hbitmap) };
+        unsafe {
+            let _ = DeleteObject(hbitmap.into());
+        }
+        let (data, w, h) = pixels?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        if w == cx && h == cy {
+            Some(ThumbnailResult {
+                data,
+                width: w,
+                height: h,
+                format: ImageFormat::Bmp,
+            })
+        } else if w <= cx && h <= cy && (w >= (cx * 3) / 4 || h >= (cy * 3) / 4) {
+            Some(ThumbnailResult {
+                data,
+                width: w,
+                height: h,
+                format: ImageFormat::Bmp,
+            })
+        } else {
+            let padded = Self::resize_and_pad(&data, w, h, cx, cy)?;
+            Some(ThumbnailResult {
+                data: padded,
+                width: cx,
+                height: cy,
+                format: ImageFormat::Bmp,
+            })
+        }
+    }
+
+    /// Extract a Windows file-type or folder icon using `SHGFI_USEFILEATTRIBUTES`
+    /// (works for both real paths and virtual archive entries that don't exist on disk).
+    #[cfg(windows)]
+    pub fn extract_shell_icon_by_extension(
+        &self,
+        ext_or_name: &str,
+        is_dir: bool,
+        size: ThumbnailSize,
+    ) -> Option<ThumbnailResult> {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+        };
+        use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
+        use windows::Win32::UI::Shell::{
+            SHGetFileInfoW, SHGetImageList, SHFILEINFOW, SHGFI_SYSICONINDEX,
+            SHGFI_USEFILEATTRIBUTES, SHIL_JUMBO,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+        let dummy = if is_dir {
+            "C:\\folder".to_string()
+        } else if ext_or_name.starts_with('.') {
+            format!("C:\\item{}", ext_or_name)
+        } else if !ext_or_name.is_empty() {
+            format!("C:\\item.{}", ext_or_name)
+        } else {
+            "C:\\item".to_string()
+        };
+        let wide: Vec<u16> = dummy.encode_utf16().chain(std::iter::once(0)).collect();
+        let attrs = if is_dir {
+            FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            FILE_ATTRIBUTE_NORMAL
+        };
+        let mut info: SHFILEINFOW = unsafe { std::mem::zeroed() };
+        let ret = unsafe {
+            SHGetFileInfoW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                attrs,
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES,
+            )
+        };
+        if ret == 0 {
+            return None;
+        }
+        let image_list = unsafe { SHGetImageList::<IImageList>(SHIL_JUMBO as i32).ok()? };
+        let hicon = unsafe { image_list.GetIcon(info.iIcon, ILD_TRANSPARENT.0).ok()? };
+        if hicon.is_invalid() {
+            return None;
+        }
+        let (cx, cy) = size.dimensions();
+        let pixels = unsafe { Self::extract_icon_pixels(hicon, cx, cy) };
+        unsafe {
+            let _ = DestroyIcon(hicon);
+        }
+        let data = pixels?;
+        if data.len() < (cx * cy * 4) as usize {
+            return None;
+        }
+        Some(ThumbnailResult {
+            data,
+            width: cx,
+            height: cy,
+            format: ImageFormat::Bmp,
+        })
+    }
+
+    /// Save BGRA pixel buffer to a fast-compressed PNG file after rejecting blank/empty frames.
+    pub fn save_bgra_as_fast_png(
+        bgra: &[u8],
+        w: u32,
+        h: u32,
+        out_path: &std::path::Path,
+    ) -> bool {
+        use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
+        use image::ImageEncoder;
+
+        if w == 0 || h == 0 || (bgra.len() as u64) < (w as u64 * h as u64 * 4) {
+            return false;
+        }
+        let mut rgba = bgra[..(w as usize * h as usize * 4)].to_vec();
+        for ch in rgba.chunks_exact_mut(4) {
+            ch.swap(0, 2);
+        }
+
+        // Reject blank extractions (single solid color or fully transparent)
+        let mut distinct = std::collections::HashSet::new();
+        let mut any_opaque = false;
+        for px in rgba.chunks_exact(4).step_by(64) {
+            if px[3] != 0 {
+                any_opaque = true;
+            }
+            distinct.insert((px[0], px[1], px[2], px[3]));
+            if distinct.len() > 4 {
+                break;
+            }
+        }
+        if distinct.len() <= 1 || !any_opaque {
+            return false;
+        }
+
+        let tmp_path = out_path.with_extension("png.tmp");
+        let Ok(file) = std::fs::File::create(&tmp_path) else {
+            return false;
+        };
+        let writer = std::io::BufWriter::with_capacity(32 * 1024, file);
+        let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, PngFilter::Sub);
+        if encoder
+            .write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)
+            .is_ok()
+        {
+            if std::fs::rename(&tmp_path, out_path).is_ok() {
+                return true;
+            }
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+        false
     }
 }
 

@@ -6,7 +6,9 @@ use crate::core::path_util::FilesPath;
 use crate::core::progress::{FileOperationJob, OperationStatus};
 use crate::ui::constants::UiConstants;
 use gpui::*;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 /// Represents a conflict that needs user resolution during file operations.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +112,26 @@ impl NotificationItem {
     pub fn toast_remaining_fraction(&self) -> f32 {
         let elapsed = self.created_at.elapsed().as_secs_f32();
         (1.0 - (elapsed / self.toast_duration_secs.max(0.5))).clamp(0.0, 1.0)
+    }
+
+    /// Smooth entrance/exit slide offset (pixels) and opacity (0.0..=1.0) for the toast card.
+    pub fn toast_motion(&self) -> (f32, f32) {
+        let elapsed = self.created_at.elapsed().as_secs_f32();
+        let dur = self.toast_duration_secs.max(0.5);
+        let enter_dur = 0.20f32;
+        let exit_dur = 0.22f32;
+
+        if elapsed < enter_dur {
+            let t = (elapsed / enter_dur).clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(3);
+            ((1.0 - ease) * 32.0, ease)
+        } else if elapsed > (dur - exit_dur) {
+            let t = ((dur - elapsed) / exit_dur).clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(2);
+            ((1.0 - ease) * 20.0, ease)
+        } else {
+            (0.0, 1.0)
+        }
     }
 }
 
@@ -227,6 +249,15 @@ impl StatusCenterState {
             n.read = true;
             n.show_toast = false;
         }
+    }
+
+    /// Returns `true` when any toast countdown, bell pulse, or progress ring still needs frames.
+    pub fn has_active_animations(&self) -> bool {
+        if self.notifications.iter().any(|n| n.show_toast) || self.bell_pulse > 0.01 {
+            return true;
+        }
+        let target_prog = self.aggregate_progress().unwrap_or(0.0);
+        (target_prog - self.displayed_progress).abs() > 0.005
     }
 
     /// Tick floating toast timers and smooth progress ring / bell pulse animations.
@@ -593,12 +624,14 @@ impl StatusCenterToastView {
             let v_open = view.clone();
             let v_center = view.clone();
             let frac = toast.toast_remaining_fraction();
+            let (slide_x, opacity) = toast.toast_motion();
 
             let mut card = div()
                 .absolute()
-                .left(px(right_x))
+                .left(px(right_x + slide_x))
                 .top(px(top_y))
                 .w(px(toast_w))
+                .opacity(opacity)
                 .bg(rgba(0x262626F8u32))
                 .border(px(1.0))
                 .border_color(border_accent)

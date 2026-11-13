@@ -126,9 +126,9 @@ impl Render for AppWindow {
             self.state.sidebar.bouncy_scroll.update_bounds(ch, vh);
         }
 
-        // Tick all active bouncy scroll states (momentum + spring-back) at
+        // Tick all active bouncy scroll states (momentum + spring-back) and UI animations at
         // display refresh rate — no background timer latency.
-        self.tick_bouncy_scrolls(window, cx);
+        let animations_active = self.tick_bouncy_scrolls(window, cx);
 
         // Poll file system events — refresh if any folder changes detected
         self.poll_file_events(cx);
@@ -693,7 +693,9 @@ impl Render for AppWindow {
             ],
         );
 
-        if (state.sidebar_visible && state.sidebar.anim_start_time.is_some()
+        if animations_active
+            || state.status_center.has_active_animations()
+            || (state.sidebar_visible && state.sidebar.anim_start_time.is_some()
             && state.sidebar.anim_start_time.unwrap().elapsed()
                 < std::time::Duration::from_millis(200))
             || state.tab_drag.is_dragging
@@ -728,6 +730,7 @@ impl Render for AppWindow {
         let mut base = {
             let view_drop = cx.entity();
             let view_drag_move = cx.entity();
+            let view_slider_up = cx.entity();
             div()
                 .id("app-root-drop-surface")
                 .relative()
@@ -736,12 +739,42 @@ impl Render for AppWindow {
                 .on_mouse_move(move |event, _win, cx| {
                     let pos = gpui::point(event.position.x.into(), event.position.y.into());
                     let mods = event.modifiers;
+                    let click_x: f32 = event.position.x.into();
                     view_drag_move.update(cx, |this, cx| {
+                        if this.state.settings_ui.thumb_slider_dragging {
+                            let (left, width) = this
+                                .state
+                                .settings_ui
+                                .thumb_slider_track_bounds
+                                .lock()
+                                .map(|g| *g)
+                                .unwrap_or((0.0, 220.0));
+                            let w = if width > 1.0 { width } else { 220.0 };
+                            let ratio = ((click_x - left) / w).clamp(0.0, 1.0);
+                            let raw = 1024.0 + ratio * (32768.0 - 1024.0);
+                            let snapped = ((raw / 512.0).round() * 512.0).clamp(1024.0, 32768.0) as u32;
+                            this.preview_thumbnail_cache_limit(snapped, cx);
+                        }
                         if this.state.main_view.drag_state.is_dragging
                             || this.state.main_view.drag_state.pending_candidate.is_some()
                             || this.state.main_view.drag_state.pending_path_candidate.is_some()
                         {
                             this.update_file_drag_move(pos, mods, None, cx);
+                        }
+                    });
+                })
+                .on_mouse_up(MouseButton::Left, move |_event, _win, cx| {
+                    view_slider_up.update(cx, |this, cx| {
+                        if this.state.settings_ui.thumb_slider_dragging {
+                            this.state.settings_ui.thumb_slider_dragging = false;
+                            let limit = this
+                                .state
+                                .settings
+                                .read(cx)
+                                .config
+                                .experimental
+                                .thumbnail_cache_size_limit;
+                            this.apply_thumbnail_cache_limit(limit, cx);
                         }
                     });
                 })
