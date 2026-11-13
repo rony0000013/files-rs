@@ -11,9 +11,13 @@ use crate::domain::search::{
     SearchService,
 };
 use crate::storage::storage::FileType;
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputState, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use gpui::*;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OmnibarMode {
@@ -94,6 +98,9 @@ pub struct NavigationBarState {
     /// Whether the entire input text is currently selected (e.g. on Ctrl+L / Ctrl+A)
     #[serde(skip)]
     pub selection_all: bool,
+    /// Unified single-line text input state for omnibar Path / Command / Search modes
+    #[serde(skip)]
+    pub text_input: TextInputState,
     /// Raw text typed by the user prior to arrow-key suggestion previewing
     #[serde(skip)]
     pub user_typed_input: String,
@@ -181,6 +188,7 @@ impl NavigationBarState {
             suggestions_scroll: gpui::ScrollHandle::new(),
             cursor_pos,
             selection_all: false,
+            text_input: TextInputState::new(initial_text.clone()),
             user_typed_input: initial_text.clone(),
             ghost_prediction: None,
             search_options: SearchOptions::default(),
@@ -222,6 +230,7 @@ impl NavigationBarState {
         self.user_typed_input = path_str;
         self.cursor_pos = self.edit_text.chars().count();
         self.selection_all = false;
+        self.text_input.set_text(self.edit_text.clone());
         self.ghost_prediction = None;
         self.edit_mode = false;
         self.siblings.clear();
@@ -296,6 +305,18 @@ impl NavigationBarState {
         }
     }
 
+    pub fn sync_mode_from_text_input(&mut self) {
+        let updated = self.text_input.text.clone();
+        match self.omnibar_mode {
+            OmnibarMode::Path => self.edit_text = updated.clone(),
+            OmnibarMode::Search => self.search_query = updated.clone(),
+            OmnibarMode::CommandPalette => self.command_query = updated.clone(),
+        }
+        self.user_typed_input = updated;
+        self.cursor_pos = self.text_input.cursor;
+        self.selection_all = self.text_input.is_all_selected();
+    }
+
     pub fn set_active_text(&mut self, text: String, select_all: bool) {
         let count = text.chars().count();
         match self.omnibar_mode {
@@ -303,9 +324,10 @@ impl NavigationBarState {
             OmnibarMode::Search => self.search_query = text.clone(),
             OmnibarMode::CommandPalette => self.command_query = text.clone(),
         }
-        self.user_typed_input = text;
+        self.user_typed_input = text.clone();
         self.cursor_pos = count;
         self.selection_all = select_all;
+        self.text_input.reset_keeping_layout(text, select_all);
     }
 
     /// Preview a suggestion in the input box when cycling with Up/Down arrows
@@ -313,13 +335,14 @@ impl NavigationBarState {
     pub fn preview_suggestion_text(&mut self, text: String) {
         let count = text.chars().count();
         match self.omnibar_mode {
-            OmnibarMode::Path => self.edit_text = text,
-            OmnibarMode::Search => self.search_query = text,
+            OmnibarMode::Path => self.edit_text = text.clone(),
+            OmnibarMode::Search => self.search_query = text.clone(),
             OmnibarMode::CommandPalette => {}
         }
         self.cursor_pos = count;
         self.selection_all = false;
         self.ghost_prediction = None;
+        self.text_input.set_text(text);
     }
 
     /// Revert input box text back to `user_typed_input` (when arrowing past ends or pressing Escape).
@@ -327,19 +350,21 @@ impl NavigationBarState {
         let saved = self.user_typed_input.clone();
         let count = saved.chars().count();
         match self.omnibar_mode {
-            OmnibarMode::Path => self.edit_text = saved,
-            OmnibarMode::Search => self.search_query = saved,
-            OmnibarMode::CommandPalette => self.command_query = saved,
+            OmnibarMode::Path => self.edit_text = saved.clone(),
+            OmnibarMode::Search => self.search_query = saved.clone(),
+            OmnibarMode::CommandPalette => self.command_query = saved.clone(),
         }
         self.cursor_pos = count;
         self.selection_all = false;
         self.selected_suggestion_index = None;
+        self.text_input.set_text(saved);
     }
 
     pub fn select_all(&mut self) {
         let len = self.active_text().chars().count();
         self.cursor_pos = len;
         self.selection_all = len > 0;
+        self.text_input.select_all();
     }
 
     pub fn insert_text(&mut self, s: &str) {
@@ -1380,15 +1405,14 @@ impl NavigationBarView {
             .bg(rgba(UiConstants::DIVIDER_RGBA))
     }
 
-    /// Render the interactive text input with caret positioning, selection highlight (`Ctrl+A`),
-    /// and FilePilot-style inline predictive ghost completion (`Tab ⇥`).
+    /// Render the interactive omnibar text input via the unified `render_text_input` widget,
+    /// paired with optional mode prefix badge and inline predictive ghost hint (`Tab ⇥`).
     fn render_text_input_with_ghost(
-        text: &str,
+        text_input: &TextInputState,
         placeholder: &str,
-        cursor_pos: usize,
-        selection_all: bool,
         ghost_prediction: Option<&str>,
         prefix_badge: Option<&'static str>,
+        view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let mut row = div()
             .flex()
@@ -1413,103 +1437,55 @@ impl NavigationBarView {
             );
         }
 
-        if text.is_empty() {
-            let caret = div()
-                .w(px(1.5))
-                .h(px(16.0))
-                .bg(rgba(UiConstants::ACCENT_RGBA))
-                .mr(px(2.0));
-            return row.child(caret).child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(placeholder.to_string()),
-            );
-        }
-
-        if selection_all {
-            return row
-                .child(
-                    div()
-                        .px(px(3.0))
-                        .rounded(px(3.0))
-                        .bg(rgba(0x0078D466u32))
-                        .text_size(px(13.0))
-                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(text.to_string()),
-                )
-                .child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(16.0))
-                        .bg(rgba(UiConstants::ACCENT_RGBA)),
-                );
-        }
-
-        let chars: Vec<char> = text.chars().collect();
-        let split = cursor_pos.min(chars.len());
-        let before: String = chars[..split].iter().collect();
-        let after: String = chars[split..].iter().collect();
-
         row = row.child(
             div()
-                .text_size(px(13.0))
-                .font_family(UiConstants::FONT_MAIN)
-                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                .whitespace_nowrap()
-                .child(before),
-        );
-        row = row.child(
-            div()
-                .w(px(0.0))
+                .flex_1()
                 .min_w(px(0.0))
-                .h(px(16.0))
-                .flex_shrink_0()
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(-0.75))
-                        .w(px(1.5))
-                        .h(px(16.0))
-                        .bg(rgba(UiConstants::ACCENT_RGBA)),
-                ),
+                .child(render_text_input(
+                    "omnibar-unified-text-input",
+                    text_input,
+                    placeholder,
+                    true,
+                    false,
+                    TextInputMode::SingleLine,
+                    TextInputStyle::omnibar_borderless(),
+                    view,
+                    Rc::new(|app| Some(&mut app.state.nav_bar.text_input)),
+                    Some(Rc::new(|app, win, _cx| {
+                        if let Some(ref focus) = app.state.main_focus {
+                            win.focus(focus);
+                        }
+                    })),
+                )),
         );
-        if !after.is_empty() {
-            row = row.child(
-                div()
-                    .text_size(px(13.0))
-                    .font_family(UiConstants::FONT_MAIN)
-                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .whitespace_nowrap()
-                    .child(after),
-            );
-        } else if let Some(ghost) = ghost_prediction {
-            if !ghost.is_empty() {
-                row = row
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(rgba(0xFFFFFF50u32))
-                            .whitespace_nowrap()
-                            .child(ghost.to_string()),
-                    )
-                    .child(
-                        div()
-                            .ml(px(6.0))
-                            .px(px(5.0))
-                            .py(px(1.0))
-                            .rounded(px(4.0))
-                            .bg(rgba(0xFFFFFF10u32))
-                            .border(px(1.0))
-                            .border_color(rgba(0xFFFFFF1Eu32))
-                            .text_size(px(10.0))
-                            .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                            .child("Tab ⇥"),
-                    );
+
+        if text_input.selection_range().is_none()
+            && text_input.cursor >= text_input.len_chars()
+        {
+            if let Some(ghost) = ghost_prediction {
+                if !ghost.is_empty() {
+                    row = row
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(rgba(0xFFFFFF50u32))
+                                .whitespace_nowrap()
+                                .child(ghost.to_string()),
+                        )
+                        .child(
+                            div()
+                                .ml(px(6.0))
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .bg(rgba(0xFFFFFF10u32))
+                                .border(px(1.0))
+                                .border_color(rgba(0xFFFFFF1Eu32))
+                                .text_size(px(10.0))
+                                .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                                .child("Tab ⇥"),
+                        );
+                }
             }
         }
 
@@ -2092,12 +2068,11 @@ impl NavigationBarView {
                             .min_w(px(0.0))
                             .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
-                                &state.edit_text,
+                                &state.text_input,
                                 "Enter a folder path, ~, %VAR%, or '>' for commands...",
-                                state.cursor_pos,
-                                state.selection_all,
                                 state.ghost_prediction.as_deref(),
                                 None,
+                                view.clone(),
                             )),
                     )
                     .child(
@@ -2167,12 +2142,11 @@ impl NavigationBarView {
                             .min_w(px(0.0))
                             .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
-                                &state.command_query,
+                                &state.text_input,
                                 "Type a command name or shortcut...",
-                                state.cursor_pos,
-                                state.selection_all,
                                 state.ghost_prediction.as_deref(),
                                 Some(">"),
+                                view.clone(),
                             )),
                     )
                     .child(
@@ -2230,12 +2204,11 @@ impl NavigationBarView {
                             .min_w(px(0.0))
                             .px(px(8.0))
                             .child(Self::render_text_input_with_ghost(
-                                &state.search_query,
+                                &state.text_input,
                                 &placeholder,
-                                state.cursor_pos,
-                                state.selection_all,
                                 state.ghost_prediction.as_deref(),
                                 Some("?"),
+                                view.clone(),
                             )),
                     )
                     // Interactive Search Option Filter Pills (`.*`, `Aa`, `Txt`, `Meta`, `Sub`)

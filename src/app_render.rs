@@ -202,6 +202,12 @@ impl Render for AppWindow {
             let focus = self.state.main_focus.clone().unwrap();
             window.focus(&focus);
         }
+        if self.state.pending_focus_main {
+            self.state.pending_focus_main = false;
+            if let Some(ref focus) = self.state.main_focus {
+                window.focus(focus);
+            }
+        }
 
         // Miller-columns caches: keyed, so this does zero I/O unless the
         // current directory or the selected folder changed since last frame.
@@ -736,11 +742,16 @@ impl Render for AppWindow {
                 .relative()
                 .w(live_size.width)
                 .h(live_size.height)
-                .on_mouse_move(move |event, _win, cx| {
+                .on_mouse_move(move |event, win, cx| {
                     let pos = gpui::point(event.position.x.into(), event.position.y.into());
                     let mods = event.modifiers;
                     let click_x: f32 = event.position.x.into();
+                    let click_y: f32 = event.position.y.into();
+                    let pressed_left = event.dragging();
                     view_drag_move.update(cx, |this, cx| {
+                        if this.apply_active_text_drag_move(click_x, click_y, pressed_left, win) {
+                            cx.notify();
+                        }
                         if this.state.settings_ui.thumb_slider_dragging {
                             let (left, width) = this
                                 .state
@@ -765,6 +776,9 @@ impl Render for AppWindow {
                 })
                 .on_mouse_up(MouseButton::Left, move |_event, _win, cx| {
                     view_slider_up.update(cx, |this, cx| {
+                        if this.finish_active_text_drag() {
+                            cx.notify();
+                        }
                         if this.state.settings_ui.thumb_slider_dragging {
                             this.state.settings_ui.thumb_slider_dragging = false;
                             let limit = this
@@ -804,6 +818,13 @@ impl Render for AppWindow {
                 ));
         } else {
             base = base.child(main_content).children(tab_floating_overlays);
+        }
+
+        if let Some(ref menu) = state.text_context_menu {
+            base = base.child(crate::ui::components::text_input::render_text_context_menu(
+                menu,
+                cx.entity(),
+            ));
         }
 
         // Lightweight hover label for context-menu toolbar buttons and

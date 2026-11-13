@@ -510,38 +510,275 @@ impl AppWindow {
     }
 }
 
-fn prev_word_boundary(text: &str, cur: usize) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    if cur == 0 || chars.is_empty() {
-        return 0;
-    }
-    let mut i = cur.min(chars.len());
-    while i > 0 && !chars[i - 1].is_alphanumeric() {
-        i -= 1;
-    }
-    while i > 0 && chars[i - 1].is_alphanumeric() {
-        i -= 1;
-    }
-    i
-}
-
-fn next_word_boundary(text: &str, cur: usize) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    if cur >= len {
-        return len;
-    }
-    let mut i = cur;
-    while i < len && chars[i].is_alphanumeric() {
-        i += 1;
-    }
-    while i < len && !chars[i].is_alphanumeric() {
-        i += 1;
-    }
-    i
-}
-
 impl AppWindow {
+    /// True whenever any text input (inline rename, Omnibar, Settings search/tag, or dialog textbox)
+    /// is actively receiving keystrokes so global tab/pane navigation shortcuts don't steal Shift/Ctrl+Arrow.
+    pub fn is_any_text_input_active(&self) -> bool {
+        if self.state.nav_bar.is_focused() {
+            return true;
+        }
+        if self.state.main_view.renaming_index.is_some()
+            || self.state.secondary_view.renaming_index.is_some()
+        {
+            return true;
+        }
+        if matches!(
+            self.state.main_view.target,
+            crate::ui::views::main_view::ViewTarget::Settings
+        ) && (self.state.settings_ui.search_focused
+            || self.state.settings_ui.actions_search_focused
+            || self.state.settings_ui.is_creating_tag)
+        {
+            return true;
+        }
+        match self.state.active_dialog {
+            Some(DialogType::AddItem { .. } | DialogType::Rename { .. }) => true,
+            Some(DialogType::DecompressArchive { ref state }) => state.focused_field.is_some(),
+            Some(DialogType::CustomProperties { ref state }) => state.focused_input.is_some(),
+            _ => false,
+        }
+    }
+
+    fn refresh_dialog_path_completions(&mut self, cx: &mut Context<Self>) {
+        use crate::ui::components::dialogs::DialogType;
+        use crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField;
+        use crate::ui::dialog_services::decompress_dialog::DecompressInputField;
+
+        #[derive(Clone, Copy)]
+        enum DialogPathTarget {
+            DecompressDest,
+            PropertiesField(PropertiesInputField),
+        }
+
+        let (raw, dirs_only, target) = match &self.state.active_dialog {
+            Some(DialogType::DecompressArchive { state })
+                if state.focused_field == Some(DecompressInputField::Destination) =>
+            {
+                (
+                    state.destination_input.text.clone(),
+                    true,
+                    DialogPathTarget::DecompressDest,
+                )
+            }
+            Some(DialogType::CustomProperties { state }) => {
+                let Some(field) = state.focused_input else {
+                    return;
+                };
+                match field {
+                    PropertiesInputField::ShortcutWorkingDir => (
+                        state.input_ref(field).text.clone(),
+                        true,
+                        DialogPathTarget::PropertiesField(field),
+                    ),
+                    PropertiesInputField::ShortcutTarget | PropertiesInputField::CustomIconPath => {
+                        (
+                            state.input_ref(field).text.clone(),
+                            false,
+                            DialogPathTarget::PropertiesField(field),
+                        )
+                    }
+                    _ => return,
+                }
+            }
+            _ => return,
+        };
+
+        let trimmed = raw.trim();
+        let last_sep = trimmed.rfind(['\\', '/']);
+        let Some(sep_idx) = last_sep else {
+            match &mut self.state.active_dialog {
+                Some(DialogType::DecompressArchive { state }) => {
+                    state.destination_input.clear_completions();
+                }
+                Some(DialogType::CustomProperties { state }) => {
+                    if let DialogPathTarget::PropertiesField(f) = target {
+                        state.input_mut(f).clear_completions();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        };
+
+        let dir_prefix = &trimmed[..=sep_idx];
+        let name_prefix = &trimmed[sep_idx + 1..];
+        let search_dir = std::path::PathBuf::from(dir_prefix);
+        let dir_prefix_owned = dir_prefix.to_string();
+        let name_prefix_lower = name_prefix.to_ascii_lowercase();
+        let raw_expected = raw.clone();
+
+        let this_weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let bg = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                let candidates = bg
+                    .spawn(async move {
+                        let Ok(entries) = std::fs::read_dir(&search_dir) else {
+                            return Vec::new();
+                        };
+                        let mut matches: Vec<(bool, String)> = Vec::new();
+                        for entry in entries.flatten() {
+                            let is_dir = entry
+                                .file_type()
+                                .map(|ft| ft.is_dir())
+                                .unwrap_or(false);
+                            if dirs_only && !is_dir {
+                                continue;
+                            }
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name_prefix_lower.is_empty()
+                                || name.to_ascii_lowercase().starts_with(&name_prefix_lower)
+                            {
+                                let mut candidate = format!("{}{}", dir_prefix_owned, name);
+                                if is_dir && !candidate.ends_with(['\\', '/']) {
+                                    candidate.push(std::path::MAIN_SEPARATOR);
+                                }
+                                matches.push((is_dir, candidate));
+                            }
+                        }
+                        matches.sort_by(|a, b| {
+                            b.0.cmp(&a.0)
+                                .then_with(|| a.1.to_ascii_lowercase().cmp(&b.1.to_ascii_lowercase()))
+                        });
+                        matches.into_iter().take(24).map(|(_, p)| p).collect::<Vec<_>>()
+                    })
+                    .await;
+
+                let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    let applied = match (&mut this.state.active_dialog, target) {
+                        (
+                            Some(DialogType::DecompressArchive { state }),
+                            DialogPathTarget::DecompressDest,
+                        ) if state.destination_input.text == raw_expected => {
+                            state.destination_input.set_completions(candidates);
+                            true
+                        }
+                        (
+                            Some(DialogType::CustomProperties { state }),
+                            DialogPathTarget::PropertiesField(f),
+                        ) if state.input_ref(f).text == raw_expected => {
+                            state.input_mut(f).set_completions(candidates);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if applied {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+    }
+
+    pub(crate) fn sync_after_text_input_change(&mut self) {
+        if self.state.nav_bar.text_input.dragging || self.state.nav_bar.is_focused() {
+            self.state.nav_bar.sync_mode_from_text_input();
+        }
+        self.state.settings_ui.sync_from_inputs();
+        match self.state.active_dialog {
+            Some(DialogType::DecompressArchive { ref mut state }) => {
+                state.sync_destination_from_text();
+                state.sync_password_from_input();
+            }
+            Some(DialogType::CustomProperties { ref mut state }) => {
+                state.sync_inputs_to_fields();
+            }
+            _ => {}
+        }
+    }
+
+    fn find_dragging_text_input_mut(
+        &mut self,
+    ) -> Option<&mut crate::ui::components::text_input::TextInputState> {
+        if self.state.main_view.rename_input.dragging {
+            return Some(&mut self.state.main_view.rename_input);
+        }
+        if self.state.secondary_view.rename_input.dragging {
+            return Some(&mut self.state.secondary_view.rename_input);
+        }
+        if self.state.nav_bar.text_input.dragging {
+            return Some(&mut self.state.nav_bar.text_input);
+        }
+        if self.state.settings_ui.search_input.dragging {
+            return Some(&mut self.state.settings_ui.search_input);
+        }
+        if self.state.settings_ui.actions_search_input.dragging {
+            return Some(&mut self.state.settings_ui.actions_search_input);
+        }
+        if self.state.settings_ui.new_tag_input.dragging {
+            return Some(&mut self.state.settings_ui.new_tag_input);
+        }
+        match self.state.active_dialog {
+            Some(DialogType::AddItem { ref mut input, .. }) => {
+                if input.dragging {
+                    return Some(input);
+                }
+            }
+            Some(DialogType::Rename { ref mut input, .. }) => {
+                if input.dragging {
+                    return Some(input);
+                }
+            }
+            Some(DialogType::DecompressArchive { ref mut state }) => {
+                if state.destination_input.dragging {
+                    return Some(&mut state.destination_input);
+                }
+                if state.password_input.dragging {
+                    return Some(&mut state.password_input);
+                }
+            }
+            Some(DialogType::CustomProperties { ref mut state }) => {
+                use crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField;
+                for f in [
+                    PropertiesInputField::ItemName,
+                    PropertiesInputField::HashCompare,
+                    PropertiesInputField::ShortcutTarget,
+                    PropertiesInputField::ShortcutArgs,
+                    PropertiesInputField::ShortcutWorkingDir,
+                    PropertiesInputField::ShortcutComment,
+                    PropertiesInputField::CustomIconPath,
+                ] {
+                    if state.input_ref(f).dragging {
+                        return Some(state.input_mut(f));
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    pub fn apply_active_text_drag_move(
+        &mut self,
+        x: f32,
+        y: f32,
+        pressed_left: bool,
+        win: &mut gpui::Window,
+    ) -> bool {
+        if !pressed_left {
+            return self.finish_active_text_drag();
+        }
+        if let Some(ti) = self.find_dragging_text_input_mut() {
+            ti.apply_pointer_drag_cached(x, y, win);
+            self.sync_after_text_input_change();
+            return true;
+        }
+        false
+    }
+
+    pub fn finish_active_text_drag(&mut self) -> bool {
+        if let Some(ti) = self.find_dragging_text_input_mut() {
+            ti.dragging = false;
+            if ti.selection_anchor == Some(ti.cursor) {
+                ti.selection_anchor = None;
+            }
+            self.sync_after_text_input_change();
+            return true;
+        }
+        false
+    }
+
     /// Handle a keyboard event by dispatching to the appropriate handler.
     pub fn handle_key_event(
         &mut self,
@@ -554,6 +791,15 @@ impl AppWindow {
             crate::core::action_registry::from_gpui_keystroke(keystroke);
 
         use crate::ui::components::dialogs::DialogType;
+
+        // Escape closes any open floating text-field context menu first
+        if self.state.text_context_menu.is_some()
+            && keystroke.key.as_str().eq_ignore_ascii_case("escape")
+        {
+            self.state.text_context_menu = None;
+            cx.notify();
+            return;
+        }
 
         // Escape during an active tab drag cancels the drag and restores the tab to its initial slot
         if self.state.tab_drag.is_dragging
@@ -612,11 +858,17 @@ impl AppWindow {
                 }
                 return;
             }
-            if keystroke.modifiers.shift && (key.eq_ignore_ascii_case("left") || key.eq_ignore_ascii_case("arrowleft")) {
+            if keystroke.modifiers.shift
+                && !self.is_any_text_input_active()
+                && (key.eq_ignore_ascii_case("left") || key.eq_ignore_ascii_case("arrowleft"))
+            {
                 self.move_active_tab_left(cx);
                 return;
             }
-            if keystroke.modifiers.shift && (key.eq_ignore_ascii_case("right") || key.eq_ignore_ascii_case("arrowright")) {
+            if keystroke.modifiers.shift
+                && !self.is_any_text_input_active()
+                && (key.eq_ignore_ascii_case("right") || key.eq_ignore_ascii_case("arrowright"))
+            {
                 self.move_active_tab_right(cx);
                 return;
             }
@@ -841,43 +1093,6 @@ impl AppWindow {
                         self.activate_omnibar_command_mode(cx);
                         return;
                     }
-                    "a" => {
-                        self.state.nav_bar.select_all();
-                        cx.notify();
-                        return;
-                    }
-                    "c" => {
-                        let txt = self.state.nav_bar.active_text().to_string();
-                        if !txt.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(txt));
-                        }
-                        return;
-                    }
-                    "x" => {
-                        let txt = self.state.nav_bar.active_text().to_string();
-                        if !txt.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(txt));
-                            self.state.nav_bar.set_active_text(String::new(), false);
-                            if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                                self.update_search(String::new(), cx);
-                            }
-                            self.refresh_omnibar_suggestions(cx);
-                        }
-                        return;
-                    }
-                    "v" => {
-                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                            let clean = clip.lines().next().unwrap_or("").to_string();
-                            self.state.nav_bar.insert_text(&clean);
-                            self.state.nav_bar.show_suggestions = true;
-                            if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                                let q = self.state.nav_bar.search_query.clone();
-                                self.update_search(q, cx);
-                            }
-                            self.refresh_omnibar_suggestions(cx);
-                        }
-                        return;
-                    }
                     _ => {}
                 }
             }
@@ -900,12 +1115,14 @@ impl AppWindow {
                     } else {
                         self.dismiss_omnibar(cx);
                     }
+                    return;
                 }
                 "enter" | "return" => {
                     self.handle_suggestion_confirm_with_modifiers(ctrl, shift, alt, cx);
                     cx.notify();
+                    return;
                 }
-                "up" | "arrowup" => {
+                "up" | "arrowup" if !shift => {
                     if !self.state.nav_bar.suggestions.is_empty() {
                         self.state.nav_bar.show_suggestions = true;
                         let len = self.state.nav_bar.suggestions.len();
@@ -926,8 +1143,9 @@ impl AppWindow {
                         }
                         cx.notify();
                     }
+                    return;
                 }
-                "down" | "arrowdown" => {
+                "down" | "arrowdown" if !shift => {
                     if !self.state.nav_bar.suggestions.is_empty() {
                         self.state.nav_bar.show_suggestions = true;
                         let len = self.state.nav_bar.suggestions.len();
@@ -947,6 +1165,7 @@ impl AppWindow {
                         }
                         cx.notify();
                     }
+                    return;
                 }
                 "pageup" => {
                     if self.state.nav_bar.show_suggestions
@@ -958,6 +1177,7 @@ impl AppWindow {
                         self.preview_selected_suggestion(next);
                         cx.notify();
                     }
+                    return;
                 }
                 "pagedown" => {
                     if self.state.nav_bar.show_suggestions
@@ -970,29 +1190,23 @@ impl AppWindow {
                         self.preview_selected_suggestion(next);
                         cx.notify();
                     }
+                    return;
                 }
-                "left" | "arrowleft" => {
-                    self.state.nav_bar.move_cursor_left(ctrl);
-                    cx.notify();
-                }
-                "right" | "arrowright" => {
-                    if self.state.nav_bar.move_cursor_right(ctrl) {
+                "right" | "arrowright"
+                    if !shift
+                        && self.state.nav_bar.text_input.selection_range().is_none()
+                        && self.state.nav_bar.text_input.cursor
+                            >= self.state.nav_bar.text_input.len_chars()
+                        && self.state.nav_bar.ghost_prediction.is_some() =>
+                {
+                    if self.state.nav_bar.accept_ghost_prediction() {
                         if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
                             let q = self.state.nav_bar.search_query.clone();
                             self.update_search(q, cx);
                         }
                         self.refresh_omnibar_suggestions(cx);
-                    } else {
-                        cx.notify();
                     }
-                }
-                "home" => {
-                    self.state.nav_bar.move_cursor_home();
-                    cx.notify();
-                }
-                "end" => {
-                    self.state.nav_bar.move_cursor_end();
-                    cx.notify();
+                    return;
                 }
                 "tab" => {
                     // 1. If a suggestion is highlighted, autocomplete it into the input box
@@ -1055,82 +1269,67 @@ impl AppWindow {
                         self.preview_selected_suggestion(0);
                         cx.notify();
                     }
+                    return;
                 }
-                "backspace" => {
-                    self.state.nav_bar.backspace(ctrl);
-                    self.state.nav_bar.selected_suggestion_index = None;
-                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                        let query = self.state.nav_bar.search_query.clone();
-                        self.update_search(query, cx);
-                    }
-                    self.refresh_omnibar_suggestions(cx);
-                }
-                "delete" => {
+                "delete" if shift => {
                     // Shift+Delete removes a highlighted SearchHistory item
-                    if shift {
-                        if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
-                            if let Some(SuggestionKind::SearchHistory { query }) =
-                                self.state.nav_bar.suggestions.get(idx).map(|s| s.kind.clone())
-                            {
-                                self.state.nav_bar.remove_search_history_item(&query);
-                                self.refresh_omnibar_suggestions(cx);
-                                return;
-                            }
+                    if let Some(idx) = self.state.nav_bar.selected_suggestion_index {
+                        if let Some(SuggestionKind::SearchHistory { query }) =
+                            self.state.nav_bar.suggestions.get(idx).map(|s| s.kind.clone())
+                        {
+                            self.state.nav_bar.remove_search_history_item(&query);
+                            self.refresh_omnibar_suggestions(cx);
+                            return;
                         }
                     }
-                    self.state.nav_bar.delete_forward(ctrl);
-                    self.state.nav_bar.selected_suggestion_index = None;
-                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                        let query = self.state.nav_bar.search_query.clone();
-                        self.update_search(query, cx);
-                    }
-                    self.refresh_omnibar_suggestions(cx);
                 }
-                "space" => {
-                    self.state.nav_bar.insert_text(" ");
-                    self.state.nav_bar.selected_suggestion_index = None;
-                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                        let query = self.state.nav_bar.search_query.clone();
-                        self.update_search(query, cx);
-                    }
-                    self.refresh_omnibar_suggestions(cx);
-                }
-                _ => {
-                    if !ctrl && !alt && !keystroke.modifiers.platform {
-                        let typed_str = keystroke.key_char.as_deref().unwrap_or(key);
-                        if let Some(mut ch) = typed_str.chars().next() {
-                            if shift && ch.is_ascii_lowercase() {
-                                ch = ch.to_ascii_uppercase();
-                            }
-                            if !ch.is_control() && (typed_str.chars().count() == 1 || key.chars().count() == 1) {
-                                let insert_str = ch.to_string();
-                                // Prefix mode switching: typing `>` or `?` at start of Path Mode switches to
-                                // Command Palette or Search Mode automatically!
-                                if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Path)
-                                    && (self.state.nav_bar.selection_all
-                                        || self.state.nav_bar.edit_text.is_empty())
-                                {
-                                    if insert_str == ">" {
-                                        self.activate_omnibar_command_mode(cx);
-                                        return;
-                                    } else if insert_str == "?" {
-                                        self.activate_omnibar_search_mode(cx);
-                                        return;
-                                    }
-                                }
+                _ => {}
+            }
 
-                                self.state.nav_bar.insert_text(&insert_str);
-                                self.state.nav_bar.selected_suggestion_index = None;
-                                self.state.nav_bar.show_suggestions = true;
-                                if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
-                                    let query = self.state.nav_bar.search_query.clone();
-                                    self.update_search(query, cx);
-                                }
-                                self.refresh_omnibar_suggestions(cx);
-                            }
-                        }
+            // Prefix mode switching: typing `>` or `?` at start of Path Mode switches to
+            // Command Palette or Search Mode automatically!
+            if !ctrl && !alt && !keystroke.modifiers.platform {
+                let typed_str = keystroke.key_char.as_deref().unwrap_or(key);
+                if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Path)
+                    && (self.state.nav_bar.text_input.is_all_selected()
+                        || self.state.nav_bar.edit_text.is_empty())
+                {
+                    if typed_str == ">" {
+                        self.activate_omnibar_command_mode(cx);
+                        return;
+                    } else if typed_str == "?" {
+                        self.activate_omnibar_search_mode(cx);
+                        return;
                     }
                 }
+            }
+
+            use crate::ui::components::text_input::{
+                TextInputKeyOptions, TextInputKeyOutcome, TextInputMode,
+            };
+            let opts = TextInputKeyOptions {
+                mode: TextInputMode::SingleLine,
+                disallow_filename_chars: false,
+                submit_on_enter: true,
+                allow_copy: true,
+                ..Default::default()
+            };
+            match self.state.nav_bar.text_input.handle_keystroke(keystroke, cx, &opts) {
+                TextInputKeyOutcome::Changed => {
+                    self.state.nav_bar.sync_mode_from_text_input();
+                    self.state.nav_bar.selected_suggestion_index = None;
+                    self.state.nav_bar.show_suggestions = true;
+                    if matches!(self.state.nav_bar.omnibar_mode, OmnibarMode::Search) {
+                        let query = self.state.nav_bar.search_query.clone();
+                        self.update_search(query, cx);
+                    }
+                    self.refresh_omnibar_suggestions(cx);
+                }
+                TextInputKeyOutcome::Handled => {
+                    self.state.nav_bar.sync_mode_from_text_input();
+                    cx.notify();
+                }
+                _ => {}
             }
             return;
         }
@@ -1178,73 +1377,63 @@ impl AppWindow {
             || self.state.settings_ui.actions_search_focused
             || self.state.settings_ui.is_creating_tag)
         {
-            let key = keystroke.key.as_str();
-            let k_lower = key.to_ascii_lowercase();
-            if k_lower == "escape" {
-                if self.state.settings_ui.is_creating_tag {
-                    self.state.settings_ui.is_creating_tag = false;
-                } else if self.state.settings_ui.actions_search_focused {
-                    self.state.settings_ui.actions_search_focused = false;
-                    self.state.settings_ui.actions_search_query.clear();
-                } else {
-                    self.state.settings_ui.search_focused = false;
-                    self.state.settings_ui.search_query.clear();
-                }
-                cx.notify();
-                return;
-            }
-            if k_lower == "enter" || k_lower == "return" {
-                if self.state.settings_ui.is_creating_tag {
-                    self.commit_create_tag(cx);
-                } else {
-                    self.state.settings_ui.search_focused = false;
-                    self.state.settings_ui.actions_search_focused = false;
-                    cx.notify();
-                }
-                return;
-            }
-            let target_buf = if self.state.settings_ui.is_creating_tag {
-                &mut self.state.settings_ui.new_tag_name
+            use crate::ui::components::text_input::{TextInputKeyOptions, TextInputKeyOutcome};
+            let target_input = if self.state.settings_ui.is_creating_tag {
+                &mut self.state.settings_ui.new_tag_input
             } else if self.state.settings_ui.actions_search_focused {
-                &mut self.state.settings_ui.actions_search_query
+                &mut self.state.settings_ui.actions_search_input
             } else {
-                &mut self.state.settings_ui.search_query
+                &mut self.state.settings_ui.search_input
             };
-            if k_lower == "backspace" {
-                target_buf.pop();
-                cx.notify();
-                return;
-            }
-            if k_lower == "space" {
-                target_buf.push(' ');
-                cx.notify();
-                return;
-            }
-            if !keystroke.modifiers.control
-                && !keystroke.modifiers.alt
-                && !keystroke.modifiers.platform
-                && key.chars().count() == 1
-            {
-                target_buf.push_str(key);
-                cx.notify();
-                return;
+            match target_input.handle_keystroke(keystroke, cx, &TextInputKeyOptions::default()) {
+                TextInputKeyOutcome::Cancelled => {
+                    if self.state.settings_ui.is_creating_tag {
+                        self.state.settings_ui.is_creating_tag = false;
+                    } else if self.state.settings_ui.actions_search_focused {
+                        self.state.settings_ui.actions_search_focused = false;
+                        self.state.settings_ui.clear_actions_search();
+                    } else {
+                        self.state.settings_ui.search_focused = false;
+                        self.state.settings_ui.clear_search();
+                    }
+                    cx.notify();
+                    return;
+                }
+                TextInputKeyOutcome::Submitted => {
+                    if self.state.settings_ui.is_creating_tag {
+                        self.commit_create_tag(cx);
+                    } else {
+                        self.state.settings_ui.search_focused = false;
+                        self.state.settings_ui.actions_search_focused = false;
+                        cx.notify();
+                    }
+                    return;
+                }
+                TextInputKeyOutcome::Changed
+                | TextInputKeyOutcome::AutocompleteAccepted
+                | TextInputKeyOutcome::AutocompleteCycle { .. }
+                | TextInputKeyOutcome::Handled => {
+                    self.state.settings_ui.sync_from_inputs();
+                    cx.notify();
+                    return;
+                }
+                TextInputKeyOutcome::Ignored | TextInputKeyOutcome::TabPressed { .. } => {}
             }
         }
 
-        // Intercept CustomProperties dialog input typing & keyboard shortcuts
+        // Intercept DecompressArchive dialog input typing & keyboard shortcuts
         if matches!(
             self.state.active_dialog,
             Some(DialogType::DecompressArchive { .. })
         ) {
+            use crate::ui::components::text_input::{TextInputKeyOptions, TextInputKeyOutcome};
             use crate::ui::dialog_services::decompress_dialog::DecompressInputField;
             let key = keystroke.key.as_str();
-            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-
-            if key == "escape" || key == "Escape" {
+            if key.eq_ignore_ascii_case("escape") {
                 self.close_dialog(cx);
                 return;
             }
-            if key == "enter" || key == "return" || key == "Enter" || key == "Return" {
+            if key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return") {
                 self.execute_decompress_dialog(cx);
                 return;
             }
@@ -1254,67 +1443,17 @@ impl AppWindow {
             {
                 if let Some(field) = state.focused_field {
                     let is_dest = field == DecompressInputField::Destination;
-                    let buf: &mut String = match field {
-                        DecompressInputField::Destination => &mut state.destination_text,
-                        DecompressInputField::Password => {
-                            state.password.get_or_insert_with(String::new)
-                        }
+                    let allow_copy = is_dest || state.show_password;
+                    let ti = match field {
+                        DecompressInputField::Destination => &mut state.destination_input,
+                        DecompressInputField::Password => &mut state.password_input,
                     };
-
-                    if is_ctrl {
-                        match key {
-                            "c" | "C" => {
-                                if !buf.is_empty() {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        buf.clone(),
-                                    ));
-                                }
-                            }
-                            "v" | "V" => {
-                                if let Some(clip) =
-                                    cx.read_from_clipboard().and_then(|c| c.text())
-                                {
-                                    let clean: String = clip
-                                        .chars()
-                                        .filter(|c| !['\r', '\n'].contains(c))
-                                        .collect();
-                                    buf.push_str(&clean);
-                                    if is_dest {
-                                        state.sync_destination_from_text();
-                                    }
-                                    cx.notify();
-                                }
-                            }
-                            "u" | "U" => {
-                                buf.clear();
-                                if is_dest {
-                                    state.sync_destination_from_text();
-                                }
-                                cx.notify();
-                            }
-                            _ => {}
-                        }
-                        return;
-                    }
-
-                    match key {
-                        "backspace" | "Backspace" => {
-                            buf.pop();
-                            if is_dest {
-                                state.sync_destination_from_text();
-                            }
-                            cx.notify();
-                            return;
-                        }
-                        "space" | "Space" => {
-                            buf.push(' ');
-                            if is_dest {
-                                state.sync_destination_from_text();
-                            }
-                            cx.notify();
-                            return;
-                        }
-                        "tab" | "Tab" => {
+                    let opts = TextInputKeyOptions {
+                        allow_copy,
+                        ..Default::default()
+                    };
+                    match ti.handle_keystroke(keystroke, cx, &opts) {
+                        TextInputKeyOutcome::TabPressed { .. } => {
                             state.focused_field = Some(if is_dest {
                                 DecompressInputField::Password
                             } else {
@@ -1323,24 +1462,27 @@ impl AppWindow {
                             cx.notify();
                             return;
                         }
-                        _ => {
-                            let ch_str = keystroke.key_char.as_deref().unwrap_or(key);
-                            if !keystroke.modifiers.control
-                                && !keystroke.modifiers.alt
-                                && !keystroke.modifiers.platform
-                                && ch_str.chars().count() == 1
-                            {
-                                let ch = ch_str.chars().next().unwrap_or('\0');
-                                if !ch.is_control() {
-                                    buf.push(ch);
-                                    if is_dest {
-                                        state.sync_destination_from_text();
-                                    }
-                                    cx.notify();
-                                }
-                                return;
+                        TextInputKeyOutcome::Changed
+                        | TextInputKeyOutcome::AutocompleteAccepted
+                        | TextInputKeyOutcome::AutocompleteCycle { .. } => {
+                            if is_dest {
+                                state.sync_destination_from_text();
+                            } else {
+                                state.sync_password_from_input();
                             }
+                            if is_dest {
+                                self.refresh_dialog_path_completions(cx);
+                            }
+                            cx.notify();
+                            return;
                         }
+                        TextInputKeyOutcome::Handled => {
+                            cx.notify();
+                            return;
+                        }
+                        TextInputKeyOutcome::Submitted
+                        | TextInputKeyOutcome::Cancelled
+                        | TextInputKeyOutcome::Ignored => {}
                     }
                 }
             }
@@ -1350,10 +1492,13 @@ impl AppWindow {
             self.state.active_dialog,
             Some(DialogType::CustomProperties { .. })
         ) {
+            use crate::ui::components::text_input::{
+                TextInputKeyOptions, TextInputKeyOutcome, TextInputMode,
+            };
+            use crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField;
             let key = keystroke.key.as_str();
-            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
 
-            if key == "escape" || key == "Escape" {
+            if key.eq_ignore_ascii_case("escape") {
                 let mut had_focus = false;
                 if let Some(DialogType::CustomProperties { ref mut state }) =
                     self.state.active_dialog
@@ -1371,472 +1516,171 @@ impl AppWindow {
                 return;
             }
 
-            if key == "enter" || key == "return" || key == "Enter" || key == "Return" {
-                let in_hash_compare = matches!(
-                    self.state.active_dialog,
-                    Some(DialogType::CustomProperties { ref state })
-                        if state.focused_input
-                            == Some(crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField::HashCompare)
-                );
-                if !in_hash_compare {
-                    self.save_and_close_properties_dialog(cx);
-                }
+            let focused_field = if let Some(DialogType::CustomProperties { ref state }) =
+                self.state.active_dialog
+            {
+                state.focused_input
+            } else {
+                None
+            };
+
+            if focused_field.is_none()
+                && (key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return"))
+            {
+                self.save_and_close_properties_dialog(cx);
                 return;
             }
 
-            if let Some(DialogType::CustomProperties { ref mut state }) =
-                self.state.active_dialog
-            {
-                if let Some(field) = state.focused_input {
-                    use crate::ui::dialog_services::custom_properties_dialog::PropertiesInputField;
-
-                    let buf: &mut String = match field {
-                        PropertiesInputField::ItemName => &mut state.edited_name,
-                        PropertiesInputField::HashCompare => &mut state.hash_compare_input,
-                        PropertiesInputField::ShortcutTarget => &mut state.shortcut.target_path,
-                        PropertiesInputField::ShortcutArgs => &mut state.shortcut.arguments,
-                        PropertiesInputField::ShortcutWorkingDir => &mut state.shortcut.working_dir,
-                        PropertiesInputField::ShortcutComment => &mut state.shortcut.comment,
-                        PropertiesInputField::CustomIconPath => {
-                            state
-                                .customization
-                                .folder_icon_path
-                                .get_or_insert_with(String::new)
-                        }
+            if let Some(field) = focused_field {
+                if let Some(DialogType::CustomProperties { ref mut state }) =
+                    self.state.active_dialog
+                {
+                    let is_comment = field == PropertiesInputField::ShortcutComment;
+                    let is_hash = field == PropertiesInputField::HashCompare;
+                    let opts = TextInputKeyOptions {
+                        mode: if is_comment {
+                            TextInputMode::MultiLine {
+                                max_lines: None,
+                                allow_newlines: true,
+                                text_align_center: false,
+                            }
+                        } else {
+                            TextInputMode::SingleLine
+                        },
+                        disallow_filename_chars: field == PropertiesInputField::ItemName,
+                        submit_on_enter: !is_comment,
+                        allow_copy: true,
+                        ..Default::default()
                     };
-
-                    if is_ctrl {
-                        match key {
-                            "c" | "C" => {
-                                if !buf.is_empty() {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        buf.clone(),
-                                    ));
-                                }
+                    match state.input_mut(field).handle_keystroke(keystroke, cx, &opts) {
+                        TextInputKeyOutcome::Submitted => {
+                            if !is_hash {
+                                self.save_and_close_properties_dialog(cx);
                             }
-                            "v" | "V" => {
-                                if let Some(clip) =
-                                    cx.read_from_clipboard().and_then(|c| c.text())
-                                {
-                                    let clean: String = clip
-                                        .chars()
-                                        .filter(|c| !['\r', '\n'].contains(c))
-                                        .collect();
-                                    buf.push_str(&clean);
-                                    cx.notify();
-                                }
-                            }
-                            "u" | "U" => {
-                                buf.clear();
-                                cx.notify();
-                            }
-                            _ => {}
+                            return;
                         }
-                        return;
-                    }
-
-                    match key {
-                        "backspace" | "Backspace" => {
-                            buf.pop();
+                        TextInputKeyOutcome::Changed
+                        | TextInputKeyOutcome::AutocompleteAccepted
+                        | TextInputKeyOutcome::AutocompleteCycle { .. } => {
+                            state.sync_inputs_to_fields();
+                            if matches!(
+                                field,
+                                PropertiesInputField::ShortcutTarget
+                                    | PropertiesInputField::ShortcutWorkingDir
+                                    | PropertiesInputField::CustomIconPath
+                            ) {
+                                self.refresh_dialog_path_completions(cx);
+                            }
                             cx.notify();
                             return;
                         }
-                        "space" | "Space" => {
-                            buf.push(' ');
+                        TextInputKeyOutcome::Handled => {
                             cx.notify();
                             return;
                         }
-                        _ => {
-                            let ch_str = keystroke.key_char.as_deref().unwrap_or(key);
-                            if !keystroke.modifiers.control
-                                && !keystroke.modifiers.alt
-                                && !keystroke.modifiers.platform
-                                && ch_str.chars().count() == 1
-                            {
-                                let ch = ch_str.chars().next().unwrap_or('\0');
-                                if !ch.is_control() {
-                                    if field == PropertiesInputField::ItemName
-                                        && ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
-                                            .contains(&ch)
-                                    {
-                                        return;
-                                    }
-                                    buf.push(ch);
-                                    cx.notify();
-                                }
-                                return;
-                            }
-                        }
+                        _ => {}
                     }
                 }
             }
         }
 
-        // Intercept AddItem dialog input typing
-        if let Some(DialogType::AddItem {
-            ref mut name,
-            ref mut selected_all,
-            ..
-        }) = self.state.active_dialog
-        {
-            let key = keystroke.key.as_str();
-            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-
-            if is_ctrl {
-                match key {
-                    "a" | "A" => {
-                        *selected_all = true;
-                        cx.notify();
-                    }
-                    "c" | "C" => {
-                        if !name.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
-                        }
-                    }
-                    "x" | "X" => {
-                        if *selected_all && !name.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
-                            name.clear();
-                            *selected_all = false;
-                            cx.notify();
-                        }
-                    }
-                    "v" | "V" => {
-                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                            let clean: String = clip
-                                .chars()
-                                .filter(|c| !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
-                                .collect();
-                            if !clean.is_empty() {
-                                if *selected_all {
-                                    *name = clean;
-                                    *selected_all = false;
-                                } else {
-                                    name.push_str(&clean);
-                                }
-                                cx.notify();
-                            }
-                        }
-                    }
-                    _ => {}
+        // Intercept AddItem / Rename dialog input typing
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::AddItem { .. } | DialogType::Rename { .. })
+        ) {
+            use crate::ui::components::text_input::{
+                TextInputKeyOptions, TextInputKeyOutcome, TextInputMode,
+            };
+            let opts = TextInputKeyOptions {
+                mode: TextInputMode::SingleLine,
+                disallow_filename_chars: true,
+                submit_on_enter: true,
+                allow_copy: true,
+                ..Default::default()
+            };
+            let outcome = match self.state.active_dialog {
+                Some(DialogType::AddItem { ref mut input, .. })
+                | Some(DialogType::Rename { ref mut input, .. }) => {
+                    input.handle_keystroke(keystroke, cx, &opts)
                 }
-                return;
-            }
-
-            match key {
-                "escape" | "Escape" => {
+                _ => TextInputKeyOutcome::Ignored,
+            };
+            match outcome {
+                TextInputKeyOutcome::Cancelled => {
                     self.close_dialog(cx);
                 }
-                "enter" | "return" | "Enter" | "Return" => {
-                    self.confirm_add_item(cx);
-                }
-                "backspace" | "Backspace" => {
-                    if *selected_all {
-                        name.clear();
-                        *selected_all = false;
+                TextInputKeyOutcome::Submitted => {
+                    if matches!(self.state.active_dialog, Some(DialogType::AddItem { .. })) {
+                        self.confirm_add_item(cx);
                     } else {
-                        name.pop();
+                        self.close_dialog(cx);
                     }
+                }
+                TextInputKeyOutcome::Changed
+                | TextInputKeyOutcome::AutocompleteAccepted
+                | TextInputKeyOutcome::AutocompleteCycle { .. }
+                | TextInputKeyOutcome::Handled => {
                     cx.notify();
                 }
-                "delete" | "Delete" => {
-                    if *selected_all {
-                        name.clear();
-                        *selected_all = false;
-                        cx.notify();
-                    }
-                }
-                "left" | "Left" | "right" | "Right" | "home" | "Home" | "end" | "End" => {
-                    *selected_all = false;
-                    cx.notify();
-                }
-                "space" | "Space" => {
-                    if *selected_all {
-                        *name = " ".to_string();
-                        *selected_all = false;
-                    } else {
-                        name.push(' ');
-                    }
-                    cx.notify();
-                }
-                _ => {
-                    if !keystroke.modifiers.control
-                        && !keystroke.modifiers.alt
-                        && !keystroke.modifiers.platform
-                        && keystroke.key.chars().count() == 1
-                    {
-                        if *selected_all {
-                            *name = keystroke.key.clone();
-                            *selected_all = false;
-                        } else {
-                            name.push_str(&keystroke.key);
-                        }
-                        cx.notify();
-                    }
-                }
+                _ => {}
             }
             return;
         }
 
-        // Intercept inline renaming input typing (in either pane) - Zed inspired text editing
-        if self.state.active_view().renaming_index.is_some() {
+        if matches!(
+            self.state.active_dialog,
+            Some(DialogType::RenameConflict { .. })
+        ) {
             let key = keystroke.key.as_str();
-            let is_ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-
-            if is_ctrl {
-                match key {
-                    "a" | "A" => {
-                        let view = self.state.active_view_mut();
-                        view.rename_selected_all = true;
-                        view.rename_cursor_pos = view.rename_text.chars().count();
-                        cx.notify();
-                    }
-                    "c" | "C" => {
-                        let view = self.state.active_view();
-                        if view.rename_selected_all && !view.rename_text.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(view.rename_text.clone()));
-                        }
-                    }
-                    "x" | "X" => {
-                        let view = self.state.active_view_mut();
-                        if view.rename_selected_all && !view.rename_text.is_empty() {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(view.rename_text.clone()));
-                            view.rename_text.clear();
-                            view.rename_selected_all = false;
-                            view.rename_cursor_pos = 0;
-                            cx.notify();
-                        }
-                    }
-                    "v" | "V" => {
-                        if let Some(clip) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                            let clean: String = clip
-                                .chars()
-                                .filter(|c| !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
-                                .collect();
-                            if !clean.is_empty() {
-                                let view = self.state.active_view_mut();
-                                if view.rename_selected_all {
-                                    view.rename_text = clean.clone();
-                                    view.rename_selected_all = false;
-                                    view.rename_cursor_pos = clean.chars().count();
-                                } else {
-                                    let mut chars: Vec<char> = view.rename_text.chars().collect();
-                                    let pos = view.rename_cursor_pos.min(chars.len());
-                                    for (offset, ch) in clean.chars().enumerate() {
-                                        chars.insert(pos + offset, ch);
-                                    }
-                                    view.rename_cursor_pos = pos + clean.chars().count();
-                                    view.rename_text = chars.into_iter().collect();
-                                }
-                                cx.notify();
-                            }
-                        }
-                    }
-                    "left" | "Left" => {
-                        let view = self.state.active_view_mut();
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = prev_word_boundary(&view.rename_text, view.rename_cursor_pos);
-                        cx.notify();
-                    }
-                    "right" | "Right" => {
-                        let view = self.state.active_view_mut();
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = next_word_boundary(&view.rename_text, view.rename_cursor_pos);
-                        cx.notify();
-                    }
-                    "backspace" | "Backspace" => {
-                        let view = self.state.active_view_mut();
-                        if view.rename_selected_all {
-                            view.rename_text.clear();
-                            view.rename_selected_all = false;
-                            view.rename_cursor_pos = 0;
-                        } else {
-                            let prev = prev_word_boundary(&view.rename_text, view.rename_cursor_pos);
-                            let mut chars: Vec<char> = view.rename_text.chars().collect();
-                            let cur = view.rename_cursor_pos.min(chars.len());
-                            if prev < cur {
-                                chars.drain(prev..cur);
-                                view.rename_cursor_pos = prev;
-                                view.rename_text = chars.into_iter().collect();
-                            }
-                        }
-                        cx.notify();
-                    }
-                    "delete" | "Delete" => {
-                        let view = self.state.active_view_mut();
-                        if view.rename_selected_all {
-                            view.rename_text.clear();
-                            view.rename_selected_all = false;
-                            view.rename_cursor_pos = 0;
-                        } else {
-                            let next = next_word_boundary(&view.rename_text, view.rename_cursor_pos);
-                            let mut chars: Vec<char> = view.rename_text.chars().collect();
-                            let cur = view.rename_cursor_pos.min(chars.len());
-                            if cur < next {
-                                chars.drain(cur..next.min(chars.len()));
-                                view.rename_text = chars.into_iter().collect();
-                            }
-                        }
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-                return;
+            if key.eq_ignore_ascii_case("escape") {
+                self.close_dialog(cx);
             }
+            return;
+        }
 
-            match key {
-                "escape" | "Escape" => {
-                    self.cancel_rename(cx);
-                }
-                "enter" | "return" | "Enter" | "Return" => {
-                    self.commit_rename(cx);
-                }
-                "backspace" | "Backspace" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_text.clear();
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = 0;
-                    } else if view.rename_cursor_pos > 0 && !view.rename_text.is_empty() {
-                        let mut chars: Vec<char> = view.rename_text.chars().collect();
-                        let pos = view.rename_cursor_pos.min(chars.len());
-                        chars.remove(pos - 1);
-                        view.rename_cursor_pos = pos - 1;
-                        view.rename_text = chars.into_iter().collect();
-                    }
-                    cx.notify();
-                }
-                "delete" | "Delete" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_text.clear();
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = 0;
-                    } else {
-                        let mut chars: Vec<char> = view.rename_text.chars().collect();
-                        let pos = view.rename_cursor_pos.min(chars.len());
-                        if pos < chars.len() {
-                            chars.remove(pos);
-                            view.rename_text = chars.into_iter().collect();
+        // Intercept inline renaming input typing (in either pane) using unified TextInputState
+        let rename_pane = if self.state.active_view().renaming_index.is_some() {
+            Some(self.state.active_pane_focus())
+        } else if self.state.main_view.renaming_index.is_some() {
+            Some(crate::core::navigation_manager::PaneFocus::Primary)
+        } else if self.state.secondary_view.renaming_index.is_some() {
+            Some(crate::core::navigation_manager::PaneFocus::Secondary)
+        } else {
+            None
+        };
+        if let Some(rp) = rename_pane {
+            use crate::ui::components::text_input::{
+                TextInputKeyOptions, TextInputKeyOutcome, TextInputMode,
+            };
+            let outcome = {
+                let view = self.state.pane_view_mut(rp);
+                let is_grid = matches!(view.view_mode, crate::config::config::ViewMode::Grid);
+                let opts = TextInputKeyOptions {
+                    mode: if is_grid {
+                        TextInputMode::MultiLine {
+                            max_lines: Some(3),
+                            allow_newlines: false,
+                            text_align_center: true,
                         }
-                    }
-                    cx.notify();
-                }
-                "left" | "Left" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = 0;
-                    } else if view.rename_cursor_pos > 0 {
-                        view.rename_cursor_pos -= 1;
-                    }
-                    cx.notify();
-                }
-                "right" | "Right" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = view.rename_text.chars().count();
                     } else {
-                        let char_count = view.rename_text.chars().count();
-                        if view.rename_cursor_pos < char_count {
-                            view.rename_cursor_pos += 1;
-                        }
-                    }
-                    cx.notify();
-                }
-                "up" | "Up" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = 0;
-                    } else {
-                        let cpl = view.rename_chars_per_line;
-                        view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
-                            &view.rename_text,
-                            view.rename_cursor_pos,
-                            true,
-                            cpl,
-                        );
-                    }
-                    cx.notify();
-                }
-                "down" | "Down" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = view.rename_text.chars().count();
-                    } else {
-                        let cpl = view.rename_chars_per_line;
-                        view.rename_cursor_pos = crate::ui::views::helpers::rename_cursor_move_vertical(
-                            &view.rename_text,
-                            view.rename_cursor_pos,
-                            false,
-                            cpl,
-                        );
-                    }
-                    cx.notify();
-                }
-                "home" | "Home" => {
-                    let view = self.state.active_view_mut();
-                    view.rename_selected_all = false;
-                    view.rename_cursor_pos = 0;
-                    cx.notify();
-                }
-                "end" | "End" => {
-                    let view = self.state.active_view_mut();
-                    view.rename_selected_all = false;
-                    view.rename_cursor_pos = view.rename_text.chars().count();
-                    cx.notify();
-                }
-                "space" | "Space" => {
-                    let view = self.state.active_view_mut();
-                    if view.rename_selected_all {
-                        view.rename_text = " ".to_string();
-                        view.rename_selected_all = false;
-                        view.rename_cursor_pos = 1;
-                    } else {
-                        let mut chars: Vec<char> = view.rename_text.chars().collect();
-                        let pos = view.rename_cursor_pos.min(chars.len());
-                        chars.insert(pos, ' ');
-                        view.rename_cursor_pos = pos + 1;
-                        view.rename_text = chars.into_iter().collect();
-                    }
-                    cx.notify();
-                }
-                _ => {
-                    if !keystroke.modifiers.control
-                        && !keystroke.modifiers.alt
-                        && !keystroke.modifiers.platform
-                    {
-                        // In GPUI, keystroke.key_char contains the typed character (accounting for Shift, CapsLock, layout)
-                        let typed_str = keystroke.key_char.as_deref().unwrap_or(keystroke.key.as_str());
-                        if let Some(mut ch) = typed_str.chars().next() {
-                            if keystroke.modifiers.shift && ch.is_ascii_lowercase() {
-                                ch = ch.to_ascii_uppercase();
-                            }
-                            // Filter control codes and Windows invalid filename characters: \ / : * ? " < > |
-                            if !ch.is_control()
-                                && !['\r', '\n', '/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&ch)
-                                && (typed_str.chars().count() == 1 || keystroke.key.chars().count() == 1)
-                            {
-                                let view = self.state.active_view_mut();
-                                if view.rename_selected_all {
-                                    view.rename_text = ch.to_string();
-                                    view.rename_selected_all = false;
-                                    view.rename_cursor_pos = 1;
-                                } else {
-                                    let mut chars: Vec<char> = view.rename_text.chars().collect();
-                                    let pos = view.rename_cursor_pos.min(chars.len());
-                                    chars.insert(pos, ch);
-                                    view.rename_cursor_pos = pos + 1;
-                                    view.rename_text = chars.into_iter().collect();
-                                }
-                                cx.notify();
-                            }
-                        }
-                    }
-                }
+                        TextInputMode::SingleLine
+                    },
+                    disallow_filename_chars: true,
+                    submit_on_enter: true,
+                    allow_copy: true,
+                    ..Default::default()
+                };
+                view.rename_input.handle_keystroke(keystroke, cx, &opts)
+            };
+            match outcome {
+                TextInputKeyOutcome::Cancelled => self.cancel_rename(cx),
+                TextInputKeyOutcome::Submitted => self.commit_rename(cx),
+                TextInputKeyOutcome::Changed
+                | TextInputKeyOutcome::AutocompleteAccepted
+                | TextInputKeyOutcome::AutocompleteCycle { .. }
+                | TextInputKeyOutcome::Handled => cx.notify(),
+                _ => {}
             }
             return;
         }
@@ -1908,9 +1752,13 @@ impl AppWindow {
             }
         }
 
-        // Ctrl+Shift+1..5 -> View mode switching (Details, List, Cards, Grid, Columns)
+        // Ctrl+Shift+1..6 -> View mode switching, Ctrl+Shift+Z -> Redo
         if keystroke.modifiers.control && keystroke.modifiers.shift && !keystroke.modifiers.alt {
             match key_str {
+                "z" | "Z" => {
+                    self.redo(cx);
+                    return;
+                }
                 "1" | "!" => {
                     self.set_view_mode(ViewMode::Details, cx);
                     return;
@@ -1929,6 +1777,10 @@ impl AppWindow {
                 }
                 "5" | "%" => {
                     self.set_view_mode(ViewMode::Columns, cx);
+                    return;
+                }
+                "6" | "^" => {
+                    self.set_view_mode(ViewMode::Tree, cx);
                     return;
                 }
                 _ => {}
@@ -2161,6 +2013,29 @@ impl AppWindow {
             "right" | "arrowright" => {
                 if !had_selection {
                     Some(visual_items[0])
+                } else if view_mode == ViewMode::Tree && !shift {
+                    let item_info = self
+                        .state
+                        .pane_view(pane_focus)
+                        .items
+                        .get(current_item_idx)
+                        .map(|it| {
+                            (
+                                matches!(it.file_type, FileType::Directory),
+                                it.path.as_path().to_path_buf(),
+                                self.state
+                                    .pane_view(pane_focus)
+                                    .tree_expanded_paths
+                                    .contains(it.path.as_path()),
+                            )
+                        });
+                    if let Some((true, p, is_exp)) = item_info {
+                        if !is_exp {
+                            self.toggle_tree_folder(pane_focus, p, cx);
+                            return true;
+                        }
+                    }
+                    Some(visual_items[(cur_vis_pos + 1).min(vis_len - 1)])
                 } else {
                     Some(visual_items[(cur_vis_pos + 1).min(vis_len - 1)])
                 }
@@ -2168,6 +2043,33 @@ impl AppWindow {
             "left" | "arrowleft" => {
                 if !had_selection {
                     Some(visual_items[0])
+                } else if view_mode == ViewMode::Tree && !shift {
+                    let view = self.state.pane_view(pane_focus);
+                    let cur_depth = view.tree_depths.get(current_item_idx).copied().unwrap_or(0);
+                    let item_info = view.items.get(current_item_idx).map(|it| {
+                        (
+                            matches!(it.file_type, FileType::Directory),
+                            it.path.as_path().to_path_buf(),
+                            view.tree_expanded_paths.contains(it.path.as_path()),
+                        )
+                    });
+                    if let Some((true, p, true)) = item_info {
+                        self.toggle_tree_folder(pane_focus, p, cx);
+                        return true;
+                    }
+                    if cur_depth > 0 {
+                        let parent_idx = (0..cur_vis_pos)
+                            .rev()
+                            .find_map(|vp| {
+                                let idx = visual_items[vp];
+                                let d = view.tree_depths.get(idx).copied().unwrap_or(0);
+                                if d < cur_depth { Some(idx) } else { None }
+                            })
+                            .unwrap_or(visual_items[cur_vis_pos.saturating_sub(1)]);
+                        Some(parent_idx)
+                    } else {
+                        Some(visual_items[cur_vis_pos.saturating_sub(1)])
+                    }
                 } else {
                     Some(visual_items[cur_vis_pos.saturating_sub(1)])
                 }
@@ -3481,7 +3383,10 @@ impl AppWindow {
                 cx.foreground_executor()
                     .spawn(async move {
                         use crate::core::progress::OpKind;
-                        use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
+                        use crate::core::transfer::{
+                            TransferOutcome, run_copy_job_recorded_rt, run_move_job_recorded_rt,
+                        };
+                        use crate::core::undo_redo::{CopyFilesAction, MoveFilesAction};
                         let (op_label, kind) = if is_copy {
                             ("Copy", OpKind::Copy)
                         } else {
@@ -3490,10 +3395,22 @@ impl AppWindow {
                         let job_id = progress_engine
                             .start_job(format!("{} ({} items)", op_label, total), kind)
                             .await;
-                        let outcome = if is_copy {
-                            run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                        let (outcome, pairs) = if is_copy {
+                            run_copy_job_recorded_rt(
+                                progress_engine.clone(),
+                                job_id,
+                                sources,
+                                dest_dir,
+                            )
+                            .await
                         } else {
-                            run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                            run_move_job_recorded_rt(
+                                progress_engine.clone(),
+                                job_id,
+                                sources,
+                                dest_dir,
+                            )
+                            .await
                         };
                         match outcome {
                             TransferOutcome::Done => progress_engine.complete_job(job_id).await,
@@ -3503,7 +3420,24 @@ impl AppWindow {
                             }
                         }
                         let _ = this_weak.update(&mut async_cx, |this, cx| {
+                            if !pairs.is_empty() {
+                                if is_copy {
+                                    this.state.undo_redo.record_executed(Box::new(
+                                        CopyFilesAction { pairs },
+                                    ));
+                                } else {
+                                    this.state.undo_redo.record_executed(Box::new(
+                                        MoveFilesAction { pairs },
+                                    ));
+                                }
+                            }
                             this.refresh(cx);
+                            if matches!(
+                                this.state.main_view.pane_type,
+                                crate::ui::views::main_view::PaneType::Dual
+                            ) {
+                                this.refresh_secondary_pane(cx);
+                            }
                         });
                     })
                     .detach();
@@ -4594,13 +4528,15 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{TransferOutcome, run_delete_job_rt};
+                use crate::core::transfer::{TransferOutcome, run_delete_job_recorded_rt};
+                use crate::core::undo_redo::DeleteToTrashAction;
                 let n = bufs.len();
                 let job = engine
                     .start_job(format!("Delete ({} items)", n), OpKind::Delete)
                     .await;
                 let parent_to_inv = bufs.first().and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                match run_delete_job_rt(engine.clone(), job, bufs, true).await {
+                let (outcome, trashed) = run_delete_job_recorded_rt(engine.clone(), job, bufs, true).await;
+                match outcome {
                     TransferOutcome::Done => {
                         engine.complete_job(job).await;
                     }
@@ -4622,6 +4558,11 @@ impl AppWindow {
                     crate::storage::folder_size::refresh_changed_branch_background(parent_dir);
                 }
                 weak.update(&mut async_cx, |this, cx| {
+                    if !trashed.is_empty() {
+                        this.state
+                            .undo_redo
+                            .record_executed(Box::new(DeleteToTrashAction { paths: trashed }));
+                    }
                     this.clear_selection(cx);
                     this.refresh(cx);
                 })
@@ -4940,7 +4881,7 @@ impl AppWindow {
                     let rh = (22.0 + view.zoom_level * 22.0).round();
                     (vis_pos, rh)
                 }
-                ViewMode::Details => {
+                ViewMode::Details | ViewMode::Tree => {
                     let base_row_h = if view.compact_mode { 22.0 } else { 26.0 };
                     let rh = (base_row_h + view.zoom_level * 22.0).round();
                     (vis_pos, rh)
@@ -5412,6 +5353,43 @@ impl AppWindow {
             return;
         }
 
+        // In Tree view mode, single-clicking a folder selects and expands it when collapsed,
+        // or collapses and deselects it when already expanded.
+        if click_count == 1
+            && is_dir
+            && !modifiers.shift
+            && !modifiers.control
+            && matches!(
+                self.state.pane_view(pane_focus).view_mode,
+                crate::config::config::ViewMode::Tree
+            )
+        {
+            let folder_pb = path.as_path().to_path_buf();
+            let was_expanded = self
+                .state
+                .pane_view(pane_focus)
+                .tree_expanded_paths
+                .contains(&folder_pb);
+            if was_expanded {
+                {
+                    let pv = self.state.pane_view_mut(pane_focus);
+                    pv.selected_indices.clear();
+                    pv.selection_anchor_index = None;
+                    pv.last_clicked_index = None;
+                }
+                self.clear_selection(cx);
+                self.toggle_tree_folder(pane_focus, folder_pb, cx);
+                return;
+            } else {
+                self.select_item_in_pane(pane_focus, idx, false, false, cx);
+                self.toggle_tree_folder(pane_focus, folder_pb, cx);
+                self.state
+                    .main_view
+                    .record_drag_candidate(pane_focus, idx, pos);
+                return;
+            }
+        }
+
         let already_in_multi_selection = {
             let pv = self.state.pane_view(pane_focus);
             pv.selected_indices.len() > 1
@@ -5677,7 +5655,10 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{run_copy_job_rt, run_move_job_rt, TransferOutcome};
+                use crate::core::transfer::{
+                    run_copy_job_recorded_rt, run_move_job_recorded_rt, TransferOutcome,
+                };
+                use crate::core::undo_redo::{CopyFilesAction, MoveFilesAction};
                 let (op_label, kind) = if is_copy {
                     ("Copy", OpKind::Copy)
                 } else {
@@ -5686,12 +5667,22 @@ impl AppWindow {
                 let job_id = progress_engine
                     .start_job(format!("{} ({} items)", op_label, total), kind)
                     .await;
-                let outcome = if is_copy {
-                    run_copy_job_rt(progress_engine.clone(), job_id, filtered_sources, dest_dir)
-                        .await
+                let (outcome, pairs) = if is_copy {
+                    run_copy_job_recorded_rt(
+                        progress_engine.clone(),
+                        job_id,
+                        filtered_sources,
+                        dest_dir,
+                    )
+                    .await
                 } else {
-                    run_move_job_rt(progress_engine.clone(), job_id, filtered_sources, dest_dir)
-                        .await
+                    run_move_job_recorded_rt(
+                        progress_engine.clone(),
+                        job_id,
+                        filtered_sources,
+                        dest_dir,
+                    )
+                    .await
                 };
                 match outcome {
                     TransferOutcome::Done => progress_engine.complete_job(job_id).await,
@@ -5701,7 +5692,24 @@ impl AppWindow {
                     }
                 }
                 let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    if !pairs.is_empty() {
+                        if is_copy {
+                            this.state
+                                .undo_redo
+                                .record_executed(Box::new(CopyFilesAction { pairs }));
+                        } else {
+                            this.state
+                                .undo_redo
+                                .record_executed(Box::new(MoveFilesAction { pairs }));
+                        }
+                    }
                     this.refresh(cx);
+                    if matches!(
+                        this.state.main_view.pane_type,
+                        crate::ui::views::main_view::PaneType::Dual
+                    ) {
+                        this.refresh_secondary_pane(cx);
+                    }
                 });
             })
             .detach();
@@ -6306,7 +6314,10 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{run_copy_job_rt, run_move_job_rt, TransferOutcome};
+                use crate::core::transfer::{
+                    run_copy_job_recorded_rt, run_move_job_recorded_rt, TransferOutcome,
+                };
+                use crate::core::undo_redo::{CopyFilesAction, MoveFilesAction};
                 let (op_label, kind) = if is_copy {
                     ("Copy", OpKind::Copy)
                 } else {
@@ -6320,10 +6331,12 @@ impl AppWindow {
                         total as u64,
                     )
                     .await;
-                let outcome = if is_copy {
-                    run_copy_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                let (outcome, pairs) = if is_copy {
+                    run_copy_job_recorded_rt(progress_engine.clone(), job_id, sources, dest_dir)
+                        .await
                 } else {
-                    run_move_job_rt(progress_engine.clone(), job_id, sources, dest_dir).await
+                    run_move_job_recorded_rt(progress_engine.clone(), job_id, sources, dest_dir)
+                        .await
                 };
                 match outcome {
                     TransferOutcome::Done => progress_engine.complete_job(job_id).await,
@@ -6333,7 +6346,24 @@ impl AppWindow {
                     }
                 }
                 let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    if !pairs.is_empty() {
+                        if is_copy {
+                            this.state
+                                .undo_redo
+                                .record_executed(Box::new(CopyFilesAction { pairs }));
+                        } else {
+                            this.state
+                                .undo_redo
+                                .record_executed(Box::new(MoveFilesAction { pairs }));
+                        }
+                    }
                     this.refresh(cx);
+                    if matches!(
+                        this.state.main_view.pane_type,
+                        crate::ui::views::main_view::PaneType::Dual
+                    ) {
+                        this.refresh_secondary_pane(cx);
+                    }
                 });
             })
             .detach();
@@ -6912,20 +6942,23 @@ impl AppWindow {
     }
 
     pub fn confirm_add_item(&mut self, cx: &mut Context<Self>) {
-        if let Some(DialogType::AddItem { is_folder, name, .. }) = self.state.active_dialog.clone() {
+        if let Some(DialogType::AddItem { is_folder, input }) = self.state.active_dialog.clone() {
             let default_name = if is_folder { "New folder" } else { "New Text Document.txt" };
-            let trimmed = name.trim();
+            let trimmed = input.text.trim();
             let final_name = if trimmed.is_empty() { default_name } else { trimmed };
-            let mut target_path = self.state.main_view.primary_path.as_path().to_path_buf();
+            let mut target_path = self.state.active_view().primary_path.as_path().to_path_buf();
             target_path.push(final_name);
-            if is_folder {
-                let _ = std::fs::create_dir_all(&target_path);
-            } else {
-                let _ = std::fs::write(&target_path, b"");
+            let action = Box::new(crate::core::undo_redo::CreateItemAction {
+                path: FilesPath::from(target_path),
+                is_folder,
+            });
+            if let Err(e) = self.state.undo_redo.perform(action) {
+                tracing::warn!("Add item failed: {}", e);
             }
             // Refresh directory
-            let current_path = self.state.main_view.primary_path.clone();
-            self.navigate(current_path, cx);
+            let pane_focus = self.state.active_pane_focus();
+            let current_path = self.state.pane_view(pane_focus).primary_path.clone();
+            self.navigate_pane(current_path, pane_focus, cx);
         }
         self.state.active_dialog = None;
         cx.notify();
@@ -7994,6 +8027,7 @@ impl AppWindow {
             ActionKind::ViewList => self.set_view_mode(ViewMode::List, cx),
             ActionKind::ViewGrid => self.set_view_mode(ViewMode::Grid, cx),
             ActionKind::ViewColumns => self.set_view_mode(ViewMode::Columns, cx),
+            ActionKind::ViewTree => self.set_view_mode(ViewMode::Tree, cx),
             ActionKind::CycleViewMode => self.cycle_view_mode(cx),
             ActionKind::ZoomIn | ActionKind::MouseWheelZoomIn => {
                 let z = (self.state.active_view().zoom_level + 0.1).min(1.0);

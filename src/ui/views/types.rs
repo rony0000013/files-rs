@@ -828,17 +828,9 @@ pub struct MainViewState {
     pub side_pane_resize_start_width: Option<f32>,
     /// Whether rename is in progress for an item index
     pub renaming_index: Option<usize>,
-    /// Current rename text (used during inline rename)
-    pub rename_text: String,
-    /// Whether all text is currently selected in the inline rename box (e.g. on initial rename trigger)
+    /// Unified text input state for inline file rename
     #[serde(skip)]
-    pub rename_selected_all: bool,
-    /// Cursor character index inside rename_text
-    #[serde(skip)]
-    pub rename_cursor_pos: usize,
-    /// Effective characters per line used for multiline rename wrapping in Grid view
-    #[serde(skip)]
-    pub rename_chars_per_line: usize,
+    pub rename_input: crate::ui::components::text_input::TextInputState,
     /// Paths of files currently cut to the clipboard (rendered with opacity + dashed border)
     #[serde(skip)]
     pub cut_paths: HashSet<std::path::PathBuf>,
@@ -999,14 +991,42 @@ pub struct MainViewState {
     /// Whether groups are ordered ascending (`true`) or descending (`false`)
     #[serde(default = "default_true_bool")]
     pub group_ascending: bool,
+    /// Expanded folder paths in main-view Tree Mode
+    #[serde(skip)]
+    pub tree_expanded_paths: HashSet<std::path::PathBuf>,
+    /// Cached sorted direct children for expanded folders in main-view Tree Mode
+    #[serde(skip)]
+    pub tree_children_cache: std::collections::HashMap<std::path::PathBuf, Vec<FileItem>>,
+    /// Folder paths currently loading children in the background for Tree Mode
+    #[serde(skip)]
+    pub tree_loading_paths: HashSet<std::path::PathBuf>,
+    /// Top-level items snapshot for lossless switch between flat views and Tree Mode
+    #[serde(skip)]
+    pub tree_top_items: Vec<FileItem>,
+    /// Per-item nesting depth aligned with `items` when `view_mode == ViewMode::Tree`
+    #[serde(skip)]
+    pub tree_depths: Vec<u16>,
+    /// Monotonic generation token invalidating stale async Tree Mode child loads
+    #[serde(skip)]
+    pub tree_load_generation: u64,
 }
 
 impl MainViewState {
+    /// Clear all inline rename state.
+    pub fn clear_rename_state(&mut self) {
+        self.renaming_index = None;
+        self.rename_input = crate::ui::components::text_input::TextInputState::default();
+    }
+
     /// Invalidate the cached sorted view index mapping when sort settings change.
     /// (`visible_items_rc()` performs non-destructive natural sorting so `self.items`,
     /// `self.selected_indices`, and `FileItems` stay index-aligned at all times.)
     pub fn apply_sort(&mut self) {
-        self.bump_items_revision();
+        if matches!(self.view_mode, crate::config::config::ViewMode::Tree) {
+            self.rebuild_tree_items();
+        } else {
+            self.bump_items_revision();
+        }
     }
 }
 
@@ -1062,6 +1082,7 @@ pub struct VisibleCacheKey {
     pub search_query: String,
     pub search_results_len: usize,
     pub tags_cache_len: usize,
+    pub is_tree_mode: bool,
 }
 
 fn default_dual_pane_ratio() -> f32 {

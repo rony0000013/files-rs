@@ -699,7 +699,10 @@ impl AppWindow {
         cx.foreground_executor()
             .spawn(async move {
                 use crate::core::progress::OpKind;
-                use crate::core::transfer::{TransferOutcome, run_copy_job_rt, run_move_job_rt};
+                use crate::core::transfer::{
+                    TransferOutcome, run_copy_job_recorded_rt, run_move_job_recorded_rt,
+                };
+                use crate::core::undo_redo::{CopyFilesAction, MoveFilesAction};
                 let kind = if is_cut { OpKind::Move } else { OpKind::Copy };
                 let job_id = progress_engine
                     .start_job_with_meta(
@@ -715,10 +718,12 @@ impl AppWindow {
                     .collect();
                 let invalidation_sources = sources.clone();
                 let invalidation_target = target_path.clone();
-                let outcome = if is_cut {
-                    run_move_job_rt(progress_engine.clone(), job_id, sources, target_path).await
+                let (outcome, recorded_pairs) = if is_cut {
+                    run_move_job_recorded_rt(progress_engine.clone(), job_id, sources, target_path)
+                        .await
                 } else {
-                    run_copy_job_rt(progress_engine.clone(), job_id, sources, target_path).await
+                    run_copy_job_recorded_rt(progress_engine.clone(), job_id, sources, target_path)
+                        .await
                 };
                 crate::storage::folder_size::refresh_changed_branch_background(invalidation_target);
                 if is_cut {
@@ -752,10 +757,27 @@ impl AppWindow {
 
                 this_weak
                     .update(&mut async_cx, |this, cx| {
+                        if !recorded_pairs.is_empty() {
+                            if is_cut {
+                                this.state.undo_redo.record_executed(Box::new(MoveFilesAction {
+                                    pairs: recorded_pairs,
+                                }));
+                            } else {
+                                this.state.undo_redo.record_executed(Box::new(CopyFilesAction {
+                                    pairs: recorded_pairs,
+                                }));
+                            }
+                        }
                         this.state.clipboard = ClipboardState::Empty;
                         this.state.main_view.cut_paths.clear();
                         this.state.secondary_view.cut_paths.clear();
                         this.refresh(cx);
+                        if matches!(
+                            this.state.main_view.pane_type,
+                            crate::ui::views::main_view::PaneType::Dual
+                        ) {
+                            this.refresh_secondary_pane(cx);
+                        }
                     })
                     .ok();
             })
@@ -2788,14 +2810,34 @@ impl AppWindow {
                 let _ = weak_entity.update(&mut async_cx, |this, cx| {
                     match result {
                         Ok(()) => {
-                            tracing::info!("Undo successful");
+                            let label = action.name().to_string();
+                            tracing::info!("Undo successful: {}", label);
                             this.state.undo_redo.commit_undo_success(action);
                             this.state.main_view.bump_items_revision();
+                            this.state.status_center.push_notification(
+                                "Undo",
+                                format!("Undone: {}", label),
+                                crate::ui::components::status_center::NotificationSeverity::Info,
+                                None,
+                            );
                             this.refresh(cx);
+                            if matches!(
+                                this.state.main_view.pane_type,
+                                crate::ui::views::main_view::PaneType::Dual
+                            ) {
+                                this.refresh_secondary_pane(cx);
+                            }
                         }
                         Err(e) => {
-                            tracing::warn!("Undo failed: {}", e);
+                            let msg = format!("{e}");
+                            tracing::warn!("Undo failed: {}", msg);
                             this.state.undo_redo.commit_undo_failure(action);
+                            this.state.status_center.push_notification(
+                                "Undo failed",
+                                msg,
+                                crate::ui::components::status_center::NotificationSeverity::Warning,
+                                None,
+                            );
                         }
                     }
                     cx.notify();
@@ -2823,14 +2865,34 @@ impl AppWindow {
                 let _ = weak_entity.update(&mut async_cx, |this, cx| {
                     match result {
                         Ok(()) => {
-                            tracing::info!("Redo successful");
+                            let label = action.name().to_string();
+                            tracing::info!("Redo successful: {}", label);
                             this.state.undo_redo.commit_redo_success(action);
                             this.state.main_view.bump_items_revision();
+                            this.state.status_center.push_notification(
+                                "Redo",
+                                format!("Redone: {}", label),
+                                crate::ui::components::status_center::NotificationSeverity::Info,
+                                None,
+                            );
                             this.refresh(cx);
+                            if matches!(
+                                this.state.main_view.pane_type,
+                                crate::ui::views::main_view::PaneType::Dual
+                            ) {
+                                this.refresh_secondary_pane(cx);
+                            }
                         }
                         Err(e) => {
-                            tracing::warn!("Redo failed: {}", e);
+                            let msg = format!("{e}");
+                            tracing::warn!("Redo failed: {}", msg);
                             this.state.undo_redo.commit_redo_failure(action);
+                            this.state.status_center.push_notification(
+                                "Redo failed",
+                                msg,
+                                crate::ui::components::status_center::NotificationSeverity::Warning,
+                                None,
+                            );
                         }
                     }
                     cx.notify();
@@ -2842,8 +2904,7 @@ impl AppWindow {
     pub fn new_folder(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = Some(DialogType::AddItem {
             is_folder: true,
-            name: "New folder".to_string(),
-            selected_all: true,
+            input: crate::ui::components::text_input::TextInputState::with_text("New folder", true),
         });
         cx.notify();
     }
@@ -2851,8 +2912,10 @@ impl AppWindow {
     pub fn new_file(&mut self, cx: &mut Context<Self>) {
         self.state.active_dialog = Some(DialogType::AddItem {
             is_folder: false,
-            name: "New Text Document.txt".to_string(),
-            selected_all: true,
+            input: crate::ui::components::text_input::TextInputState::with_text(
+                "New Text Document.txt",
+                true,
+            ),
         });
         cx.notify();
     }
@@ -3006,24 +3069,180 @@ impl AppWindow {
 
     pub fn start_rename(&mut self, index: usize, cx: &mut Context<Self>) {
         self.commit_rename_if_active(cx);
-        let view = self.state.active_view_mut();
-        if let Some(item) = view.items.get(index) {
-            view.renaming_index = Some(index);
-            view.rename_text = item.name.clone();
-            view.rename_selected_all = true;
-            view.rename_cursor_pos = view.rename_text.chars().count();
-            let cpl = match view.view_mode {
-                crate::config::config::ViewMode::Grid => {
-                    let metrics = crate::ui::views::main_view::MainViewState::grid_layout_params(view.zoom_level);
-                    let font_size = 11.5 + (view.zoom_level - 1.0).clamp(-0.4, 0.6) * 2.0;
-                    let avail_w = metrics.item_width - 12.0;
-                    ((avail_w.max(60.0) / (font_size * 0.58)).floor() as usize).max(8)
-                }
-                _ => 18,
-            };
-            view.rename_chars_per_line = cpl;
+        let name_opt = {
+            let view = self.state.active_view_mut();
+            if let Some(item) = view.items.get(index) {
+                let name = item.name.clone();
+                view.renaming_index = Some(index);
+                view.rename_input =
+                    crate::ui::components::text_input::TextInputState::with_text(name.clone(), true);
+                Some(name)
+            } else {
+                None
+            }
+        };
+        if name_opt.is_some() {
+            self.state.pending_focus_main = true;
             cx.notify();
         }
+    }
+
+    /// Generate a non-colliding candidate filename such as `name (2).ext` in `parent`.
+    pub fn unique_rename_candidate(parent: &std::path::Path, desired_name: &str) -> String {
+        let p = std::path::Path::new(desired_name);
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(desired_name);
+        let ext = p.extension().and_then(|e| e.to_str());
+        for counter in 2..=9999 {
+            let candidate = match ext {
+                Some(e) if !e.is_empty() && desired_name.starts_with('.') == false => {
+                    format!("{} ({}).{}", stem, counter, e)
+                }
+                _ => format!("{} ({})", desired_name, counter),
+            };
+            if std::fs::symlink_metadata(parent.join(&candidate)).is_err() {
+                return candidate;
+            }
+        }
+        format!("{}_copy", desired_name)
+    }
+
+    fn detect_rename_conflict(
+        old_path: &std::path::Path,
+        old_name: &str,
+        new_path: &std::path::Path,
+        new_name: &str,
+    ) -> bool {
+        #[cfg(windows)]
+        let same_ci_name = new_name.eq_ignore_ascii_case(old_name);
+        #[cfg(not(windows))]
+        let same_ci_name = new_path == old_path;
+
+        if same_ci_name {
+            return false;
+        }
+        let _ = old_path;
+        std::fs::symlink_metadata(new_path).is_ok()
+    }
+
+    fn format_meta_timestamp(meta: Option<&std::fs::Metadata>) -> String {
+        meta.and_then(|m| m.modified().ok())
+            .map(|t| crate::ui::views::helpers::format_system_time(Some(t)))
+            .unwrap_or_else(|| "—".to_string())
+    }
+
+    pub fn reopen_rename_with_text(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        index: usize,
+        prefill: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.main_view.active_pane = pane_focus;
+        let updated = {
+            let view = self.state.pane_view_mut(pane_focus);
+            if index < view.items.len() {
+                view.renaming_index = Some(index);
+                view.rename_input =
+                    crate::ui::components::text_input::TextInputState::with_text(prefill, true);
+                true
+            } else {
+                false
+            }
+        };
+        if updated {
+            self.state.pending_focus_main = true;
+            cx.notify();
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_resolved_rename(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        idx: usize,
+        old_path: std::path::PathBuf,
+        new_path: std::path::PathBuf,
+        new_name: String,
+        replace_existing: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if replace_existing && std::fs::symlink_metadata(&new_path).is_ok() {
+            if let Err(e) = trash::delete(&new_path) {
+                tracing::error!("Failed to trash existing item before replace rename {:?}: {}", new_path, e);
+                self.state.status_center.push_notification(
+                    "Rename Failed".to_string(),
+                    format!("Could not move existing \"{}\" to Recycle Bin: {}", new_name, e),
+                    crate::ui::components::status_center::ToastSeverity::Error,
+                    None,
+                );
+                cx.notify();
+                return;
+            }
+        }
+
+        let action = crate::core::undo_redo::RenameAction {
+            old_path: FilesPath::new(old_path.clone()),
+            new_path: FilesPath::new(new_path.clone()),
+        };
+        if let Err(e) = self.state.undo_redo.perform(Box::new(action)) {
+            tracing::error!("Failed to rename {:?} to {:?}: {}", old_path, new_path, e);
+            self.state.status_center.push_notification(
+                "Rename Failed".to_string(),
+                format!("Could not rename to \"{}\": {}", new_name, e),
+                crate::ui::components::status_center::ToastSeverity::Error,
+                None,
+            );
+            cx.notify();
+            return;
+        }
+
+        let new_fp = FilesPath::new(new_path.clone());
+        let view = self.state.pane_view_mut(pane_focus);
+        if let Some(item) = view.items.get_mut(idx) {
+            item.name = new_name.clone();
+            item.path = new_fp.clone();
+        }
+        // Sync top-level snapshot & tree cache if present
+        for item in &mut view.tree_top_items {
+            if item.path.as_path() == old_path.as_path() {
+                item.name = new_name.clone();
+                item.path = new_fp.clone();
+            }
+        }
+        for children in view.tree_children_cache.values_mut() {
+            for item in children.iter_mut() {
+                if item.path.as_path() == old_path.as_path() {
+                    item.name = new_name.clone();
+                    item.path = new_fp.clone();
+                }
+            }
+        }
+        if replace_existing {
+            // Remove the displaced existing item (other than the renamed row itself)
+            let mut cur_pos = 0usize;
+            view.items.retain(|it| {
+                let keep = cur_pos == idx || it.path.as_path() != new_path.as_path();
+                cur_pos += 1;
+                keep
+            });
+            view.tree_top_items.retain(|it| it.path.as_path() != new_path.as_path() || it.name == new_name);
+        }
+        view.bump_items_revision();
+        let updated_items = view.items.clone();
+        self.state.pane_file_items(pane_focus).update(cx, |m, _| {
+            m.items = updated_items;
+        });
+        self.state.status_center.push_notification(
+            "Renamed".to_string(),
+            format!("Renamed to \"{}\"", new_name),
+            crate::ui::components::status_center::ToastSeverity::Success,
+            None,
+        );
+        cx.notify();
     }
 
     pub fn commit_rename(&mut self, cx: &mut Context<Self>) {
@@ -3044,10 +3263,9 @@ impl AppWindow {
 
         let rename_info = {
             let view = self.state.pane_view_mut(pane_focus);
-            if let Some(idx) = view.renaming_index.take() {
-                let new_name = view.rename_text.trim().to_string();
-                view.rename_selected_all = false;
-                view.rename_cursor_pos = 0;
+            if let Some(idx) = view.renaming_index {
+                let new_name = view.rename_input.text.trim().to_string();
+                view.clear_rename_state();
                 view.items.get(idx).map(|item| (idx, item.path.clone(), item.name.clone(), new_name))
             } else {
                 None
@@ -3055,26 +3273,63 @@ impl AppWindow {
         };
         if let Some((idx, old_path, old_name, new_name)) = rename_info {
             if !new_name.is_empty() && new_name != old_name {
+                if new_name == "."
+                    || new_name == ".."
+                    || new_name
+                        .chars()
+                        .any(|c| ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c) || c.is_control())
+                {
+                    self.state.status_center.push_notification(
+                        "Invalid File Name".to_string(),
+                        "File names cannot contain \\ / : * ? \" < > |".to_string(),
+                        crate::ui::components::status_center::ToastSeverity::Warning,
+                        None,
+                    );
+                    cx.notify();
+                    return;
+                }
+
                 if let Some(parent) = old_path.as_path().parent() {
-                    let new_path = FilesPath::new(parent.join(&new_name));
-                    let action = crate::core::undo_redo::RenameAction {
-                        old_path: old_path.clone(),
-                        new_path: new_path.clone(),
-                    };
-                    if let Err(e) = self.state.undo_redo.perform(Box::new(action)) {
-                        tracing::error!("Failed to rename {:?} to {:?}: {}", old_path, new_path, e);
-                    } else {
-                        let view = self.state.pane_view_mut(pane_focus);
-                        if let Some(item) = view.items.get_mut(idx) {
-                            item.name = new_name;
-                            item.path = new_path;
-                        }
-                        view.bump_items_revision();
-                        let updated_items = view.items.clone();
-                        self.state.pane_file_items(pane_focus).update(cx, |m, _| {
-                            m.items = updated_items;
-                        });
+                    let new_path = parent.join(&new_name);
+                    if Self::detect_rename_conflict(
+                        old_path.as_path(),
+                        &old_name,
+                        &new_path,
+                        &new_name,
+                    ) {
+                        let src_meta = std::fs::symlink_metadata(old_path.as_path()).ok();
+                        let dst_meta = std::fs::symlink_metadata(&new_path).ok();
+                        let suggested_name = Self::unique_rename_candidate(parent, &new_name);
+                        self.state.active_dialog =
+                            Some(crate::ui::components::dialogs::DialogType::RenameConflict {
+                                pane_focus,
+                                item_index: idx,
+                                old_path: old_path.as_path().to_path_buf(),
+                                old_name,
+                                new_path,
+                                new_name,
+                                suggested_name,
+                                source_size: src_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                                source_modified: Self::format_meta_timestamp(src_meta.as_ref()),
+                                source_is_dir: src_meta.as_ref().is_some_and(|m| m.is_dir()),
+                                existing_size: dst_meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                                existing_modified: Self::format_meta_timestamp(dst_meta.as_ref()),
+                                existing_is_dir: dst_meta.as_ref().is_some_and(|m| m.is_dir()),
+                            });
+                        cx.notify();
+                        return;
                     }
+
+                    self.apply_resolved_rename(
+                        pane_focus,
+                        idx,
+                        old_path.as_path().to_path_buf(),
+                        new_path,
+                        new_name,
+                        false,
+                        cx,
+                    );
+                    return;
                 }
             }
             cx.notify();
@@ -3082,12 +3337,8 @@ impl AppWindow {
     }
 
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
-        self.state.main_view.renaming_index = None;
-        self.state.secondary_view.renaming_index = None;
-        self.state.main_view.rename_selected_all = false;
-        self.state.secondary_view.rename_selected_all = false;
-        self.state.main_view.rename_cursor_pos = 0;
-        self.state.secondary_view.rename_cursor_pos = 0;
+        self.state.main_view.clear_rename_state();
+        self.state.secondary_view.clear_rename_state();
         cx.notify();
     }
 
@@ -3760,7 +4011,7 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Cycle Details -> List -> Grid -> Columns (toolbar View button).
+    /// Cycle Details -> List -> Cards -> Grid -> Columns -> Tree (toolbar View button).
     pub fn cycle_view_mode(&mut self, cx: &mut Context<Self>) {
         use crate::config::config::ViewMode as VM;
         let next = match self.state.main_view.view_mode {
@@ -3768,7 +4019,8 @@ impl AppWindow {
             VM::List => VM::Cards,
             VM::Cards => VM::Grid,
             VM::Grid => VM::Columns,
-            VM::Columns => VM::Details,
+            VM::Columns => VM::Tree,
+            VM::Tree => VM::Details,
         };
         self.set_view_mode(next, cx);
     }
@@ -3779,7 +4031,7 @@ impl AppWindow {
         let new_zoom = self.state.navigation.update(cx, |nav, _cx| {
             let tab = nav.tabs.active_tab_mut();
             // Save the old mode's zoom level
-            tab.per_view_zoom_levels.insert(old_mode, current_zoom);
+            tab.per_view_zoom_levels.insert(old_mode.clone(), current_zoom);
             // Switch to the new view mode
             tab.view_mode = mode.clone();
             // Restore the new mode's saved zoom, or keep current zoom as default
@@ -3795,6 +4047,18 @@ impl AppWindow {
         self.state.main_view.zoom_level = new_zoom;
         self.state.secondary_view.view_mode = mode.clone();
         self.state.secondary_view.zoom_level = new_zoom;
+
+        if matches!(mode, ViewMode::Tree) {
+            self.state.main_view.enter_tree_mode();
+            self.state.secondary_view.enter_tree_mode();
+        } else if matches!(old_mode, ViewMode::Tree) {
+            self.state.main_view.exit_tree_mode();
+            self.state.secondary_view.exit_tree_mode();
+        }
+        let main_sync = self.state.main_view.items.clone();
+        let sec_sync = self.state.secondary_view.items.clone();
+        self.state.file_items.update(cx, |m, _| m.items = main_sync);
+        self.state.secondary_file_items.update(cx, |m, _| m.items = sec_sync);
 
         if let Some(crate::ui::components::dialogs::DialogType::ZoomSlider {
             ref mut current_zoom,
@@ -3836,6 +4100,132 @@ impl AppWindow {
         // Persist session so per-tab view mode and zoom are saved
         self.save_session(cx);
 
+        cx.notify();
+    }
+
+    /// Expand or collapse a directory node in main-view Tree Mode without blocking the UI thread.
+    pub fn toggle_tree_folder(
+        &mut self,
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        folder_path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let (was_expanded, has_cache, gen_token) = {
+            let view = self.state.pane_view_mut(pane_focus);
+            if !matches!(view.view_mode, ViewMode::Tree) {
+                return;
+            }
+            if view.tree_expanded_paths.remove(&folder_path) {
+                view.tree_loading_paths.remove(&folder_path);
+                view.rebuild_tree_items();
+                let updated = view.items.clone();
+                self.state.pane_file_items(pane_focus).update(cx, |m, _| m.items = updated);
+                cx.notify();
+                return;
+            }
+            view.tree_expanded_paths.insert(folder_path.clone());
+            if view.tree_children_cache.contains_key(&folder_path) {
+                view.rebuild_tree_items();
+                let updated = view.items.clone();
+                self.state.pane_file_items(pane_focus).update(cx, |m, _| m.items = updated);
+                cx.notify();
+                return;
+            }
+            view.tree_loading_paths.insert(folder_path.clone());
+            (false, false, view.tree_load_generation)
+        };
+        let _ = (was_expanded, has_cache);
+
+        let mut async_cx = cx.to_async();
+        let this_weak = cx.weak_entity();
+        let folder_clone = folder_path.clone();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let children: Vec<crate::domain::metadata::FileItem> = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        if let Some((arch_path, inner_dir)) =
+                            crate::storage::archive_service::ArchiveService::split_archive_path(
+                                &folder_clone,
+                            )
+                        {
+                            return crate::storage::archive_service::ArchiveService::list_virtual_directory(
+                                &arch_path,
+                                &inner_dir,
+                            )
+                            .unwrap_or_default();
+                        }
+
+                        let mut list = Vec::new();
+                        let Ok(rd) = std::fs::read_dir(&folder_clone) else {
+                            return list;
+                        };
+                        for entry in rd.filter_map(|e| e.ok()) {
+                            let ep = entry.path();
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            let meta = entry.metadata().ok();
+                            let is_dir = meta
+                                .as_ref()
+                                .map(|m| m.is_dir())
+                                .unwrap_or_else(|| {
+                                    entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                                });
+                            let size = if is_dir {
+                                crate::storage::folder_size::peek_cached_size(&ep).unwrap_or(0)
+                            } else {
+                                meta.as_ref().map(|m| m.len()).unwrap_or(0)
+                            };
+                            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+                            let created = meta.as_ref().and_then(|m| m.created().ok());
+                            #[cfg(windows)]
+                            let (is_hidden, is_system) = {
+                                use std::os::windows::fs::MetadataExt;
+                                let attrs = meta.as_ref().map(|m| m.file_attributes()).unwrap_or(0);
+                                ((attrs & 0x2) != 0 || name.starts_with('.'), (attrs & 0x4) != 0)
+                            };
+                            #[cfg(not(windows))]
+                            let (is_hidden, is_system) = (name.starts_with('.'), false);
+
+                            list.push(crate::domain::metadata::FileItem {
+                                name,
+                                path: FilesPath::new(ep),
+                                file_type: if is_dir {
+                                    crate::storage::storage::FileType::Directory
+                                } else {
+                                    crate::storage::storage::FileType::File
+                                },
+                                size,
+                                is_hidden,
+                                is_system,
+                                modified,
+                                created,
+                                tags: Vec::new(),
+                            });
+                        }
+                        list
+                    })
+                    .await;
+
+                let _ = this_weak.update(&mut async_cx, |this, cx| {
+                    let view = this.state.pane_view_mut(pane_focus);
+                    view.tree_loading_paths.remove(&folder_path);
+                    if view.tree_load_generation != gen_token {
+                        return;
+                    }
+                    view.tree_children_cache.insert(folder_path.clone(), children);
+                    if matches!(view.view_mode, ViewMode::Tree) {
+                        view.rebuild_tree_items();
+                        let updated = view.items.clone();
+                        this.state
+                            .pane_file_items(pane_focus)
+                            .update(cx, |m, _| m.items = updated);
+                        this.sync_pane_icon_paths();
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
         cx.notify();
     }
 
@@ -4290,6 +4680,7 @@ impl AppWindow {
     }
 
     pub fn commit_create_tag(&mut self, cx: &mut Context<Self>) {
+        self.state.settings_ui.sync_from_inputs();
         let name = self.state.settings_ui.new_tag_name.trim().to_string();
         let color = self.state.settings_ui.new_tag_color.clone();
         if name.is_empty() {
@@ -4312,6 +4703,7 @@ impl AppWindow {
             }
         });
         self.state.settings_ui.new_tag_name.clear();
+        self.state.settings_ui.new_tag_input.clear();
         self.state.settings_ui.is_creating_tag = false;
         self.refresh_home_tags_cache(cx);
         cx.notify();
@@ -5263,4 +5655,59 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod rename_conflict_tests {
+    use super::AppWindow;
+
+    #[test]
+    fn test_unique_rename_candidate_increments_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "files_rs_rename_cand_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.txt"), b"a").unwrap();
+        std::fs::write(dir.join("report (2).txt"), b"b").unwrap();
+
+        let cand = AppWindow::unique_rename_candidate(&dir, "report.txt");
+        assert_eq!(cand, "report (3).txt");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_rename_conflict_checks_collisions_and_same_case() {
+        let dir = std::env::temp_dir().join(format!(
+            "files_rs_rename_conf_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("Alpha.txt");
+        let b = dir.join("Beta.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        // Renaming Alpha.txt -> Beta.txt must trigger a conflict!
+        assert!(AppWindow::detect_rename_conflict(&a, "Alpha.txt", &b, "Beta.txt"));
+
+        // Renaming Alpha.txt -> Gamma.txt (doesn't exist) has no conflict
+        let g = dir.join("Gamma.txt");
+        assert!(!AppWindow::detect_rename_conflict(&a, "Alpha.txt", &g, "Gamma.txt"));
+
+        // Case-only rename on the same file (Alpha.txt -> alpha.txt) on Windows is allowed
+        let a_lower = dir.join("alpha.txt");
+        #[cfg(windows)]
+        assert!(!AppWindow::detect_rename_conflict(
+            &a,
+            "Alpha.txt",
+            &a_lower,
+            "alpha.txt"
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

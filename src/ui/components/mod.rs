@@ -22,6 +22,7 @@ pub mod status_bar;
 pub mod status_center;
 pub mod tab_bar;
 pub mod tab_interactions;
+pub mod text_input;
 pub mod toolbar;
 
 // No glob re-exports — all access goes through specific module paths

@@ -1,5 +1,9 @@
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputState, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use gpui::*;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,11 +40,11 @@ pub enum DialogType {
     Rename {
         item_index: usize,
         current_name: String,
+        input: TextInputState,
     },
     AddItem {
         is_folder: bool,
-        name: String,
-        selected_all: bool,
+        input: TextInputState,
     },
     Dynamic {
         title: String,
@@ -157,6 +161,22 @@ pub enum DialogType {
     Conflict {
         state: Box<crate::ui::dialog_services::conflict_dialog::ConflictDialogState>,
     },
+    /// Rename Conflict Resolution Dialog (prevents silent overwrite on duplicate name)
+    RenameConflict {
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        item_index: usize,
+        old_path: std::path::PathBuf,
+        old_name: String,
+        new_path: std::path::PathBuf,
+        new_name: String,
+        suggested_name: String,
+        source_size: u64,
+        source_modified: String,
+        source_is_dir: bool,
+        existing_size: u64,
+        existing_modified: String,
+        existing_is_dir: bool,
+    },
     /// Clone Repository Dialog
     CloneRepo {
         state: Box<crate::ui::dialog_services::clone_repo_dialog::CloneRepoState>,
@@ -210,9 +230,11 @@ pub struct KeyBindingRecorderState {
 #[derive(Debug, Clone)]
 pub struct SettingsUiState {
     pub search_query: String,
+    pub search_input: TextInputState,
     pub search_focused: bool,
     pub expanded_sections: std::collections::HashSet<String>,
     pub actions_search_query: String,
+    pub actions_search_input: TextInputState,
     pub actions_search_focused: bool,
     pub actions_filter: String,
     pub recorder: Option<KeyBindingRecorderState>,
@@ -220,6 +242,7 @@ pub struct SettingsUiState {
     pub pending_delete_action: Option<crate::core::action_registry::ActionKind>,
     pub is_creating_tag: bool,
     pub new_tag_name: String,
+    pub new_tag_input: TextInputState,
     pub new_tag_color: String,
     pub editing_tag_index: Option<usize>,
     pub editing_tag_name: String,
@@ -267,9 +290,11 @@ impl Default for SettingsUiState {
         }
         Self {
             search_query: String::new(),
+            search_input: TextInputState::default(),
             search_focused: false,
             expanded_sections: expanded,
             actions_search_query: String::new(),
+            actions_search_input: TextInputState::default(),
             actions_search_focused: false,
             actions_filter: "all".to_string(),
             recorder: None,
@@ -277,6 +302,7 @@ impl Default for SettingsUiState {
             pending_delete_action: None,
             is_creating_tag: false,
             new_tag_name: String::new(),
+            new_tag_input: TextInputState::default(),
             new_tag_color: "#0078D4".to_string(),
             editing_tag_index: None,
             editing_tag_name: String::new(),
@@ -294,6 +320,22 @@ impl Default for SettingsUiState {
 }
 
 impl SettingsUiState {
+    pub fn sync_from_inputs(&mut self) {
+        self.search_query = self.search_input.text.clone();
+        self.actions_search_query = self.actions_search_input.text.clone();
+        self.new_tag_name = self.new_tag_input.text.clone();
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_input.clear();
+    }
+
+    pub fn clear_actions_search(&mut self) {
+        self.actions_search_query.clear();
+        self.actions_search_input.clear();
+    }
+
     pub fn is_expanded(&self, key: &str) -> bool {
         self.expanded_sections.contains(key)
     }
@@ -416,13 +458,13 @@ impl DialogsView {
             DialogType::Rename {
                 item_index,
                 current_name,
-            } => Self::build_rename_dialog(*item_index, current_name, view.clone())
+                input,
+            } => Self::build_rename_dialog(*item_index, current_name, input, view.clone())
                 .into_any_element(),
             DialogType::AddItem {
                 is_folder,
-                name,
-                selected_all,
-            } => Self::build_add_item_dialog(*is_folder, name, *selected_all, view.clone())
+                input,
+            } => Self::build_add_item_dialog(*is_folder, input, view.clone())
                 .into_any_element(),
             DialogType::SiblingDropdown {
                 parent_path,
@@ -581,6 +623,37 @@ impl DialogsView {
             DialogType::Conflict { state } => {
                 Self::build_conflict_dialog(state, view.clone()).into_any_element()
             }
+            DialogType::RenameConflict {
+                pane_focus,
+                item_index,
+                old_path,
+                old_name,
+                new_path,
+                new_name,
+                suggested_name,
+                source_size,
+                source_modified,
+                source_is_dir,
+                existing_size,
+                existing_modified,
+                existing_is_dir,
+            } => Self::build_rename_conflict_dialog(
+                *pane_focus,
+                *item_index,
+                old_path,
+                old_name,
+                new_path,
+                new_name,
+                suggested_name,
+                *source_size,
+                source_modified,
+                *source_is_dir,
+                *existing_size,
+                existing_modified,
+                *existing_is_dir,
+                view.clone(),
+            )
+            .into_any_element(),
             DialogType::CloneRepo { state } => {
                 Self::build_clone_repo_dialog(state, view.clone()).into_any_element()
             }
@@ -659,6 +732,7 @@ impl DialogsView {
                 overlay = overlay.bg(rgba(0x00000075u32));
             }
             overlay = overlay
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Left, {
                     let v = v_overlay_close.clone();
                     move |_, _, cx| {
@@ -671,8 +745,9 @@ impl DialogsView {
         }
 
         let mut container = div()
-            // Stop clicks on the dialog itself from bubbling up to the overlay and closing it
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            // Stop clicks and scroll wheel events on the dialog itself from bubbling up to the overlay/background
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
 
         if is_popup_menu {
             match dialog {
@@ -690,7 +765,7 @@ impl DialogsView {
                         DialogType::ZoomSlider { .. } => {
                             let win_w = mica_geo.as_ref().map_or(1000.0, |g| g.w);
                             let win_h = mica_geo.as_ref().map_or(700.0, |g| g.h);
-                            (win_w - 10.0 - 180.0, win_h - 48.0 - 168.0)
+                            (win_w - 10.0 - 180.0, win_h - 48.0 - 196.0)
                         }
                         DialogType::SidebarContextMenu { position, bottom_y, .. } => {
                             let y = if *bottom_y > 0.0 { f32::from(position.y) - *bottom_y } else { f32::from(position.y) };
@@ -726,9 +801,9 @@ impl DialogsView {
             }
         } else {
             container = container
-                .bg(rgba(UiConstants::BG_DIALOG_RGBA))
+                .bg(rgb(0x1F1F1F))
                 .border(px(1.0))
-                .border_color(rgba(UiConstants::DIVIDER_RGBA))
+                .border_color(rgba(0xFFFFFF1Cu32))
                 .rounded(px(8.0))
                 .shadow_lg();
         }
@@ -791,6 +866,15 @@ impl DialogsView {
             DialogType::CustomProperties { .. } => {
                 container = container.p(px(0.0)).overflow_hidden();
             }
+            DialogType::DecompressArchive { .. } => {
+                container = container.w(px(580.0)).p(px(0.0)).overflow_hidden();
+            }
+            DialogType::RenameConflict { .. } | DialogType::Conflict { .. } => {
+                container = container.w(px(540.0)).p(px(0.0)).overflow_hidden();
+            }
+            DialogType::CreateArchive { .. } => {
+                container = container.w(px(460.0)).p(px(UiConstants::PADDING_LARGE_RAW as f32));
+            }
             _ => {
                 container = container
                     .w(px(400.0))
@@ -798,18 +882,13 @@ impl DialogsView {
             }
         }
 
-        // Fluent DialogThemeTransition: quick fade on open.
-        let container = container.with_animation(
-            "dialog-entrance",
-            Animation::new(std::time::Duration::from_millis(120)),
-            |elem, delta| elem.opacity(delta),
-        );
         overlay.child(container)
     }
 
     fn build_rename_dialog(
         _index: usize,
-        current_name: &str,
+        _current_name: &str,
+        input: &TextInputState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v_cancel = view.clone();
@@ -849,47 +928,26 @@ impl DialogsView {
                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                             .child("Enter a new name:"),
                     )
-                    // WinUI 3 Fluent TextBox
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(36.0))
-                            .bg(rgba(0x1E1E1EFF))
-                            .border(px(1.0))
-                            .border_color(rgba(UiConstants::STROKE_RGBA))
-                            .border_b(px(2.0))
-                            .border_color(rgb(0x60CDFF))
-                            .rounded(px(4.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(1.0))
-                            .child(
-                                div()
-                                    .text_size(px(13.5))
-                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                    .child(current_name.to_string()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(0.0))
-                                    .h(px(16.0))
-                                    .flex_shrink_0()
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(px(-0.75))
-                                            .w(px(1.5))
-                                            .h(px(16.0))
-                                            .bg(rgb(0xFFFFFF))
-                                            .with_animation(
-                                                "add-cursor-blink",
-                                                Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                                |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                                            ),
-                                    ),
-                            ),
-                    ),
+                    .child(render_text_input(
+                        "dialog-rename-input",
+                        input,
+                        "Enter a new name...",
+                        true,
+                        false,
+                        TextInputMode::SingleLine,
+                        TextInputStyle::dialog(),
+                        view.clone(),
+                        Rc::new(|app| {
+                            if let Some(DialogType::Rename { ref mut input, .. }) =
+                                app.state.active_dialog
+                            {
+                                Some(input)
+                            } else {
+                                None
+                            }
+                        }),
+                        None,
+                    )),
             )
             // WinUI 3 ContentDialog Footer
             .child(
@@ -911,8 +969,7 @@ impl DialogsView {
 
     fn build_add_item_dialog(
         is_folder: bool,
-        name: &str,
-        selected_all: bool,
+        input: &TextInputState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let v_cancel = view.clone();
@@ -956,104 +1013,26 @@ impl DialogsView {
                             .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                             .child("Enter an item name:"),
                     )
-                    // WinUI 3 Fluent TextBox
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(36.0))
-                            .bg(rgba(0x1E1E1EFF))
-                            .border(px(1.0))
-                            .border_color(rgba(UiConstants::STROKE_RGBA))
-                            .border_b(px(2.0))
-                            .border_color(rgb(0x60CDFF))
-                            .rounded(px(4.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(1.0))
-                            .children(if name.is_empty() {
-                                vec![
-                                    div()
-                                        .text_size(px(13.5))
-                                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                                        .child(default_placeholder.to_string())
-                                        .into_any_element(),
-                                    div()
-                                        .w(px(0.0))
-                                        .h(px(16.0))
-                                        .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left(px(-0.75))
-                                                .w(px(1.5))
-                                                .h(px(16.0))
-                                                .bg(rgb(0xFFFFFF))
-                                                .with_animation(
-                                                    "add-item-cursor-blink",
-                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                                                ),
-                                        )
-                                        .into_any_element(),
-                                ]
-                            } else if selected_all {
-                                vec![
-                                    div()
-                                        .bg(rgb(0x0078D4))
-                                        .text_color(rgb(0xFFFFFF))
-                                        .rounded(px(2.0))
-                                        .px(px(2.0))
-                                        .text_size(px(13.5))
-                                        .child(name.to_string())
-                                        .into_any_element(),
-                                    div()
-                                        .w(px(0.0))
-                                        .h(px(16.0))
-                                        .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left(px(-0.75))
-                                                .w(px(1.5))
-                                                .h(px(16.0))
-                                                .bg(rgb(0xFFFFFF))
-                                                .with_animation(
-                                                    "add-item-cursor-blink",
-                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                                                ),
-                                        )
-                                        .into_any_element(),
-                                ]
+                    .child(render_text_input(
+                        "dialog-add-item-input",
+                        input,
+                        default_placeholder,
+                        true,
+                        false,
+                        TextInputMode::SingleLine,
+                        TextInputStyle::dialog(),
+                        view.clone(),
+                        Rc::new(|app| {
+                            if let Some(DialogType::AddItem { ref mut input, .. }) =
+                                app.state.active_dialog
+                            {
+                                Some(input)
                             } else {
-                                vec![
-                                    div()
-                                        .text_size(px(13.5))
-                                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                        .child(name.to_string())
-                                        .into_any_element(),
-                                    div()
-                                        .w(px(0.0))
-                                        .h(px(16.0))
-                                        .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left(px(-0.75))
-                                                .w(px(1.5))
-                                                .h(px(16.0))
-                                                .bg(rgb(0xFFFFFF))
-                                                .with_animation(
-                                                    "add-item-cursor-blink",
-                                                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                                                ),
-                                        )
-                                        .into_any_element(),
-                                ]
-                            }),
-                    ),
+                                None
+                            }
+                        }),
+                        None,
+                    )),
             )
             // WinUI 3 ContentDialog Footer
             .child(
@@ -1188,14 +1167,17 @@ impl DialogsView {
         state: &crate::ui::dialog_services::decompress_dialog::DecompressState,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        use crate::ui::dialog_services::decompress_dialog::DecompressInputField;
+        use crate::ui::dialog_services::decompress_dialog::{
+            DecompressInputField, FolderCheckState,
+        };
 
+        let v_close = view.clone();
         let v_cancel = view.clone();
         let v_ok = view.clone();
         let v_browse = view.clone();
-        let v_dest_focus = view.clone();
-        let v_pwd_focus = view.clone();
         let v_pwd_show = view.clone();
+        let v_expand_all = view.clone();
+        let v_collapse_all = view.clone();
         let v_sel_all = view.clone();
         let v_desel_all = view.clone();
         let v_sub = view.clone();
@@ -1214,11 +1196,6 @@ impl DialogsView {
 
         let dest_focused = state.focused_field == Some(DecompressInputField::Destination);
         let pwd_focused = state.focused_field == Some(DecompressInputField::Password);
-        let dest_display = if state.destination_text.is_empty() {
-            state.destination.to_string_lossy().to_string()
-        } else {
-            state.destination_text.clone()
-        };
         let resolved_preview = state.effective_destination_preview();
 
         let total_entries = state.contents.len();
@@ -1231,19 +1208,12 @@ impl DialogsView {
             "—".to_string()
         };
         let summary_text = if state.loading {
-            "Scanning archive entries...".to_string()
+            "Scanning archive tree...".to_string()
         } else {
             format!(
-                "{} / {} items • Uncompressed: {} (Compressed: {})",
+                "{} / {} selected • {} (Archive {})",
                 selected_count, total_entries, selected_size_str, compressed_str
             )
-        };
-
-        let raw_pwd = state.password.as_deref().unwrap_or("");
-        let pwd_display = if state.show_password {
-            raw_pwd.to_string()
-        } else {
-            "•".repeat(raw_pwd.chars().count())
         };
 
         let render_checkbox = |id_str: &'static str,
@@ -1263,27 +1233,28 @@ impl DialogsView {
                     div()
                         .w(px(16.0))
                         .h(px(16.0))
+                        .flex_shrink_0()
                         .rounded(px(4.0))
                         .flex()
                         .items_center()
                         .justify_center()
                         .bg(if checked {
-                            rgb(UiConstants::ACCENT_COLOR_RGB)
+                            rgb(0x4CC2FF)
                         } else {
-                            rgba(0xFFFFFF10u32).into()
+                            rgb(0x2D2D2D)
                         })
                         .border_1()
                         .border_color(if checked {
-                            rgb(UiConstants::ACCENT_COLOR_RGB)
+                            rgb(0x4CC2FF).into()
                         } else {
-                            rgba(0xFFFFFF30u32).into()
+                            rgba(0xFFFFFF38u32)
                         })
                         .children(if checked {
                             Some(
                                 div()
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_size(px(10.0))
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(0x000000))
                                     .child("\u{E73E}"),
                             )
                         } else {
@@ -1293,297 +1264,649 @@ impl DialogsView {
                 .child(
                     div()
                         .text_size(px(12.5))
-                        .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                        .text_color(rgb(0xECECEC))
                         .child(label),
                 )
         };
 
-        // Preview first 120 entries in scrollable list to keep dialog fast even on 10k-entry archives
-        let visible_limit = 120usize;
-        let truncated_entries = total_entries.saturating_sub(visible_limit);
+        let tree_rows = state.visible_tree_rows();
+        let total_tree_rows = tree_rows.len();
+        let visible_limit = 220usize;
+        let truncated_rows = total_tree_rows.saturating_sub(visible_limit);
 
+        let info_row = |label: &'static str, value: &str| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0x9E9E9E))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_right()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight(500.0))
+                        .text_color(rgb(0xF3F3F3))
+                        .truncate()
+                        .child(value.to_string()),
+                )
+        };
+
+        // Opaque WinUI 3 Fluent card shell matching CustomProperties visual polish (#1F1F1F / #272727 / #212121)
         div()
             .flex()
             .flex_col()
-            .w(px(520.0))
-            .gap(px(12.0))
-            // Header + Format Pill
+            .w(px(580.0))
+            .bg(rgb(0x1F1F1F))
+            .rounded(px(8.0))
+            .overflow_hidden()
+            // 1. Titlebar Strip
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
+                    .h(px(44.0))
+                    .pl(px(18.0))
+                    .pr(px(4.0))
+                    .bg(rgb(0x1F1F1F))
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(8.0))
+                            .gap(px(10.0))
                             .child(
                                 div()
                                     .font_family(UiConstants::FONT_ICONS)
-                                    .text_size(px(18.0))
-                                    .text_color(rgb(UiConstants::ACCENT_COLOR_RGB))
+                                    .text_size(px(16.0))
+                                    .text_color(rgb(0x4CC2FF))
                                     .child("\u{F012}"),
                             )
                             .child(
                                 div()
-                                    .text_size(AbsoluteLength::Pixels(px(18.0)))
-                                    .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
+                                    .text_size(px(15.0))
+                                    .text_color(rgb(0xFFFFFF))
                                     .font_weight(FontWeight(600.0))
                                     .child("Extract Archive"),
+                            )
+                            .child(
+                                div()
+                                    .px(px(7.0))
+                                    .py(px(1.5))
+                                    .rounded(px(4.0))
+                                    .bg(rgba(0x4CC2FF24u32))
+                                    .border_1()
+                                    .border_color(rgba(0x4CC2FF55u32))
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(rgb(0x60CDFF))
+                                    .child(badge),
                             ),
                     )
                     .child(
                         div()
-                            .px(px(8.0))
-                            .py(px(2.0))
+                            .w(px(40.0))
+                            .h(px(36.0))
                             .rounded(px(4.0))
-                            .bg(rgba(0x4CC2FF22u32))
-                            .border_1()
-                            .border_color(rgba(0x4CC2FF55u32))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight(600.0))
-                            .text_color(rgb(0x4CC2FF))
-                            .child(badge),
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(0xC42B1C)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_close.update(cx, |this, cx| this.close_dialog(cx));
+                            })
+                            .child(
+                                div()
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("\u{E8BB}"),
+                            ),
                     ),
             )
-            // Archive metadata summary bar
+            // 2. Main Body Card Surface (#272727)
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
-                    .p(px(10.0))
-                    .rounded(px(6.0))
-                    .bg(rgba(0xFFFFFF08u32))
-                    .border_1()
+                    .p(px(18.0))
+                    .gap(px(12.0))
+                    .bg(rgb(0x272727))
+                    .border_t(px(1.0))
                     .border_color(rgba(0xFFFFFF12u32))
-                    .child(Self::build_settings_row("Archive", &archive_name))
-                    .child(Self::build_settings_row("Selection", &summary_text)),
-            )
-            // Scrollable entry checklist
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
+                    // Archive summary card
                     .child(
                         div()
                             .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
+                            .flex_col()
+                            .gap(px(5.0))
+                            .px(px(12.0))
+                            .py(px(9.0))
+                            .rounded(px(6.0))
+                            .bg(rgb(0x1E1E1E))
+                            .border_1()
+                            .border_color(rgba(0xFFFFFF12u32))
+                            .child(info_row("Archive", &archive_name))
+                            .child(info_row("Selection", &summary_text)),
+                    )
+                    // Archive Contents Tree Section
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight(600.0))
+                                            .text_color(rgb(0xCCCCCC))
+                                            .child("Archive contents (tree)"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(Self::build_compact_btn(
+                                                "Expand All",
+                                                false,
+                                                move |_, _, cx| {
+                                                    v_expand_all.update(cx, |this, cx| {
+                                                        if let Some(
+                                                            DialogType::DecompressArchive {
+                                                                ref mut state,
+                                                            },
+                                                        ) = this.state.active_dialog
+                                                        {
+                                                            state.expand_all_folders();
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            ))
+                                            .child(Self::build_compact_btn(
+                                                "Collapse All",
+                                                false,
+                                                move |_, _, cx| {
+                                                    v_collapse_all.update(cx, |this, cx| {
+                                                        if let Some(
+                                                            DialogType::DecompressArchive {
+                                                                ref mut state,
+                                                            },
+                                                        ) = this.state.active_dialog
+                                                        {
+                                                            state.collapse_all_folders();
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            ))
+                                            .child(Self::build_compact_btn(
+                                                "Select All",
+                                                false,
+                                                move |_, _, cx| {
+                                                    v_sel_all.update(cx, |this, cx| {
+                                                        if let Some(
+                                                            DialogType::DecompressArchive {
+                                                                ref mut state,
+                                                            },
+                                                        ) = this.state.active_dialog
+                                                        {
+                                                            state.select_all();
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            ))
+                                            .child(Self::build_compact_btn(
+                                                "Deselect All",
+                                                false,
+                                                move |_, _, cx| {
+                                                    v_desel_all.update(cx, |this, cx| {
+                                                        if let Some(
+                                                            DialogType::DecompressArchive {
+                                                                ref mut state,
+                                                            },
+                                                        ) = this.state.active_dialog
+                                                        {
+                                                            state.deselect_all();
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("decompress-entries-scroll")
+                                    .flex()
+                                    .flex_col()
+                                    .h(px(192.0))
+                                    .track_scroll(&state.tree_scroll_handle.0)
+                                    .overflow_y_scroll()
+                                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(rgba(0xFFFFFF16u32))
+                                    .bg(rgb(0x181818))
+                                    .p(px(6.0))
+                                    .gap(px(1.0))
+                                    .children(if state.loading {
+                                        vec![div()
+                                            .p(px(14.0))
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(0xB4B4B4))
+                                            .child("Reading archive index safely...")
+                                            .into_any_element()]
+                                    } else if tree_rows.is_empty() {
+                                        vec![div()
+                                            .p(px(14.0))
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(0xB4B4B4))
+                                            .child("Archive contains no extractable entries.")
+                                            .into_any_element()]
+                                    } else {
+                                        let mut rows: Vec<AnyElement> = tree_rows
+                                            .iter()
+                                            .take(visible_limit)
+                                            .enumerate()
+                                            .map(|(row_i, row)| {
+                                                let indent_px = (row.depth as f32) * 18.0;
+                                                let is_dir = row.is_dir;
+                                                let expanded = row.expanded;
+                                                let folder_key = row.folder_key.clone();
+                                                let desc = row.descendant_indices.clone();
+                                                let check_state = if is_dir {
+                                                    state.folder_check_state(&desc)
+                                                } else if row
+                                                    .entry_index
+                                                    .is_some_and(|i| state.selected_entries.contains(&i))
+                                                {
+                                                    FolderCheckState::Checked
+                                                } else {
+                                                    FolderCheckState::Unchecked
+                                                };
+                                                let checked_bg = matches!(
+                                                    check_state,
+                                                    FolderCheckState::Checked
+                                                        | FolderCheckState::Partial
+                                                );
+                                                let size_lbl = if is_dir {
+                                                    format!(
+                                                        "{} item{} • {}",
+                                                        row.child_count,
+                                                        if row.child_count == 1 { "" } else { "s" },
+                                                        crate::ui::components::status_bar::format_size(
+                                                            row.total_size,
+                                                        )
+                                                    )
+                                                } else {
+                                                    crate::ui::components::status_bar::format_size(
+                                                        row.total_size,
+                                                    )
+                                                };
+
+                                                let v_expand = view.clone();
+                                                let v_check = view.clone();
+                                                let folder_key_expand = folder_key.clone();
+                                                let single_entry_idx = row.entry_index;
+
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "decomp-tree-row-{}",
+                                                        row_i
+                                                    )))
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .h(px(26.0))
+                                                    .pl(px(4.0 + indent_px))
+                                                    .pr(px(8.0))
+                                                    .rounded(px(4.0))
+                                                    .hover(|s| s.bg(rgba(0xFFFFFF10u32)))
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .items_center()
+                                                            .gap(px(6.0))
+                                                            .flex_1()
+                                                            .min_w(px(0.0))
+                                                            // Chevron toggle for folder nodes
+                                                            .child(if is_dir {
+                                                                div()
+                                                                    .w(px(16.0))
+                                                                    .h(px(20.0))
+                                                                    .flex_shrink_0()
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .rounded(px(3.0))
+                                                                    .cursor_pointer()
+                                                                    .hover(|s| {
+                                                                        s.bg(rgba(0xFFFFFF18u32))
+                                                                    })
+                                                                    .on_mouse_down(
+                                                                        MouseButton::Left,
+                                                                        move |_, _, cx| {
+                                                                            cx.stop_propagation();
+                                                                            v_expand.update(
+                                                                                cx,
+                                                                                |this, cx| {
+                                                                                    if let Some(
+                                                                                        DialogType::DecompressArchive {
+                                                                                            ref mut state,
+                                                                                        },
+                                                                                    ) = this
+                                                                                        .state
+                                                                                        .active_dialog
+                                                                                    {
+                                                                                        state.toggle_folder_expand(&folder_key_expand);
+                                                                                    }
+                                                                                    cx.notify();
+                                                                                },
+                                                                            );
+                                                                        },
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .font_family(UiConstants::FONT_ICONS)
+                                                                            .text_size(px(9.0))
+                                                                            .text_color(rgb(0xCCCCCC))
+                                                                            .child(if expanded {
+                                                                                "\u{E70D}"
+                                                                            } else {
+                                                                                "\u{E76C}"
+                                                                            }),
+                                                                    )
+                                                            } else {
+                                                                div()
+                                                                    .w(px(16.0))
+                                                                    .h(px(20.0))
+                                                                    .flex_shrink_0()
+                                                            })
+                                                            // Checkbox + icon + name clickable row
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_row()
+                                                                    .items_center()
+                                                                    .gap(px(7.0))
+                                                                    .flex_1()
+                                                                    .min_w(px(0.0))
+                                                                    .cursor_pointer()
+                                                                    .on_mouse_down(
+                                                                        MouseButton::Left,
+                                                                        move |_, _, cx| {
+                                                                            v_check.update(
+                                                                                cx,
+                                                                                |this, cx| {
+                                                                                    if let Some(
+                                                                                        DialogType::DecompressArchive {
+                                                                                            ref mut state,
+                                                                                        },
+                                                                                    ) = this
+                                                                                        .state
+                                                                                        .active_dialog
+                                                                                    {
+                                                                                        if is_dir {
+                                                                                            state.toggle_folder_selection(&desc);
+                                                                                        } else if let Some(idx) = single_entry_idx {
+                                                                                            state.toggle_entry(idx);
+                                                                                        }
+                                                                                    }
+                                                                                    cx.notify();
+                                                                                },
+                                                                            );
+                                                                        },
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .w(px(14.0))
+                                                                            .h(px(14.0))
+                                                                            .flex_shrink_0()
+                                                                            .rounded(px(3.0))
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .bg(if checked_bg {
+                                                                                rgb(0x4CC2FF)
+                                                                            } else {
+                                                                                rgb(0x2D2D2D)
+                                                                            })
+                                                                            .border_1()
+                                                                            .border_color(if checked_bg {
+                                                                                rgb(0x4CC2FF).into()
+                                                                            } else {
+                                                                                rgba(0xFFFFFF35u32)
+                                                                            })
+                                                                            .children(match check_state {
+                                                                                FolderCheckState::Checked => Some(
+                                                                                    div()
+                                                                                        .font_family(UiConstants::FONT_ICONS)
+                                                                                        .text_size(px(9.0))
+                                                                                        .text_color(rgb(0x000000))
+                                                                                        .child("\u{E73E}"),
+                                                                                ),
+                                                                                FolderCheckState::Partial => Some(
+                                                                                    div()
+                                                                                        .w(px(8.0))
+                                                                                        .h(px(2.0))
+                                                                                        .rounded(px(1.0))
+                                                                                        .bg(rgb(0x000000)),
+                                                                                ),
+                                                                                FolderCheckState::Unchecked => None,
+                                                                            }),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .flex_shrink_0()
+                                                                            .font_family(UiConstants::FONT_ICONS)
+                                                                            .text_size(px(13.0))
+                                                                            .text_color(if is_dir {
+                                                                                rgb(0xF5C242)
+                                                                            } else {
+                                                                                rgb(0x9CDCFE)
+                                                                            })
+                                                                            .child(if is_dir {
+                                                                                if expanded {
+                                                                                    "\u{E838}"
+                                                                                } else {
+                                                                                    "\u{E8B7}"
+                                                                                }
+                                                                            } else {
+                                                                                "\u{E7C3}"
+                                                                            }),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .flex_1()
+                                                                            .min_w(px(0.0))
+                                                                            .text_size(px(12.5))
+                                                                            .text_color(rgb(0xF3F3F3))
+                                                                            .truncate()
+                                                                            .child(row.name.clone()),
+                                                                    ),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_shrink_0()
+                                                            .text_size(px(11.0))
+                                                            .text_color(rgb(0xA6A6A6))
+                                                            .pl(px(10.0))
+                                                            .child(size_lbl),
+                                                    )
+                                                    .into_any_element()
+                                            })
+                                            .collect();
+                                        if truncated_rows > 0 {
+                                            rows.push(
+                                                div()
+                                                    .px(px(8.0))
+                                                    .py(px(5.0))
+                                                    .text_size(px(11.5))
+                                                    .text_color(rgb(0x9E9E9E))
+                                                    .child(format!(
+                                                        "... {} more visible rows (all selected items still extract)",
+                                                        truncated_rows
+                                                    ))
+                                                    .into_any_element(),
+                                            );
+                                        }
+                                        rows
+                                    }),
+                            ),
+                    )
+                    // Destination folder path + Browse button
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight(600.0))
-                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                    .child("Files to extract"),
+                                    .text_color(rgb(0xCCCCCC))
+                                    .child("Destination folder"),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
-                                    .gap(px(6.0))
-                                    .child(Self::build_compact_btn(
-                                        "Select All",
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .child(render_text_input(
+                                                "decomp-dest-input",
+                                                &state.destination_input,
+                                                "Enter destination path...",
+                                                dest_focused,
+                                                false,
+                                                TextInputMode::SingleLine,
+                                                TextInputStyle::dialog(),
+                                                view.clone(),
+                                                Rc::new(|app| {
+                                                    if let Some(DialogType::DecompressArchive {
+                                                        ref mut state,
+                                                    }) = app.state.active_dialog
+                                                    {
+                                                        Some(&mut state.destination_input)
+                                                    } else {
+                                                        None
+                                                    }
+                                                }),
+                                                Some(Rc::new(|app, _win, _cx| {
+                                                    if let Some(DialogType::DecompressArchive {
+                                                        ref mut state,
+                                                    }) = app.state.active_dialog
+                                                    {
+                                                        state.focused_field =
+                                                            Some(DecompressInputField::Destination);
+                                                    }
+                                                })),
+                                            )),
+                                    )
+                                    .child(Self::build_button(
+                                        "Browse...",
                                         false,
                                         move |_, _, cx| {
-                                            v_sel_all.update(cx, |this, cx| {
-                                                if let Some(DialogType::DecompressArchive {
-                                                    ref mut state,
-                                                }) = this.state.active_dialog
-                                                {
-                                                    state.select_all();
-                                                }
-                                                cx.notify();
-                                            });
-                                        },
-                                    ))
-                                    .child(Self::build_compact_btn(
-                                        "Deselect All",
-                                        false,
-                                        move |_, _, cx| {
-                                            v_desel_all.update(cx, |this, cx| {
-                                                if let Some(DialogType::DecompressArchive {
-                                                    ref mut state,
-                                                }) = this.state.active_dialog
-                                                {
-                                                    state.deselect_all();
-                                                }
-                                                cx.notify();
+                                            v_browse.update(cx, |this, cx| {
+                                                this.browse_decompress_destination(cx);
                                             });
                                         },
                                     )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(0xA6A6A6))
+                                    .truncate()
+                                    .child(format!("Output path: {}", resolved_preview.display())),
                             ),
                     )
+                    // Options checkboxes
                     .child(
                         div()
-                            .id("decompress-entries-scroll")
                             .flex()
                             .flex_col()
-                            .max_h(px(150.0))
-                            .overflow_y_scroll()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(rgba(0xFFFFFF12u32))
-                            .bg(rgba(0x00000028u32))
-                            .p(px(4.0))
                             .gap(px(2.0))
-                            .children(if state.loading {
-                                vec![div()
-                                    .p(px(12.0))
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                    .child("Reading archive index safely...")
-                                    .into_any_element()]
-                            } else if state.contents.is_empty() {
-                                vec![div()
-                                    .p(px(12.0))
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                    .child("Archive contains no extractable entries.")
-                                    .into_any_element()]
-                            } else {
-                                let mut rows: Vec<AnyElement> = state
-                                    .contents
-                                    .iter()
-                                    .take(visible_limit)
-                                    .map(|entry| {
-                                        let idx = entry.index;
-                                        let checked = state.selected_entries.contains(&idx);
-                                        let v_row = view.clone();
-                                        let size_lbl = if entry.is_dir {
-                                            "Folder".to_string()
-                                        } else {
-                                            crate::ui::components::status_bar::format_size(entry.size)
-                                        };
-                                        div()
-                                            .id(SharedString::from(format!("decomp-entry-{}", idx)))
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .justify_between()
-                                            .px(px(6.0))
-                                            .py(px(4.0))
-                                            .rounded(px(4.0))
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(rgba(0xFFFFFF0Fu32)))
-                                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                                v_row.update(cx, |this, cx| {
-                                                    if let Some(DialogType::DecompressArchive {
-                                                        ref mut state,
-                                                    }) = this.state.active_dialog
-                                                    {
-                                                        state.toggle_entry(idx);
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            })
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap(px(8.0))
-                                                    .min_w_0()
-                                                    .child(
-                                                        div()
-                                                            .w(px(14.0))
-                                                            .h(px(14.0))
-                                                            .rounded(px(3.0))
-                                                            .flex()
-                                                            .items_center()
-                                                            .justify_center()
-                                                            .bg(if checked {
-                                                                rgb(UiConstants::ACCENT_COLOR_RGB)
-                                                            } else {
-                                                                rgba(0xFFFFFF10u32).into()
-                                                            })
-                                                            .border_1()
-                                                            .border_color(rgba(0xFFFFFF2Cu32))
-                                                            .children(if checked {
-                                                                Some(
-                                                                    div()
-                                                                        .font_family(
-                                                                            UiConstants::FONT_ICONS,
-                                                                        )
-                                                                        .text_size(px(9.0))
-                                                                        .text_color(rgb(0xFFFFFF))
-                                                                        .child("\u{E73E}"),
-                                                                )
-                                                            } else {
-                                                                None
-                                                            }),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .font_family(UiConstants::FONT_ICONS)
-                                                            .text_size(px(12.0))
-                                                            .text_color(if entry.is_dir {
-                                                                rgb(0xF5C242)
-                                                            } else {
-                                                                rgb(UiConstants::TEXT_MUTED_RGB)
-                                                            })
-                                                            .child(if entry.is_dir {
-                                                                "\u{E8B7}"
-                                                            } else {
-                                                                "\u{E7C3}"
-                                                            }),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.0))
-                                                            .text_color(rgb(
-                                                                UiConstants::TEXT_PRIMARY_RGB,
-                                                            ))
-                                                            .truncate()
-                                                            .child(entry.path.clone()),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                                    .pl(px(8.0))
-                                                    .child(size_lbl),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .collect();
-                                if truncated_entries > 0 {
-                                    rows.push(
-                                        div()
-                                            .px(px(6.0))
-                                            .py(px(4.0))
-                                            .text_size(px(11.0))
-                                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                                            .child(format!(
-                                                "... and {} more entries (included when selected)",
-                                                truncated_entries
-                                            ))
-                                            .into_any_element(),
-                                    );
-                                }
-                                rows
-                            }),
-                    ),
-            )
-            // Destination folder path + Browse button
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(5.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight(600.0))
-                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                            .child("Destination folder"),
+                            .child(render_checkbox(
+                                "decomp-opt-subfolder",
+                                state.create_subfolder,
+                                "Extract files into archive subfolder",
+                                Box::new(move |_, _, cx| {
+                                    v_sub.update(cx, |this, cx| {
+                                        if let Some(DialogType::DecompressArchive {
+                                            ref mut state,
+                                        }) = this.state.active_dialog
+                                        {
+                                            state.create_subfolder = !state.create_subfolder;
+                                        }
+                                        cx.notify();
+                                    });
+                                }),
+                            ))
+                            .child(render_checkbox(
+                                "decomp-opt-overwrite",
+                                state.overwrite,
+                                "Overwrite existing files without prompting",
+                                Box::new(move |_, _, cx| {
+                                    v_overwrite.update(cx, |this, cx| {
+                                        if let Some(DialogType::DecompressArchive {
+                                            ref mut state,
+                                        }) = this.state.active_dialog
+                                        {
+                                            state.toggle_overwrite();
+                                        }
+                                        cx.notify();
+                                    });
+                                }),
+                            ))
+                            .child(render_checkbox(
+                                "decomp-opt-open-dest",
+                                state.open_destination,
+                                "Show extracted files when complete",
+                                Box::new(move |_, _, cx| {
+                                    v_open_dest.update(cx, |this, cx| {
+                                        if let Some(DialogType::DecompressArchive {
+                                            ref mut state,
+                                        }) = this.state.active_dialog
+                                        {
+                                            state.open_destination = !state.open_destination;
+                                        }
+                                        cx.notify();
+                                    });
+                                }),
+                            )),
                     )
+                    // Password row (properly flex-aligned so Show never wraps or clips)
                     .child(
                         div()
                             .flex()
@@ -1592,223 +1915,96 @@ impl DialogsView {
                             .gap(px(8.0))
                             .child(
                                 div()
-                                    .id("decomp-dest-input")
-                                    .flex_1()
-                                    .h(px(32.0))
-                                    .px(px(10.0))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(5.0))
-                                    .bg(rgba(0x00000038u32))
-                                    .border_1()
-                                    .border_color(if dest_focused {
-                                        rgb(UiConstants::ACCENT_COLOR_RGB).into()
+                                    .w(px(76.0))
+                                    .flex_shrink_0()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(0xCCCCCC))
+                                    .child(if state.is_encrypted {
+                                        "Password *:"
                                     } else {
-                                        rgba(0xFFFFFF22u32)
-                                    })
-                                    .cursor_text()
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        v_dest_focus.update(cx, |this, cx| {
+                                        "Password:"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(render_text_input(
+                                        "decomp-pwd-input",
+                                        &state.password_input,
+                                        if state.is_encrypted {
+                                            "Required for encrypted entries"
+                                        } else {
+                                            "Optional (if encrypted)"
+                                        },
+                                        pwd_focused,
+                                        !state.show_password,
+                                        TextInputMode::SingleLine,
+                                        TextInputStyle::compact_search(),
+                                        view.clone(),
+                                        Rc::new(|app| {
                                             if let Some(DialogType::DecompressArchive {
                                                 ref mut state,
-                                            }) = this.state.active_dialog
+                                            }) = app.state.active_dialog
+                                            {
+                                                Some(&mut state.password_input)
+                                            } else {
+                                                None
+                                            }
+                                        }),
+                                        Some(Rc::new(|app, _win, _cx| {
+                                            if let Some(DialogType::DecompressArchive {
+                                                ref mut state,
+                                            }) = app.state.active_dialog
                                             {
                                                 state.focused_field =
-                                                    Some(DecompressInputField::Destination);
+                                                    Some(DecompressInputField::Password);
                                             }
-                                            cx.notify();
-                                        });
-                                    })
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .text_size(px(12.5))
-                                            .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                                            .truncate()
-                                            .child(if dest_display.is_empty() {
-                                                "Enter destination path...".to_string()
-                                            } else if dest_focused {
-                                                format!("{}|", dest_display)
-                                            } else {
-                                                dest_display
-                                            }),
-                                    ),
+                                        })),
+                                    )),
                             )
-                            .child(Self::build_button(
-                                "Browse...",
-                                false,
+                            .child(div().flex_shrink_0().child(Self::build_compact_btn(
+                                if state.show_password { "Hide" } else { "Show" },
+                                state.show_password,
                                 move |_, _, cx| {
-                                    v_browse.update(cx, |this, cx| {
-                                        this.browse_decompress_destination(cx);
+                                    v_pwd_show.update(cx, |this, cx| {
+                                        if let Some(DialogType::DecompressArchive {
+                                            ref mut state,
+                                        }) = this.state.active_dialog
+                                        {
+                                            state.toggle_password();
+                                        }
+                                        cx.notify();
                                     });
                                 },
-                            )),
+                            ))),
                     )
-                    .child(
+                    // Error banner if validation or scan failed
+                    .children(state.error.as_ref().map(|err| {
                         div()
-                            .text_size(px(11.0))
-                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                            .truncate()
-                            .child(format!("Output path: {}", resolved_preview.display())),
-                    ),
+                            .p(px(8.0))
+                            .rounded(px(5.0))
+                            .bg(rgba(0xC42B1C33u32))
+                            .border_1()
+                            .border_color(rgba(0xFF6B6B66u32))
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xFF9A9A))
+                            .child(err.clone())
+                    })),
             )
-            // Options checkboxes + optional Password row
+            // 3. Dedicated Footer Bar (#212121)
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(render_checkbox(
-                        "decomp-opt-subfolder",
-                        state.create_subfolder,
-                        "Extract files into archive subfolder",
-                        Box::new(move |_, _, cx| {
-                            v_sub.update(cx, |this, cx| {
-                                if let Some(DialogType::DecompressArchive { ref mut state }) =
-                                    this.state.active_dialog
-                                {
-                                    state.create_subfolder = !state.create_subfolder;
-                                }
-                                cx.notify();
-                            });
-                        }),
-                    ))
-                    .child(render_checkbox(
-                        "decomp-opt-overwrite",
-                        state.overwrite,
-                        "Overwrite existing files without prompting",
-                        Box::new(move |_, _, cx| {
-                            v_overwrite.update(cx, |this, cx| {
-                                if let Some(DialogType::DecompressArchive { ref mut state }) =
-                                    this.state.active_dialog
-                                {
-                                    state.toggle_overwrite();
-                                }
-                                cx.notify();
-                            });
-                        }),
-                    ))
-                    .child(render_checkbox(
-                        "decomp-opt-open-dest",
-                        state.open_destination,
-                        "Show extracted files when complete",
-                        Box::new(move |_, _, cx| {
-                            v_open_dest.update(cx, |this, cx| {
-                                if let Some(DialogType::DecompressArchive { ref mut state }) =
-                                    this.state.active_dialog
-                                {
-                                    state.open_destination = !state.open_destination;
-                                }
-                                cx.notify();
-                            });
-                        }),
-                    )),
-            )
-            // Password row (always accessible for encrypted zips/7z)
-            .child(
-                div()
+                    .h(px(54.0))
+                    .px(px(18.0))
+                    .bg(rgb(0x212121))
+                    .border_t(px(1.0))
+                    .border_color(rgba(0xFFFFFF12u32))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .w(px(80.0))
-                            .text_size(px(12.0))
-                            .text_color(rgb(UiConstants::TEXT_MUTED_RGB))
-                            .child(if state.is_encrypted {
-                                "Password *:"
-                            } else {
-                                "Password:"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("decomp-pwd-input")
-                            .flex_1()
-                            .h(px(30.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(5.0))
-                            .bg(rgba(0x00000038u32))
-                            .border_1()
-                            .border_color(if pwd_focused {
-                                rgb(UiConstants::ACCENT_COLOR_RGB).into()
-                            } else {
-                                rgba(0xFFFFFF20u32)
-                            })
-                            .cursor_text()
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                v_pwd_focus.update(cx, |this, cx| {
-                                    if let Some(DialogType::DecompressArchive { ref mut state }) =
-                                        this.state.active_dialog
-                                    {
-                                        state.focused_field =
-                                            Some(DecompressInputField::Password);
-                                    }
-                                    cx.notify();
-                                });
-                            })
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_size(px(12.0))
-                                    .text_color(if raw_pwd.is_empty() && !pwd_focused {
-                                        rgb(UiConstants::TEXT_MUTED_RGB)
-                                    } else {
-                                        rgb(UiConstants::TEXT_PRIMARY_RGB)
-                                    })
-                                    .truncate()
-                                    .child(if raw_pwd.is_empty() {
-                                        if pwd_focused {
-                                            "|".to_string()
-                                        } else if state.is_encrypted {
-                                            "Required for encrypted entries".to_string()
-                                        } else {
-                                            "Optional (only if archive is encrypted)".to_string()
-                                        }
-                                    } else if pwd_focused {
-                                        format!("{}|", pwd_display)
-                                    } else {
-                                        pwd_display
-                                    }),
-                            ),
-                    )
-                    .child(Self::build_compact_btn(
-                        if state.show_password { "Hide" } else { "Show" },
-                        state.show_password,
-                        move |_, _, cx| {
-                            v_pwd_show.update(cx, |this, cx| {
-                                if let Some(DialogType::DecompressArchive { ref mut state }) =
-                                    this.state.active_dialog
-                                {
-                                    state.toggle_password();
-                                }
-                                cx.notify();
-                            });
-                        },
-                    )),
-            )
-            // Error banner if validation or scan failed
-            .children(state.error.as_ref().map(|err| {
-                div()
-                    .p(px(8.0))
-                    .rounded(px(5.0))
-                    .bg(rgba(0xC42B1C28u32))
-                    .border_1()
-                    .border_color(rgba(0xFF6B6B55u32))
-                    .text_size(px(12.0))
-                    .text_color(rgb(0xFF8E8E))
-                    .child(err.clone())
-            }))
-            // Action buttons
-            .child(
-                div()
-                    .flex()
                     .justify_end()
-                    .gap(px(8.0))
-                    .mt(px(4.0))
+                    .gap(px(10.0))
                     .child(Self::build_button("Cancel", false, move |_, _, cx| {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     }))
@@ -3391,14 +3587,21 @@ impl DialogsView {
                 is_active: matches!(current_mode, ViewMode::Details),
                 divider_after: false,
             },
+            MenuItem {
+                name: "Tree",
+                icon: "\u{F0E2}",
+                mode: ViewMode::Tree,
+                is_active: matches!(current_mode, ViewMode::Tree),
+                divider_after: false,
+            },
         ];
 
-        // Fixed dialog height for 5 view mode items
-        let dialog_ht = 168.0;
+        // Fixed dialog height for 6 view mode items
+        let dialog_ht = 196.0;
         let pad_y = 8.0;
-        let inner_ht = dialog_ht - pad_y * 2.0; // 152.0
-        let track_h = 136.0;
-        let thumb_travel = track_h - 16.0; // 120.0
+        let inner_ht = dialog_ht - pad_y * 2.0; // 180.0
+        let track_h = 164.0;
+        let thumb_travel = track_h - 16.0; // 148.0
         let clamped_zoom = current_zoom.clamp(0.0, 1.0);
         let thumb_pos_ratio = 1.0 - clamped_zoom;
         let v_wheel = view.clone();
@@ -4269,6 +4472,341 @@ impl DialogsView {
                     .child(Self::build_button("Cancel", false, move |_, _, cx| {
                         v_cancel.update(cx, |this, cx| this.close_dialog(cx));
                     })),
+            )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_rename_conflict_dialog(
+        pane_focus: crate::core::navigation_manager::PaneFocus,
+        item_index: usize,
+        old_path: &std::path::Path,
+        old_name: &str,
+        new_path: &std::path::Path,
+        new_name: &str,
+        suggested_name: &str,
+        source_size: u64,
+        source_modified: &str,
+        source_is_dir: bool,
+        existing_size: u64,
+        existing_modified: &str,
+        existing_is_dir: bool,
+        view: Entity<crate::app::AppWindow>,
+    ) -> impl IntoElement {
+        let v_close = view.clone();
+        let v_cancel = view.clone();
+        let v_edit = view.clone();
+        let v_keep_both = view.clone();
+        let v_replace = view.clone();
+
+        let type_mismatch = source_is_dir != existing_is_dir;
+        let old_p1 = old_path.to_path_buf();
+        let new_p1 = new_path.to_path_buf();
+        let new_n_edit = new_name.to_string();
+
+        let old_p2 = old_path.to_path_buf();
+        let sugg_p = new_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(suggested_name);
+        let sugg_n = suggested_name.to_string();
+
+        let old_p3 = old_path.to_path_buf();
+        let new_p3 = new_path.to_path_buf();
+        let new_n3 = new_name.to_string();
+
+        let info_card = |heading: &'static str,
+                         badge_color: u32,
+                         name: &str,
+                         is_dir: bool,
+                         size: u64,
+                         modified: &str| {
+            let size_text = if is_dir {
+                "Folder".to_string()
+            } else {
+                crate::ui::components::status_bar::format_size(size)
+            };
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .p(px(12.0))
+                .rounded(px(6.0))
+                .bg(rgb(0x1E1E1E))
+                .border_1()
+                .border_color(rgba(0xFFFFFF16u32))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight(600.0))
+                        .text_color(rgb(badge_color))
+                        .child(heading),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_size(px(14.0))
+                                .text_color(if is_dir {
+                                    rgb(0xF5C242)
+                                } else {
+                                    rgb(0x9CDCFE)
+                                })
+                                .child(if is_dir { "\u{E8B7}" } else { "\u{E7C3}" }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight(600.0))
+                                .text_color(rgb(0xFFFFFF))
+                                .truncate()
+                                .child(name.to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(0xB4B4B4))
+                        .child(format!("Size: {}", size_text)),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(0xB4B4B4))
+                        .truncate()
+                        .child(format!("Modified: {}", modified)),
+                )
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .w(px(540.0))
+            .bg(rgb(0x1F1F1F))
+            .rounded(px(8.0))
+            .overflow_hidden()
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .h(px(44.0))
+                    .pl(px(18.0))
+                    .pr(px(4.0))
+                    .bg(rgb(0x1F1F1F))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_size(px(16.0))
+                                    .text_color(rgb(0xFCE100))
+                                    .child("\u{E7BA}"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("Rename Conflict"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(40.0))
+                            .h(px(36.0))
+                            .rounded(px(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(0xC42B1C)))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                v_close.update(cx, |this, cx| this.close_dialog(cx));
+                            })
+                            .child(
+                                div()
+                                    .font_family(UiConstants::FONT_ICONS)
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child("\u{E8BB}"),
+                            ),
+                    ),
+            )
+            // Body (#272727)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p(px(18.0))
+                    .gap(px(12.0))
+                    .bg(rgb(0x272727))
+                    .border_t(px(1.0))
+                    .border_color(rgba(0xFFFFFF12u32))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(0xE8E8E8))
+                            .child(format!(
+                                "There is already {} named \"{}\" in this folder.",
+                                if existing_is_dir { "a folder" } else { "a file" },
+                                new_name
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(10.0))
+                            .child(info_card(
+                                "Item being renamed",
+                                0x4CC2FF,
+                                old_name,
+                                source_is_dir,
+                                source_size,
+                                source_modified,
+                            ))
+                            .child(info_card(
+                                "Existing item",
+                                0xFCE100,
+                                new_name,
+                                existing_is_dir,
+                                existing_size,
+                                existing_modified,
+                            )),
+                    )
+                    .children(if type_mismatch {
+                        Some(
+                            div()
+                                .p(px(8.0))
+                                .rounded(px(5.0))
+                                .bg(rgba(0xFCE1001Eu32))
+                                .border_1()
+                                .border_color(rgba(0xFCE10055u32))
+                                .text_size(px(12.0))
+                                .text_color(rgb(0xFFE97F))
+                                .child("Cannot replace directly because one item is a folder and the other is a file. Choose Keep Both or edit the name."),
+                        )
+                    } else {
+                        Some(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(0xA6A6A6))
+                                .child("If you choose Replace, the existing item will be moved to the Recycle Bin before renaming."),
+                        )
+                    }),
+            )
+            // Footer buttons (#212121)
+            .child(
+                div()
+                    .min_h(px(56.0))
+                    .px(px(18.0))
+                    .py(px(10.0))
+                    .bg(rgb(0x212121))
+                    .border_t(px(1.0))
+                    .border_color(rgba(0xFFFFFF12u32))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(Self::build_button("Cancel", false, move |_, _, cx| {
+                        v_cancel.update(cx, |this, cx| this.close_dialog(cx));
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(Self::build_button("Edit Name", false, move |_, _, cx| {
+                                let name_clone = new_n_edit.clone();
+                                v_edit.update(cx, |this, cx| {
+                                    this.close_dialog(cx);
+                                    this.reopen_rename_with_text(
+                                        pane_focus,
+                                        item_index,
+                                        name_clone,
+                                        cx,
+                                    );
+                                });
+                            }))
+                            .child(Self::build_button(
+                                &format!("Keep Both ({})", suggested_name),
+                                true,
+                                move |_, _, cx| {
+                                    let op = old_p2.clone();
+                                    let sp = sugg_p.clone();
+                                    let sn = sugg_n.clone();
+                                    v_keep_both.update(cx, |this, cx| {
+                                        this.close_dialog(cx);
+                                        this.apply_resolved_rename(
+                                            pane_focus,
+                                            item_index,
+                                            op,
+                                            sp,
+                                            sn,
+                                            false,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ))
+                            .children(if !type_mismatch {
+                                Some(
+                                    div()
+                                        .min_w(px(88.0))
+                                        .h(px(32.0))
+                                        .px(px(14.0))
+                                        .rounded(px(4.0))
+                                        .bg(rgb(0xC42B1C))
+                                        .hover(|s| s.bg(rgb(0xD83B2C)))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight(500.0))
+                                        .text_color(rgb(0xFFFFFF))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            let op = old_p3.clone();
+                                            let np = new_p3.clone();
+                                            let nn = new_n3.clone();
+                                            v_replace.update(cx, |this, cx| {
+                                                this.close_dialog(cx);
+                                                this.apply_resolved_rename(
+                                                    pane_focus,
+                                                    item_index,
+                                                    op,
+                                                    np,
+                                                    nn,
+                                                    true,
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                        .child("Replace"),
+                                )
+                            } else {
+                                let _ = (&old_p1, &new_p1);
+                                None
+                            }),
+                    ),
             )
     }
 

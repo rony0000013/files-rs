@@ -155,6 +155,7 @@ impl AppWindow {
             if !same_path_refresh {
                 target_view.folder_background =
                     crate::ui::views::main_view::FolderBackground::default();
+                target_view.reset_tree_for_navigation();
             }
 
             target_view.show_dot_files = app_prefs.show_dot_files;
@@ -259,8 +260,14 @@ impl AppWindow {
                     this_weak
                         .update(&mut async_cx, |this, cx| {
                             if is_secondary {
+                                this.state.secondary_view.tree_top_items = fast_items.clone();
                                 this.state.secondary_view.items = fast_items;
-                                this.state.secondary_view.bump_items_revision();
+                                if matches!(this.state.secondary_view.view_mode, crate::config::config::ViewMode::Tree) {
+                                    this.state.secondary_view.rebuild_tree_items();
+                                } else {
+                                    this.state.secondary_view.tree_depths.clear();
+                                    this.state.secondary_view.bump_items_revision();
+                                }
                                 this.state.secondary_file_items.update(cx, |m, _| {
                                     m.items = this.state.secondary_view.items.clone();
                                     m.selected_indices =
@@ -269,8 +276,14 @@ impl AppWindow {
                                 this.state.secondary_view.primary_path = p1.clone();
                                 this.state.main_view.secondary_path = Some(p1.clone());
                             } else {
+                                this.state.main_view.tree_top_items = fast_items.clone();
                                 this.state.main_view.items = fast_items;
-                                this.state.main_view.bump_items_revision();
+                                if matches!(this.state.main_view.view_mode, crate::config::config::ViewMode::Tree) {
+                                    this.state.main_view.rebuild_tree_items();
+                                } else {
+                                    this.state.main_view.tree_depths.clear();
+                                    this.state.main_view.bump_items_revision();
+                                }
                                 this.state.file_items.update(cx, |m, _| {
                                     m.items = this.state.main_view.items.clone();
                                     m.selected_indices =
@@ -400,17 +413,29 @@ impl AppWindow {
                                         for (idx, size, modified, created, is_hidden, is_system) in
                                             enriched
                                         {
-                                            if let Some(item) =
-                                                this.state.secondary_view.items.get_mut(idx)
-                                            {
-                                                item.size = size;
-                                                item.modified = modified;
-                                                item.created = created;
-                                                item.is_hidden = is_hidden;
-                                                item.is_system = is_system;
+                                            let path_match = this.state.secondary_view.tree_top_items.get_mut(idx).map(|top_it| {
+                                                top_it.size = size;
+                                                top_it.modified = modified;
+                                                top_it.created = created;
+                                                top_it.is_hidden = is_hidden;
+                                                top_it.is_system = is_system;
+                                                top_it.path.clone()
+                                            });
+                                            if let Some(p_match) = path_match {
+                                                if let Some(item) = this.state.secondary_view.items.iter_mut().find(|it| it.path == p_match) {
+                                                    item.size = size;
+                                                    item.modified = modified;
+                                                    item.created = created;
+                                                    item.is_hidden = is_hidden;
+                                                    item.is_system = is_system;
+                                                }
                                             }
                                         }
-                                        this.state.secondary_view.bump_items_revision();
+                                        if matches!(this.state.secondary_view.view_mode, crate::config::config::ViewMode::Tree) {
+                                            this.state.secondary_view.rebuild_tree_items();
+                                        } else {
+                                            this.state.secondary_view.bump_items_revision();
+                                        }
                                         this.state.secondary_file_items.update(cx, |m, _| {
                                             m.items = this.state.secondary_view.items.clone();
                                         });
@@ -421,17 +446,29 @@ impl AppWindow {
                                         for (idx, size, modified, created, is_hidden, is_system) in
                                             enriched
                                         {
-                                            if let Some(item) =
-                                                this.state.main_view.items.get_mut(idx)
-                                            {
-                                                item.size = size;
-                                                item.modified = modified;
-                                                item.created = created;
-                                                item.is_hidden = is_hidden;
-                                                item.is_system = is_system;
+                                            let path_match = this.state.main_view.tree_top_items.get_mut(idx).map(|top_it| {
+                                                top_it.size = size;
+                                                top_it.modified = modified;
+                                                top_it.created = created;
+                                                top_it.is_hidden = is_hidden;
+                                                top_it.is_system = is_system;
+                                                top_it.path.clone()
+                                            });
+                                            if let Some(p_match) = path_match {
+                                                if let Some(item) = this.state.main_view.items.iter_mut().find(|it| it.path == p_match) {
+                                                    item.size = size;
+                                                    item.modified = modified;
+                                                    item.created = created;
+                                                    item.is_hidden = is_hidden;
+                                                    item.is_system = is_system;
+                                                }
                                             }
                                         }
-                                        this.state.main_view.bump_items_revision();
+                                        if matches!(this.state.main_view.view_mode, crate::config::config::ViewMode::Tree) {
+                                            this.state.main_view.rebuild_tree_items();
+                                        } else {
+                                            this.state.main_view.bump_items_revision();
+                                        }
                                         this.state.file_items.update(cx, |m, _| {
                                             m.items = this.state.main_view.items.clone();
                                         });

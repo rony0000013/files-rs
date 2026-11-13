@@ -4,8 +4,12 @@
 //! - Right scrollable `SettingsContentFrame` with WinUI 3 `SubtitleTextBlockStyle` page heading and `SettingsCard` / `SettingsExpander` blocks.
 
 use crate::ui::components::dialogs::{SettingsPreReadData, SettingsTab};
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputState, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use gpui::*;
+use std::rc::Rc;
 
 use super::main_view::{MainView, MainViewState};
 
@@ -28,7 +32,7 @@ impl MainView {
             .overflow_hidden()
             .child(Self::build_settings_sidebar(
                 active_tab,
-                &data.ui_state.search_query,
+                &data.ui_state.search_input,
                 data.ui_state.search_focused,
                 view.clone(),
             ))
@@ -83,13 +87,12 @@ impl MainView {
     /// Build the 240px left Settings navigation sidebar (`SettingsPage.xaml` `SettingsSidebar` parity).
     fn build_settings_sidebar(
         active_tab: SettingsTab,
-        search_query: &str,
+        search_input: &TextInputState,
         search_focused: bool,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
-        let v_focus_search = view.clone();
         let v_clear_search = view.clone();
-        let q_str = search_query.to_string();
+        let has_query = !search_input.text.is_empty();
 
         div()
             .w(px(240.0))
@@ -119,61 +122,36 @@ impl MainView {
                     .child(
                         div()
                             .w_full()
-                            .h(px(32.0))
-                            .px(px(10.0))
-                            .rounded(px(5.0))
-                            .bg(rgba(0xFFFFFF0Eu32))
-                            .border(px(1.0))
-                            .border_b(px(if search_focused { 2.0 } else { 1.0 }))
-                            .border_color(if search_focused {
-                                rgb(0x60CDFF)
-                            } else {
-                                rgba(UiConstants::STROKE_RGBA)
-                            })
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(8.0))
-                            .cursor_text()
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                cx.stop_propagation();
-                                v_focus_search.update(cx, |this, cx| {
-                                    this.state.settings_ui.search_focused = true;
-                                    this.state.settings_ui.actions_search_focused = false;
-                                    cx.notify();
-                                });
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_family(UiConstants::FONT_ICONS)
-                                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                    .child("\u{E721}"),
-                            )
+                            .gap(px(6.0))
                             .child(
                                 div()
                                     .flex_1()
-                                    .overflow_hidden()
-                                    .text_size(px(12.5))
-                                    .text_color(if q_str.is_empty() {
-                                        rgba(UiConstants::TEXT_MUTED_RGBA)
-                                    } else {
-                                        rgba(UiConstants::TEXT_PRIMARY_RGBA)
-                                    })
-                                    .child(if q_str.is_empty() {
-                                        if search_focused {
-                                            "Find a setting... |".to_string()
-                                        } else {
-                                            "Find a setting".to_string()
-                                        }
-                                    } else if search_focused {
-                                        format!("{}|", q_str)
-                                    } else {
-                                        q_str.clone()
-                                    }),
+                                    .min_w(px(0.0))
+                                    .child(render_text_input(
+                                        "settings-sidebar-search",
+                                        search_input,
+                                        "Find a setting",
+                                        search_focused,
+                                        false,
+                                        TextInputMode::SingleLine,
+                                        TextInputStyle::compact_search(),
+                                        view.clone(),
+                                        Rc::new(|app| Some(&mut app.state.settings_ui.search_input)),
+                                        Some(Rc::new(|app, _win, _cx| {
+                                            app.state.settings_ui.search_focused = true;
+                                            app.state.settings_ui.actions_search_focused = false;
+                                        })),
+                                    )),
                             )
-                            .children(if !q_str.is_empty() {
+                            .children(if has_query {
                                 vec![div()
+                                    .px(px(6.0))
+                                    .py(px(6.0))
+                                    .rounded(px(4.0))
+                                    .bg(rgba(0xFFFFFF0Eu32))
                                     .text_size(px(10.0))
                                     .font_family(UiConstants::FONT_ICONS)
                                     .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
@@ -181,7 +159,7 @@ impl MainView {
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         cx.stop_propagation();
                                         v_clear_search.update(cx, |this, cx| {
-                                            this.state.settings_ui.search_query.clear();
+                                            this.state.settings_ui.clear_search();
                                             cx.notify();
                                         });
                                     })

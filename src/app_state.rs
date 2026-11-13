@@ -195,6 +195,8 @@ pub struct AppState {
     pub tab_drag: TabDragState,
     /// Focus handle for the main content area (for keyboard events)
     pub main_focus: Option<gpui::FocusHandle>,
+    /// Deferred request to focus `main_focus` on the next render frame (e.g. starting rename from menu)
+    pub pending_focus_main: bool,
     /// Whether the window is currently maximized
     pub is_maximized: bool,
     /// Ultra-fast thumbnail cache with hash-based invalidation
@@ -213,6 +215,8 @@ pub struct AppState {
     pub type_to_select_buffer: String,
     /// Timestamp of the last type-to-select keystroke
     pub type_to_select_last_time: Option<std::time::Instant>,
+    /// Active floating right-click context menu for any text field
+    pub text_context_menu: Option<crate::ui::components::text_input::TextInputContextMenuState>,
 }
 
 impl AppState {
@@ -287,6 +291,7 @@ impl AppState {
             undo_redo: UndoRedoManager::new(),
             tab_drag: TabDragState::default(),
             main_focus: None,
+            pending_focus_main: false,
             is_maximized: false,
             thumbnail_cache: crate::domain::thumbnail_cache::ThumbnailCache::with_capacity(
                 thumb_limit,
@@ -298,6 +303,7 @@ impl AppState {
             last_scale_factor: 1.0,
             type_to_select_buffer: String::new(),
             type_to_select_last_time: None,
+            text_context_menu: None,
         }
     }
 

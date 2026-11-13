@@ -367,10 +367,8 @@ impl MainViewState {
                                                     compact,
                                                     show_extensions,
                                                     main_state.renaming_index,
-                                                    &main_state.rename_text,
+                                                    &main_state.rename_input,
                                                     main_state.cut_paths.contains(item.path.as_path()),
-                                                    main_state.rename_selected_all,
-                                                    main_state.rename_cursor_pos,
                                                     pane_focus,
                                                     pane_w,
                                                 )
@@ -493,10 +491,8 @@ impl MainViewState {
                                     compact,
                                     show_extensions,
                                     self.renaming_index,
-                                    &self.rename_text,
+                                    &self.rename_input,
                                     self.cut_paths.contains(item.path.as_path()),
-                                    self.rename_selected_all,
-                                    self.rename_cursor_pos,
                                     pane_focus,
                                     pane_w,
                                 )
@@ -655,10 +651,8 @@ impl MainViewState {
         compact: bool,
         show_extensions: bool,
         renaming_index: Option<usize>,
-        rename_text: &str,
+        rename_input: &crate::ui::components::text_input::TextInputState,
         is_cut: bool,
-        rename_selected_all: bool,
-        rename_cursor_pos: usize,
         pane_focus: PaneFocus,
         pane_w: f32,
     ) -> impl IntoElement {
@@ -1008,8 +1002,6 @@ impl MainViewState {
                 .into_any_element()
         };
 
-        let rename_str = rename_text.to_string();
-
         item_div
             .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                 cx.stop_propagation();
@@ -1092,9 +1084,7 @@ impl MainViewState {
             )
             .child(if renaming_index == Some(index) {
                 crate::ui::views::helpers::render_inline_rename_grid(
-                    rename_text,
-                    rename_selected_all,
-                    rename_cursor_pos,
+                    rename_input,
                     label_box_h,
                     effective_font_size,
                     effective_line_h,

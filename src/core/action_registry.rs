@@ -396,6 +396,7 @@ pub enum ActionKind {
     ViewList,
     ViewGrid,
     ViewColumns,
+    ViewTree,
     CycleViewMode,
     CycleSortColumn,
     CycleGroupBy,
@@ -541,6 +542,7 @@ impl ActionKind {
             Self::ViewList => "List View",
             Self::ViewGrid => "Grid View",
             Self::ViewColumns => "Columns View",
+            Self::ViewTree => "Tree View",
             Self::CycleViewMode => "Cycle Layout Mode",
             Self::CycleSortColumn => "Cycle Sort Column",
             Self::CycleGroupBy => "Cycle Group By",
@@ -673,7 +675,8 @@ impl ActionKind {
             Self::ViewList => "Switch layout to multi-column List view",
             Self::ViewGrid => "Switch layout to Grid thumbnail/cards view",
             Self::ViewColumns => "Switch layout to Miller Columns hierarchy view",
-            Self::CycleViewMode => "Cycle through Details, List, Grid, and Columns layouts",
+            Self::ViewTree => "Switch layout to expandable Tree hierarchy view",
+            Self::CycleViewMode => "Cycle through Details, List, Cards, Grid, Columns, and Tree layouts",
             Self::CycleSortColumn => "Cycle sort column between Name, Date, Size, and Type",
             Self::CycleGroupBy => "Cycle item grouping mode in the active pane",
             Self::ZoomIn => "Increase item and icon size in the current layout",
@@ -825,6 +828,7 @@ impl ActionKind {
             | Self::ViewList
             | Self::ViewGrid
             | Self::ViewColumns
+            | Self::ViewTree
             | Self::CycleViewMode
             | Self::CycleSortColumn
             | Self::CycleGroupBy
@@ -947,7 +951,7 @@ impl ActionKind {
             Self::OpenProperties => "\u{E946}",
             Self::OpenItem => "\u{E8E5}",
             Self::SelectAll | Self::InvertSelection | Self::ClearSelection | Self::ToggleCheckboxes => "\u{E762}",
-            Self::ViewDetails | Self::ViewList | Self::ViewGrid | Self::ViewColumns | Self::CycleViewMode => "\u{E8FD}",
+            Self::ViewDetails | Self::ViewList | Self::ViewGrid | Self::ViewColumns | Self::ViewTree | Self::CycleViewMode => "\u{E8FD}",
             Self::CycleSortColumn => "\u{E8CB}",
             Self::CycleGroupBy => "\u{F168}",
             Self::ZoomIn | Self::MouseWheelZoomIn => "\u{E8A3}",
@@ -1044,6 +1048,7 @@ impl ActionKind {
             ViewList,
             ViewGrid,
             ViewColumns,
+            ViewTree,
             CycleViewMode,
             CycleSortColumn,
             CycleGroupBy,
@@ -1526,6 +1531,10 @@ pub fn default_bindings() -> HashMap<ActionKind, KeyCombination> {
     m.insert(
         ActionKind::ViewColumns,
         KeyCombination::new("4").with_ctrl_shift(),
+    );
+    m.insert(
+        ActionKind::ViewTree,
+        KeyCombination::new("6").with_ctrl_shift(),
     );
     m.insert(
         ActionKind::CycleViewMode,

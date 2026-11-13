@@ -1,470 +1,93 @@
 use crate::config::config::ViewMode;
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputState, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use gpui::*;
 use std::cmp::Ordering;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::ui::components::status_bar::format_size;
 
-/// Renders the inline rename input container with WinUI 3 selection highlight, Zed-inspired smooth stationary cursor,
-/// and automatic horizontal scrolling so cursor navigation never wraps or displaces characters.
-pub fn render_inline_rename_element(
-    rename_text: &str,
-    selected_all: bool,
-    cursor_pos: usize,
-    view: Entity<crate::app::AppWindow>,
-) -> AnyElement {
-    render_inline_rename_element_multiline(rename_text, selected_all, cursor_pos, None, view)
+fn active_rename_input_mut(app: &mut crate::app::AppWindow) -> Option<&mut TextInputState> {
+    let active_focus = app.state.active_pane_focus();
+    if app.state.pane_view(active_focus).renaming_index.is_some() {
+        Some(&mut app.state.pane_view_mut(active_focus).rename_input)
+    } else if app.state.main_view.renaming_index.is_some() {
+        Some(&mut app.state.main_view.rename_input)
+    } else if app.state.secondary_view.renaming_index.is_some() {
+        Some(&mut app.state.secondary_view.rename_input)
+    } else {
+        None
+    }
 }
 
-/// Inline rename element for view rows and Grid view label boxes (Zed-inspired single-stream text editing).
-pub fn render_inline_rename_element_multiline(
-    rename_text: &str,
-    selected_all: bool,
-    cursor_pos: usize,
-    _min_height: Option<f32>,
+fn focus_main_on_rename_click(
+    app: &mut crate::app::AppWindow,
+    win: &mut Window,
+    _cx: &mut Context<crate::app::AppWindow>,
+) {
+    if let Some(ref focus) = app.state.main_focus {
+        win.focus(focus);
+    }
+}
+
+/// Render unified single-line inline rename input (Details, List, Columns, Tree views).
+pub fn render_inline_rename_single(
+    state: &TextInputState,
     view: Entity<crate::app::AppWindow>,
 ) -> AnyElement {
-    let chars: Vec<char> = rename_text.chars().collect();
-    let pos = cursor_pos.min(chars.len());
-    let before: String = chars[..pos].iter().collect();
-    let after: String = chars[pos..].iter().collect();
-
-    // Zero-width stationary cursor element: doesn't displace characters when moving
-    let cursor_bar = div()
-        .w(px(0.0))
+    div()
+        .flex_1()
         .min_w(px(0.0))
-        .h(px(16.0))
-        .flex_shrink_0()
-        .child(
-            div()
-                .absolute()
-                .left(px(-0.75))
-                .w(px(1.5))
-                .h(px(16.0))
-                .bg(rgb(0xFFFFFF))
-                .with_animation(
-                    "inline-rename-blink",
-                    Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                    |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                ),
-        );
-
-    // Zed-inspired auto-scroll offset calculation: keep the caret comfortably in view.
-    // Average Segoe UI character pitch is ~7.2px at 12.5px font size.
-    // Only scroll when cursor exceeds comfortable viewport width (240px)
-    let cursor_x = pos as f32 * 7.2;
-    let scroll_x = if cursor_x > 240.0 {
-        cursor_x - 220.0
-    } else {
-        0.0
-    };
-
-    let container = div()
-        .w_full()
-        .h(px(28.0))
-        .bg(rgba(0x1E1E1EFF))
-        .border(px(1.0))
-        .border_color(rgb(0x60CDFF))
-        .border_b(px(2.0))
-        .rounded(px(4.0))
-        .px(px(6.0))
-        .overflow_hidden()
-        .flex()
-        .items_center()
-        .cursor_text()
-        .on_mouse_down(MouseButton::Left, {
-            let v = view.clone();
-            move |ev, _, cx| {
-                cx.stop_propagation();
-                v.update(cx, |this, cx| {
-                    let view_state = this.state.active_view_mut();
-                    if ev.click_count == 2 {
-                        view_state.rename_selected_all = true;
-                        view_state.rename_cursor_pos = view_state.rename_text.chars().count();
-                    } else {
-                        view_state.rename_selected_all = false;
-                    }
-                    cx.notify();
-                });
-            }
-        });
-
-    let (visible_text, cursor_overlay) = if selected_all {
-        (
-            div()
-                .bg(rgb(0x0078D4))
-                .text_color(rgb(0xFFFFFF))
-                .rounded(px(2.0))
-                .px(px(2.0))
-                .font_family(UiConstants::FONT_MAIN)
-                .whitespace_nowrap()
-                .child(if rename_text.is_empty() {
-                    " ".to_string()
-                } else {
-                    rename_text.to_string()
-                }),
-            None,
-        )
-    } else {
-        (
-            div()
-                .font_family(UiConstants::FONT_MAIN)
-                .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                .whitespace_nowrap()
-                .child(if rename_text.is_empty() {
-                    " ".to_string()
-                } else {
-                    rename_text.to_string()
-                }),
-            Some(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .bottom_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(
-                        div()
-                            .opacity(0.0)
-                            .font_family(UiConstants::FONT_MAIN)
-                            .whitespace_nowrap()
-                            .child(before),
-                    )
-                    .child(cursor_bar),
-            ),
-        )
-    };
-
-    let mut inner_row = div()
-        .relative()
-        .flex()
-        .flex_row()
-        .items_center()
-        .whitespace_nowrap()
-        .ml(px(-scroll_x))
-        .child(visible_text);
-
-    if let Some(overlay) = cursor_overlay {
-        inner_row = inner_row.child(overlay);
-    }
-
-    container.child(inner_row).into_any_element()
+        .child(render_text_input(
+            "inline-rename-single-input",
+            state,
+            "",
+            true,
+            false,
+            TextInputMode::SingleLine,
+            TextInputStyle::inline_rename_single(),
+            view,
+            Rc::new(active_rename_input_mut),
+            Some(Rc::new(focus_main_on_rename_click)),
+        ))
+        .into_any_element()
 }
 
-/// A wrapped line segment inside the multiline grid rename editor.
-#[derive(Debug, Clone)]
-pub struct WrappedRenameLine {
-    pub text: String,
-    pub start_char_idx: usize,
-    pub end_char_idx: usize,
-}
-
-/// Delimiter-aware line wrapping for multiline rename in Grid view.
-/// Breaks on spaces, dots, dashes, underscores, and brackets without splitting mid-character.
-pub fn wrap_rename_text(
-    text: &str,
-    chars_per_line: usize,
-    max_lines: usize,
-) -> Vec<WrappedRenameLine> {
-    if text.is_empty() {
-        return vec![WrappedRenameLine {
-            text: String::new(),
-            start_char_idx: 0,
-            end_char_idx: 0,
-        }];
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let total_len = chars.len();
-    let mut lines = Vec::new();
-    let mut cur_start = 0;
-
-    while cur_start < total_len && lines.len() < max_lines {
-        // If this is the last allowed line, include all remaining characters
-        if lines.len() == max_lines - 1 {
-            let line_chars: String = chars[cur_start..].iter().collect();
-            lines.push(WrappedRenameLine {
-                text: line_chars,
-                start_char_idx: cur_start,
-                end_char_idx: total_len,
-            });
-            break;
-        }
-
-        let remaining = total_len - cur_start;
-        if remaining <= chars_per_line {
-            let line_chars: String = chars[cur_start..].iter().collect();
-            lines.push(WrappedRenameLine {
-                text: line_chars,
-                start_char_idx: cur_start,
-                end_char_idx: total_len,
-            });
-            break;
-        }
-
-        // Search for a natural break point (whitespace or delimiter)
-        let max_chunk = chars_per_line.min(remaining);
-        let mut break_idx = None;
-
-        // 1. Whitespace
-        for i in (1..=max_chunk).rev() {
-            if chars[cur_start + i - 1].is_whitespace() {
-                break_idx = Some(cur_start + i);
-                break;
-            }
-        }
-
-        // 2. Delimiters ('.', '-', '_', ')', ']')
-        if break_idx.is_none() {
-            let min_search = chars_per_line.saturating_sub(6).max(1);
-            for i in (min_search..=max_chunk).rev() {
-                let ch = chars[cur_start + i - 1];
-                if matches!(ch, '.' | '-' | '_' | ')' | ']' | '(' | '[') {
-                    break_idx = Some(cur_start + i);
-                    break;
-                }
-            }
-        }
-
-        let next_start = break_idx.unwrap_or(cur_start + max_chunk);
-        let line_chars: String = chars[cur_start..next_start].iter().collect();
-        lines.push(WrappedRenameLine {
-            text: line_chars,
-            start_char_idx: cur_start,
-            end_char_idx: next_start,
-        });
-        cur_start = next_start;
-    }
-
-    if lines.is_empty() {
-        lines.push(WrappedRenameLine {
-            text: String::new(),
-            start_char_idx: 0,
-            end_char_idx: 0,
-        });
-    }
-    lines
-}
-
-/// Renders a multiline word-wrapped inline rename element for Grid View tiles,
-/// occupying the full 2–3 row label height (`label_box_h`) with WinUI 3 focus border,
-/// selection highlighting across all lines, and stationary cursor tracking.
+/// Render unified 3-line centered inline rename input (Grid view tiles).
 pub fn render_inline_rename_grid(
-    rename_text: &str,
-    selected_all: bool,
-    cursor_pos: usize,
+    state: &TextInputState,
     box_height: f32,
     font_size: f32,
-    line_h: f32,
-    avail_w: f32,
+    line_height: f32,
+    box_width: f32,
     view: Entity<crate::app::AppWindow>,
 ) -> AnyElement {
-    let chars_per_line = ((avail_w.max(60.0) / (font_size * 0.58)).floor() as usize).max(8);
-    let lines = wrap_rename_text(rename_text, chars_per_line, 3);
-    let total_chars = rename_text.chars().count();
-    let clamped_pos = cursor_pos.min(total_chars);
-
-    // Outer input container with WinUI 3 focus border, taking full label box height
-    let mut container = div()
-        .w_full()
-        .h(px(box_height))
+    div()
+        .w(px(box_width.max(48.0)))
+        .max_w_full()
         .mt(px(4.0))
-        .px(px(4.0))
-        .py(px(2.0))
-        .bg(rgba(0x1E1E1EF0))
-        .border(px(1.0))
-        .border_color(rgb(0x60CDFF))
-        .border_b(px(2.0))
-        .rounded(px(4.0))
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .justify_center()
-        .cursor_text()
-        .on_mouse_down(MouseButton::Left, {
-            let v = view.clone();
-            move |ev, _, cx| {
-                cx.stop_propagation();
-                v.update(cx, |this, cx| {
-                    let view_state = this.state.active_view_mut();
-                    if ev.click_count == 2 {
-                        view_state.rename_selected_all = true;
-                        view_state.rename_cursor_pos = view_state.rename_text.chars().count();
-                    } else {
-                        view_state.rename_selected_all = false;
-                    }
-                    cx.notify();
-                });
-            }
-        });
-
-    let num_lines = lines.len();
-    for (line_idx, line) in lines.iter().enumerate() {
-        let is_last_line = line_idx == num_lines - 1;
-        let is_active_line = clamped_pos >= line.start_char_idx
-            && (clamped_pos < line.end_char_idx || (is_last_line && clamped_pos >= line.end_char_idx));
-
-        let line_content = if line.text.is_empty() {
-            " ".to_string()
-        } else {
-            line.text.clone()
-        };
-
-        if selected_all {
-            container = container.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .child(
-                        div()
-                            .bg(rgb(0x0078D4))
-                            .text_color(rgb(0xFFFFFF))
-                            .rounded(px(2.0))
-                            .px(px(2.0))
-                            .text_size(px(font_size))
-                            .line_height(px(line_h))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .whitespace_nowrap()
-                            .child(line_content),
-                    ),
-            );
-        } else {
-            // Unbroken text layer: shapes line.text as a single continuous string.
-            // Preserves 100% of font kerning and layout bounds so characters never shift.
-            let visible_text = div()
-                .text_size(px(font_size))
-                .line_height(px(line_h))
-                .font_family(UiConstants::FONT_MAIN)
-                .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
-                .whitespace_nowrap()
-                .child(line_content);
-
-            let mut text_block = div()
-                .relative()
-                .flex()
-                .items_center()
-                .whitespace_nowrap()
-                .child(visible_text);
-
-            if is_active_line {
-                let line_chars: Vec<char> = line.text.chars().collect();
-                let col = clamped_pos.saturating_sub(line.start_char_idx).min(line_chars.len());
-                let before: String = line_chars[..col].iter().collect();
-
-                let cursor_bar = div()
-                    .w(px(0.0))
-                    .min_w(px(0.0))
-                    .h(px(line_h.max(14.0)))
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(-0.75))
-                            .w(px(1.5))
-                            .h(px(line_h.max(14.0)))
-                            .bg(rgb(0xFFFFFF))
-                            .with_animation(
-                                "inline-rename-grid-blink",
-                                Animation::new(std::time::Duration::from_millis(500)).repeat(),
-                                |elem, delta| elem.opacity(if delta > 0.5 { 0.0 } else { 1.0 }),
-                            ),
-                    );
-
-                let cursor_overlay = div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .bottom_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(
-                        div()
-                            .opacity(0.0)
-                            .text_size(px(font_size))
-                            .line_height(px(line_h))
-                            .font_family(UiConstants::FONT_MAIN)
-                            .whitespace_nowrap()
-                            .child(before),
-                    )
-                    .child(cursor_bar);
-
-                text_block = text_block.child(cursor_overlay);
-            }
-
-            container = container.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .child(text_block),
-            );
-        }
-    }
-
-    container.into_any_element()
+        .child(render_text_input(
+            "inline-rename-grid-input",
+            state,
+            "",
+            true,
+            false,
+            TextInputMode::MultiLine {
+                max_lines: Some(3),
+                allow_newlines: false,
+                text_align_center: true,
+            },
+            TextInputStyle::inline_rename_grid(font_size, line_height, box_height.max(line_height + 6.0)),
+            view,
+            Rc::new(active_rename_input_mut),
+            Some(Rc::new(focus_main_on_rename_click)),
+        ))
+        .into_any_element()
 }
 
-/// Move cursor vertically up or down across wrapped multiline rename text.
-pub fn rename_cursor_move_vertical(
-    text: &str,
-    cur_pos: usize,
-    move_up: bool,
-    chars_per_line: usize,
-) -> usize {
-    let total_len = text.chars().count();
-    if total_len == 0 {
-        return 0;
-    }
-    let cpl = if chars_per_line >= 6 { chars_per_line } else { 18 };
-    let lines = wrap_rename_text(text, cpl, 3);
-    if lines.is_empty() {
-        return if move_up { 0 } else { total_len };
-    }
-
-    let clamped_pos = cur_pos.min(total_len);
-    let num_lines = lines.len();
-
-    // Map clamped_pos to (line_idx, col) matching render_inline_rename_grid
-    let mut cur_line_idx = 0;
-    for (i, line) in lines.iter().enumerate() {
-        let is_last = i == num_lines - 1;
-        if clamped_pos >= line.start_char_idx
-            && (clamped_pos < line.end_char_idx || (is_last && clamped_pos >= line.end_char_idx))
-        {
-            cur_line_idx = i;
-            break;
-        }
-    }
-
-    let cur_line = &lines[cur_line_idx];
-    let col = clamped_pos.saturating_sub(cur_line.start_char_idx);
-
-    if move_up {
-        if cur_line_idx > 0 {
-            let prev_line = &lines[cur_line_idx - 1];
-            let prev_len = prev_line.text.chars().count();
-            let target_col = col.min(prev_len);
-            prev_line.start_char_idx + target_col
-        } else {
-            0
-        }
-    } else {
-        if cur_line_idx + 1 < num_lines {
-            let next_line = &lines[cur_line_idx + 1];
-            let next_len = next_line.text.chars().count();
-            let target_col = col.min(next_len);
-            next_line.start_char_idx + target_col
-        } else {
-            total_len
-        }
-    }
-}
 
 /// Compute an adaptive 3-line filename label, effective font size, and line height.
 ///
@@ -766,7 +389,7 @@ pub fn get_file_type_icon_and_color(extension: &str) -> (&'static str, u32) {
 /// Map a ViewMode to its default zoom level (0.0–1.0).
 pub fn zoom_for_view_mode(mode: &ViewMode) -> f32 {
     match mode {
-        ViewMode::Details => 0.15,
+        ViewMode::Details | ViewMode::Tree => 0.15,
         ViewMode::List => 0.25,
         ViewMode::Cards => 0.42,
         ViewMode::Columns => 0.35,
@@ -797,6 +420,7 @@ pub fn zoom_mode_label(mode: &ViewMode) -> (&'static str, &'static str) {
         ViewMode::Cards => ("\u{E8A9}", "Cards"),
         ViewMode::Columns => ("\u{E8F1}", "Columns"),
         ViewMode::Grid => ("\u{E80A}", "Grid"),
+        ViewMode::Tree => ("\u{F0E2}", "Tree"),
     }
 }
 
@@ -866,31 +490,5 @@ mod tests {
             "Sorting 50,000 filenames took {:?} (expected < 250ms in debug / < 15ms in release)",
             elapsed
         );
-    }
-
-    #[test]
-    fn test_wrap_rename_text_delimiter_and_multiline() {
-        let text = "Verity.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv";
-        let lines = wrap_rename_text(text, 18, 3);
-        assert!(lines.len() <= 3);
-        let joined: String = lines.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(joined, text);
-        assert_eq!(lines[0].start_char_idx, 0);
-        assert_eq!(lines.last().unwrap().end_char_idx, text.chars().count());
-    }
-
-    #[test]
-    fn test_rename_cursor_move_vertical() {
-        let text = "Verity.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv";
-        // From start, up arrow stays at 0
-        assert_eq!(rename_cursor_move_vertical(text, 0, true, 18), 0);
-        // Down arrow from start moves down to next line
-        let down1 = rename_cursor_move_vertical(text, 0, false, 18);
-        assert!(down1 > 0);
-        // Up arrow from next line moves back up to 0
-        assert_eq!(rename_cursor_move_vertical(text, down1, true, 18), 0);
-        // Down arrow from end of text stays at end of text
-        let total = text.chars().count();
-        assert_eq!(rename_cursor_move_vertical(text, total, false, 18), total);
     }
 }

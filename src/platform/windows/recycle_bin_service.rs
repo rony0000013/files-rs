@@ -197,6 +197,30 @@ impl RecycleBinService {
         })
     }
 
+    /// Synchronously restores a single item from the Recycle Bin by its original path.
+    pub fn restore_item_sync(original_path: &Path) -> Result<()> {
+        #[cfg(windows)]
+        {
+            match Self::try_native_restore_windows(original_path)? {
+                Some(_) => Ok(()),
+                None => Err(anyhow::anyhow!(
+                    "Item not found in Recycle Bin for {}",
+                    original_path.display()
+                )),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            match Self::try_native_restore_unix(original_path)? {
+                Some(_) => Ok(()),
+                None => Err(anyhow::anyhow!(
+                    "Item not found in Trash for {}",
+                    original_path.display()
+                )),
+            }
+        }
+    }
+
     /// Permanently deletes a single item from the Recycle Bin by its original path.
     pub async fn delete_item(&self, original_path: &Path) -> Result<()> {
         #[cfg(windows)]
@@ -405,9 +429,28 @@ impl RecycleBinService {
     }
 
     #[cfg(windows)]
+    fn ordered_drive_letters(target_orig_path: &Path) -> Vec<char> {
+        let mut drives = Vec::with_capacity(26);
+        if let Some(first) = target_orig_path
+            .to_string_lossy()
+            .chars()
+            .next()
+            .filter(|c| c.is_ascii_alphabetic())
+        {
+            drives.push(first.to_ascii_uppercase());
+        }
+        for drive in 'C'..='Z' {
+            if !drives.contains(&drive) {
+                drives.push(drive);
+            }
+        }
+        drives
+    }
+
+    #[cfg(windows)]
     fn try_native_restore_windows(target_orig_path: &Path) -> Result<Option<String>> {
         let target_str = target_orig_path.to_string_lossy().to_string();
-        for drive in ['C', 'D', 'E', 'F', 'G', 'H'] {
+        for drive in Self::ordered_drive_letters(target_orig_path) {
             let rb_root = PathBuf::from(format!("{}:\\$Recycle.Bin", drive));
             let Ok(sid_dirs) = std::fs::read_dir(&rb_root) else {
                 continue;
@@ -445,7 +488,7 @@ impl RecycleBinService {
     #[cfg(windows)]
     fn try_native_delete_windows(target_orig_path: &Path) -> Result<bool> {
         let target_str = target_orig_path.to_string_lossy().to_string();
-        for drive in ['C', 'D', 'E', 'F', 'G', 'H'] {
+        for drive in Self::ordered_drive_letters(target_orig_path) {
             let rb_root = PathBuf::from(format!("{}:\\$Recycle.Bin", drive));
             let Ok(sid_dirs) = std::fs::read_dir(&rb_root) else {
                 continue;

@@ -48,10 +48,7 @@ impl MainViewState {
             side_pane_resize_start_x: None,
             side_pane_resize_start_width: None,
             renaming_index: None,
-            rename_text: String::new(),
-            rename_selected_all: false,
-            rename_cursor_pos: 0,
-            rename_chars_per_line: 18,
+            rename_input: crate::ui::components::text_input::TextInputState::default(),
             cut_paths: HashSet::new(),
             compact_mode: false,
             preview_text: None,
@@ -111,6 +108,12 @@ impl MainViewState {
             office_preview: OfficePreviewHost::default(),
             show_filter_bar: false,
             group_ascending: true,
+            tree_expanded_paths: HashSet::new(),
+            tree_children_cache: std::collections::HashMap::new(),
+            tree_loading_paths: HashSet::new(),
+            tree_top_items: Vec::new(),
+            tree_depths: Vec::new(),
+            tree_load_generation: 0,
         }
     }
 
@@ -202,6 +205,7 @@ impl MainViewState {
             search_query: self.search_state.query.clone(),
             search_results_len: self.search_state.results.len(),
             tags_cache_len: self.tags_cache.len(),
+            is_tree_mode: matches!(self.view_mode, ViewMode::Tree),
         };
 
         if let Some((cached_key, cached_rc)) = self.visible_cache.borrow().as_ref() {
@@ -239,102 +243,212 @@ impl MainViewState {
             .map(|(i, _)| i)
             .collect();
 
-        indices.sort_unstable_by(|&a, &b| {
-            let ia = &self.items[a];
-            let ib = &self.items[b];
-            if self.sort.folders_first {
-                let af = matches!(ia.file_type, FileType::Directory);
-                let bf = matches!(ib.file_type, FileType::Directory);
-                if af != bf {
-                    return if af {
-                        std::cmp::Ordering::Less
-                    } else {
-                        std::cmp::Ordering::Greater
-                    };
-                }
-            } else if self.sort.files_first {
-                let af = matches!(ia.file_type, FileType::Directory);
-                let bf = matches!(ib.file_type, FileType::Directory);
-                if af != bf {
-                    return if af {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        std::cmp::Ordering::Less
-                    };
-                }
-            }
-            let ord = match self.sort.column {
-                SortBy::Name => natural_cmp(&ia.name, &ib.name),
-                SortBy::Size => ia.size.cmp(&ib.size).then_with(|| natural_cmp(&ia.name, &ib.name)),
-                SortBy::Type => {
-                    let dir_a = matches!(ia.file_type, FileType::Directory);
-                    let dir_b = matches!(ib.file_type, FileType::Directory);
-                    if dir_a && dir_b {
-                        natural_cmp(&ia.name, &ib.name)
-                    } else if dir_a != dir_b {
-                        if self.sort.files_first {
-                            if dir_a {
-                                std::cmp::Ordering::Greater
-                            } else {
-                                std::cmp::Ordering::Less
-                            }
-                        } else if self.sort.folders_first {
-                            if dir_a {
-                                std::cmp::Ordering::Less
-                            } else {
-                                std::cmp::Ordering::Greater
-                            }
-                        } else {
-                            ext_cmp(&ia.name, &ib.name)
-                        }
-                    } else {
-                        ext_cmp(&ia.name, &ib.name)
-                    }
-                }
-                SortBy::Tag => {
-                    let first_tag_a = self
-                        .item_tags(ia)
-                        .and_then(|t| t.first())
-                        .map(|s| s.as_str());
-                    let first_tag_b = self
-                        .item_tags(ib)
-                        .and_then(|t| t.first())
-                        .map(|s| s.as_str());
-                    match (first_tag_a, first_tag_b) {
-                        (Some(a), Some(b)) => natural_cmp(a, b),
-                        (Some(_), None) => return std::cmp::Ordering::Less,
-                        (None, Some(_)) => return std::cmp::Ordering::Greater,
-                        (None, None) => natural_cmp(&ia.name, &ib.name),
-                    }
-                }
-                SortBy::DateModified => {
-                    let a_time = ia.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    let b_time = ib.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
-                }
-                SortBy::DateCreated => {
-                    let a_time = ia
-                        .created
-                        .or(ia.modified)
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    let b_time = ib
-                        .created
-                        .or(ib.modified)
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
-                }
-                _ => natural_cmp(&ia.name, &ib.name),
-            };
-            if self.sort.ascending {
-                ord
-            } else {
-                ord.reverse()
-            }
-        });
+        // In Tree View mode, `self.items` is already ordered in sorted pre-order DFS tree hierarchy;
+        // do not re-sort across depths or nested children will separate from their parents.
+        if !matches!(self.view_mode, ViewMode::Tree) {
+            indices.sort_unstable_by(|&a, &b| {
+                self.compare_file_items(&self.items[a], &self.items[b])
+            });
+        }
 
         let rc = std::rc::Rc::new(indices);
         *self.visible_cache.borrow_mut() = Some((key, rc.clone()));
         rc
+    }
+
+    /// Compare two `FileItem`s using the active pane's sort column, direction, and folder/file grouping rules.
+    pub fn compare_file_items(&self, ia: &FileItem, ib: &FileItem) -> std::cmp::Ordering {
+        if self.sort.folders_first {
+            let af = matches!(ia.file_type, FileType::Directory);
+            let bf = matches!(ib.file_type, FileType::Directory);
+            if af != bf {
+                return if af {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+        } else if self.sort.files_first {
+            let af = matches!(ia.file_type, FileType::Directory);
+            let bf = matches!(ib.file_type, FileType::Directory);
+            if af != bf {
+                return if af {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+            }
+        }
+        let ord = match self.sort.column {
+            SortBy::Name => natural_cmp(&ia.name, &ib.name),
+            SortBy::Size => ia.size.cmp(&ib.size).then_with(|| natural_cmp(&ia.name, &ib.name)),
+            SortBy::Type => {
+                let dir_a = matches!(ia.file_type, FileType::Directory);
+                let dir_b = matches!(ib.file_type, FileType::Directory);
+                if dir_a && dir_b {
+                    natural_cmp(&ia.name, &ib.name)
+                } else if dir_a != dir_b {
+                    if self.sort.files_first {
+                        if dir_a {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    } else if self.sort.folders_first {
+                        if dir_a {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    } else {
+                        ext_cmp(&ia.name, &ib.name)
+                    }
+                } else {
+                    ext_cmp(&ia.name, &ib.name)
+                }
+            }
+            SortBy::Tag => {
+                let first_tag_a = self
+                    .item_tags(ia)
+                    .and_then(|t| t.first())
+                    .map(|s| s.as_str());
+                let first_tag_b = self
+                    .item_tags(ib)
+                    .and_then(|t| t.first())
+                    .map(|s| s.as_str());
+                match (first_tag_a, first_tag_b) {
+                    (Some(a), Some(b)) => natural_cmp(a, b),
+                    (Some(_), None) => return std::cmp::Ordering::Less,
+                    (None, Some(_)) => return std::cmp::Ordering::Greater,
+                    (None, None) => natural_cmp(&ia.name, &ib.name),
+                }
+            }
+            SortBy::DateModified => {
+                let a_time = ia.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let b_time = ib.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
+            }
+            SortBy::DateCreated => {
+                let a_time = ia
+                    .created
+                    .or(ia.modified)
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let b_time = ib
+                    .created
+                    .or(ib.modified)
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                a_time.cmp(&b_time).then_with(|| natural_cmp(&ia.name, &ib.name))
+            }
+            _ => natural_cmp(&ia.name, &ib.name),
+        };
+        if self.sort.ascending {
+            ord
+        } else {
+            ord.reverse()
+        }
+    }
+
+    /// Clear cached tree expansions/children on directory navigation.
+    pub fn reset_tree_for_navigation(&mut self) {
+        self.tree_load_generation = self.tree_load_generation.wrapping_add(1);
+        self.tree_expanded_paths.clear();
+        self.tree_children_cache.clear();
+        self.tree_loading_paths.clear();
+        self.tree_top_items.clear();
+        self.tree_depths.clear();
+    }
+
+    /// Snapshot top-level items before entering Tree Mode and flatten expanded folders.
+    pub fn enter_tree_mode(&mut self) {
+        self.view_mode = ViewMode::Tree;
+        if self.tree_top_items.is_empty() || self.tree_depths.is_empty() {
+            self.tree_top_items = self.items.clone();
+        }
+        self.rebuild_tree_items();
+    }
+
+    /// Restore top-level items cleanly when leaving Tree Mode.
+    pub fn exit_tree_mode(&mut self) {
+        if !self.tree_top_items.is_empty() {
+            let selected_paths: HashSet<std::path::PathBuf> = self
+                .selected_indices
+                .iter()
+                .filter_map(|&i| self.items.get(i).map(|it| it.path.as_path().to_path_buf()))
+                .collect();
+            self.items = self.tree_top_items.clone();
+            self.selected_indices = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| selected_paths.contains(it.path.as_path()))
+                .map(|(i, _)| i)
+                .collect();
+        }
+        self.tree_depths.clear();
+        self.bump_items_revision();
+    }
+
+    /// Rebuild `self.items` and `self.tree_depths` as a sorted pre-order DFS tree.
+    pub fn rebuild_tree_items(&mut self) {
+        if self.tree_top_items.is_empty() && !self.items.is_empty() && self.tree_depths.is_empty() {
+            self.tree_top_items = self.items.clone();
+        }
+
+        let selected_paths: HashSet<std::path::PathBuf> = self
+            .selected_indices
+            .iter()
+            .filter_map(|&i| self.items.get(i).map(|it| it.path.as_path().to_path_buf()))
+            .collect();
+        let last_clicked_path = self
+            .last_clicked_index
+            .and_then(|i| self.items.get(i).map(|it| it.path.as_path().to_path_buf()));
+
+        let mut flat_items = Vec::with_capacity(self.tree_top_items.len());
+        let mut flat_depths = Vec::with_capacity(self.tree_top_items.len());
+
+        let mut top = self.tree_top_items.clone();
+        top.sort_unstable_by(|a, b| self.compare_file_items(a, b));
+
+        fn push_subtree(
+            state: &MainViewState,
+            nodes: &[FileItem],
+            depth: u16,
+            flat_items: &mut Vec<FileItem>,
+            flat_depths: &mut Vec<u16>,
+        ) {
+            for item in nodes {
+                flat_items.push(item.clone());
+                flat_depths.push(depth);
+                if matches!(item.file_type, FileType::Directory)
+                    && depth < 32
+                    && state.tree_expanded_paths.contains(item.path.as_path())
+                {
+                    if let Some(children) = state.tree_children_cache.get(item.path.as_path()) {
+                        let mut sorted_children = children.clone();
+                        sorted_children.sort_unstable_by(|a, b| state.compare_file_items(a, b));
+                        push_subtree(state, &sorted_children, depth + 1, flat_items, flat_depths);
+                    }
+                }
+            }
+        }
+
+        push_subtree(self, &top, 0, &mut flat_items, &mut flat_depths);
+
+        self.items = flat_items;
+        self.tree_depths = flat_depths;
+        self.selected_indices = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| selected_paths.contains(it.path.as_path()))
+            .map(|(i, _)| i)
+            .collect();
+        self.last_clicked_index = last_clicked_path.and_then(|p| {
+            self.items
+                .iter()
+                .position(|it| it.path.as_path() == p.as_path())
+        });
+        self.bump_items_revision();
     }
 
     /// Return the sorted+filtered items as index slices into self.items.
@@ -1371,7 +1485,7 @@ impl MainView {
             Self::render_home_view(state, settings_data, view.clone()).into_any_element()
         } else {
             match state.view_mode {
-                ViewMode::Details => {
+                ViewMode::Details | ViewMode::Tree => {
                     {
                         let list_origin = point(
                             base_origin.x,
@@ -2460,5 +2574,93 @@ mod tests {
         st.sort.folders_first = false;
         st.sort.files_first = false;
         assert_eq!(*st.visible_items_rc(), vec![2, 0, 1, 3]);
+    }
+
+    #[test]
+    fn test_inline_rename_partial_selection_and_editing() {
+        let mut st = MainViewState::new(FilesPath::new("C:\\test"), ViewMode::Details);
+        st.renaming_index = Some(0);
+        st.rename_input =
+            crate::ui::components::text_input::TextInputState::with_text("report_final_v2.pdf", false);
+        st.rename_input.selection_anchor = Some(0);
+        st.rename_input.cursor = 15; // before ".pdf"
+
+        assert_eq!(st.rename_input.selection_range(), Some((0, 15)));
+        assert_eq!(st.rename_input.selected_text(), "report_final_v2");
+
+        // Shift+Left shrinks selection from right edge
+        st.rename_input.move_cursor(12, true, true);
+        assert_eq!(st.rename_input.selection_range(), Some((0, 12)));
+        assert_eq!(st.rename_input.selected_text(), "report_final");
+
+        // Typing replaces only the selected portion
+        st.rename_input.replace_selection("draft");
+        assert_eq!(st.rename_input.text, "draft_v2.pdf");
+        assert_eq!(st.rename_input.cursor, 5);
+        assert_eq!(st.rename_input.selection_range(), None);
+
+        // Select "_v2" via Shift+Right and delete it
+        st.rename_input.move_cursor(8, true, false);
+        assert_eq!(st.rename_input.selected_text(), "_v2");
+        assert!(st.rename_input.delete_selection());
+        assert_eq!(st.rename_input.text, "draft.pdf");
+        assert_eq!(st.rename_input.cursor, 5);
+
+        st.clear_rename_state();
+        assert_eq!(st.renaming_index, None);
+        assert_eq!(st.rename_input.selection_range(), None);
+    }
+
+    #[test]
+    fn test_tree_mode_dfs_order_and_mode_roundtrip() {
+        let mut st = MainViewState::new(FilesPath::new("/tmp"), ViewMode::Details);
+        let folder_a = create_test_file_item("alpha", true);
+        let file_z = create_test_file_item("zebra.txt", false);
+        st.items = vec![file_z.clone(), folder_a.clone()];
+        st.tree_top_items = st.items.clone();
+
+        // Populate cached children for "alpha"
+        let child_dir = FileItem {
+            name: "nested".to_string(),
+            path: FilesPath::new("/tmp/alpha/nested"),
+            file_type: FileType::Directory,
+            size: 0,
+            is_hidden: false,
+            is_system: false,
+            modified: None,
+            created: None,
+            tags: Vec::new(),
+        };
+        let child_file = FileItem {
+            name: "notes.md".to_string(),
+            path: FilesPath::new("/tmp/alpha/notes.md"),
+            file_type: FileType::File,
+            size: 12,
+            is_hidden: false,
+            is_system: false,
+            modified: None,
+            created: None,
+            tags: Vec::new(),
+        };
+        st.tree_children_cache.insert(
+            folder_a.path.as_path().to_path_buf(),
+            vec![child_file, child_dir],
+        );
+        st.tree_expanded_paths
+            .insert(folder_a.path.as_path().to_path_buf());
+
+        st.enter_tree_mode();
+        assert_eq!(st.view_mode, ViewMode::Tree);
+        let names: Vec<&str> = st.items.iter().map(|i| i.name.as_str()).collect();
+        // Folders first at each level: alpha (0), nested (1), notes.md (1), zebra.txt (0)
+        assert_eq!(names, vec!["alpha", "nested", "notes.md", "zebra.txt"]);
+        assert_eq!(st.tree_depths, vec![0, 1, 1, 0]);
+        // visible_items_rc must keep DFS hierarchy order intact
+        assert_eq!(*st.visible_items_rc(), vec![0, 1, 2, 3]);
+
+        // Exiting Tree Mode restores top-level items cleanly
+        st.exit_tree_mode();
+        assert_eq!(st.items.len(), 2);
+        assert!(st.tree_depths.is_empty());
     }
 }

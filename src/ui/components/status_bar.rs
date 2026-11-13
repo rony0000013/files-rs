@@ -116,6 +116,7 @@ impl StatusBarView {
             ViewMode::Columns => ("\u{E8F1}", "Columns"),
             ViewMode::Cards => ("\u{E8A9}", "Cards"),
             ViewMode::Grid => ("\u{E80A}", "Icons"),
+            ViewMode::Tree => ("\u{F0E2}", "Tree"),
         };
 
         let is_zoom_menu_open = matches!(

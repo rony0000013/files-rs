@@ -1,9 +1,13 @@
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputState, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use crate::ui::dialog_services::custom_properties_dialog::{
     CustomPropertiesState, PropertiesInputField, PropertiesTab,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use std::rc::Rc;
 
 impl crate::ui::components::dialogs::DialogsView {
     /// Redesigned modern Properties panel matching `Files-community` (`MainPropertiesPage.xaml`)
@@ -479,10 +483,10 @@ impl crate::ui::components::dialogs::DialogsView {
         if !is_multi && !is_drive {
             // Editable Item File Name TextBox
             overview_right = overview_right.child(Self::properties_text_input(
-                &state.edited_name,
+                state.input_ref(PropertiesInputField::ItemName),
                 "Item name",
                 name_focused,
-                state.name_selected_all && name_focused,
+                false,
                 PropertiesInputField::ItemName,
                 view.clone(),
             ));
@@ -1305,8 +1309,8 @@ impl crate::ui::components::dialogs::DialogsView {
                 .items_center()
                 .gap(px(8.0))
                 .child(
-                    div().flex_1().child(Self::properties_text_input(
-                        &state.hash_compare_input,
+                    div().flex_1().min_w(px(0.0)).child(Self::properties_text_input(
+                        state.input_ref(PropertiesInputField::HashCompare),
                         "Enter a hash to compare...",
                         cmp_focused,
                         false,
@@ -1341,6 +1345,9 @@ impl crate::ui::components::dialogs::DialogsView {
                                     ) = this.state.active_dialog
                                     {
                                         state.hash_compare_input = clip.trim().to_string();
+                                        state
+                                            .hash_compare_text_input
+                                            .set_text_and_cursor_end(state.hash_compare_input.clone());
                                         cx.notify();
                                     }
                                 });
@@ -1765,8 +1772,8 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .child("Target:"),
                             )
                             .child(
-                                div().flex_1().child(Self::properties_text_input(
-                                    &sc.target_path,
+                                div().flex_1().min_w(px(0.0)).child(Self::properties_text_input(
+                                    state.input_ref(PropertiesInputField::ShortcutTarget),
                                     "Target path",
                                     state.focused_input
                                         == Some(PropertiesInputField::ShortcutTarget),
@@ -1797,8 +1804,8 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .child("Arguments:"),
                             )
                             .child(
-                                div().flex_1().child(Self::properties_text_input(
-                                    &sc.arguments,
+                                div().flex_1().min_w(px(0.0)).child(Self::properties_text_input(
+                                    state.input_ref(PropertiesInputField::ShortcutArgs),
                                     "Command-line arguments",
                                     state.focused_input == Some(PropertiesInputField::ShortcutArgs),
                                     false,
@@ -1823,8 +1830,8 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .child("Start in:"),
                             )
                             .child(
-                                div().flex_1().child(Self::properties_text_input(
-                                    &sc.working_dir,
+                                div().flex_1().min_w(px(0.0)).child(Self::properties_text_input(
+                                    state.input_ref(PropertiesInputField::ShortcutWorkingDir),
                                     "Working directory",
                                     state.focused_input
                                         == Some(PropertiesInputField::ShortcutWorkingDir),
@@ -1838,11 +1845,12 @@ impl crate::ui::components::dialogs::DialogsView {
                         div()
                             .flex()
                             .flex_row()
-                            .items_center()
+                            .items_start()
                             .gap(px(8.0))
                             .child(
                                 div()
                                     .w(px(110.0))
+                                    .pt(px(6.0))
                                     .flex_shrink_0()
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight(600.0))
@@ -1850,12 +1858,12 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .child("Comment:"),
                             )
                             .child(
-                                div().flex_1().child(Self::properties_text_input(
-                                    &sc.comment,
+                                div().flex_1().min_w(px(0.0)).child(Self::properties_text_input(
+                                    state.input_ref(PropertiesInputField::ShortcutComment),
                                     "Description / comment",
                                     state.focused_input
                                         == Some(PropertiesInputField::ShortcutComment),
-                                    false,
+                                    true,
                                     PropertiesInputField::ShortcutComment,
                                     view.clone(),
                                 )),
@@ -2072,6 +2080,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                             {
                                                 state.customization.folder_icon_path = None;
                                                 state.customization.folder_icon_index = None;
+                                                state.custom_icon_path_input.clear();
                                                 cx.notify();
                                             }
                                         });
@@ -2080,7 +2089,7 @@ impl crate::ui::components::dialogs::DialogsView {
                             }),
                     )
                     .child(Self::properties_text_input(
-                        icon_path_str,
+                        state.input_ref(PropertiesInputField::CustomIconPath),
                         "Icon file or DLL path (e.g. C:\\Windows\\System32\\imageres.dll)",
                         state.focused_input == Some(PropertiesInputField::CustomIconPath),
                         false,
@@ -2128,6 +2137,9 @@ impl crate::ui::components::dialogs::DialogsView {
                                                     state.customization.folder_icon_path = Some(
                                                         "C:\\Windows\\System32\\imageres.dll"
                                                             .to_string(),
+                                                    );
+                                                    state.custom_icon_path_input.set_text_and_cursor_end(
+                                                        "C:\\Windows\\System32\\imageres.dll",
                                                     );
                                                 }
                                                 state.customization.folder_icon_index = Some(idx);
@@ -2651,73 +2663,64 @@ impl crate::ui::components::dialogs::DialogsView {
     }
 
     pub(crate) fn properties_text_input(
-        value: &str,
+        input: &TextInputState,
         placeholder: &str,
         focused: bool,
-        selected_all: bool,
+        multiline: bool,
         field: PropertiesInputField,
         view: Entity<crate::app::AppWindow>,
-    ) -> Div {
-        let is_empty = value.is_empty();
-        div()
-            .w_full()
-            .h(px(32.0))
-            .px(px(10.0))
-            .rounded(px(4.0))
-            .bg(if focused {
-                rgba(0x181818E0u32)
-            } else {
-                rgba(0xFFFFFF0Au32)
-            })
-            .border(px(1.0))
-            .border_b(px(if focused { 2.0 } else { 1.0 }))
-            .border_color(if focused {
-                rgba(0x4CC2FFFFu32)
-            } else {
-                rgba(0xFFFFFF22u32)
-            })
-            .cursor_text()
-            .flex()
-            .flex_row()
-            .items_center()
-            .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                view.update(cx, |this, cx| {
-                    if let Some(crate::ui::components::dialogs::DialogType::CustomProperties {
-                        ref mut state,
-                    }) = this.state.active_dialog
-                    {
-                        state.focused_input = Some(field);
-                        state.name_selected_all = false;
-                        cx.notify();
-                    }
-                });
-            })
-            .child(
-                div()
-                    .px(px(if selected_all && !is_empty { 2.0 } else { 0.0 }))
-                    .rounded(px(2.0))
-                    .bg(if selected_all && !is_empty {
-                        rgba(0x0078D488u32)
-                    } else {
-                        rgba(0x00000000u32)
-                    })
-                    .text_size(px(13.0))
-                    .text_color(if is_empty {
-                        rgb(UiConstants::TEXT_MUTED_RGB)
-                    } else {
-                        rgb(UiConstants::TEXT_PRIMARY_RGB)
-                    })
-                    .truncate()
-                    .child(if is_empty {
-                        placeholder.to_string()
-                    } else if focused && !selected_all {
-                        format!("{}|", value)
-                    } else {
-                        value.to_string()
-                    }),
-            )
+    ) -> AnyElement {
+        let mode = if multiline {
+            TextInputMode::MultiLine {
+                max_lines: None,
+                allow_newlines: true,
+                text_align_center: false,
+            }
+        } else {
+            TextInputMode::SingleLine
+        };
+        let style = if multiline {
+            TextInputStyle::textarea(72.0, 140.0)
+        } else {
+            TextInputStyle::dialog()
+        };
+        let id_str: &'static str = match field {
+            PropertiesInputField::ItemName => "prop-input-item-name",
+            PropertiesInputField::HashCompare => "prop-input-hash-cmp",
+            PropertiesInputField::ShortcutTarget => "prop-input-shortcut-target",
+            PropertiesInputField::ShortcutArgs => "prop-input-shortcut-args",
+            PropertiesInputField::ShortcutWorkingDir => "prop-input-shortcut-workdir",
+            PropertiesInputField::ShortcutComment => "prop-input-shortcut-comment",
+            PropertiesInputField::CustomIconPath => "prop-input-custom-icon",
+        };
+        render_text_input(
+            id_str,
+            input,
+            placeholder,
+            focused,
+            false,
+            mode,
+            style,
+            view,
+            Rc::new(move |app| {
+                if let Some(crate::ui::components::dialogs::DialogType::CustomProperties {
+                    ref mut state,
+                }) = app.state.active_dialog
+                {
+                    Some(state.input_mut(field))
+                } else {
+                    None
+                }
+            }),
+            Some(Rc::new(move |app, _win, _cx| {
+                if let Some(crate::ui::components::dialogs::DialogType::CustomProperties {
+                    ref mut state,
+                }) = app.state.active_dialog
+                {
+                    state.focused_input = Some(field);
+                }
+            })),
+        )
     }
 
     pub(crate) fn properties_attribute_row(

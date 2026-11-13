@@ -31,13 +31,30 @@ pub fn io_handle() -> tokio::runtime::Handle {
         .clone()
 }
 
-async fn join_transfer(
-    handle: tokio::task::JoinHandle<TransferOutcome>,
-) -> TransferOutcome {
+async fn join_transfer_recorded<T: Default>(
+    handle: tokio::task::JoinHandle<(TransferOutcome, T)>,
+) -> (TransferOutcome, T) {
     match handle.await {
-        Ok(outcome) => outcome,
-        Err(e) => TransferOutcome::Failed(format!("transfer task failed: {e}")),
+        Ok(res) => res,
+        Err(e) => (
+            TransferOutcome::Failed(format!("transfer task failed: {e}")),
+            T::default(),
+        ),
     }
+}
+
+/// Copy on the I/O runtime, returning both [`TransferOutcome`] and the `(src, dst)` pairs created.
+pub async fn run_copy_job_recorded_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> (TransferOutcome, Vec<(PathBuf, PathBuf)>) {
+    let handle = io_handle();
+    join_transfer_recorded(
+        handle.spawn(async move { run_copy_job_recorded(&engine, job, sources, dest_dir).await }),
+    )
+    .await
 }
 
 /// Copy on the I/O runtime (GPUI-safe wrapper around [`run_copy_job`]).
@@ -47,9 +64,19 @@ pub async fn run_copy_job_rt(
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
+    run_copy_job_recorded_rt(engine, job, sources, dest_dir).await.0
+}
+
+/// Move on the I/O runtime, returning both [`TransferOutcome`] and the `(src, dst)` pairs moved.
+pub async fn run_move_job_recorded_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> (TransferOutcome, Vec<(PathBuf, PathBuf)>) {
     let handle = io_handle();
-    join_transfer(
-        handle.spawn(async move { run_copy_job(&engine, job, sources, dest_dir).await }),
+    join_transfer_recorded(
+        handle.spawn(async move { run_move_job_recorded(&engine, job, sources, dest_dir).await }),
     )
     .await
 }
@@ -61,9 +88,19 @@ pub async fn run_move_job_rt(
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
+    run_move_job_recorded_rt(engine, job, sources, dest_dir).await.0
+}
+
+/// Delete on the I/O runtime, returning both [`TransferOutcome`] and the paths moved to Trash.
+pub async fn run_delete_job_recorded_rt(
+    engine: std::sync::Arc<ProgressEngine>,
+    job: uuid::Uuid,
+    paths: Vec<PathBuf>,
+    use_trash: bool,
+) -> (TransferOutcome, Vec<PathBuf>) {
     let handle = io_handle();
-    join_transfer(
-        handle.spawn(async move { run_move_job(&engine, job, sources, dest_dir).await }),
+    join_transfer_recorded(
+        handle.spawn(async move { run_delete_job_recorded(&engine, job, paths, use_trash).await }),
     )
     .await
 }
@@ -75,11 +112,7 @@ pub async fn run_delete_job_rt(
     paths: Vec<PathBuf>,
     use_trash: bool,
 ) -> TransferOutcome {
-    let handle = io_handle();
-    join_transfer(
-        handle.spawn(async move { run_delete_job(&engine, job, paths, use_trash).await }),
-    )
-    .await
+    run_delete_job_recorded_rt(engine, job, paths, use_trash).await.0
 }
 
 /// Chunk size for streaming copies (256 KiB keeps UI updates smooth).
@@ -295,6 +328,16 @@ pub async fn run_copy_job(
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
+    run_copy_job_recorded(engine, job, sources, dest_dir).await.0
+}
+
+/// Copy `sources` into `dest_dir` and return `(outcome, created_src_dst_pairs)`.
+pub async fn run_copy_job_recorded(
+    engine: &ProgressEngine,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> (TransferOutcome, Vec<(PathBuf, PathBuf)>) {
     let (files, total) = scan_tree(&sources);
     let total_bytes = total.max(1);
     let total_items = files.max(sources.len() as u64).max(1);
@@ -312,24 +355,36 @@ pub async fn run_copy_job(
         file: String::new(),
     };
     let mut errors = Vec::new();
+    let mut copied = Vec::new();
     for src in &sources {
         if wait_if_paused(engine, job).await {
-            return TransferOutcome::Cancelled;
+            return (TransferOutcome::Cancelled, copied);
         }
         let name = src
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "item".to_string());
         let dst = unique_dest(dest_dir.join(&name));
-        copy_tree_stack(vec![(src.clone(), dst)], engine, job, &mut rep, &mut errors).await;
+        let err_before = errors.len();
+        copy_tree_stack(
+            vec![(src.clone(), dst.clone())],
+            engine,
+            job,
+            &mut rep,
+            &mut errors,
+        )
+        .await;
         if cancelled(engine, job) {
-            return TransferOutcome::Cancelled;
+            return (TransferOutcome::Cancelled, copied);
+        }
+        if errors.len() == err_before && dst.symlink_metadata().is_ok() {
+            copied.push((src.clone(), dst));
         }
     }
     engine
         .report_with_items(job, rep.total_bytes, rep.total_bytes, rep.total_items, rep.total_items, "")
         .await;
-    if errors.is_empty() {
+    let outcome = if errors.is_empty() {
         TransferOutcome::Done
     } else {
         TransferOutcome::Failed(format!(
@@ -338,7 +393,8 @@ pub async fn run_copy_job(
             if errors.len() == 1 { "" } else { "s" },
             errors[0]
         ))
-    }
+    };
+    (outcome, copied)
 }
 
 /// Move `sources` into `dest_dir`: same-volume rename, else copy + delete.
@@ -348,6 +404,16 @@ pub async fn run_move_job(
     sources: Vec<PathBuf>,
     dest_dir: PathBuf,
 ) -> TransferOutcome {
+    run_move_job_recorded(engine, job, sources, dest_dir).await.0
+}
+
+/// Move `sources` into `dest_dir` and return `(outcome, moved_src_dst_pairs)`.
+pub async fn run_move_job_recorded(
+    engine: &ProgressEngine,
+    job: uuid::Uuid,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+) -> (TransferOutcome, Vec<(PathBuf, PathBuf)>) {
     let (files, total) = scan_tree(&sources);
     let total_bytes = total.max(1);
     let total_items = files.max(sources.len() as u64).max(1);
@@ -365,9 +431,10 @@ pub async fn run_move_job(
         file: String::new(),
     };
     let mut errors = Vec::new();
+    let mut moved = Vec::new();
     for src in &sources {
         if wait_if_paused(engine, job).await {
-            return TransferOutcome::Cancelled;
+            return (TransferOutcome::Cancelled, moved);
         }
         let name = src
             .file_name()
@@ -377,20 +444,34 @@ pub async fn run_move_job(
         let dst = unique_dest(dest_dir.join(&name));
         match tokio::fs::rename(src, &dst).await {
             Ok(_) => {
+                moved.push((src.clone(), dst));
                 rep.file = name.clone();
                 rep.done_bytes = rep.done_bytes.saturating_add(fbytes).min(rep.total_bytes);
                 rep.file_done().await;
             }
             Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
                 let dst = unique_dest(dest_dir.join(&name));
-                copy_tree_stack(vec![(src.clone(), dst)], engine, job, &mut rep, &mut errors).await;
+                let err_before = errors.len();
+                copy_tree_stack(
+                    vec![(src.clone(), dst.clone())],
+                    engine,
+                    job,
+                    &mut rep,
+                    &mut errors,
+                )
+                .await;
                 if cancelled(engine, job) {
-                    return TransferOutcome::Cancelled;
+                    return (TransferOutcome::Cancelled, moved);
                 }
-                if src.is_dir() {
-                    let _ = tokio::fs::remove_dir_all(src).await;
-                } else {
-                    let _ = tokio::fs::remove_file(src).await;
+                if errors.len() == err_before {
+                    if src.is_dir() {
+                        let _ = tokio::fs::remove_dir_all(src).await;
+                    } else {
+                        let _ = tokio::fs::remove_file(src).await;
+                    }
+                    if dst.symlink_metadata().is_ok() {
+                        moved.push((src.clone(), dst));
+                    }
                 }
             }
             Err(e) => {
@@ -398,13 +479,13 @@ pub async fn run_move_job(
             }
         }
         if cancelled(engine, job) {
-            return TransferOutcome::Cancelled;
+            return (TransferOutcome::Cancelled, moved);
         }
     }
     engine
         .report_with_items(job, rep.total_bytes, rep.total_bytes, rep.total_items, rep.total_items, "")
         .await;
-    if errors.is_empty() {
+    let outcome = if errors.is_empty() {
         TransferOutcome::Done
     } else {
         TransferOutcome::Failed(format!(
@@ -413,7 +494,8 @@ pub async fn run_move_job(
             if errors.len() == 1 { "" } else { "s" },
             errors[0]
         ))
-    }
+    };
+    (outcome, moved)
 }
 
 /// Delete paths (trash or permanent) with per-item progress and pause/cancel support.
@@ -423,12 +505,23 @@ pub async fn run_delete_job(
     paths: Vec<PathBuf>,
     use_trash: bool,
 ) -> TransferOutcome {
+    run_delete_job_recorded(engine, job, paths, use_trash).await.0
+}
+
+/// Delete paths and return `(outcome, trashed_paths)` when `use_trash` is true.
+pub async fn run_delete_job_recorded(
+    engine: &ProgressEngine,
+    job: uuid::Uuid,
+    paths: Vec<PathBuf>,
+    use_trash: bool,
+) -> (TransferOutcome, Vec<PathBuf>) {
     let total = paths.len().max(1) as u64;
     let mut done = 0u64;
     let mut errors = Vec::new();
+    let mut trashed = Vec::new();
     for p in &paths {
         if wait_if_paused(engine, job).await {
-            return TransferOutcome::Cancelled;
+            return (TransferOutcome::Cancelled, trashed);
         }
         let name = p
             .file_name()
@@ -444,15 +537,17 @@ pub async fn run_delete_job(
         } else {
             std::fs::remove_file(p).map_err(anyhow::Error::from)
         };
-        if let Err(e) = r {
-            errors.push(format!("{}: {:#}", p.display(), e));
+        match r {
+            Ok(()) if use_trash => trashed.push(p.clone()),
+            Ok(()) => {}
+            Err(e) => errors.push(format!("{}: {:#}", p.display(), e)),
         }
         done += 1;
         engine
             .report_with_items(job, done, total, done, total, &name)
             .await;
     }
-    if errors.is_empty() {
+    let outcome = if errors.is_empty() {
         TransferOutcome::Done
     } else {
         TransferOutcome::Failed(format!(
@@ -461,5 +556,6 @@ pub async fn run_delete_job(
             if errors.len() == 1 { "" } else { "s" },
             errors[0]
         ))
-    }
+    };
+    (outcome, trashed)
 }

@@ -364,7 +364,7 @@ impl MainViewState {
                     .0
                     .max(1)
             }
-            ViewMode::Details | ViewMode::Columns => 1,
+            ViewMode::Details | ViewMode::Columns | ViewMode::Tree => 1,
         };
 
         if self.group_by == GroupColumn::None {
@@ -465,7 +465,7 @@ impl MainViewState {
                     }
                 }
             }
-            ViewMode::Details => {
+            ViewMode::Details | ViewMode::Tree => {
                 let base_row_h = if compact { 22.0 } else { 26.0 };
                 let row_h = (base_row_h + zoom * 22.0).round();
                 let header_h = row_h.max(30.0);

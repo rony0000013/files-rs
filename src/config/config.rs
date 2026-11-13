@@ -680,6 +680,7 @@ pub enum ViewMode {
     Grid,
     Details,
     Columns,
+    Tree,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

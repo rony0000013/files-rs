@@ -1,8 +1,48 @@
 //! Decompress Dialog Service
 //! State machine for DecompressArchiveDialog.
 
+use crate::ui::components::text_input::TextInputState;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Wrapper around `gpui::ScrollHandle` so `DecompressState` keeps `Clone`, `Debug`, and `PartialEq`.
+#[derive(Clone, Default)]
+pub struct ArchiveTreeScrollHandle(pub gpui::ScrollHandle);
+
+impl std::fmt::Debug for ArchiveTreeScrollHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArchiveTreeScrollHandle").finish()
+    }
+}
+
+impl PartialEq for ArchiveTreeScrollHandle {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// Tri-state checkbox state for a folder node in the archive tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderCheckState {
+    Unchecked,
+    Partial,
+    Checked,
+}
+
+/// Flattened visible node produced by `DecompressState::visible_tree_rows()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveTreeRow {
+    pub name: String,
+    pub folder_key: String,
+    pub depth: usize,
+    pub is_dir: bool,
+    pub expanded: bool,
+    pub entry_index: Option<usize>,
+    pub descendant_indices: Vec<usize>,
+    pub total_size: u64,
+    pub child_count: usize,
+}
 
 /// Focused text input field inside `DecompressArchiveDialog`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +65,9 @@ pub struct DecompressState {
     /// Editable destination text buffer synced with `destination`
     #[serde(default)]
     pub destination_text: String,
+    /// Unified text input state for Destination field
+    #[serde(skip)]
+    pub destination_input: TextInputState,
     /// Detected archive format badge (e.g. "ZIP", "TAR.GZ", "7Z")
     #[serde(default)]
     pub format_badge: String,
@@ -43,6 +86,9 @@ pub struct DecompressState {
     pub overwrite: bool,
     /// Password for encrypted archives
     pub password: Option<String>,
+    /// Unified text input state for Password field
+    #[serde(skip)]
+    pub password_input: TextInputState,
     /// Show password field / reveal password characters
     pub show_password: bool,
     /// Currently focused input field for keyboard typing
@@ -55,6 +101,12 @@ pub struct DecompressState {
     pub error: Option<String>,
     /// Is the archive password protected
     pub is_encrypted: bool,
+    /// Folders currently collapsed in the Extract Archive tree view
+    #[serde(default)]
+    pub collapsed_folders: HashSet<String>,
+    /// Scroll handle for the archive tree scroll viewport
+    #[serde(skip)]
+    pub tree_scroll_handle: ArchiveTreeScrollHandle,
 }
 
 /// An entry within an archive
@@ -78,6 +130,7 @@ impl Default for DecompressState {
             selected_entries: Vec::new(),
             destination: PathBuf::new(),
             destination_text: String::new(),
+            destination_input: TextInputState::default(),
             format_badge: String::new(),
             compressed_size: 0,
             full_paths: false,
@@ -85,11 +138,14 @@ impl Default for DecompressState {
             open_destination: false,
             overwrite: false,
             password: None,
+            password_input: TextInputState::default(),
             show_password: false,
             focused_field: None,
             loading: false,
             error: None,
             is_encrypted: false,
+            collapsed_folders: HashSet::new(),
+            tree_scroll_handle: ArchiveTreeScrollHandle::default(),
         }
     }
 }
@@ -104,7 +160,8 @@ impl DecompressState {
         Self {
             archive_path,
             destination,
-            destination_text: dest_text,
+            destination_text: dest_text.clone(),
+            destination_input: TextInputState::with_text(dest_text, false),
             format_badge,
             full_paths: true,
             overwrite: true,
@@ -116,6 +173,7 @@ impl DecompressState {
     }
 
     pub fn sync_destination_from_text(&mut self) {
+        self.destination_text = self.destination_input.text.clone();
         let trimmed = self.destination_text.trim();
         self.destination = if trimmed.is_empty() {
             PathBuf::new()
@@ -124,8 +182,17 @@ impl DecompressState {
         };
     }
 
+    pub fn sync_password_from_input(&mut self) {
+        self.password = if self.password_input.text.is_empty() {
+            None
+        } else {
+            Some(self.password_input.text.clone())
+        };
+    }
+
     pub fn set_destination_path(&mut self, dest: PathBuf) {
         self.destination_text = dest.to_string_lossy().to_string();
+        self.destination_input.set_text_and_cursor_end(self.destination_text.clone());
         self.destination = dest;
     }
 
@@ -151,6 +218,217 @@ impl DecompressState {
         self.contents = contents;
         // By default, select all entries
         self.selected_entries = (0..count).collect();
+        self.collapsed_folders.clear();
+        // On huge archives (> 250 entries), auto-collapse deeper folders for responsive browsing
+        if count > 250 {
+            let mut seen_folders = HashSet::new();
+            for e in &self.contents {
+                let norm = e.path.trim_matches(['/', '\\']);
+                let mut cur = String::new();
+                let parts: Vec<&str> = norm.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+                let limit = if e.is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+                for (depth, seg) in parts.iter().take(limit).enumerate() {
+                    if !cur.is_empty() {
+                        cur.push('/');
+                    }
+                    cur.push_str(seg);
+                    if depth >= 1 && seen_folders.insert(cur.clone()) {
+                        self.collapsed_folders.insert(cur.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn toggle_folder_expand(&mut self, folder_key: &str) {
+        if !self.collapsed_folders.remove(folder_key) {
+            self.collapsed_folders.insert(folder_key.to_string());
+        }
+    }
+
+    pub fn expand_all_folders(&mut self) {
+        self.collapsed_folders.clear();
+    }
+
+    pub fn collapse_all_folders(&mut self) {
+        let mut all = HashSet::new();
+        for e in &self.contents {
+            let norm = e.path.trim_matches(['/', '\\']);
+            let parts: Vec<&str> = norm.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+            let limit = if e.is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+            let mut cur = String::new();
+            for seg in parts.iter().take(limit) {
+                if !cur.is_empty() {
+                    cur.push('/');
+                }
+                cur.push_str(seg);
+                all.insert(cur.clone());
+            }
+        }
+        self.collapsed_folders = all;
+    }
+
+    pub fn folder_check_state(&self, descendant_indices: &[usize]) -> FolderCheckState {
+        if descendant_indices.is_empty() {
+            return FolderCheckState::Unchecked;
+        }
+        let sel: HashSet<usize> = self.selected_entries.iter().copied().collect();
+        let selected_count = descendant_indices.iter().filter(|i| sel.contains(i)).count();
+        if selected_count == 0 {
+            FolderCheckState::Unchecked
+        } else if selected_count == descendant_indices.len() {
+            FolderCheckState::Checked
+        } else {
+            FolderCheckState::Partial
+        }
+    }
+
+    pub fn toggle_folder_selection(&mut self, descendant_indices: &[usize]) {
+        if descendant_indices.is_empty() {
+            return;
+        }
+        let state = self.folder_check_state(descendant_indices);
+        let targets: HashSet<usize> = descendant_indices.iter().copied().collect();
+        if state == FolderCheckState::Checked {
+            self.selected_entries.retain(|i| !targets.contains(i));
+        } else {
+            let existing: HashSet<usize> = self.selected_entries.iter().copied().collect();
+            for &idx in descendant_indices {
+                if !existing.contains(&idx) {
+                    self.selected_entries.push(idx);
+                }
+            }
+            self.selected_entries.sort_unstable();
+        }
+    }
+
+    /// Build a hierarchical tree view (folders first, sorted naturally at each level) flattened for display.
+    pub fn visible_tree_rows(&self) -> Vec<ArchiveTreeRow> {
+        #[derive(Default)]
+        struct BuildNode {
+            name: String,
+            folder_key: String,
+            is_dir: bool,
+            entry_index: Option<usize>,
+            own_size: u64,
+            children: BTreeMap<(u8, String, String), BuildNode>,
+        }
+
+        fn insert_path(
+            root: &mut BuildNode,
+            parts: &[&str],
+            depth_idx: usize,
+            prefix: &str,
+            entry: &ArchiveEntry,
+        ) {
+            if depth_idx >= parts.len() {
+                return;
+            }
+            let seg = parts[depth_idx];
+            let is_last = depth_idx + 1 == parts.len();
+            let node_is_dir = !is_last || entry.is_dir;
+            let full_key = if prefix.is_empty() {
+                seg.to_string()
+            } else {
+                format!("{}/{}", prefix, seg)
+            };
+            let order_group = if node_is_dir { 0u8 } else { 1u8 };
+            let sort_key = (order_group, seg.to_lowercase(), full_key.clone());
+            let child = root.children.entry(sort_key).or_insert_with(|| BuildNode {
+                name: seg.to_string(),
+                folder_key: full_key.clone(),
+                is_dir: node_is_dir,
+                entry_index: None,
+                own_size: 0,
+                children: BTreeMap::new(),
+            });
+            if node_is_dir {
+                child.is_dir = true;
+            }
+            if is_last {
+                child.entry_index = Some(entry.index);
+                child.own_size = if entry.is_dir { 0 } else { entry.size };
+            } else {
+                insert_path(child, parts, depth_idx + 1, &full_key, entry);
+            }
+        }
+
+        fn summarize_and_flatten(
+            node: &BuildNode,
+            depth: usize,
+            collapsed: &HashSet<String>,
+            out: &mut Vec<ArchiveTreeRow>,
+        ) -> (Vec<usize>, u64, usize) {
+            let mut desc = Vec::new();
+            let mut total_size = node.own_size;
+            let mut file_count = usize::from(!node.is_dir);
+            if let Some(idx) = node.entry_index {
+                desc.push(idx);
+            }
+            let expanded = !node.is_dir || !collapsed.contains(&node.folder_key);
+            let row_pos = out.len();
+            if node.is_dir {
+                out.push(ArchiveTreeRow {
+                    name: node.name.clone(),
+                    folder_key: node.folder_key.clone(),
+                    depth,
+                    is_dir: true,
+                    expanded,
+                    entry_index: node.entry_index,
+                    descendant_indices: Vec::new(),
+                    total_size: 0,
+                    child_count: node.children.len(),
+                });
+                let mut tmp_desc_only = Vec::new();
+                for child in node.children.values() {
+                    if expanded {
+                        let (cd, cs, cf) = summarize_and_flatten(child, depth + 1, collapsed, out);
+                        desc.extend(cd);
+                        total_size = total_size.saturating_add(cs);
+                        file_count += cf;
+                    } else {
+                        let (cd, cs, cf) =
+                            summarize_and_flatten(child, depth + 1, collapsed, &mut tmp_desc_only);
+                        desc.extend(cd);
+                        total_size = total_size.saturating_add(cs);
+                        file_count += cf;
+                    }
+                }
+                if let Some(row) = out.get_mut(row_pos) {
+                    row.descendant_indices = desc.clone();
+                    row.total_size = total_size;
+                }
+            } else {
+                out.push(ArchiveTreeRow {
+                    name: node.name.clone(),
+                    folder_key: node.folder_key.clone(),
+                    depth,
+                    is_dir: false,
+                    expanded: false,
+                    entry_index: node.entry_index,
+                    descendant_indices: desc.clone(),
+                    total_size,
+                    child_count: 0,
+                });
+            }
+            (desc, total_size, file_count)
+        }
+
+        let mut root = BuildNode::default();
+        for entry in &self.contents {
+            let norm = entry.path.trim_matches(['/', '\\']);
+            let parts: Vec<&str> = norm.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+            if parts.is_empty() {
+                continue;
+            }
+            insert_path(&mut root, &parts, 0, "", entry);
+        }
+
+        let mut out = Vec::new();
+        for child in root.children.values() {
+            summarize_and_flatten(child, 0, &self.collapsed_folders, &mut out);
+        }
+        out
     }
 
     /// Toggle selection of an entry
@@ -497,5 +775,68 @@ mod tests {
         state.selected_entries = vec![0];
         let result = state.validate();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_decompress_tree_hierarchy_collapse_and_tristate() {
+        let mut state = DecompressState::default();
+        // Implicit parent folder "src/sub" should be synthesized cleanly alongside files
+        let entries = vec![
+            create_test_entry(0, "src/main.rs", false, 500),
+            create_test_entry(1, "src/sub/lib.rs", false, 300),
+            create_test_entry(2, "README.md", false, 200),
+        ];
+        state.set_contents(entries);
+
+        let rows = state.visible_tree_rows();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].name, "src");
+        assert!(rows[0].is_dir);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[1].name, "sub");
+        assert!(rows[1].is_dir);
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[2].name, "lib.rs");
+        assert_eq!(rows[2].depth, 2);
+        assert_eq!(rows[3].name, "main.rs");
+        assert_eq!(rows[3].depth, 1);
+        assert_eq!(rows[4].name, "README.md");
+        assert_eq!(rows[4].depth, 0);
+
+        let src_desc = rows[0].descendant_indices.clone();
+        let sub_desc = rows[1].descendant_indices.clone();
+
+        // Checked state for folders initially All Checked
+        assert_eq!(state.folder_check_state(&src_desc), FolderCheckState::Checked);
+        assert_eq!(state.folder_check_state(&sub_desc), FolderCheckState::Checked);
+
+        // Deselecting one child in "src" makes "src" Partial
+        state.toggle_entry(0);
+        assert_eq!(state.folder_check_state(&src_desc), FolderCheckState::Partial);
+        assert_eq!(state.folder_check_state(&sub_desc), FolderCheckState::Checked);
+
+        // Clicking a Partial folder checks all descendants
+        state.toggle_folder_selection(&src_desc);
+        assert_eq!(state.folder_check_state(&src_desc), FolderCheckState::Checked);
+
+        // Clicking a Checked folder unchecks all descendants
+        state.toggle_folder_selection(&src_desc);
+        assert_eq!(state.folder_check_state(&src_desc), FolderCheckState::Unchecked);
+        assert!(!state.selected_entries.contains(&0));
+        assert!(!state.selected_entries.contains(&1));
+        assert!(state.selected_entries.contains(&2));
+
+        // Collapsing "src" hides its descendants but preserves README.md
+        state.toggle_folder_expand("src");
+        let collapsed_rows = state.visible_tree_rows();
+        assert_eq!(collapsed_rows.len(), 2);
+        assert_eq!(collapsed_rows[0].name, "src");
+        assert!(!collapsed_rows[0].expanded);
+        assert_eq!(collapsed_rows[1].name, "README.md");
+
+        state.expand_all_folders();
+        assert_eq!(state.visible_tree_rows().len(), 5);
+        state.collapse_all_folders();
+        assert_eq!(state.visible_tree_rows().len(), 2);
     }
 }

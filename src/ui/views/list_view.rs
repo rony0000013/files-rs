@@ -350,10 +350,8 @@ impl MainViewState {
                     .line_clamp(3)
                     .text_ellipsis()
                     .child(if main_state.renaming_index == Some(idx) {
-                        crate::ui::views::helpers::render_inline_rename_element(
-                            &main_state.rename_text,
-                            main_state.rename_selected_all,
-                            main_state.rename_cursor_pos,
+                        crate::ui::views::helpers::render_inline_rename_single(
+                            &main_state.rename_input,
                             view_row.clone(),
                         )
                     } else {
@@ -1540,10 +1538,8 @@ impl MainViewState {
                         .gap(px(6.0))
                         .overflow_hidden()
                         .child(if main_state.renaming_index == Some(idx) {
-                            crate::ui::views::helpers::render_inline_rename_element(
-                                &main_state.rename_text,
-                                main_state.rename_selected_all,
-                                main_state.rename_cursor_pos,
+                            crate::ui::views::helpers::render_inline_rename_single(
+                                &main_state.rename_input,
                                 view.clone(),
                             )
                         } else {

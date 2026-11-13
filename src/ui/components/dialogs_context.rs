@@ -2938,6 +2938,7 @@ impl crate::ui::components::dialogs::DialogsView {
             ("\u{E8A9}", "Cards", crate::config::config::ViewMode::Cards),
             ("\u{E80A}", "Grid", crate::config::config::ViewMode::Grid),
             ("\u{E8F1}", "Columns", crate::config::config::ViewMode::Columns),
+            ("\u{F0E2}", "Tree", crate::config::config::ViewMode::Tree),
         ];
         let mut rows = Vec::new();
         for (glyph, label, mode) in modes {

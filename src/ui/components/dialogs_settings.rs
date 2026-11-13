@@ -5,8 +5,12 @@ use crate::core::action_registry::{ActionCategory, ActionKind, KeyCombination};
 use crate::ui::components::dialogs::{
     KeyBindingRecorderState, SettingsPreReadData, SettingsTab,
 };
+use crate::ui::components::text_input::{
+    render_text_input, TextInputMode, TextInputStyle,
+};
 use crate::ui::constants::UiConstants;
 use gpui::*;
+use std::rc::Rc;
 
 impl crate::ui::components::dialogs::DialogsView {
     // ─────────────────────────────────────────────────────────────────────────
@@ -634,9 +638,13 @@ impl crate::ui::components::dialogs::DialogsView {
                         "\u{E70F}",
                         move |_, _, cx| {
                             v.update(cx, |this, cx| {
-                                this.state.settings_ui.search_query.clear();
+                                this.state.settings_ui.clear_search();
                                 this.state.settings_ui.search_focused = false;
                                 this.state.settings_ui.actions_search_query = filter_q.clone();
+                                this.state
+                                    .settings_ui
+                                    .actions_search_input
+                                    .set_text_and_cursor_end(filter_q.clone());
                                 this.state
                                     .settings_ui
                                     .expanded_sections
@@ -1727,6 +1735,7 @@ impl crate::ui::components::dialogs::DialogsView {
             (ViewMode::Cards, "Cards"),
             (ViewMode::Grid, "Grid"),
             (ViewMode::Columns, "Columns"),
+            (ViewMode::Tree, "Tree"),
         ];
         let mut mode_pills = div().flex().flex_row().gap(px(4.0)).flex_wrap();
         for (m, label) in layout_modes {
@@ -2841,7 +2850,6 @@ impl crate::ui::components::dialogs::DialogsView {
         // Filter Bar (Search Box + Category Filter Pills)
         let is_search_focused = data.ui_state.actions_search_focused;
         let search_q = data.ui_state.actions_search_query.clone();
-        let v_focus_search = view.clone();
         let v_clear_search = view.clone();
 
         let filter_pills = [
@@ -2903,60 +2911,38 @@ impl crate::ui::components::dialogs::DialogsView {
                             // Interactive Search Box
                             div()
                                 .w(px(260.0))
-                                .h(px(32.0))
-                                .px(px(10.0))
-                                .rounded(px(5.0))
-                                .bg(rgba(0xFFFFFF10u32))
-                                .border(px(1.0))
-                                .border_b(px(if is_search_focused { 2.0 } else { 1.0 }))
-                                .border_color(if is_search_focused {
-                                    rgb(0x60CDFF)
-                                } else {
-                                    rgba(UiConstants::STROKE_RGBA)
-                                })
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap(px(8.0))
-                                .cursor_text()
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    v_focus_search.update(cx, |this, cx| {
-                                        this.state.settings_ui.actions_search_focused = true;
-                                        this.state.settings_ui.search_focused = false;
-                                        cx.notify();
-                                    });
-                                })
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .font_family(UiConstants::FONT_ICONS)
-                                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                        .child("\u{E721}"),
-                                )
+                                .gap(px(6.0))
                                 .child(
                                     div()
                                         .flex_1()
-                                        .text_size(px(12.5))
-                                        .text_color(if search_q.is_empty() {
-                                            rgba(UiConstants::TEXT_MUTED_RGBA)
-                                        } else {
-                                            rgba(UiConstants::TEXT_PRIMARY_RGBA)
-                                        })
-                                        .child(if search_q.is_empty() {
-                                            if is_search_focused {
-                                                "Type to filter actions... |".to_string()
-                                            } else {
-                                                "Search actions or keys...".to_string()
-                                            }
-                                        } else if is_search_focused {
-                                            format!("{}|", search_q)
-                                        } else {
-                                            search_q.clone()
-                                        }),
+                                        .min_w(px(0.0))
+                                        .child(render_text_input(
+                                            "settings-actions-search",
+                                            &data.ui_state.actions_search_input,
+                                            "Search actions or keys...",
+                                            is_search_focused,
+                                            false,
+                                            TextInputMode::SingleLine,
+                                            TextInputStyle::compact_search(),
+                                            view.clone(),
+                                            Rc::new(|app| {
+                                                Some(&mut app.state.settings_ui.actions_search_input)
+                                            }),
+                                            Some(Rc::new(|app, _win, _cx| {
+                                                app.state.settings_ui.actions_search_focused = true;
+                                                app.state.settings_ui.search_focused = false;
+                                            })),
+                                        )),
                                 )
                                 .children(if !search_q.is_empty() {
                                     vec![div()
+                                        .px(px(6.0))
+                                        .py(px(6.0))
+                                        .rounded(px(4.0))
+                                        .bg(rgba(0xFFFFFF10u32))
                                         .text_size(px(10.0))
                                         .font_family(UiConstants::FONT_ICONS)
                                         .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
@@ -2964,7 +2950,7 @@ impl crate::ui::components::dialogs::DialogsView {
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             cx.stop_propagation();
                                             v_clear_search.update(cx, |this, cx| {
-                                                this.state.settings_ui.actions_search_query.clear();
+                                                this.state.settings_ui.clear_actions_search();
                                                 cx.notify();
                                             });
                                         })
@@ -3622,6 +3608,13 @@ impl crate::ui::components::dialogs::DialogsView {
             v_new_btn.update(cx, |this, cx| {
                 this.state.settings_ui.is_creating_tag = true;
                 this.state.settings_ui.new_tag_name = "New Tag".to_string();
+                this.state
+                    .settings_ui
+                    .new_tag_input
+                    .set_text_and_cursor_end("New Tag");
+                this.state.settings_ui.new_tag_input.select_all();
+                this.state.settings_ui.search_focused = false;
+                this.state.settings_ui.actions_search_focused = false;
                 cx.notify();
             });
         });
@@ -3683,6 +3676,7 @@ impl crate::ui::components::dialogs::DialogsView {
                     move |_, _, cx| {
                         v.update(cx, |this, cx| {
                             this.state.settings_ui.new_tag_name = pn_s.clone();
+                            this.state.settings_ui.new_tag_input.set_text_and_cursor_end(pn_s.clone());
                             cx.notify();
                         });
                     },
@@ -3715,10 +3709,26 @@ impl crate::ui::components::dialogs::DialogsView {
                                     .gap(px(12.0))
                                     .child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight(600.0))
-                                            .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                            .child(format!("Create new tag: \"{}\"", cur_name)),
+                                            .w(px(190.0))
+                                            .child(render_text_input(
+                                                "settings-new-tag-input",
+                                                &data.ui_state.new_tag_input,
+                                                "Tag name...",
+                                                !data.ui_state.search_focused
+                                                    && !data.ui_state.actions_search_focused,
+                                                false,
+                                                TextInputMode::SingleLine,
+                                                TextInputStyle::compact_search(),
+                                                view.clone(),
+                                                Rc::new(|app| {
+                                                    Some(&mut app.state.settings_ui.new_tag_input)
+                                                }),
+                                                Some(Rc::new(|app, _win, _cx| {
+                                                    app.state.settings_ui.search_focused = false;
+                                                    app.state.settings_ui.actions_search_focused =
+                                                        false;
+                                                })),
+                                            )),
                                     )
                                     .child(swatches),
                             )

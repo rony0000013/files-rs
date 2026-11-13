@@ -692,6 +692,7 @@ impl ToolbarView {
                 ViewMode::Cards => ("\u{E8A9}", "Cards"),
                 ViewMode::Grid => ("\u{E80A}", "Grid"),
                 ViewMode::Columns => ("\u{E8F1}", "Columns"),
+                ViewMode::Tree => ("\u{F0E2}", "Tree"),
             };
             let v_layout = view.clone();
             right_group = right_group.child(Self::build_dropdown_trigger_with_tooltip(
@@ -1246,6 +1247,7 @@ impl ToolbarView {
             (ViewMode::Cards, "\u{E8A9}", "Cards (Tiles)", "Ctrl+Shift+3"),
             (ViewMode::Grid, "\u{E80A}", "Grid (Icons)", "Ctrl+Shift+4"),
             (ViewMode::Columns, "\u{E8F1}", "Columns", "Ctrl+Shift+5"),
+            (ViewMode::Tree, "\u{F0E2}", "Tree", "Ctrl+Shift+6"),
         ];
 
         let sizes = [

@@ -48,7 +48,6 @@ impl MainView {
         let is_checkbox = main_state.selection_mode == SelectionMode::Checkbox;
         let is_hover_select = main_state.selection_mode == SelectionMode::HoverSelect;
         let renaming_idx = main_state.renaming_index;
-        let rename_text = &main_state.rename_text;
         let lod_fast = zoom < 0.20;
         let is_cut = main_state.cut_paths.contains(item.path.as_path());
 
@@ -268,6 +267,84 @@ impl MainView {
             );
         }
 
+        let is_tree_mode = matches!(main_state.view_mode, crate::config::config::ViewMode::Tree);
+        let tree_depth = if is_tree_mode {
+            main_state.tree_depths.get(idx).copied().unwrap_or(0) as usize
+        } else {
+            0
+        };
+        let tree_expanded = is_tree_mode
+            && is_dir
+            && main_state.tree_expanded_paths.contains(item.path.as_path());
+        let tree_loading = is_tree_mode
+            && is_dir
+            && main_state.tree_loading_paths.contains(item.path.as_path());
+
+        if is_tree_mode {
+            for _ in 0..tree_depth.min(24) {
+                name_row = name_row.child(
+                    div()
+                        .w(px(18.0))
+                        .h(px(row_height))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(px(1.0))
+                                .h_full()
+                                .bg(rgba(0xFFFFFF16u32)),
+                        ),
+                );
+            }
+            if is_dir {
+                let v_tree = view_row.clone();
+                let tree_path = item.path.as_path().to_path_buf();
+                name_row = name_row.child(
+                    div()
+                        .id(SharedString::from(format!("tree-chev-{}-{}", pane_focus as u8, idx)))
+                        .w(px(20.0))
+                        .h(px(22.0))
+                        .flex_shrink_0()
+                        .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(0xFFFFFF1Cu32)))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let p = tree_path.clone();
+                            v_tree.update(cx, |this, cx| {
+                                this.toggle_tree_folder(pane_focus, p, cx);
+                            });
+                        })
+                        .child(
+                            div()
+                                .font_family(UiConstants::FONT_ICONS)
+                                .text_size(px(10.0))
+                                .text_color(if tree_loading {
+                                    rgb(0x4CC2FF)
+                                } else if tree_expanded {
+                                    rgb(0xE8E8E8)
+                                } else {
+                                    rgb(0xA6A6A6)
+                                })
+                                .child(if tree_loading {
+                                    "\u{E895}"
+                                } else if tree_expanded {
+                                    "\u{E70D}"
+                                } else {
+                                    "\u{E76C}"
+                                }),
+                        ),
+                );
+            } else {
+                name_row = name_row.child(div().w(px(20.0)).h(px(22.0)).flex_shrink_0());
+            }
+        }
+
         name_row = name_row
             .child(
                 div()
@@ -313,10 +390,8 @@ impl MainView {
                     .line_height(px(name_line_h))
                     .text_color(rgb(UiConstants::TEXT_PRIMARY_RGB))
                     .child(if renaming_idx == Some(idx) {
-                        crate::ui::views::helpers::render_inline_rename_element(
-                            rename_text,
-                            main_state.rename_selected_all,
-                            main_state.rename_cursor_pos,
+                        crate::ui::views::helpers::render_inline_rename_single(
+                            &main_state.rename_input,
                             view_row.clone(),
                         )
                     } else {
@@ -415,7 +490,9 @@ impl MainView {
         list_origin: Point<f32>,
         pane_w: f32,
     ) -> AnyElement {
-        if state.group_by != GroupColumn::None {
+        if state.group_by != GroupColumn::None
+            && !matches!(state.view_mode, crate::config::config::ViewMode::Tree)
+        {
             return Self::details_view_grouped_for_pane(
                 state,
                 visible,
@@ -578,7 +655,7 @@ impl MainView {
                                         if idx >= fi.items.len() {
                                             return div().into_any_element();
                                         }
-                                        let item = &fi.items[idx];
+                                        let item = main_state.items.get(idx).unwrap_or(&fi.items[idx]);
                                         let is_selected = main_state.selected_indices.contains(&idx);
                                         let is_dir = matches!(item.file_type, FileType::Directory);
                                         let is_drop_target = is_dragging_any

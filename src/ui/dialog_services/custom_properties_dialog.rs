@@ -2,6 +2,7 @@
 //! State machine and backend services for the redesigned Files-community + Windows Properties panel.
 //! Supports single file, folder, shortcut, drive, and multi-item selections.
 
+use crate::ui::components::text_input::TextInputState;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -363,10 +364,23 @@ pub struct CustomPropertiesState {
     pub name: String,
     /// Editable file/folder name in General tab TextBox
     pub edited_name: String,
-    /// Whether the entire edited name is selected (Ctrl+A)
-    pub name_selected_all: bool,
     /// Currently focused input field
     pub focused_input: Option<PropertiesInputField>,
+    /// Unified text input states for editable fields
+    #[serde(skip)]
+    pub edited_name_input: TextInputState,
+    #[serde(skip)]
+    pub hash_compare_text_input: TextInputState,
+    #[serde(skip)]
+    pub shortcut_target_input: TextInputState,
+    #[serde(skip)]
+    pub shortcut_args_input: TextInputState,
+    #[serde(skip)]
+    pub shortcut_working_dir_input: TextInputState,
+    #[serde(skip)]
+    pub shortcut_comment_input: TextInputState,
+    #[serde(skip)]
+    pub custom_icon_path_input: TextInputState,
     /// File type description (e.g. "PDF File", "File folder", "Multiple Types")
     pub file_type: String,
     /// Default application that opens this file ("Opens with:")
@@ -461,8 +475,14 @@ impl Default for CustomPropertiesState {
             tab_history: Vec::new(),
             name: String::new(),
             edited_name: String::new(),
-            name_selected_all: false,
             focused_input: None,
+            edited_name_input: TextInputState::default(),
+            hash_compare_text_input: TextInputState::default(),
+            shortcut_target_input: TextInputState::default(),
+            shortcut_args_input: TextInputState::default(),
+            shortcut_working_dir_input: TextInputState::default(),
+            shortcut_comment_input: TextInputState::default(),
+            custom_icon_path_input: TextInputState::default(),
             file_type: String::new(),
             opens_with: None,
             location: String::new(),
@@ -533,13 +553,15 @@ impl CustomPropertiesState {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string_lossy().to_string());
-        Self {
+        let mut st = Self {
             edited_name: name.clone(),
             paths: vec![path.clone()],
             path,
             name,
             ..Default::default()
-        }
+        };
+        st.sync_fields_to_inputs();
+        st
     }
 
     /// Build a complete `CustomPropertiesState` for one or multiple paths, reading fast local metadata
@@ -648,6 +670,7 @@ impl CustomPropertiesState {
         }
 
         state.details_sections = build_details_sections_single(&state);
+        state.sync_fields_to_inputs();
         state
     }
 
@@ -804,7 +827,72 @@ impl CustomPropertiesState {
             ..Default::default()
         };
         state.details_sections = build_details_sections_multi(&state);
+        state.sync_fields_to_inputs();
         state
+    }
+
+    /// Borrow the `TextInputState` for `field`.
+    pub fn input_ref(&self, field: PropertiesInputField) -> &TextInputState {
+        match field {
+            PropertiesInputField::ItemName => &self.edited_name_input,
+            PropertiesInputField::HashCompare => &self.hash_compare_text_input,
+            PropertiesInputField::ShortcutTarget => &self.shortcut_target_input,
+            PropertiesInputField::ShortcutArgs => &self.shortcut_args_input,
+            PropertiesInputField::ShortcutWorkingDir => &self.shortcut_working_dir_input,
+            PropertiesInputField::ShortcutComment => &self.shortcut_comment_input,
+            PropertiesInputField::CustomIconPath => &self.custom_icon_path_input,
+        }
+    }
+
+    /// Mutably borrow the `TextInputState` for `field`.
+    pub fn input_mut(&mut self, field: PropertiesInputField) -> &mut TextInputState {
+        match field {
+            PropertiesInputField::ItemName => &mut self.edited_name_input,
+            PropertiesInputField::HashCompare => &mut self.hash_compare_text_input,
+            PropertiesInputField::ShortcutTarget => &mut self.shortcut_target_input,
+            PropertiesInputField::ShortcutArgs => &mut self.shortcut_args_input,
+            PropertiesInputField::ShortcutWorkingDir => &mut self.shortcut_working_dir_input,
+            PropertiesInputField::ShortcutComment => &mut self.shortcut_comment_input,
+            PropertiesInputField::CustomIconPath => &mut self.custom_icon_path_input,
+        }
+    }
+
+    /// Populate all `TextInputState` buffers from the backing string fields.
+    pub fn sync_fields_to_inputs(&mut self) {
+        self.edited_name_input
+            .set_text_and_cursor_end(self.edited_name.clone());
+        self.hash_compare_text_input
+            .set_text_and_cursor_end(self.hash_compare_input.clone());
+        self.shortcut_target_input
+            .set_text_and_cursor_end(self.shortcut.target_path.clone());
+        self.shortcut_args_input
+            .set_text_and_cursor_end(self.shortcut.arguments.clone());
+        self.shortcut_working_dir_input
+            .set_text_and_cursor_end(self.shortcut.working_dir.clone());
+        self.shortcut_comment_input
+            .set_text_and_cursor_end(self.shortcut.comment.clone());
+        self.custom_icon_path_input.set_text_and_cursor_end(
+            self.customization
+                .folder_icon_path
+                .clone()
+                .unwrap_or_default(),
+        );
+    }
+
+    /// Sync edited `TextInputState` buffers back into backing string fields.
+    pub fn sync_inputs_to_fields(&mut self) {
+        self.edited_name = self.edited_name_input.text.clone();
+        self.hash_compare_input = self.hash_compare_text_input.text.clone();
+        self.shortcut.target_path = self.shortcut_target_input.text.clone();
+        self.shortcut.arguments = self.shortcut_args_input.text.clone();
+        self.shortcut.working_dir = self.shortcut_working_dir_input.text.clone();
+        self.shortcut.comment = self.shortcut_comment_input.text.clone();
+        let icon_trimmed = self.custom_icon_path_input.text.trim();
+        self.customization.folder_icon_path = if icon_trimmed.is_empty() {
+            None
+        } else {
+            Some(self.custom_icon_path_input.text.clone())
+        };
     }
 
     /// True when multiple files/folders are selected

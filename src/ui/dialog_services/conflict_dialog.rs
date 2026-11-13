@@ -122,14 +122,17 @@ impl ConflictDialogState {
     /// Get the formatted source file name (last component of path)
     pub fn source_filename(&self) -> &str {
         self.source_path
-            .rsplit('/')
+            .rsplit(['/', '\\'])
             .next()
             .unwrap_or(&self.source_path)
     }
 
     /// Get the formatted destination file name (last component of path)
     pub fn dest_filename(&self) -> &str {
-        self.dest_path.rsplit('/').next().unwrap_or(&self.dest_path)
+        self.dest_path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&self.dest_path)
     }
 
     /// Format a file size in human-readable form

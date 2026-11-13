@@ -1400,7 +1400,7 @@ impl TabBarView {
                         crate::config::config::ViewMode::Cards => "Cards View",
                         crate::config::config::ViewMode::Grid => "Grid View",
                         crate::config::config::ViewMode::Columns => "Columns View",
-                        _ => "Details View",
+                        crate::config::config::ViewMode::Tree => "Tree View",
                     };
 
                     let card_w = 248.0f32;

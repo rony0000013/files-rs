@@ -138,7 +138,7 @@ impl MainViewState {
         } else {
             let visible = self.visible_items_rc();
             match self.view_mode {
-                ViewMode::Details => {
+                ViewMode::Details | ViewMode::Tree => {
                     let base_row_h = if self.compact_mode { 22.0 } else { 26.0 };
                     let row_h = (base_row_h + self.zoom_level * 22.0).round();
                     for (i, &vi) in visible.iter().enumerate() {
