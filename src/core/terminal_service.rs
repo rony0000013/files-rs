@@ -387,8 +387,10 @@ impl Default for TerminalService {
 // Helper: check if pwsh.exe is available via PATH on Windows
 #[cfg(windows)]
 fn which_pwsh() -> bool {
+    use std::os::windows::process::CommandExt;
     std::process::Command::new("where")
         .arg("pwsh.exe")
+        .creation_flags(0x08000000)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -397,8 +399,10 @@ fn which_pwsh() -> bool {
 // Helper: check if wsl.exe is available via PATH on Windows
 #[cfg(windows)]
 fn which_wsl() -> bool {
+    use std::os::windows::process::CommandExt;
     std::process::Command::new("where")
         .arg("wsl.exe")
+        .creation_flags(0x08000000)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

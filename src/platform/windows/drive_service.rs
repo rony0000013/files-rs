@@ -80,15 +80,58 @@ impl DriveInfo {
         self.root.to_string_lossy().to_string()
     }
     pub fn display_name(&self) -> String {
-        let root = self.root.to_string_lossy().to_string();
+        let raw = self.root.to_string_lossy();
+        let root = raw.trim_end_matches(['\\', '/']);
+        let root = if root.is_empty() { raw.as_ref() } else { root };
         if self.label.trim().is_empty() {
-            root
+            if root.ends_with(':') {
+                format!("Local Disk ({})", root)
+            } else {
+                root.to_string()
+            }
         } else {
-            format!("{} ({})", self.label, root)
+            format!("{} ({})", self.label.trim(), root)
         }
     }
     pub fn capacity_summary(&self) -> String {
         format!("{} free of {}", self.free_formatted(), self.total_formatted())
+    }
+
+    fn label_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<String, String>>,
+        > = std::sync::OnceLock::new();
+        CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+
+    fn normalize_drive_key(path: &std::path::Path) -> Option<String> {
+        let raw = path.to_string_lossy();
+        let trimmed = raw.trim_end_matches(['\\', '/']);
+        if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+            Some(trimmed.to_ascii_uppercase())
+        } else {
+            None
+        }
+    }
+
+    pub fn update_label_cache(drives: &[DriveInfo]) {
+        if let Ok(mut map) = Self::label_cache().lock() {
+            for d in drives {
+                if let Some(key) = Self::normalize_drive_key(d.root.as_path()) {
+                    map.insert(key, d.display_name());
+                }
+            }
+        }
+    }
+
+    pub fn cached_display_label(path: &std::path::Path) -> Option<String> {
+        let key = Self::normalize_drive_key(path)?;
+        if let Ok(map) = Self::label_cache().lock() {
+            if let Some(label) = map.get(&key) {
+                return Some(label.clone());
+            }
+        }
+        Some(key)
     }
     pub fn icon(&self) -> &'static str {
         match self.drive_type {
@@ -134,6 +177,7 @@ pub fn enumerate_drives() -> Vec<DriveInfo> {
         }
         pos = end + 1;
     }
+    DriveInfo::update_label_cache(&drives);
     drives
 }
 
@@ -355,5 +399,110 @@ mod tests {
             is_ready: false,
         };
         assert!(!info.is_ready);
+    }
+
+    #[test]
+    fn test_drive_display_name_and_cache() {
+        let make_drive = |root: &str, label: &str| DriveInfo {
+            root: FilesPath::new(root),
+            label: label.to_string(),
+            drive_type: DriveType::Fixed,
+            total_bytes: 100,
+            free_bytes: 50,
+            file_system: "NTFS".to_string(),
+            is_ready: true,
+        };
+
+        // DriveInfo::display_name() with labels and trailing slashes
+        assert_eq!(make_drive("C:\\", "Windows").display_name(), "Windows (C:)");
+        assert_eq!(make_drive("D:/", "Data").display_name(), "Data (D:)");
+        assert_eq!(
+            make_drive("F:\\", "Local Disk").display_name(),
+            "Local Disk (F:)"
+        );
+        assert_eq!(
+            make_drive("C:\\", "  Windows  ").display_name(),
+            "Windows (C:)"
+        );
+
+        // DriveInfo::display_name() with empty or whitespace-only label
+        assert_eq!(make_drive("C:\\", "").display_name(), "Local Disk (C:)");
+        assert_eq!(make_drive("C:\\", "   \t ").display_name(), "Local Disk (C:)");
+
+        // DriveInfo::display_name() with drive letter without backslash
+        assert_eq!(make_drive("C:", "Windows").display_name(), "Windows (C:)");
+        assert_eq!(make_drive("C:", "").display_name(), "Local Disk (C:)");
+
+        // Verify enumerate_drives() populates cached labels for mounted drives
+        let real_drives = enumerate_drives();
+        for d in &real_drives {
+            assert_eq!(
+                DriveInfo::cached_display_label(d.root.as_path()),
+                Some(d.display_name())
+            );
+        }
+
+        // Use unmounted drive letters so parallel tests calling enumerate_drives() cannot race
+        let mounted_keys: std::collections::HashSet<String> = real_drives
+            .iter()
+            .filter_map(|d| DriveInfo::normalize_drive_key(d.root.as_path()))
+            .collect();
+        let unused: Vec<String> = ('A'..='Z')
+            .rev()
+            .map(|c| format!("{c}:"))
+            .filter(|k| !mounted_keys.contains(k))
+            .take(3)
+            .collect();
+        assert_eq!(
+            unused.len(),
+            3,
+            "Expected at least 3 unmounted drive letters for isolated cache test"
+        );
+        let d1 = &unused[0];
+        let d2 = &unused[1];
+        let d3 = &unused[2];
+
+        // Uncached drive returns normalized key; non-root paths return None
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&format!("{d3}\\"))),
+            Some(d3.clone())
+        );
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new("C:\\Users")),
+            None
+        );
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new("/usr/bin")),
+            None
+        );
+
+        // Update cache and verify lookups across trailing slashes and case
+        DriveInfo::update_label_cache(&[
+            make_drive(&format!("{d1}\\"), "Windows"),
+            make_drive(&format!("{d2}/"), "   "),
+        ]);
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&format!("{d1}\\"))),
+            Some(format!("Windows ({d1})"))
+        );
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&format!("{d1}/"))),
+            Some(format!("Windows ({d1})"))
+        );
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&d1.to_ascii_lowercase())),
+            Some(format!("Windows ({d1})"))
+        );
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&format!("{d2}\\"))),
+            Some(format!("Local Disk ({d2})"))
+        );
+
+        // Updating an existing drive replaces its cached display label
+        DriveInfo::update_label_cache(&[make_drive(&format!("{d1}\\"), "Data")]);
+        assert_eq!(
+            DriveInfo::cached_display_label(std::path::Path::new(&format!("{d1}\\"))),
+            Some(format!("Data ({d1})"))
+        );
     }
 }

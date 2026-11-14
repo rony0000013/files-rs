@@ -12,6 +12,10 @@ pub struct FileActionService;
 
 impl FileActionService {
     pub async fn open_item(path: &FilesPath) -> Result<()> {
+        if cfg!(test) {
+            let _ = path;
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             let wide_path: Vec<u16> = path
@@ -41,6 +45,10 @@ impl FileActionService {
     }
 
     pub async fn edit_in_notepad(path: &FilesPath) -> Result<()> {
+        if cfg!(test) {
+            let _ = path;
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             Command::new("notepad.exe")
@@ -58,6 +66,10 @@ impl FileActionService {
     }
 
     pub async fn run_with_powershell(path: &FilesPath) -> Result<()> {
+        if cfg!(test) {
+            let _ = path;
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             let wide_op: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
@@ -91,6 +103,9 @@ impl FileActionService {
     }
 
     pub async fn open_storage_sense() -> Result<()> {
+        if cfg!(test) {
+            return Ok(());
+        }
         #[cfg(windows)]
         {
             let wide_url: Vec<u16> = "ms-settings:storagesense"
@@ -118,8 +133,13 @@ impl FileActionService {
     }
 
     pub async fn run_as_admin(path: &FilesPath) -> Result<()> {
+        if cfg!(test) {
+            let _ = path;
+            return Ok(());
+        }
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             Command::new("powershell")
                 .arg("-NoProfile")
                 .arg("-Command")
@@ -127,6 +147,7 @@ impl FileActionService {
                     "Start-Process '{}' -Verb runAs",
                     path.as_path().to_string_lossy()
                 ))
+                .creation_flags(0x08000000)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

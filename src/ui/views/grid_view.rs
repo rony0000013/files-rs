@@ -72,72 +72,49 @@ impl MainViewState {
 
     /// Compute grid layout parameters from `zoom_level` (`0.0..=1.0`).
     /// Reserves space for 3 full lines of filename text (`label_lines = 3.0`) without
-    /// redundant "Folder" or file-size text under the filename.
+    /// Exact `Files-community` `GridViewSizeKind` (80px..300px in 20px steps) with 1:1 square
+    /// thumbnail/icon area, 12px inner margin, 8px container corner radius, and 3-line centered label.
     pub fn grid_layout_params(zoom: f32) -> GridLayoutParams {
         let z = zoom.clamp(0.0, 1.0);
-        let items_per_row = if z < 0.15 {
-            12
-        } else if z < 0.30 {
-            9
-        } else if z < 0.50 {
-            7
-        } else if z < 0.75 {
-            5
-        } else {
-            4
-        };
-
-        let item_width = (78.0 + z * 168.0).min(246.0);
-        let thumb_height = if z < 0.22 {
-            (item_width * 0.54).max(34.0)
-        } else {
-            item_width * 0.66
-        };
-        let text_size = (10.5 + z * 2.8).clamp(10.5, 13.5);
-        let line_h = (text_size * 1.24).ceil();
-        let label_box_h = line_h * 3.0 + 6.0;
-        let item_height = thumb_height + 14.0 + label_box_h;
-        let gap = if z < 0.22 {
-            6.0
-        } else if z < 0.50 {
-            8.0
-        } else if z < 0.75 {
-            10.0
+        let step = (z * 11.0).round().clamp(0.0, 11.0) as usize;
+        let item_width = 80.0 + (step as f32) * 20.0;
+        let thumb_margin = if item_width <= 90.0 { 10.0 } else { 12.0 };
+        let icon_size = (item_width - thumb_margin * 2.0).max(40.0);
+        let text_size = if item_width <= 90.0 {
+            12.0
+        } else if item_width <= 130.0 {
+            13.0
         } else {
             14.0
         };
-        let row_height = item_height + gap;
-        let icon_size = thumb_height * 0.78;
-        let rounded = if z < 0.25 {
-            4.0
-        } else if z < 0.65 {
-            6.0
-        } else {
-            8.0
-        };
-        let padding = if z < 0.25 { 8.0 } else { 14.0 };
+        let label_box_h = 56.0;
+        let item_height = item_width + label_box_h;
+        let gap = 6.0;
+        let padding = 8.0;
+        let items_per_row =
+            (((1400.0 - padding * 2.0 + gap) / (item_width + gap)).floor() as usize).clamp(1, 32);
 
         GridLayoutParams {
             items_per_row,
             item_width,
             item_height,
-            row_height,
+            row_height: item_height + gap,
             icon_size,
             gap,
-            rounded,
+            rounded: 8.0,
             text_size,
             padding,
         }
     }
 
-    /// Columns that fit the actual pane width (Files-community style: fill the row).
+    /// Columns that fit the actual pane width (Files-community style: fixed width items, left-aligned wrap).
     pub fn grid_columns_for_width(pane_w: f32, zoom: f32) -> usize {
         let params = Self::grid_layout_params(zoom);
+        let avail = (pane_w - params.padding * 2.0).max(params.item_width);
         let slot = params.item_width + params.gap;
-        if pane_w <= slot || slot <= 0.0 {
+        if slot <= 0.0 {
             return params.items_per_row;
         }
-        let avail = pane_w - params.padding * 2.0;
         (((avail + params.gap) / slot).floor() as usize).clamp(1, 32)
     }
 
@@ -152,33 +129,17 @@ impl MainViewState {
     fn grid_layout_params_for_width(pane_w: f32, zoom: f32, cols: usize) -> GridLayoutParams {
         let base = Self::grid_layout_params(zoom);
         let cols = cols.max(1);
-        let avail = pane_w - base.padding * 2.0;
-        if avail <= base.item_width {
-            let mut params = base;
-            params.items_per_row = cols;
-            return params;
-        }
-        let total_gaps = base.gap * (cols.saturating_sub(1) as f32);
-        let stretched_w = ((avail - total_gaps) / cols as f32)
-            .floor()
-            .clamp(base.item_width, base.item_width * 1.32);
-        let z = zoom.clamp(0.0, 1.0);
-        let thumb_height = if z < 0.22 {
-            (stretched_w * 0.54).max(34.0)
-        } else {
-            stretched_w * 0.66
-        };
-        let fit_text = (10.5 + z * 2.8).clamp(10.5, 13.5);
-        let line_h = (fit_text * 1.24).ceil();
-        let label_box_h = line_h * 3.0 + 6.0;
-        let item_height = thumb_height + 14.0 + label_box_h;
+        let avail = (pane_w - base.padding * 2.0).max(64.0);
+        let item_width = base.item_width.min(avail);
+        let thumb_margin = if item_width <= 90.0 { 10.0 } else { 12.0 };
+        let icon_size = (item_width - thumb_margin * 2.0).max(40.0);
+        let item_height = item_width + 56.0;
         GridLayoutParams {
             items_per_row: cols,
-            item_width: stretched_w,
+            item_width,
             item_height,
             row_height: item_height + base.gap,
-            icon_size: thumb_height * 0.78,
-            text_size: fit_text,
+            icon_size,
             ..base
         }
     }
@@ -331,7 +292,7 @@ impl MainViewState {
                                 .hovered_target_folder
                                 .clone();
                             let is_dragging_any = app_state.state.main_view.drag_state.is_dragging;
-                            let lod_fast = zoom < 0.08;
+                            let lod_fast = false;
 
                             range
                                 .map(|row_idx| {
@@ -441,7 +402,7 @@ impl MainViewState {
         let show_extensions = self.show_extensions;
         let hovered_drop_folder = self.drag_state.hovered_target_folder.clone();
         let is_dragging_any = self.drag_state.is_dragging;
-        let lod_fast = zoom < 0.08;
+        let lod_fast = false;
 
         let scroll_list = MainView::render_virtualized_grouped_list(
             match pane_focus {
@@ -675,168 +636,26 @@ impl MainViewState {
                 .into_owned()
         };
 
+        let _ = lod_fast;
         let item_width = params.item_width;
-        let thumb_height = if lod_fast {
-            (item_width * 0.54).max(34.0)
-        } else {
-            item_width * 0.66
-        };
-        let item_height = if compact && !lod_fast {
-            params.item_height - 4.0
+        let thumb_height = item_width;
+        let label_box_h = if compact { 50.0 } else { 56.0 };
+        let item_height = if compact {
+            (params.item_height - 6.0).max(item_width + label_box_h)
         } else {
             params.item_height
         };
         let icon_size_val = params.icon_size;
+        let thumb_margin = if item_width <= 90.0 { 10.0 } else { 12.0 };
         let rounded = params.rounded;
         let text_size = params.text_size;
-        let base_line_h = (text_size * 1.24).ceil();
-        let label_box_h = base_line_h * 3.0 + 4.0;
         let (display_label, effective_font_size, effective_line_h) = adaptive_three_line_label(
             &raw_name,
-            item_width - 12.0,
+            item_width - 10.0,
             text_size,
-            (text_size - 2.2).max(8.5),
+            (text_size - 1.5).max(10.0),
         );
 
-        // ── High-Density >120 FPS LOD Fast-Path (when zoom < 0.08) ──
-        if lod_fast {
-            let v_click = view.clone();
-            let v_move = view.clone();
-            let v_right = view;
-            let p_click = item_path.clone();
-            let p_move = item_path;
-            let is_hover_select = selection_mode == SelectionMode::HoverSelect;
-
-            return div()
-                .id(ElementId::from(
-                    index + match pane_focus {
-                        PaneFocus::Primary => 70000,
-                        PaneFocus::Secondary => 170000,
-                    },
-                ))
-                .w(px(item_width))
-                .h(px(item_height))
-                .flex_shrink_0()
-                .flex_col()
-                .items_center()
-                .justify_start()
-                .overflow_hidden()
-                .py(px(4.0))
-                .px(px(3.0))
-                .rounded(px(rounded))
-                .cursor_pointer()
-                .border(px(1.0))
-                .border_color(if is_drop_target {
-                    rgba(0x60CDFFFFu32)
-                } else if selected {
-                    rgba(0x60CDFFCCu32)
-                } else {
-                    rgba(0x00000000u32)
-                })
-                .bg(if is_drop_target {
-                    rgba(0x0078D444u32)
-                } else if selected {
-                    rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
-                } else {
-                    rgba(0x00000000u32)
-                })
-                .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
-                    cx.stop_propagation();
-                    let pos = point(event.position.x.into(), event.position.y.into());
-                    v_click.update(cx, |this, cx| {
-                        this.handle_item_mouse_down(
-                            pane_focus,
-                            index,
-                            p_click.clone(),
-                            is_dir,
-                            event.click_count,
-                            pos,
-                            event.modifiers,
-                            cx,
-                        );
-                    });
-                })
-                .on_mouse_move(move |ev, _win, cx| {
-                    let pos = point(ev.position.x.into(), ev.position.y.into());
-                    v_move.update(cx, |this, cx| {
-                        if this.state.main_view.drag_state.is_dragging
-                            || this.state.main_view.drag_state.pending_candidate.is_some()
-                            || this
-                                .state
-                                .main_view
-                                .drag_state
-                                .pending_path_candidate
-                                .is_some()
-                        {
-                            let folder_target = if is_dir {
-                                Some((p_move.clone(), item_name_for_drag.clone()))
-                            } else if this.state.main_view.drag_state.source_pane != pane_focus {
-                                let dest = this.state.pane_view(pane_focus).primary_path.clone();
-                                let lbl = dest
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| dest.to_string_lossy().into_owned());
-                                Some((dest, lbl))
-                            } else {
-                                None
-                            };
-                            this.update_file_drag_move(pos, ev.modifiers, folder_target, cx);
-                        } else if this.state.pane_view(pane_focus).lasso_state.is_some() {
-                            this.update_lasso_in_pane(pane_focus, pos, pane_w, cx);
-                        } else if is_hover_select {
-                            this.handle_item_hover(index, cx);
-                        }
-                    });
-                })
-                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                    cx.stop_propagation();
-                    v_right.update(cx, |this, cx| {
-                        this.focus_pane(pane_focus, cx);
-                        if !this
-                            .state
-                            .pane_view(pane_focus)
-                            .selected_indices
-                            .contains(&index)
-                        {
-                            this.select_item_in_pane(pane_focus, index, false, false, cx);
-                        }
-                        this.show_context_menu(Some(index), event.position, window, cx);
-                    });
-                })
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(thumb_height))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_size(px(icon_size_val * 0.78))
-                                .font_family(UiConstants::FONT_MDL2)
-                                .text_color(rgb(fallback_color))
-                                .child(fallback_glyph),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(label_box_h))
-                        .px(px(2.0))
-                        .mt(px(3.0))
-                        .text_center()
-                        .overflow_hidden()
-                        .text_size(px(effective_font_size))
-                        .line_height(px(effective_line_h))
-                        .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                        .line_clamp(3)
-                        .text_ellipsis()
-                        .child(display_label),
-                );
-        }
-
-        // ── Standard & Large Card-Tile Renderer (zoom >= 0.22) ──
         let v_click = view.clone();
         let v_hover = view.clone();
         let v_checkbox = view.clone();
@@ -859,7 +678,6 @@ impl MainViewState {
             .items_center()
             .justify_start()
             .overflow_hidden()
-            .py(px(6.0))
             .rounded(px(rounded))
             .relative()
             .cursor_pointer()
@@ -959,7 +777,9 @@ impl MainViewState {
                 "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
             )
             && item_path.as_path().is_file();
-        let visual_el: AnyElement = if is_thumbnail && (cached_icon_path.is_some() || can_direct_image_fallback) {
+        let visual_el: AnyElement = if (is_thumbnail || cached_icon_path.is_some())
+            && (cached_icon_path.is_some() || can_direct_image_fallback)
+        {
             img(if let Some(p) = &cached_icon_path {
                 p.clone()
             } else {
@@ -968,33 +788,18 @@ impl MainViewState {
             .w(px(icon_size_val))
             .h(px(icon_size_val))
             .object_fit(gpui::ObjectFit::Contain)
-            .rounded(px(rounded))
+            .rounded(px(2.5))
             .into_any_element()
-        } else if let Some(icon_path) = &cached_icon_path {
-            div()
-                .w(px(thumb_height * 0.82))
-                .h(px(thumb_height * 0.82))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    img(icon_path.clone())
-                        .w_full()
-                        .h_full()
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .rounded(px(rounded)),
-                )
-                .into_any_element()
         } else {
             div()
-                .w_full()
-                .h_full()
+                .w(px(icon_size_val))
+                .h(px(icon_size_val))
                 .flex()
                 .items_center()
                 .justify_center()
                 .child(
                     div()
-                        .text_size(px(thumb_height * 0.68))
+                        .text_size(px(icon_size_val * 0.72))
                         .font_family(UiConstants::FONT_MDL2)
                         .text_color(rgb(fallback_color))
                         .child(fallback_glyph),
@@ -1074,12 +879,13 @@ impl MainViewState {
             })
             .child(
                 div()
-                    .w_full()
+                    .w(px(item_width))
+                    .h(px(thumb_height))
+                    .p(px(thumb_margin))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .h(px(thumb_height))
                     .child(visual_el),
             )
             .child(if renaming_index == Some(index) {
@@ -1088,15 +894,15 @@ impl MainViewState {
                     label_box_h,
                     effective_font_size,
                     effective_line_h,
-                    item_width - 12.0,
+                    item_width - 10.0,
                     view.clone(),
                 )
             } else {
                 div()
                     .w_full()
                     .h(px(label_box_h))
-                    .px(px(6.0))
-                    .mt(px(4.0))
+                    .px(px(4.0))
+                    .pb(px(6.0))
                     .text_center()
                     .overflow_hidden()
                     .text_size(px(effective_font_size))

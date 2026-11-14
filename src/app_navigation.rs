@@ -78,12 +78,27 @@ impl AppWindow {
             self.state.nav_cancel_guard.reset()
         };
 
+        let path_str = path.to_string_lossy().into_owned();
+        let is_home = path_str.is_empty() || path_str == "Home";
+        let is_recycle_bin =
+            path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin");
+        let resolved_target = if is_home {
+            crate::ui::views::main_view::ViewTarget::Home
+        } else if is_recycle_bin {
+            crate::ui::views::main_view::ViewTarget::RecycleBin
+        } else {
+            crate::ui::views::main_view::ViewTarget::Directory(path.clone())
+        };
+
         // Update navigation history on the active tab for the target pane
+        let tab_target = resolved_target.clone();
         self.state.navigation.update(cx, |nav, _cx| {
             if is_secondary {
                 nav.tabs.active_tab_mut().navigate_secondary(path.clone());
             } else {
-                nav.tabs.active_tab_mut().navigate(path.clone());
+                let tab = nav.tabs.active_tab_mut();
+                tab.navigate(path.clone());
+                tab.target = tab_target;
             }
         });
 
@@ -108,12 +123,16 @@ impl AppWindow {
         }
         cx.notify();
 
-        let virtual_archive_target =
-            crate::storage::archive_service::ArchiveService::split_archive_path(path.as_path());
+        let virtual_archive_target = if is_home || is_recycle_bin {
+            None
+        } else {
+            crate::storage::archive_service::ArchiveService::split_archive_path(path.as_path())
+        };
         let is_virtual_archive = virtual_archive_target.is_some();
+        let is_virtual_location = is_home || is_recycle_bin || is_virtual_archive;
 
         // Start watching this folder for changes (only recreate watcher if path changed or not yet watching)
-        if !is_virtual_archive {
+        if !is_virtual_location {
             if is_secondary {
                 if !same_path_refresh || self.file_watcher_secondary.is_none() {
                     self.stop_file_watcher(true);
@@ -170,6 +189,80 @@ impl AppWindow {
             path,
             prefs.view_mode
         );
+
+        // Switch to Home, Recycle Bin, or Directory target and persist session
+        if !is_secondary {
+            match resolved_target {
+                crate::ui::views::main_view::ViewTarget::Home => {
+                    self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
+                    self.refresh_home_tags_cache(cx);
+                }
+                crate::ui::views::main_view::ViewTarget::RecycleBin => {
+                    self.state.main_view.target =
+                        crate::ui::views::main_view::ViewTarget::RecycleBin;
+                    self.state.main_view.selected_indices.clear();
+                    let rb_weak = cx.weak_entity();
+                    let mut rb_cx = cx.to_async();
+                    let bg = cx.background_executor().spawn(async move {
+                        let service = RecycleBinService::new();
+                        service.list_contents_sync().unwrap_or_default()
+                    });
+                    cx.foreground_executor()
+                        .spawn(async move {
+                            let items = bg.await;
+                            rb_weak
+                                .update(&mut rb_cx, |this, cx| {
+                                    this.state.main_view.recycle_bin_items = items;
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .detach();
+                }
+                dir_target => {
+                    self.state.main_view.target = dir_target;
+                }
+            }
+        } else if is_home {
+            self.state.secondary_view.target = crate::ui::views::main_view::ViewTarget::Home;
+            self.refresh_home_tags_cache(cx);
+            self.state.secondary_view.home_tags_cache =
+                self.state.main_view.home_tags_cache.clone();
+        } else {
+            self.state.secondary_view.target =
+                crate::ui::views::main_view::ViewTarget::Directory(path.clone());
+        }
+
+        self.save_session(cx);
+        self.save_session_path(cx);
+
+        // Virtual non-directory targets (Home / Recycle Bin) do not read disk directories or git repos
+        if is_home || is_recycle_bin {
+            let (view, file_items) = if is_secondary {
+                (
+                    &mut self.state.secondary_view,
+                    self.state.secondary_file_items.clone(),
+                )
+            } else {
+                (&mut self.state.main_view, self.state.file_items.clone())
+            };
+            view.tree_top_items.clear();
+            view.items.clear();
+            view.tree_depths.clear();
+            view.bump_items_revision();
+            file_items.update(cx, |m, _| {
+                m.items.clear();
+                m.selected_indices.clear();
+            });
+            if is_focused_pane {
+                self.state.status_bar.sync(0, 0, 0);
+                self.state.status_bar.show_git_actions = false;
+                self.state.status_bar.git_branch = None;
+            }
+            self.sync_pane_icon_paths();
+            cx.notify();
+            return;
+        }
 
         let path_clone = path.clone();
         let mut async_cx = cx.to_async();
@@ -626,44 +719,6 @@ impl AppWindow {
                 }
             })
             .detach();
-
-        // Check if we should switch to Home or Recycle Bin view (Primary pane target)
-        if !is_secondary {
-            let path_str = path.to_string_lossy();
-            if path_str.is_empty() || path_str == "Home" {
-                self.state.main_view.target = crate::ui::views::main_view::ViewTarget::Home;
-                self.refresh_home_tags_cache(cx);
-            } else if path_str == "shell:RecycleBinFolder" || path_str.contains("RecycleBin") {
-                self.state.main_view.target = crate::ui::views::main_view::ViewTarget::RecycleBin;
-                self.state.main_view.selected_indices.clear();
-                let rb_weak = cx.weak_entity();
-                let mut rb_cx = cx.to_async();
-                let bg = cx.background_executor().spawn(async move {
-                    let service = RecycleBinService::new();
-                    service.list_contents_sync().unwrap_or_default()
-                });
-                cx.foreground_executor()
-                    .spawn(async move {
-                        let items = bg.await;
-                        rb_weak
-                            .update(&mut rb_cx, |this, cx| {
-                                this.state.main_view.recycle_bin_items = items;
-                                cx.notify();
-                            })
-                            .ok();
-                    })
-                    .detach();
-            } else {
-                self.state.main_view.target =
-                    crate::ui::views::main_view::ViewTarget::Directory(path.clone());
-            }
-        } else {
-            self.state.secondary_view.target =
-                crate::ui::views::main_view::ViewTarget::Directory(path.clone());
-        }
-
-        self.save_session(cx);
-        self.save_session_path(cx);
     }
 
     /// Synchronize `icon_paths` for both Primary and Secondary panes from the shared LRU cache.
@@ -723,16 +778,7 @@ impl AppWindow {
 
     /// Navigate to the Home view (quick access dashboard)
     pub fn navigate_home(&mut self, cx: &mut Context<Self>) {
-        match crate::core::navigation_service::NavigationService::get_home_path() {
-            Ok(home_path) => {
-                self.navigate(home_path, cx);
-            }
-            Err(_) => {
-                if let Some(home) = dirs::home_dir() {
-                    self.navigate(crate::core::path_util::FilesPath::from(home), cx);
-                }
-            }
-        }
+        self.navigate(FilesPath::new("Home"), cx);
     }
 
     /// Navigate to the root of the current drive/path in the active pane

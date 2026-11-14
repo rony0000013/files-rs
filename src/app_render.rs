@@ -23,6 +23,7 @@ impl Render for AppWindow {
         if let Some(os_maximized) = crate::wallpaper_mica::is_main_hwnd_maximized() {
             self.state.is_maximized = os_maximized;
         }
+        self.state.expire_button_highlight();
 
         // Compute live window size from `window.bounds().size` (which `gpui_windows`
         // updates directly in `WindowsWindowState::logical_size` on every `WM_SIZE`
@@ -412,7 +413,7 @@ impl Render for AppWindow {
                                                     }
                                                 });
                                             })
-                                            .child(NavigationBarView::build(
+                                            .child(NavigationBarView::build_with_keytips(
                                                 &state.nav_bar,
                                                 can_go_back,
                                                 can_go_forward,
@@ -420,6 +421,14 @@ impl Render for AppWindow {
                                                 cx.entity(),
                                                 &state.action_registry,
                                                 &state.status_center,
+                                                state.keytips_visible,
+                                                state.highlighted_button.as_ref().and_then(
+                                                    |(id, _)| {
+                                                        state
+                                                            .is_button_highlighted(id)
+                                                            .then_some(id.as_str())
+                                                    },
+                                                ),
                                             ))
                                     })
                                     .child({
@@ -608,6 +617,7 @@ impl Render for AppWindow {
                                                     && !matches!(
                                                         state.main_view.target,
                                                         crate::ui::views::types::ViewTarget::Settings
+                                                            | crate::ui::views::types::ViewTarget::Home
                                                     ) {
                                                     vec![div()
                                                         .flex_shrink_0()
@@ -713,6 +723,7 @@ impl Render for AppWindow {
             || state.main_view.peek_bouncy_scroll.animating
             || state.main_view.video_playing
             || state.main_view.side_pane_resize_start_x.is_some()
+            || self.state.highlighted_button.is_some()
         {
             window.request_animation_frame();
         }
@@ -1327,6 +1338,94 @@ impl Render for AppWindow {
                 |elem, delta| elem.opacity(delta),
             ));
         }
+
+        // Render rich sidebar item tooltip (at app level, outside overflow containers)
+        if !menu_open {
+            if let Some(ref tip) = self.sidebar_tooltip {
+                let win_w = f32::from(live_size.width);
+                let win_h = f32::from(live_size.height);
+                let max_left = (win_w - 290.0).max(8.0);
+                let max_top = (win_h - 110.0).max(8.0);
+                let tip_left = (f32::from(tip.position.x) + 14.0).clamp(8.0, max_left);
+                let tip_top = (f32::from(tip.position.y) + 16.0).clamp(8.0, max_top);
+
+                let mut card = div()
+                    .absolute()
+                    .left(px(tip_left))
+                    .top(px(tip_top))
+                    .w(px(250.0))
+                    .bg(rgb(0x282828u32))
+                    .border(px(1.0))
+                    .border_color(rgba(0xFFFFFF22u32))
+                    .rounded(px(6.0))
+                    .shadow_lg()
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .font_family(UiConstants::FONT_MAIN)
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight(600.0))
+                            .text_color(rgb(0xF5F5F5u32))
+                            .child(tip.title.clone()),
+                    );
+
+                if let Some(sub) = &tip.subtitle {
+                    card = card.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(0xB5B5B5u32))
+                            .child(sub.clone()),
+                    );
+                }
+
+                if let Some(pct) = tip.usage_percent {
+                    let ratio = if pct.is_finite() {
+                        (pct / 100.0).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let bar_color = if pct >= 90.0 {
+                        0xFF99A4u32
+                    } else if pct >= 75.0 {
+                        0xFCE100u32
+                    } else {
+                        0x60CDFFu32
+                    };
+                    card = card.child(
+                        div()
+                            .w_full()
+                            .h(px(5.0))
+                            .rounded(px(2.5))
+                            .bg(rgba(0xFFFFFF18u32))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(ratio))
+                                    .rounded(px(2.5))
+                                    .bg(rgb(bar_color)),
+                            ),
+                    );
+                }
+
+                if let Some(detail) = &tip.detail_line {
+                    card = card.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(0xCFCFCFu32))
+                            .child(detail.clone()),
+                    );
+                }
+
+                base = base.child(card);
+            }
+        }
+
         if let Some(peek_modal) =
             MainView::render_peek_modal(&state.main_view, cx.entity())
         {

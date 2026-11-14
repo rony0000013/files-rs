@@ -48,8 +48,9 @@ impl MainView {
         let is_checkbox = main_state.selection_mode == SelectionMode::Checkbox;
         let is_hover_select = main_state.selection_mode == SelectionMode::HoverSelect;
         let renaming_idx = main_state.renaming_index;
-        let lod_fast = zoom < 0.20;
         let is_cut = main_state.cut_paths.contains(item.path.as_path());
+        let spec = MainViewState::details_layout_spec(zoom, main_state.compact_mode);
+        let lod_fast = false;
 
         let is_dir = matches!(item.file_type, FileType::Directory);
         let display_name = main_state.display_name(item).into_owned();
@@ -60,16 +61,17 @@ impl MainView {
             get_file_type_icon_and_color(&ext)
         };
 
-        let icon_size = (row_height - 8.0).clamp(15.0, 36.0);
-        let text_size = (11.5 + zoom * 3.5).clamp(11.0, 15.0);
+        let icon_size = spec.icon_size;
+        let icon_box = spec.icon_box_size;
+        let text_size = spec.name_text_size;
         let single_line_chars = ((widths.name / (text_size * 0.56)).floor() as usize).max(16);
         let effective_name_size = if display_name.chars().count() > single_line_chars {
-            (text_size - 1.2).max(10.0)
+            (text_size - 1.0).max(11.0)
         } else {
             text_size
         };
         let name_line_h = (effective_name_size * 1.24).ceil();
-        let text_size_sm = (10.5 + zoom * 2.5).clamp(10.0, 13.5);
+        let text_size_sm = spec.col_text_size;
         let sm_line_h = (text_size_sm * 1.24).ceil();
         let item_path = item.path.clone();
         let item_name_for_drag = item.name.clone();
@@ -348,8 +350,9 @@ impl MainView {
         name_row = name_row
             .child(
                 div()
-                    .w(px(icon_size))
-                    .h(px(icon_size))
+                    .w(px(icon_box))
+                    .h(px(icon_box))
+                    .p(px(2.0))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -359,10 +362,12 @@ impl MainView {
                             img(icon_path.clone())
                                 .w(px(icon_size))
                                 .h(px(icon_size))
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .rounded(px(2.0))
                                 .into_any_element()
                         } else {
                             div()
-                                .text_size(px(icon_size * 0.72))
+                                .text_size(px(icon_size * 0.78))
                                 .font_family(UiConstants::FONT_MDL2)
                                 .text_color(rgb(fallback_color))
                                 .child(fallback_glyph)
@@ -370,7 +375,7 @@ impl MainView {
                         }
                     } else {
                         div()
-                            .text_size(px(icon_size * 0.72))
+                            .text_size(px(icon_size * 0.78))
                             .font_family(UiConstants::FONT_MDL2)
                             .text_color(rgb(fallback_color))
                             .child(fallback_glyph)
@@ -643,8 +648,8 @@ impl MainView {
                                     .hovered_target_folder
                                     .clone();
                                 let is_dragging_any = app_state.state.main_view.drag_state.is_dragging;
-                                let base_row_h = if compact { 22.0 } else { 26.0 };
-                                let row_height = (base_row_h + zoom * 22.0).round();
+                                let row_height =
+                                    MainViewState::details_layout_spec(zoom, compact).row_height;
 
                                 range
                                     .map(|i| {
@@ -739,8 +744,7 @@ impl MainView {
         let flattened = state.flatten_grouped_items(visible);
         let zoom = state.zoom_level;
         let compact = state.compact_mode;
-        let base_row_h = if compact { 22.0 } else { 26.0 };
-        let row_height = (base_row_h + zoom * 22.0).round();
+        let row_height = MainViewState::details_layout_spec(zoom, compact).row_height;
         let header_h = row_height.max(30.0);
         let hovered_drop_folder = state.drag_state.hovered_target_folder.clone();
         let is_dragging_any = state.drag_state.is_dragging;
@@ -1033,9 +1037,9 @@ impl MainView {
         let mut header = div()
             .flex()
             .flex_row()
-            .h(px(30.0))
+            .h(px(40.0))
             .items_center()
-            .px(px(UiConstants::PADDING_LARGE_RAW as f32))
+            .px(px(12.0))
             .bg(rgba(UiConstants::BG_TOOLBAR_RGBA))
             .border_b(px(1.0))
             .border_color(rgba(UiConstants::DIVIDER_RGBA))

@@ -26,7 +26,7 @@ use crate::ui::views::main_view::{
 };
 pub use app_state::{
     icons_cache_dir, AppState, AppWindow, ButtonTooltipData, HoverTooltipData, SidebarDragState,
-    SidebarPinnedDragState, TagState,
+    SidebarPinnedDragState, SidebarTooltipData, TagState,
 };
 use gpui::*;
 use std::collections::HashMap;
@@ -55,6 +55,8 @@ impl AppWindow {
             hover_tooltip: None,
             button_tooltip: None,
             button_tooltip_task: None,
+            sidebar_tooltip: None,
+            sidebar_tooltip_task: None,
             menu_tip: None,
             hover_timer_task: None,
             tab_hover_timer_task: None,
@@ -250,6 +252,10 @@ impl AppWindow {
                 // resize, tab, sidebar) would otherwise stick forever since
                 // its mouse-up never arrives. Cancel first, then dismiss.
                 this.cancel_pointer_tracking(cx);
+                if this.state.keytips_visible {
+                    this.state.keytips_visible = false;
+                    cx.notify();
+                }
                 this.dismiss_omnibar(cx);
             });
             window_view.focus_out_subscription = Some(sub);
@@ -355,6 +361,8 @@ impl AppWindow {
                 });
             }
         }
+
+        window_view.load_sidebar_shell_icons(cx);
 
         window_view
     }
@@ -1688,6 +1696,36 @@ impl AppWindow {
         // Files-community parity shortcuts (address bar, search, zoom, view modes, pane switch)
         let key_str = keystroke.key.as_str();
 
+        // Toggle KeyTips overlay on bare Alt or F10 (without Ctrl/Shift/Platform),
+        // and dismiss with Escape when visible, provided no text input or modal is active.
+        if !self.is_any_text_input_active()
+            && self.state.active_dialog.is_none()
+            && !self.state.main_view.show_peek_modal
+        {
+            if (key_str.eq_ignore_ascii_case("alt")
+                && !keystroke.modifiers.control
+                && !keystroke.modifiers.shift
+                && !keystroke.modifiers.platform)
+                || (key_str.eq_ignore_ascii_case("f10")
+                    && !keystroke.modifiers.control
+                    && !keystroke.modifiers.alt
+                    && !keystroke.modifiers.shift
+                    && !keystroke.modifiers.platform)
+            {
+                self.state.keytips_visible = !self.state.keytips_visible;
+                cx.notify();
+                return;
+            }
+            if self.state.keytips_visible
+                && key_str.eq_ignore_ascii_case("escape")
+                && !keystroke.modifiers.modified()
+            {
+                self.state.keytips_visible = false;
+                cx.notify();
+                return;
+            }
+        }
+
         // Alt+D or F4 -> Focus address bar / path edit
         if (keystroke.modifiers.alt && !keystroke.modifiers.control && key_str.eq_ignore_ascii_case("d"))
             || (!keystroke.modifiers.modified() && key_str.eq_ignore_ascii_case("f4"))
@@ -1838,7 +1876,24 @@ impl AppWindow {
 
         // Action Registry lookup
         if let Some(action) = self.state.action_registry.lookup(&key_combo) {
+            if self.state.keytips_visible {
+                self.state.keytips_visible = false;
+                cx.notify();
+            }
             self.dispatch_action(action, cx);
+            return;
+        }
+
+        // Single-letter KeyTip fallback when KeyTips overlay is visible or Alt+<keytip> is pressed
+        if !self.is_any_text_input_active()
+            && self.state.active_dialog.is_none()
+            && !self.state.main_view.show_peek_modal
+            && !keystroke.modifiers.control
+            && !keystroke.modifiers.shift
+            && !keystroke.modifiers.platform
+            && (self.state.keytips_visible || keystroke.modifiers.alt)
+            && self.handle_keytip_key(key_str, cx)
+        {
             return;
         }
 
@@ -1846,6 +1901,7 @@ impl AppWindow {
         if !keystroke.modifiers.control
             && !keystroke.modifiers.alt
             && !keystroke.modifiers.platform
+            && !self.state.keytips_visible
             && key_str.chars().count() == 1
         {
             let ch = key_str.chars().next().unwrap();
@@ -1853,6 +1909,126 @@ impl AppWindow {
                 self.handle_type_to_select(ch, cx);
             }
         }
+    }
+
+    fn highlight_button_with_expiry(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.state.trigger_button_highlight(id);
+        let mut async_app = cx.to_async();
+        cx.spawn(
+            move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(330))
+                    .await;
+                this_weak
+                    .update(&mut async_app, |this, cx| {
+                        if this.state.expire_button_highlight() {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+            },
+        )
+        .detach();
+    }
+
+    fn handle_keytip_key(&mut self, key_str: &str, cx: &mut Context<Self>) -> bool {
+        match key_str.to_ascii_lowercase().as_str() {
+            "b" => {
+                self.highlight_button_with_expiry("nav-back", cx);
+                self.navigate_back(cx);
+            }
+            "f" => {
+                let pane_focus = self.state.active_pane_focus();
+                let can_go_forward = {
+                    let nav = self.state.navigation.read(cx);
+                    let tab = nav.tabs.active_tab();
+                    if pane_focus == crate::core::navigation_manager::PaneFocus::Secondary {
+                        tab.can_go_forward_secondary()
+                    } else {
+                        tab.can_go_forward()
+                    }
+                };
+                if can_go_forward {
+                    self.highlight_button_with_expiry("nav-forward", cx);
+                    self.navigate_forward(cx);
+                } else {
+                    self.highlight_button_with_expiry("tb-filter", cx);
+                    self.state.main_view.show_filter_bar = !self.state.main_view.show_filter_bar;
+                }
+            }
+            "u" => {
+                self.highlight_button_with_expiry("nav-up", cx);
+                self.navigate_up(cx);
+            }
+            "r" => {
+                self.highlight_button_with_expiry("nav-refresh", cx);
+                self.refresh(cx);
+            }
+            "w" => {
+                self.highlight_button_with_expiry("tb-new", cx);
+                self.toggle_toolbar_flyout("new", cx);
+            }
+            "x" => {
+                self.highlight_button_with_expiry("tb-cut", cx);
+                self.cut_selected(cx);
+            }
+            "c" => {
+                self.highlight_button_with_expiry("tb-copy", cx);
+                self.copy_selected(cx);
+            }
+            "v" => {
+                self.highlight_button_with_expiry("tb-paste", cx);
+                self.paste(cx);
+            }
+            "m" => {
+                self.highlight_button_with_expiry("tb-rename", cx);
+                self.rename_selected(cx);
+            }
+            "h" => {
+                self.highlight_button_with_expiry("tb-share", cx);
+                self.share_selected(cx);
+            }
+            "d" => {
+                self.highlight_button_with_expiry("tb-delete", cx);
+                if matches!(
+                    self.state.main_view.target,
+                    crate::ui::views::main_view::ViewTarget::RecycleBin
+                ) {
+                    self.delete_selected_recycle_bin(cx);
+                } else {
+                    self.delete_selected(cx);
+                }
+            }
+            "o" => {
+                self.highlight_button_with_expiry("tb-props", cx);
+                self.open_properties_for_selected(cx);
+            }
+            "s" => {
+                self.highlight_button_with_expiry("tb-sel", cx);
+                self.toggle_toolbar_flyout("selection", cx);
+            }
+            "a" => {
+                self.highlight_button_with_expiry("tb-sort", cx);
+                self.toggle_toolbar_flyout("sort", cx);
+            }
+            "g" => {
+                self.highlight_button_with_expiry("tb-group", cx);
+                self.toggle_toolbar_flyout("group", cx);
+            }
+            "l" => {
+                self.highlight_button_with_expiry("tb-layout", cx);
+                self.toggle_toolbar_flyout("layout", cx);
+            }
+            "p" => {
+                self.highlight_button_with_expiry("tb-pane", cx);
+                self.toggle_preview_pane(cx);
+            }
+            _ => return false,
+        }
+        self.state.keytips_visible = false;
+        cx.notify();
+        true
     }
 
     /// View-mode-aware keyboard navigation for Details, Grid, List, and Columns views.
@@ -1959,15 +2135,29 @@ impl AppWindow {
                 .items_per_row
                 .max(1)
         };
+        let compact = self.state.pane_view(pane_focus).compact_mode;
         let page_row_step = match view_mode {
             ViewMode::Grid => {
                 let params =
                     MainViewState::grid_layout_params_for_width_pub(pane_w, zoom_level, grid_cols);
                 ((viewport_h / params.row_height).floor() as usize).max(1)
             }
-            ViewMode::Cards => 6,
-            ViewMode::List => 10,
-            _ => ((viewport_h / 32.0).floor() as usize).max(1),
+            ViewMode::Cards => {
+                let spec = MainViewState::cards_layout_spec(pane_w, zoom_level, compact);
+                ((viewport_h / spec.row_height).floor() as usize).max(1)
+            }
+            ViewMode::List => {
+                let spec = MainViewState::list_layout_spec(pane_w, zoom_level, compact);
+                ((viewport_h / spec.row_height).floor() as usize).max(1)
+            }
+            ViewMode::Columns => {
+                let spec = MainViewState::columns_layout_spec(zoom_level, compact);
+                ((viewport_h / spec.row_height).floor() as usize).max(1)
+            }
+            _ => {
+                let spec = MainViewState::details_layout_spec(zoom_level, compact);
+                ((viewport_h / spec.row_height).floor() as usize).max(1)
+            }
         };
 
         let had_selection = !self.state.pane_view(pane_focus).selected_indices.is_empty();
@@ -2168,6 +2358,12 @@ impl AppWindow {
         if !paths.is_empty() {
             self.open_properties_for_paths(paths, cx);
         }
+    }
+
+    /// Open Properties for a single `FilesPath` (e.g. a drive card info button on Home),
+    /// delegating to `open_properties_for_paths`.
+    pub fn open_properties_for_path(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        self.open_properties_for_paths(vec![path.as_path().to_path_buf()], cx);
     }
 
     /// Open Properties for a specific list of file/folder paths, respecting the user's
@@ -2572,22 +2768,19 @@ impl AppWindow {
     }
 
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
-        let current_path = self.state.active_view().primary_path.clone();
+        let home_path = FilesPath::new("Home");
         let mode = self.state.active_view().view_mode.clone();
         let zoom = self.state.active_view().zoom_level;
         let new_idx = self.state.navigation.update(cx, |nav, _cx| {
-            nav.tabs.add_tab_with_zoom(current_path.clone(), mode, zoom);
+            nav.tabs.add_tab_with_zoom(home_path, mode, zoom);
             nav.tabs.active_tab_index
         });
         self.state.tab_drag.new_tab_anim = Some((new_idx, 0.0));
         self.ensure_active_tab_visible(cx);
         self.save_session(cx);
         self.load_tab_thumbnails(cx);
-        self.navigate_pane(
-            current_path,
-            crate::core::navigation_manager::PaneFocus::Primary,
-            cx,
-        );
+        self.sync_active_tab_to_views(cx);
+        cx.notify();
     }
 
     /// Open a new tab immediately to the right of `from_index` (Files-community "New tab to the right").
@@ -2926,6 +3119,96 @@ impl AppWindow {
 
     #[cfg(not(windows))]
     pub fn load_tab_thumbnails(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Extract Windows Shell icons (`shell32_<key>.png`, 32px) for sidebar drives, Quick Access,
+    /// pinned folders, and expanded tree nodes, caching them on `SidebarState::shell_icons` and
+    /// mirroring into `MainViewState::home_shell_icons`.
+    #[cfg(windows)]
+    pub fn load_sidebar_shell_icons(&mut self, cx: &mut Context<Self>) {
+        use crate::app_state::{disk_cache_key, icons_cache_dir};
+        use crate::platform::windows::thumbnail_service::StaThumbnailPool;
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        let pending_paths: Vec<FilesPath> = self
+            .state
+            .sidebar
+            .collect_shell_icon_paths()
+            .into_iter()
+            .filter(|p| !self.state.sidebar.shell_icons.contains_key(p) && seen.insert(p.clone()))
+            .collect();
+
+        if pending_paths.is_empty() {
+            if self.state.main_view.home_shell_icons.len() < self.state.sidebar.shell_icons.len() {
+                self.state.main_view.home_shell_icons = self.state.sidebar.shell_icons.clone();
+                cx.notify();
+            }
+            return;
+        }
+
+        let thumbnail_service = self.state.thumbnail_service.clone();
+        let icon_dir = icons_cache_dir();
+        let this_weak = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let extracted: Vec<(FilesPath, std::path::PathBuf)> = async_cx
+                    .background_executor()
+                    .spawn(async move {
+                        let (tx, rx) =
+                            std::sync::mpsc::channel::<Option<(FilesPath, std::path::PathBuf)>>();
+                        let total = pending_paths.len();
+                        let pool = StaThumbnailPool::global();
+
+                        for path in pending_paths {
+                            let tx = tx.clone();
+                            let svc = thumbnail_service.clone();
+                            let dir = icon_dir.clone();
+                            pool.spawn(move || {
+                                let cached_png =
+                                    dir.join(format!("shell32_{}.png", disk_cache_key(&path)));
+                                if svc.extract_shell_icon_to_png(&path, &cached_png, 32) {
+                                    let _ = tx.send(Some((path, cached_png)));
+                                } else {
+                                    let _ = tx.send(None);
+                                }
+                            });
+                        }
+                        drop(tx);
+
+                        let mut pairs = Vec::with_capacity(total);
+                        for _ in 0..total {
+                            match rx.recv() {
+                                Ok(Some(pair)) => pairs.push(pair),
+                                Ok(None) => {}
+                                Err(_) => break,
+                            }
+                        }
+                        pairs
+                    })
+                    .await;
+
+                if extracted.is_empty() {
+                    return;
+                }
+
+                this_weak
+                    .update(&mut async_cx, |this, cx| {
+                        for (path, cached_png) in extracted {
+                            this.state.sidebar.shell_icons.insert(path, cached_png);
+                        }
+                        this.state.main_view.home_shell_icons =
+                            this.state.sidebar.shell_icons.clone();
+                        cx.notify();
+                    })
+                    .ok();
+            })
+            .detach();
+    }
+
+    #[cfg(not(windows))]
+    pub fn load_sidebar_shell_icons(&mut self, _cx: &mut Context<Self>) {}
 
     // ---- Dual-Pane (Split View) Operations ----
 
@@ -4870,20 +5153,28 @@ impl AppWindow {
                     (vis_pos / cols.max(1), rh)
                 }
                 ViewMode::List => {
-                    let (cols, _col_w, rh, _gap, _pad) = MainViewState::list_layout_metrics(
+                    let spec = MainViewState::list_layout_spec(
                         pane_w,
                         view.zoom_level,
                         view.compact_mode,
                     );
-                    (vis_pos / cols.max(1), rh)
+                    let total_rows = MainViewState::list_rows_per_col(
+                        visible.len(),
+                        spec.cols,
+                        spec.row_height,
+                        view.effective_list_viewport_h(),
+                    )
+                    .max(1);
+                    (vis_pos % total_rows, spec.row_height)
                 }
                 ViewMode::Columns => {
-                    let rh = (22.0 + view.zoom_level * 22.0).round();
+                    let rh = MainViewState::columns_layout_spec(view.zoom_level, view.compact_mode)
+                        .row_height;
                     (vis_pos, rh)
                 }
                 ViewMode::Details | ViewMode::Tree => {
-                    let base_row_h = if view.compact_mode { 22.0 } else { 26.0 };
-                    let rh = (base_row_h + view.zoom_level * 22.0).round();
+                    let rh = MainViewState::details_layout_spec(view.zoom_level, view.compact_mode)
+                        .row_height;
                     (vis_pos, rh)
                 }
             };
@@ -7787,6 +8078,42 @@ impl AppWindow {
             cx.notify();
         }
     }
+
+    /// Schedule a rich sidebar item tooltip after a 500 ms hover delay.
+    pub fn start_sidebar_tooltip(&mut self, data: SidebarTooltipData, cx: &mut Context<Self>) {
+        self.sidebar_tooltip_task = None;
+        if self.sidebar_tooltip.take().is_some() {
+            cx.notify();
+        }
+
+        let mut async_app = cx.to_async();
+        let task = cx.spawn(
+            move |this_weak: WeakEntity<Self>, _: &mut AsyncApp| async move {
+                async_app
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+
+                this_weak
+                    .update(&mut async_app, |this, cx| {
+                        this.sidebar_tooltip = Some(data);
+                        cx.notify();
+                    })
+                    .ok();
+            },
+        );
+
+        self.sidebar_tooltip_task = Some(task);
+    }
+
+    /// Clear sidebar tooltip and cancel any pending hover timer.
+    pub fn stop_sidebar_tooltip(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_tooltip_task = None;
+        if self.sidebar_tooltip.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Returns true if the action was handled.
     pub fn dispatch_action(
         &mut self,
@@ -7795,6 +8122,29 @@ impl AppWindow {
     ) -> bool {
         use crate::config::config::{GroupColumn, SortBy, ViewMode};
         use crate::core::action_registry::ActionKind;
+
+        if let Some(btn_id) = match action {
+            ActionKind::NavigateBack => Some("nav-back"),
+            ActionKind::NavigateForward => Some("nav-forward"),
+            ActionKind::NavigateUp => Some("nav-up"),
+            ActionKind::Refresh => Some("nav-refresh"),
+            ActionKind::NewFolder | ActionKind::NewFile => Some("tb-new"),
+            ActionKind::Cut => Some("tb-cut"),
+            ActionKind::Copy => Some("tb-copy"),
+            ActionKind::Paste => Some("tb-paste"),
+            ActionKind::Rename => Some("tb-rename"),
+            ActionKind::Delete | ActionKind::PermanentDelete => Some("tb-delete"),
+            ActionKind::OpenProperties => Some("tb-props"),
+            ActionKind::FilterItems => Some("tb-filter"),
+            ActionKind::TogglePreviewPane
+            | ActionKind::ToggleDetailsPane
+            | ActionKind::ToggleInfoPane => Some("tb-pane"),
+            _ => None,
+        } {
+            self.highlight_button_with_expiry(btn_id, cx);
+            cx.notify();
+        }
+
         match action {
             ActionKind::NavigateBack => self.navigate_back(cx),
             ActionKind::NavigateForward => self.navigate_forward(cx),

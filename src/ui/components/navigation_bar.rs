@@ -11,6 +11,7 @@ use crate::domain::search::{
     SearchService,
 };
 use crate::storage::storage::FileType;
+use crate::ui::components::sidebar_state::{bundled_icon_path, format_drive_root_label};
 use crate::ui::components::text_input::{
     render_text_input, TextInputMode, TextInputState, TextInputStyle,
 };
@@ -1174,18 +1175,42 @@ impl NavigationBarState {
     }
 
     pub fn crumb_display_name(p: &FilesPath) -> String {
+        let s = p.to_string_lossy();
+        if s == "Home" {
+            return "Home".to_string();
+        }
+        if let Some(drive_label) = format_drive_root_label(p.as_path()) {
+            return drive_label;
+        }
         let name = p
             .as_path()
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         if name.is_empty() {
-            p.to_string_lossy().to_string()
+            let trimmed = s.trim_end_matches(['\\', '/']);
+            if trimmed.is_empty() {
+                s.to_string()
+            } else {
+                trimmed.to_string()
+            }
         } else {
             name
         }
     }
 }
+
+/// Extension trait for explicitly setting `Overflow::Visible` on GPUI elements
+/// (`gpui 0.2.2` only generates `overflow_hidden` helpers on `Styled`).
+trait OverflowVisibleExt: Styled + Sized {
+    fn overflow_visible(mut self) -> Self {
+        self.style().overflow.x = Some(Overflow::Visible);
+        self.style().overflow.y = Some(Overflow::Visible);
+        self
+    }
+}
+
+impl<T: Styled + Sized> OverflowVisibleExt for T {}
 
 pub struct NavigationBarView;
 
@@ -1230,12 +1255,16 @@ impl NavigationBarView {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_nav_btn_with_tooltip(
-        id: impl Into<ElementId>,
+        id: &'static str,
         icon: &'static str,
         tip_text: &'static str,
         tip_shortcut: Option<&'static str>,
         enabled: bool,
+        is_highlighted: bool,
+        keytip: Option<&'static str>,
+        keytips_visible: bool,
         view: Entity<crate::app::AppWindow>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
         on_right_click: Option<Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>>,
@@ -1246,6 +1275,7 @@ impl NavigationBarView {
         let shortcut = tip_shortcut.map(|s| s.to_string());
 
         let mut btn = div()
+            .relative()
             .flex()
             .items_center()
             .justify_center()
@@ -1259,11 +1289,24 @@ impl NavigationBarView {
                 rgba(UiConstants::TEXT_MUTED_RGBA)
             });
 
+        if is_highlighted {
+            btn = btn
+                .bg(rgba(0xFFFFFF22u32))
+                .border_1()
+                .border_color(rgba(0x60CDFF88u32));
+        }
+
         let stateful = btn.id(id);
 
         let final_btn = if enabled {
             let mut b = stateful
-                .hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)))
+                .hover(move |s| {
+                    if is_highlighted {
+                        s.bg(rgba(0xFFFFFF22u32))
+                    } else {
+                        s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
+                    }
+                })
                 .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
                     let pos = window.mouse_position();
                     let t = text.clone();
@@ -1281,6 +1324,8 @@ impl NavigationBarView {
                 .on_mouse_down(MouseButton::Left, move |ev, win, cx| {
                     v_click.update(cx, |this, cx| {
                         this.stop_button_tooltip(cx);
+                        this.state.trigger_button_highlight(id);
+                        cx.notify();
                     });
                     on_click(ev, win, cx);
                 });
@@ -1296,12 +1341,45 @@ impl NavigationBarView {
             stateful
         };
 
-        final_btn.child(
+        let mut elem = final_btn.child(
             div()
                 .text_size(px(14.0))
                 .font_family(UiConstants::FONT_ICONS)
                 .child(icon),
-        )
+        );
+
+        if keytips_visible {
+            if let Some(kt) = keytip {
+                elem = elem.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(-6.0))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .bg(rgb(0x2B2B2Bu32))
+                                .border_1()
+                                .border_color(rgba(0xFFFFFF40u32))
+                                .rounded(px(4.0))
+                                .px(px(5.0))
+                                .py(px(1.0))
+                                .shadow_sm()
+                                .whitespace_nowrap()
+                                .font_family(UiConstants::FONT_MAIN)
+                                .text_size(px(10.0))
+                                .line_height(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xFFFFFFu32))
+                                .child(kt),
+                        ),
+                );
+            }
+        }
+
+        elem
     }
 
     /// Files-community `OmnibarMode` pill button (30x28px rounded pill inside the 36px Omnibar).
@@ -1645,6 +1723,31 @@ impl NavigationBarView {
         _registry: &ActionRegistry,
         status: &crate::ui::components::status_center::StatusCenterState,
     ) -> impl IntoElement {
+        Self::build_with_keytips(
+            state,
+            can_go_back,
+            can_go_forward,
+            _side_pane,
+            view,
+            _registry,
+            status,
+            false,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_keytips(
+        state: &NavigationBarState,
+        can_go_back: bool,
+        can_go_forward: bool,
+        _side_pane: crate::ui::views::types::SidePaneMode,
+        view: Entity<crate::app::AppWindow>,
+        _registry: &ActionRegistry,
+        status: &crate::ui::components::status_center::StatusCenterState,
+        keytips_visible: bool,
+        highlighted_btn: Option<&str>,
+    ) -> impl IntoElement {
         let v_sidebar_toggle = view.clone();
         let v_back = view.clone();
         let v_back_rc = view.clone();
@@ -1771,13 +1874,21 @@ impl NavigationBarView {
                                         }
                                     });
                                 })
-                                .child(
+                                .child(if let Some(icon_path) = bundled_icon_path("sidebar_home.png") {
+                                    gpui::img(icon_path)
+                                        .flex_shrink_0()
+                                        .w(px(15.0))
+                                        .h(px(15.0))
+                                        .object_fit(gpui::ObjectFit::Contain)
+                                        .into_any_element()
+                                } else {
                                     div()
                                         .text_size(px(13.0))
                                         .font_family(UiConstants::FONT_ICONS)
                                         .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                                        .child("\u{E80F}"),
-                                ),
+                                        .child("\u{E80F}")
+                                        .into_any_element()
+                                }),
                         )
                         .child(
                             div()
@@ -1856,6 +1967,12 @@ impl NavigationBarView {
                         let s = crumb_path.to_string_lossy();
                         if s == "/" || s.is_empty() {
                             continue;
+                        } else if s == "Home" {
+                            "Home".to_string()
+                        } else if let Some(drive_label) =
+                            format_drive_root_label(crumb_path.as_path())
+                        {
+                            drive_label
                         } else {
                             s.trim_end_matches(['\\', '/']).to_string()
                         }
@@ -2296,6 +2413,7 @@ impl NavigationBarView {
 
         div()
             .id("navigation-bar")
+            .overflow_visible()
             .flex()
             .items_center()
             .h(Pixels::from(46.0))
@@ -2305,6 +2423,7 @@ impl NavigationBarView {
             .bg(rgba(UiConstants::BG_NAV_BAR_RGBA))
             .child(
                 div()
+                    .overflow_visible()
                     .flex()
                     .items_center()
                     .flex_shrink_0()
@@ -2316,6 +2435,9 @@ impl NavigationBarView {
                         "Toggle sidebar",
                         None,
                         true,
+                        highlighted_btn == Some("nav-sidebar-toggle"),
+                        None,
+                        keytips_visible,
                         view.clone(),
                         move |_, _, cx| {
                             v_sidebar_toggle.update(cx, |this, cx| {
@@ -2335,6 +2457,9 @@ impl NavigationBarView {
                         "Back",
                         Some("Alt+Left"),
                         can_go_back,
+                        highlighted_btn == Some("nav-back"),
+                        Some("B"),
+                        keytips_visible,
                         view.clone(),
                         move |_, _, cx| {
                             v_back.update(cx, |this, cx| {
@@ -2356,6 +2481,9 @@ impl NavigationBarView {
                         "Forward",
                         Some("Alt+Right"),
                         can_go_forward,
+                        highlighted_btn == Some("nav-forward"),
+                        Some("F"),
+                        keytips_visible,
                         view.clone(),
                         move |_, _, cx| {
                             v_forward.update(cx, |this, cx| {
@@ -2377,6 +2505,9 @@ impl NavigationBarView {
                         "Up",
                         Some("Alt+Up"),
                         true,
+                        highlighted_btn == Some("nav-up"),
+                        Some("U"),
+                        keytips_visible,
                         view.clone(),
                         move |_, _, cx| {
                             v_up.update(cx, |this, cx| {
@@ -2392,6 +2523,9 @@ impl NavigationBarView {
                         "Refresh",
                         Some("F5"),
                         true,
+                        highlighted_btn == Some("nav-refresh"),
+                        Some("R"),
+                        keytips_visible,
                         view.clone(),
                         move |_, _, cx| {
                             v_refresh.update(cx, |this, cx| {

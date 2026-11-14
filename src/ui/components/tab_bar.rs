@@ -181,14 +181,17 @@ pub fn tab_slot_x_and_width(index: usize, pinned_count: usize, tab_w: f32) -> (f
 
 /// Extract display label for a `TabState`.
 pub fn tab_display_label(tab: &crate::core::navigation_manager::TabState) -> String {
+    let path_str = tab.path.to_string_lossy();
     if matches!(tab.target, crate::ui::views::types::ViewTarget::Settings) {
         "Settings".to_string()
     } else if matches!(tab.target, crate::ui::views::types::ViewTarget::Home)
-        || tab.path.to_string_lossy() == "Home"
+        || path_str == "Home"
+        || (!matches!(tab.target, crate::ui::views::types::ViewTarget::RecycleBin)
+            && path_str.is_empty())
     {
         "Home".to_string()
     } else if matches!(tab.target, crate::ui::views::types::ViewTarget::RecycleBin)
-        || tab.path.to_string_lossy().contains("RecycleBin")
+        || path_str.contains("RecycleBin")
     {
         "Recycle Bin".to_string()
     } else {
@@ -197,12 +200,12 @@ pub fn tab_display_label(tab: &crate::core::navigation_manager::TabState) -> Str
             .as_path()
             .file_name()
             .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+            .to_string_lossy();
         if p.is_empty() {
-            tab.path.to_string_lossy().to_string()
+            crate::ui::components::sidebar_state::format_drive_root_label(tab.path.as_path())
+                .unwrap_or_else(|| path_str.into_owned())
         } else {
-            p
+            p.into_owned()
         }
     }
 }
@@ -1148,7 +1151,7 @@ impl TabBarView {
         }
     }
 
-    /// Build the icon element for a tab (Settings gear, Home glyph, Recycle Bin glyph, or cached folder thumbnail).
+    /// Build the icon element for a tab (Settings gear, Home icon/glyph, Recycle Bin glyph, or cached folder thumbnail).
     fn build_tab_icon(
         _tab: &crate::core::navigation_manager::TabState,
         is_settings: bool,
@@ -1168,14 +1171,26 @@ impl TabBarView {
                 .child("\u{E713}")
                 .into_any_element()
         } else if is_home {
-            div()
-                .flex_shrink_0()
-                .text_size(px(14.0))
-                .font_family(UiConstants::FONT_MDL2)
-                .text_color(rgba(UiConstants::ACCENT_RGBA))
-                .mr(px(mr))
-                .child("\u{E10F}")
-                .into_any_element()
+            if let Some(path) =
+                crate::ui::components::sidebar_state::bundled_icon_path("sidebar_home.png")
+            {
+                gpui::img(path)
+                    .flex_shrink_0()
+                    .w(px(15.0))
+                    .h(px(15.0))
+                    .mr(px(mr))
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .into_any_element()
+            } else {
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(14.0))
+                    .font_family(UiConstants::FONT_MDL2)
+                    .text_color(rgba(UiConstants::ACCENT_RGBA))
+                    .mr(px(mr))
+                    .child("\u{E10F}")
+                    .into_any_element()
+            }
         } else if is_recycle {
             div()
                 .flex_shrink_0()

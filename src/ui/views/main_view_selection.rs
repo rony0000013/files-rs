@@ -20,6 +20,86 @@ use super::types::{rects_intersect, DragState, LassoState};
 /// Pixel movement threshold to distinguish a click from a file/folder drag gesture.
 pub const FILE_DRAG_THRESHOLD_PX: f32 = 6.0;
 
+/// Maps normalized `zoom` (`0.0..=1.0`) and `compact_mode` onto the 5-step size scale
+/// (`Compact=0`, `Small=1`, `Medium=2`, `Large=3`, `ExtraLarge=4`) used by
+/// `Files-community` Details, List, and Columns views.
+#[inline]
+pub fn size_step_5(zoom: f32, compact: bool) -> usize {
+    if compact {
+        return 0;
+    }
+    let z = zoom.clamp(0.0, 1.0);
+    if z < 0.15 {
+        0
+    } else if z < 0.35 {
+        1
+    } else if z < 0.62 {
+        2
+    } else if z < 0.88 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Canonical `Files-community` `DetailsLayoutPage` metrics for a size step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DetailsLayoutSpec {
+    pub step: usize,
+    pub row_height: f32,
+    pub icon_size: f32,
+    pub icon_box_size: f32,
+    pub header_height: f32,
+    pub name_text_size: f32,
+    pub col_text_size: f32,
+}
+
+/// Canonical `Files-community` `ListView` (`GridLayoutPage`) metrics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListLayoutSpec {
+    pub step: usize,
+    pub cols: usize,
+    pub col_width: f32,
+    pub row_height: f32,
+    pub gap: f32,
+    pub padding: f32,
+    pub icon_size: f32,
+    pub icon_box_size: f32,
+    pub text_size: f32,
+}
+
+/// Canonical `Files-community` `CardsView` (`CardsBrowserTemplate`) metrics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardsLayoutSpec {
+    pub step: usize,
+    pub is_horizontal: bool,
+    pub cols: usize,
+    pub card_width: f32,
+    pub card_height: f32,
+    pub row_height: f32,
+    pub preview_width: f32,
+    pub preview_height: f32,
+    pub details_width: f32,
+    pub details_height: f32,
+    pub icon_size: f32,
+    pub max_lines: usize,
+    pub show_contextual: bool,
+    pub gap: f32,
+    pub padding: f32,
+}
+
+/// Canonical `Files-community` `ColumnLayoutPage` / `ColumnsLayoutPage` metrics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColumnsLayoutSpec {
+    pub step: usize,
+    pub row_height: f32,
+    pub icon_size: f32,
+    pub icon_box_size: f32,
+    pub text_size: f32,
+    pub header_height: f32,
+    pub zoom_scale: f32,
+}
+
 impl MainViewState {
     // ─────────────────────────────────────────────────────────────────────────
     // Lasso (rubber-band) selection
@@ -139,8 +219,7 @@ impl MainViewState {
             let visible = self.visible_items_rc();
             match self.view_mode {
                 ViewMode::Details | ViewMode::Tree => {
-                    let base_row_h = if self.compact_mode { 22.0 } else { 26.0 };
-                    let row_h = (base_row_h + self.zoom_level * 22.0).round();
+                    let row_h = Self::details_layout_spec(self.zoom_level, self.compact_mode).row_height;
                     for (i, &vi) in visible.iter().enumerate() {
                         let y0 = i as f32 * row_h;
                         let item_rect = (point(0.0, y0), point(effective_w, y0 + row_h));
@@ -150,10 +229,9 @@ impl MainViewState {
                     }
                 }
                 ViewMode::Columns => {
-                    let base_r_h = if self.compact_mode { 20.0 } else { 22.0 };
-                    let row_h = (base_r_h + self.zoom_level * 22.0).round();
-                    let zoom_scale = 0.80 + self.zoom_level * 0.55;
-                    let col2_w = (self.column_widths.miller_col2 * zoom_scale)
+                    let spec = Self::columns_layout_spec(self.zoom_level, self.compact_mode);
+                    let row_h = spec.row_height;
+                    let col2_w = (self.column_widths.miller_col2 * spec.zoom_scale)
                         .clamp(160.0, (effective_w * 0.55).max(240.0));
                     for (i, &vi) in visible.iter().enumerate() {
                         let y0 = i as f32 * row_h;
@@ -164,30 +242,38 @@ impl MainViewState {
                     }
                 }
                 ViewMode::List => {
-                    let (cols, col_w, row_h, gap, padding) =
-                        Self::list_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
-                    let cols_safe = cols.max(1);
+                    let spec = Self::list_layout_spec(effective_w, self.zoom_level, self.compact_mode);
+                    let avail_h = self.effective_list_viewport_h();
+                    let total_rows =
+                        Self::list_rows_per_col(visible.len(), spec.cols, spec.row_height, avail_h)
+                            .max(1);
                     for (i, &vi) in visible.iter().enumerate() {
-                        let row = i / cols_safe;
-                        let col = i % cols_safe;
-                        let x0 = padding + col as f32 * (col_w + gap);
-                        let y0 = row as f32 * row_h;
-                        let item_rect = (point(x0, y0), point(x0 + col_w, y0 + row_h));
+                        let col = i / total_rows;
+                        let row = i % total_rows;
+                        let x0 = spec.padding + col as f32 * (spec.col_width + spec.gap);
+                        let y0 = row as f32 * spec.row_height;
+                        let item_rect = (
+                            point(x0, y0),
+                            point(x0 + spec.col_width, y0 + spec.row_height),
+                        );
                         if rects_intersect(item_rect, content_rect) {
                             next_selected.insert(vi);
                         }
                     }
                 }
                 ViewMode::Cards => {
-                    let (cols, card_w, row_h, gap, padding) =
-                        Self::cards_layout_metrics(effective_w, self.zoom_level, self.compact_mode);
-                    let cols_safe = cols.max(1);
+                    let spec =
+                        Self::cards_layout_spec(effective_w, self.zoom_level, self.compact_mode);
+                    let cols_safe = spec.cols.max(1);
                     for (i, &vi) in visible.iter().enumerate() {
                         let row = i / cols_safe;
                         let col = i % cols_safe;
-                        let x0 = padding + col as f32 * (card_w + gap);
-                        let y0 = row as f32 * row_h;
-                        let item_rect = (point(x0, y0), point(x0 + card_w, y0 + row_h));
+                        let x0 = spec.padding + col as f32 * (spec.card_width + spec.gap);
+                        let y0 = row as f32 * spec.row_height;
+                        let item_rect = (
+                            point(x0, y0),
+                            point(x0 + spec.card_width, y0 + spec.card_height),
+                        );
                         if rects_intersect(item_rect, content_rect) {
                             next_selected.insert(vi);
                         }
@@ -197,8 +283,8 @@ impl MainViewState {
                     let cols = Self::grid_columns_for_width(effective_w, self.zoom_level);
                     let params =
                         Self::grid_layout_params_for_width_pub(effective_w, self.zoom_level, cols);
-                    let item_h = if self.compact_mode && self.zoom_level >= 0.22 {
-                        params.item_height - 4.0
+                    let item_h = if self.compact_mode {
+                        (params.item_height - 6.0).max(params.item_width + 44.0)
                     } else {
                         params.item_height
                     };
@@ -231,58 +317,179 @@ impl MainViewState {
         changed
     }
 
+    /// Returns the active list viewport height used by column-major `ListView` wrapping.
+    #[inline]
+    pub fn effective_list_viewport_h(&self) -> f32 {
+        if self.bouncy_scroll.viewport_height > 40.0 {
+            self.bouncy_scroll.viewport_height
+        } else {
+            760.0
+        }
+    }
+
+    /// Canonical `Files-community` `DetailsViewSizeKind` (Compact..ExtraLarge) metrics.
+    pub fn details_layout_spec(zoom: f32, compact: bool) -> DetailsLayoutSpec {
+        const ROW_HEIGHTS: [f32; 5] = [28.0, 36.0, 40.0, 44.0, 48.0];
+        const ICON_SIZES: [f32; 5] = [16.0, 16.0, 20.0, 24.0, 32.0];
+        let step = size_step_5(zoom, compact);
+        let row_height = ROW_HEIGHTS[step];
+        let icon_size = ICON_SIZES[step];
+        DetailsLayoutSpec {
+            step,
+            row_height,
+            icon_size,
+            icon_box_size: icon_size + 4.0,
+            header_height: 40.0,
+            name_text_size: if step == 0 { 13.0 } else { 14.0 },
+            col_text_size: 12.0,
+        }
+    }
+
+    /// Canonical `Files-community` `ColumnsViewSizeKind` (Compact..ExtraLarge) metrics.
+    pub fn columns_layout_spec(zoom: f32, compact: bool) -> ColumnsLayoutSpec {
+        const ROW_HEIGHTS: [f32; 5] = [24.0, 32.0, 36.0, 40.0, 44.0];
+        const ICON_SIZES: [f32; 5] = [16.0, 16.0, 20.0, 24.0, 32.0];
+        let step = size_step_5(zoom, compact);
+        let row_height = ROW_HEIGHTS[step];
+        let icon_size = ICON_SIZES[step];
+        let z = zoom.clamp(0.0, 1.0);
+        ColumnsLayoutSpec {
+            step,
+            row_height,
+            icon_size,
+            icon_box_size: icon_size + 4.0,
+            text_size: if step == 0 { 13.0 } else { 14.0 },
+            header_height: 36.0,
+            // Keep blade columns readable even at Compact/Small instead of shrinking to 130px.
+            zoom_scale: (0.94 + z * 0.18).clamp(0.94, 1.12),
+        }
+    }
+
+    /// Canonical `Files-community` `ListViewSizeKind` (`260px` column width, `24..44px` row heights).
+    pub fn list_layout_spec(pane_w: f32, zoom: f32, compact: bool) -> ListLayoutSpec {
+        const ROW_HEIGHTS: [f32; 5] = [24.0, 32.0, 36.0, 40.0, 44.0];
+        const ICON_SIZES: [f32; 5] = [16.0, 16.0, 20.0, 24.0, 32.0];
+        let step = size_step_5(zoom, compact);
+        let row_height = ROW_HEIGHTS[step];
+        let icon_size = ICON_SIZES[step];
+        let padding = 8.0;
+        let gap = 4.0;
+        let avail = (pane_w - padding * 2.0).max(160.0);
+        let col_width = 260.0_f32.min(avail).max(160.0);
+        let cols = (((avail + gap) / (col_width + gap)).floor() as usize).clamp(1, 12);
+        ListLayoutSpec {
+            step,
+            cols,
+            col_width,
+            row_height,
+            gap,
+            padding,
+            icon_size,
+            icon_box_size: icon_size + 4.0,
+            text_size: if step == 0 { 13.0 } else { 14.0 },
+        }
+    }
+
+    /// Computes vertical-wrap row count per column for column-major `ListView` layout
+    /// so smaller/medium lists stack in Column 0 and wrap into Column 1 when viewport height fills,
+    /// while huge directories stay evenly distributed and virtualized under `uniform_list`.
+    #[inline]
+    pub fn list_rows_per_col(total_items: usize, cols_fit: usize, row_h: f32, avail_h: f32) -> usize {
+        if total_items == 0 {
+            return 0;
+        }
+        let cols = cols_fit.max(1);
+        let safe_h = if avail_h > 40.0 { avail_h } else { 760.0 };
+        let rows_fit = ((safe_h / row_h.max(1.0)).floor() as usize).max(1);
+        let min_rows_for_cols = total_items.div_ceil(cols);
+        rows_fit.max(min_rows_for_cols).min(total_items)
+    }
+
     /// Multi-column list layout metrics shared between `ListView` rendering,
     /// rubber-band lasso hit-testing, and 2D keyboard navigation.
-    /// Reserves vertical height for up to 3 wrapped lines of filename text so cells never overlap.
     /// Returns `(cols, col_width, row_height, gap, horizontal_padding)`.
     pub fn list_layout_metrics(
         pane_w: f32,
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
+        let s = Self::list_layout_spec(pane_w, zoom, compact);
+        (s.cols, s.col_width, s.row_height, s.gap, s.padding)
+    }
+
+    /// Canonical `Files-community` `CardsViewSizeKind` (Small..ExtraLarge) metrics.
+    pub fn cards_layout_spec(pane_w: f32, zoom: f32, compact: bool) -> CardsLayoutSpec {
         let z = zoom.clamp(0.0, 1.0);
-        let text_size = (10.0 + z * 5.0).clamp(10.0, 15.5);
-        let line_h = (text_size * 1.25).ceil();
-        let row_h = if compact {
-            (line_h + 6.0 + z * 36.0).round()
+        let step = if compact || z < 0.28 {
+            0 // Small (Horizontal 300x104)
+        } else if z < 0.62 {
+            1 // Medium (Vertical 240x240)
+        } else if z < 0.88 {
+            2 // Large (Vertical 280x272)
         } else {
-            (line_h * 1.5 + 8.0 + z * 44.0).round()
+            3 // ExtraLarge (Vertical 320x288)
         };
-        let padding = 10.0;
-        let gap = (4.0 + z * 8.0).round();
-        let min_col_w = (130.0 + z * 280.0).clamp(120.0, 480.0);
-        let avail = (pane_w - padding * 2.0).max(min_col_w);
-        let cols = (((avail + gap) / (min_col_w + gap)).floor() as usize).clamp(1, 8);
-        let col_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
-            .floor()
-            .max(120.0);
-        (cols, col_w, row_h, gap, padding)
+
+        let (
+            is_horizontal,
+            raw_card_w,
+            card_h,
+            raw_preview_w,
+            preview_h,
+            raw_details_w,
+            details_h,
+            icon_size,
+            max_lines,
+            show_contextual,
+        ): (bool, f32, f32, f32, f32, f32, f32, f32, usize, bool) = match step {
+            0 => (true, 300.0, 104.0, 104.0, 104.0, 196.0, 104.0, 64.0, 2, false),
+            1 => (false, 240.0, 240.0, 240.0, 96.0, 240.0, 144.0, 64.0, 2, true),
+            2 => (false, 280.0, 272.0, 280.0, 128.0, 280.0, 144.0, 80.0, 2, true),
+            _ => (false, 320.0, 288.0, 320.0, 160.0, 320.0, 128.0, 96.0, 1, true),
+        };
+
+        let padding = 8.0;
+        let gap = 8.0;
+        let avail = (pane_w - padding * 2.0).max(160.0);
+        let card_width = raw_card_w.min(avail).max(160.0);
+        let cols = (((avail + gap) / (card_width + gap)).floor() as usize).clamp(1, 8);
+        let (preview_width, details_width) = if is_horizontal {
+            let pw = raw_preview_w.min(card_width * 0.45);
+            let dw = (card_width - pw).max(80.0);
+            (pw, dw)
+        } else {
+            let _ = (raw_preview_w, raw_details_w);
+            (card_width, card_width)
+        };
+
+        CardsLayoutSpec {
+            step,
+            is_horizontal,
+            cols,
+            card_width,
+            card_height: card_h,
+            row_height: card_h + gap,
+            preview_width,
+            preview_height: preview_h,
+            details_width,
+            details_height: details_h,
+            icon_size,
+            max_lines,
+            show_contextual,
+            gap,
+            padding,
+        }
     }
 
     /// `Files-community` Cards (Tiles) view layout metrics.
-    /// Reserves height for title + metadata subtitle across a wide dynamic zoom range (0% to 100%).
     /// Returns `(cols, card_width, row_height, gap, horizontal_padding)`.
     pub fn cards_layout_metrics(
         pane_w: f32,
         zoom: f32,
         compact: bool,
     ) -> (usize, f32, f32, f32, f32) {
-        let z = zoom.clamp(0.0, 1.0);
-        let title_size = (10.5 + z * 5.0).clamp(10.5, 16.0);
-        let title_line_h = (title_size * 1.25).ceil();
-        let sub_size = (9.0 + z * 3.5).clamp(9.0, 13.0);
-        let sub_line_h = (sub_size * 1.25).ceil();
-        let padding_vert = if compact { 8.0 + z * 10.0 } else { 12.0 + z * 24.0 };
-        let row_h = (title_line_h * 2.0 + sub_line_h + padding_vert + z * 56.0).round().clamp(48.0, 150.0);
-        let padding = 12.0;
-        let gap = (6.0 + z * 10.0).round();
-        let min_card_w = (170.0 + z * 290.0).clamp(160.0, 520.0);
-        let avail = (pane_w - padding * 2.0).max(min_card_w);
-        let cols = (((avail + gap) / (min_card_w + gap)).floor() as usize).clamp(1, 8);
-        let card_w = ((avail - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
-            .floor()
-            .max(150.0);
-        (cols, card_w, row_h, gap, padding)
+        let s = Self::cards_layout_spec(pane_w, zoom, compact);
+        (s.cols, s.card_width, s.row_height, s.gap, s.padding)
     }
 
     /// End lasso selection and apply it to `selected_indices`.
@@ -513,5 +720,115 @@ impl MainViewState {
                 self.selected_indices.insert(idx);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod view_layout_tests {
+    use super::MainViewState;
+
+    #[::core::prelude::v1::test]
+    fn grid_view_matches_files_community_steps_and_square_bounds() {
+        let small = MainViewState::grid_layout_params(0.0);
+        assert_eq!(small.item_width, 80.0);
+        assert_eq!(small.icon_size, 60.0);
+        assert_eq!(small.rounded, 8.0);
+        assert_eq!(small.item_height, 136.0);
+
+        let mid = MainViewState::grid_layout_params(0.45);
+        assert_eq!(mid.item_width, 180.0);
+        assert_eq!(mid.icon_size, 156.0);
+        assert_eq!(mid.item_height, 236.0);
+
+        let large = MainViewState::grid_layout_params(1.0);
+        assert_eq!(large.item_width, 300.0);
+        assert_eq!(large.icon_size, 276.0);
+        assert_eq!(large.item_height, 356.0);
+
+        // No 1.32x width distortion when fitting wide panes
+        let cols = MainViewState::grid_columns_for_width(1400.0, 0.45);
+        let fitted = MainViewState::grid_layout_params_for_width_pub(1400.0, 0.45, cols);
+        assert_eq!(fitted.item_width, 180.0);
+    }
+
+    #[test]
+    fn details_view_matches_files_community_5_steps() {
+        let compact = MainViewState::details_layout_spec(0.0, false);
+        assert_eq!((compact.row_height, compact.icon_size), (28.0, 16.0));
+        assert_eq!(compact.header_height, 40.0);
+
+        let small = MainViewState::details_layout_spec(0.25, false);
+        assert_eq!((small.row_height, small.icon_size), (36.0, 16.0));
+
+        let mid = MainViewState::details_layout_spec(0.45, false);
+        assert_eq!((mid.row_height, mid.icon_size), (40.0, 20.0));
+
+        let large = MainViewState::details_layout_spec(0.75, false);
+        assert_eq!((large.row_height, large.icon_size), (44.0, 24.0));
+
+        let xl = MainViewState::details_layout_spec(1.0, false);
+        assert_eq!((xl.row_height, xl.icon_size), (48.0, 32.0));
+
+        let forced_compact = MainViewState::details_layout_spec(1.0, true);
+        assert_eq!((forced_compact.row_height, forced_compact.icon_size), (28.0, 16.0));
+    }
+
+    #[test]
+    fn cards_view_matches_files_community_4_steps_and_orientation() {
+        let small = MainViewState::cards_layout_spec(1400.0, 0.0, false);
+        assert!(small.is_horizontal);
+        assert_eq!((small.card_width, small.card_height), (300.0, 104.0));
+        assert_eq!((small.preview_width, small.preview_height, small.icon_size), (104.0, 104.0, 64.0));
+        assert!(!small.show_contextual);
+
+        let mid = MainViewState::cards_layout_spec(1400.0, 0.4, false);
+        assert!(!mid.is_horizontal);
+        assert_eq!((mid.card_width, mid.card_height), (240.0, 240.0));
+        assert_eq!((mid.preview_width, mid.preview_height, mid.icon_size), (240.0, 96.0, 64.0));
+        assert!(mid.show_contextual);
+
+        let large = MainViewState::cards_layout_spec(1400.0, 0.75, false);
+        assert!(!large.is_horizontal);
+        assert_eq!((large.card_width, large.card_height), (280.0, 272.0));
+        assert_eq!((large.preview_width, large.preview_height, large.icon_size), (280.0, 128.0, 80.0));
+
+        let xl = MainViewState::cards_layout_spec(1400.0, 1.0, false);
+        assert!(!xl.is_horizontal);
+        assert_eq!((xl.card_width, xl.card_height), (320.0, 288.0));
+        assert_eq!((xl.preview_width, xl.preview_height, xl.icon_size), (320.0, 160.0, 96.0));
+        assert_eq!(xl.max_lines, 1);
+    }
+
+    #[test]
+    fn list_view_matches_files_community_260px_col_and_vertical_wrap() {
+        let compact = MainViewState::list_layout_spec(1400.0, 0.0, false);
+        assert_eq!(compact.col_width, 260.0);
+        assert_eq!((compact.row_height, compact.icon_size), (24.0, 16.0));
+
+        let mid = MainViewState::list_layout_spec(1400.0, 0.45, false);
+        assert_eq!((mid.row_height, mid.icon_size), (36.0, 20.0));
+
+        let xl = MainViewState::list_layout_spec(1400.0, 1.0, false);
+        assert_eq!((xl.row_height, xl.icon_size), (44.0, 32.0));
+
+        // 27 items at 44px row height in 1040px tall viewport -> 23 rows in col 0, 4 in col 1
+        let rows = MainViewState::list_rows_per_col(27, xl.cols, xl.row_height, 1040.0);
+        assert_eq!(rows, 23);
+
+        // 27 items at 24px row height in 1040px tall viewport -> all 27 fit in col 0
+        let rows_compact = MainViewState::list_rows_per_col(27, compact.cols, compact.row_height, 1040.0);
+        assert_eq!(rows_compact, 27);
+    }
+
+    #[test]
+    fn columns_view_matches_files_community_5_steps() {
+        let compact = MainViewState::columns_layout_spec(0.0, false);
+        assert_eq!((compact.row_height, compact.icon_size), (24.0, 16.0));
+
+        let mid = MainViewState::columns_layout_spec(0.45, false);
+        assert_eq!((mid.row_height, mid.icon_size), (36.0, 20.0));
+
+        let xl = MainViewState::columns_layout_spec(1.0, false);
+        assert_eq!((xl.row_height, xl.icon_size), (44.0, 32.0));
     }
 }

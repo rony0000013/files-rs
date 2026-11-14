@@ -5637,6 +5637,72 @@ impl AppWindow {
             })
             .detach();
     }
+
+    /// Toggle expansion of a directory node in the sidebar tree and lazily load its immediate subfolders.
+    pub fn toggle_sidebar_item_expand(&mut self, path: FilesPath, cx: &mut Context<Self>) {
+        if self.state.sidebar.expanded_paths.remove(&path) {
+            cx.notify();
+            return;
+        }
+
+        self.state.sidebar.expanded_paths.insert(path.clone());
+        if self.state.sidebar.tree_children.contains_key(&path)
+            || self.state.sidebar.tree_loading.contains(&path)
+        {
+            cx.notify();
+            return;
+        }
+
+        self.state.sidebar.tree_loading.insert(path.clone());
+        cx.notify();
+
+        let mut async_cx = cx.to_async();
+        let weak = cx.weak_entity();
+        let target_path = path.clone();
+
+        let bg = cx.background_executor().spawn(async move {
+            let mut children = Vec::new();
+            let Ok(entries) = std::fs::read_dir(path.as_path()) else {
+                return children;
+            };
+            for entry in entries.flatten() {
+                if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                    continue;
+                }
+                let label = entry.file_name().to_string_lossy().into_owned();
+                if label.eq_ignore_ascii_case("$RECYCLE.BIN")
+                    || label.eq_ignore_ascii_case("System Volume Information")
+                {
+                    continue;
+                }
+                let sub_path = entry.path();
+                let has_subfolders = std::fs::read_dir(&sub_path).is_ok_and(|sub_entries| {
+                    sub_entries
+                        .flatten()
+                        .any(|sub_entry| sub_entry.file_type().is_ok_and(|ft| ft.is_dir()))
+                });
+                children.push(crate::ui::components::sidebar_state::SidebarTreeChild {
+                    path: FilesPath::from(sub_path),
+                    label,
+                    has_subfolders,
+                });
+            }
+            children.sort_by(|a, b| crate::ui::views::helpers::natural_cmp(&a.label, &b.label));
+            children
+        });
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let children = bg.await;
+                let _ = weak.update(&mut async_cx, |this, cx| {
+                    this.state.sidebar.tree_loading.remove(&target_path);
+                    this.state.sidebar.tree_children.insert(target_path, children);
+                    this.load_sidebar_shell_icons(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+    }
 }
 
 

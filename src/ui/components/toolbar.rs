@@ -26,6 +26,128 @@ use std::sync::LazyLock;
 
 pub struct ToolbarView;
 
+const HIGHLIGHT_BG_RGBA: u32 = 0xFFFFFF22;
+const HIGHLIGHT_BORDER_RGBA: u32 = 0x60CDFF88;
+
+/// Canonical `(button_id, keytip)` mappings for the unibody command bar.
+const TOOLBAR_KEYTIPS: &[(&str, &str)] = &[
+    ("tb-new", "W"),
+    ("tb-cut", "X"),
+    ("tb-copy", "C"),
+    ("tb-paste", "V"),
+    ("tb-rename", "M"),
+    ("tb-share", "H"),
+    ("tb-delete", "D"),
+    ("tb-props", "O"),
+    ("tb-filter", "F"),
+    ("tb-sel", "S"),
+    ("tb-sort", "A"),
+    ("tb-group", "G"),
+    ("tb-layout", "L"),
+    ("tb-pane", "P"),
+];
+
+#[inline]
+fn toolbar_keytip_for(button_id: &str) -> Option<&'static str> {
+    TOOLBAR_KEYTIPS
+        .iter()
+        .find(|(id, _)| *id == button_id)
+        .map(|(_, key)| *key)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ToolbarKeyTip {
+    key: Option<&'static str>,
+    visible: bool,
+    highlighted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonHighlightStyle {
+    Normal,
+    Active,
+    Highlighted,
+}
+
+impl ButtonHighlightStyle {
+    #[inline]
+    fn from_flags(is_highlighted: bool, is_active: bool) -> Self {
+        if is_highlighted {
+            Self::Highlighted
+        } else if is_active {
+            Self::Active
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// Extension trait for explicitly setting `Overflow::Visible` on GPUI elements
+/// (`gpui 0.2.2` only generates `overflow_hidden` helpers on `Styled`).
+trait OverflowVisibleExt: Styled + Sized {
+    fn overflow_visible(mut self) -> Self {
+        self.style().overflow.x = Some(Overflow::Visible);
+        self.style().overflow.y = Some(Overflow::Visible);
+        self
+    }
+}
+
+impl<T: Styled + Sized> OverflowVisibleExt for T {}
+
+fn apply_highlight_or_active_chrome<T: Styled>(
+    el: T,
+    style: ButtonHighlightStyle,
+    active_bg_rgba: u32,
+) -> T {
+    match style {
+        ButtonHighlightStyle::Highlighted => el
+            .bg(rgba(HIGHLIGHT_BG_RGBA))
+            .border_1()
+            .border_color(rgba(HIGHLIGHT_BORDER_RGBA)),
+        ButtonHighlightStyle::Active => el
+            .bg(rgba(active_bg_rgba))
+            .border_1()
+            .border_color(rgba(0x60CDFF66u32)),
+        ButtonHighlightStyle::Normal => el,
+    }
+}
+
+fn keytip_badge_overlay(key: &str) -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom(px(-6.0))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .bg(rgb(0x2B2B2Bu32))
+                .border_1()
+                .border_color(rgba(0xFFFFFF40u32))
+                .rounded(px(4.0))
+                .px(px(5.0))
+                .py(px(1.0))
+                .shadow_sm()
+                .whitespace_nowrap()
+                .font_family(UiConstants::FONT_MAIN)
+                .text_size(px(10.0))
+                .line_height(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(0xFFFFFFu32))
+                .child(key.to_string()),
+        )
+}
+
+fn maybe_attach_keytip<T: ParentElement>(el: T, keytip: ToolbarKeyTip) -> T {
+    if keytip.visible {
+        if let Some(key) = keytip.key {
+            return el.child(keytip_badge_overlay(key));
+        }
+    }
+    el
+}
+
 impl ToolbarView {
     /// Legacy compatibility builder.
     pub fn build(
@@ -58,6 +180,7 @@ impl ToolbarView {
             false,
             false,
             0,
+            None,
             view,
         )
     }
@@ -118,6 +241,7 @@ impl ToolbarView {
             selected_is_archive,
             selected_is_image,
             mv.recycle_bin_items.len(),
+            Some(state),
             view,
         )
     }
@@ -130,7 +254,7 @@ impl ToolbarView {
         has_selection: bool,
         single_selection: bool,
         has_clipboard: bool,
-        filter_text: String,
+        _filter_text: String,
         show_filter_bar: bool,
         show_labels: bool,
         sort_col: &SortBy,
@@ -142,6 +266,7 @@ impl ToolbarView {
         selected_is_archive: bool,
         selected_is_image: bool,
         recycle_bin_count: usize,
+        app_state: Option<&AppState>,
         view: Entity<crate::app::AppWindow>,
     ) -> impl IntoElement {
         let is_recycle_bin = matches!(target, ViewTarget::RecycleBin);
@@ -149,9 +274,16 @@ impl ToolbarView {
         let is_settings = matches!(target, ViewTarget::Settings);
         let can_modify_dir = !is_recycle_bin && !is_home && !is_settings;
         let active_flyout = toolbar_customization.active_flyout.as_deref();
+        let keytips_visible = app_state.is_some_and(|s| s.keytips_visible);
+        let keytip_for = |id: &'static str| ToolbarKeyTip {
+            key: toolbar_keytip_for(id),
+            visible: keytips_visible,
+            highlighted: app_state.is_some_and(|s| s.is_button_highlighted(id)),
+        };
 
         let mut toolbar = div()
             .id("unibody-command-bar")
+            .overflow_visible()
             .flex()
             .flex_row()
             .items_center()
@@ -174,33 +306,42 @@ impl ToolbarView {
         // ═════════════════════════════════════════════════════════════════════
         // LEFT-ALIGNED GROUP: ContextCommandBar (`Toolbar.xaml` parity)
         // ═════════════════════════════════════════════════════════════════════
-        let mut left_group = div().flex().flex_row().items_center().gap(px(3.0));
+        let mut left_group = div()
+            .overflow_visible()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(3.0));
 
         // 1. `+ New ⌄` Split Button
         if toolbar_customization.is_visible("new_folder")
             || toolbar_customization.is_visible("new_file")
         {
             let new_flyout_open = active_flyout == Some("new");
+            let new_keytip = keytip_for("tb-new");
+            let new_chrome =
+                ButtonHighlightStyle::from_flags(new_keytip.highlighted, new_flyout_open);
             let v_new_primary = view.clone();
             let v_new_flyout = view.clone();
 
-            let split_pill = div()
+            let mut split_pill = div()
+                .id("tb-new")
+                .relative()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h(px(30.0))
-                .rounded(px(6.0))
-                .bg(if new_flyout_open {
-                    rgba(0x60CDFF24u32)
-                } else {
-                    rgba(0xFFFFFF0Du32)
-                })
-                .border(px(1.0))
-                .border_color(if new_flyout_open {
-                    rgba(0x60CDFF66u32)
-                } else {
-                    rgba(0xFFFFFF18u32)
-                })
+                .rounded(px(6.0));
+            split_pill = match new_chrome {
+                ButtonHighlightStyle::Highlighted | ButtonHighlightStyle::Active => {
+                    apply_highlight_or_active_chrome(split_pill, new_chrome, 0x60CDFF24u32)
+                }
+                ButtonHighlightStyle::Normal => split_pill
+                    .bg(rgba(0xFFFFFF0Du32))
+                    .border(px(1.0))
+                    .border_color(rgba(0xFFFFFF18u32)),
+            };
+            split_pill = split_pill
                 .opacity(if can_modify_dir { 1.0 } else { 0.45 })
                 .child(
                     div()
@@ -244,6 +385,7 @@ impl ToolbarView {
                             if can_modify_dir {
                                 v_new_primary.update(cx, |this, cx| {
                                     this.stop_button_tooltip(cx);
+                                    this.state.trigger_button_highlight("tb-new");
                                     this.close_toolbar_flyout(cx);
                                     this.new_folder(cx);
                                 });
@@ -306,6 +448,7 @@ impl ToolbarView {
                             if can_modify_dir {
                                 v_new_flyout.update(cx, |this, cx| {
                                     this.stop_button_tooltip(cx);
+                                    this.state.trigger_button_highlight("tb-new");
                                     this.toggle_toolbar_flyout("new", cx);
                                 });
                             }
@@ -318,6 +461,7 @@ impl ToolbarView {
                                 .child("\u{E70D}"),
                         ),
                 );
+            let split_pill = maybe_attach_keytip(split_pill, new_keytip);
 
             left_group = left_group.child(split_pill);
             left_group = left_group.child(ToolbarDivider::build());
@@ -334,9 +478,11 @@ impl ToolbarView {
                 Some("Ctrl+X"),
                 has_selection && can_modify_dir,
                 false,
+                keytip_for("tb-cut"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-cut");
                         this.close_toolbar_flyout(cx);
                         this.cut_selected(cx);
                     });
@@ -354,9 +500,11 @@ impl ToolbarView {
                 Some("Ctrl+C"),
                 has_selection && can_modify_dir,
                 false,
+                keytip_for("tb-copy"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-copy");
                         this.close_toolbar_flyout(cx);
                         this.copy_selected(cx);
                     });
@@ -374,9 +522,11 @@ impl ToolbarView {
                 Some("Ctrl+V"),
                 has_clipboard && can_modify_dir,
                 false,
+                keytip_for("tb-paste"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-paste");
                         this.close_toolbar_flyout(cx);
                         this.paste(cx);
                     });
@@ -395,11 +545,14 @@ impl ToolbarView {
                 Some("F2"),
                 single_selection && can_modify_dir,
                 false,
+                keytip_for("tb-rename"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-rename");
                         this.close_toolbar_flyout(cx);
                         this.rename_selected(cx);
+                        cx.notify();
                     });
                 },
             ));
@@ -415,11 +568,14 @@ impl ToolbarView {
                 None,
                 has_selection && can_modify_dir,
                 false,
+                keytip_for("tb-share"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-share");
                         this.close_toolbar_flyout(cx);
                         this.share_selected(cx);
+                        cx.notify();
                     });
                 },
             ));
@@ -435,15 +591,18 @@ impl ToolbarView {
                 Some("Del"),
                 has_selection && (!is_home && !is_settings),
                 false,
+                keytip_for("tb-delete"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-delete");
                         this.close_toolbar_flyout(cx);
                         if matches!(this.state.main_view.target, ViewTarget::RecycleBin) {
                             this.delete_selected_recycle_bin(cx);
                         } else {
                             this.delete_selected(cx);
                         }
+                        cx.notify();
                     });
                 },
             ));
@@ -452,18 +611,21 @@ impl ToolbarView {
         {
             let v = view.clone();
             left_group = left_group.child(ToolbarButton::build_with_tooltip(
-                "tb-properties",
+                "tb-props",
                 "\u{E946}",
                 if show_labels { Some("Properties") } else { None },
                 "Properties",
                 Some("Alt+Enter"),
                 can_modify_dir,
                 false,
+                keytip_for("tb-props"),
                 view.clone(),
                 move |_, _, cx| {
                     v.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-props");
                         this.close_toolbar_flyout(cx);
                         this.open_properties_for_selected(cx);
+                        cx.notify();
                     });
                 },
             ));
@@ -587,7 +749,37 @@ impl ToolbarView {
         // ═════════════════════════════════════════════════════════════════════
         // RIGHT-ALIGNED GROUP: BaseCommandBar (`Toolbar.xaml` parity)
         // ═════════════════════════════════════════════════════════════════════
-        let mut right_group = div().flex().flex_row().items_center().gap(px(4.0));
+        let mut right_group = div()
+            .overflow_visible()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0));
+
+        // 0. Filter Toggle Button (`\u{E71C}`)
+        if toolbar_customization.is_visible("filter") {
+            let v_filter = view.clone();
+            right_group = right_group.child(ToolbarButton::build_with_tooltip(
+                "tb-filter",
+                "\u{E71C}",
+                if show_labels { Some("Filter") } else { None },
+                "Filter items",
+                None,
+                true,
+                show_filter_bar,
+                keytip_for("tb-filter"),
+                view.clone(),
+                move |_, _, cx| {
+                    v_filter.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-filter");
+                        this.close_toolbar_flyout(cx);
+                        this.state.main_view.show_filter_bar =
+                            !this.state.main_view.show_filter_bar;
+                        cx.notify();
+                    });
+                },
+            ));
+        }
 
         // 1. Selection Options Flyout (`\u{E762} ⌄`)
         {
@@ -600,10 +792,12 @@ impl ToolbarView {
                 "Selection options",
                 Some("Ctrl+A"),
                 sel_open,
+                keytip_for("tb-sel"),
                 view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_sel.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-sel");
                         this.toggle_toolbar_flyout("selection", cx);
                     });
                 },
@@ -635,10 +829,12 @@ impl ToolbarView {
                 "Sort options",
                 None,
                 sort_open,
+                keytip_for("tb-sort"),
                 view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_sort.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-sort");
                         this.toggle_toolbar_flyout("sort", cx);
                     });
                 },
@@ -673,10 +869,12 @@ impl ToolbarView {
                 "Group by options",
                 None,
                 group_open,
+                keytip_for("tb-group"),
                 view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_group.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-group");
                         this.toggle_toolbar_flyout("group", cx);
                     });
                 },
@@ -706,10 +904,12 @@ impl ToolbarView {
                 "View layout options",
                 None,
                 layout_open,
+                keytip_for("tb-layout"),
                 view.clone(),
                 move |_, _, cx| {
                     cx.stop_propagation();
                     v_layout.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-layout");
                         this.toggle_toolbar_flyout("layout", cx);
                     });
                 },
@@ -732,9 +932,11 @@ impl ToolbarView {
                 Some("Ctrl+Shift+P"),
                 true,
                 pane_open,
+                keytip_for("tb-pane"),
                 view.clone(),
                 move |_, _, cx| {
                     v_pane.update(cx, |this, cx| {
+                        this.state.trigger_button_highlight("tb-pane");
                         this.close_toolbar_flyout(cx);
                         if matches!(this.state.main_view.side_pane, SidePaneMode::None) {
                             this.state.main_view.side_pane = SidePaneMode::Details;
@@ -753,6 +955,7 @@ impl ToolbarView {
         toolbar
     }
 
+    #[allow(dead_code)]
     fn build_dropdown_trigger(
         glyph: &str,
         label: Option<&str>,
@@ -809,6 +1012,7 @@ impl ToolbarView {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_dropdown_trigger_with_tooltip(
         id: impl Into<ElementId>,
         glyph: &str,
@@ -816,6 +1020,7 @@ impl ToolbarView {
         tip_text: &'static str,
         tip_shortcut: Option<&'static str>,
         is_open: bool,
+        keytip: ToolbarKeyTip,
         view: Entity<crate::app::AppWindow>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
@@ -823,8 +1028,10 @@ impl ToolbarView {
         let v_click = view.clone();
         let text = tip_text.to_string();
         let shortcut = tip_shortcut.map(|s| s.to_string());
+        let chrome_style = ButtonHighlightStyle::from_flags(keytip.highlighted, is_open);
 
         let mut btn = div()
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -834,16 +1041,13 @@ impl ToolbarView {
             .rounded(px(6.0))
             .cursor_pointer();
 
-        if is_open {
-            btn = btn
-                .bg(rgba(0x60CDFF24u32))
-                .border(px(1.0))
-                .border_color(rgba(0x60CDFF66u32));
-        } else {
+        btn = apply_highlight_or_active_chrome(btn, chrome_style, 0x60CDFF24u32);
+        if chrome_style == ButtonHighlightStyle::Normal {
             btn = btn.hover(|s| s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)));
         }
 
-        let mut final_btn = btn.id(id)
+        let mut final_btn = btn
+            .id(id)
             .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
                 let pos = window.mouse_position();
                 let t = text.clone();
@@ -885,13 +1089,15 @@ impl ToolbarView {
             );
         }
 
-        final_btn.child(
+        let final_btn = final_btn.child(
             div()
                 .text_size(px(9.0))
                 .font_family(UiConstants::FONT_ICONS)
                 .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
                 .child("\u{E70D}"),
-        )
+        );
+
+        maybe_attach_keytip(final_btn, keytip)
     }
 
     /// Render the floating WinUI 3 Flyout Menu when a Top Ribbon dropdown (`"new"`, `"selection"`, `"sort"`, `"layout"`) is open.
@@ -1504,6 +1710,7 @@ impl ToolbarButton {
         btn
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_with_tooltip(
         id: impl Into<ElementId>,
         glyph: &str,
@@ -1512,6 +1719,7 @@ impl ToolbarButton {
         tip_shortcut: Option<&'static str>,
         is_enabled: bool,
         is_toggled: bool,
+        keytip: ToolbarKeyTip,
         view: Entity<crate::app::AppWindow>,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
@@ -1519,8 +1727,10 @@ impl ToolbarButton {
         let v_click = view.clone();
         let text = tip_text.to_string();
         let shortcut = tip_shortcut.map(|s| s.to_string());
+        let chrome_style = ButtonHighlightStyle::from_flags(keytip.highlighted, is_toggled);
 
         let mut btn = div()
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -1531,24 +1741,17 @@ impl ToolbarButton {
             .px(if label.is_some() { px(9.0) } else { px(7.0) })
             .rounded(px(6.0));
 
-        if is_toggled {
-            btn = btn
-                .bg(rgba(0x60CDFF22u32))
-                .border(px(1.0))
-                .border_color(rgba(0x60CDFF66u32));
-        }
+        btn = apply_highlight_or_active_chrome(btn, chrome_style, 0x60CDFF22u32);
 
         let stateful = btn.id(id);
 
         let final_btn = if is_enabled {
             stateful
                 .cursor_pointer()
-                .hover(|s| {
-                    if is_toggled {
-                        s.bg(rgba(0x60CDFF32u32))
-                    } else {
-                        s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA))
-                    }
+                .hover(move |s| match chrome_style {
+                    ButtonHighlightStyle::Highlighted => s.bg(rgba(HIGHLIGHT_BG_RGBA)),
+                    ButtonHighlightStyle::Active => s.bg(rgba(0x60CDFF32u32)),
+                    ButtonHighlightStyle::Normal => s.bg(rgba(UiConstants::BG_ITEM_HOVER_RGBA)),
                 })
                 .on_hover(move |hovering: &bool, window: &mut Window, cx: &mut App| {
                     let pos = window.mouse_position();
@@ -1602,7 +1805,7 @@ impl ToolbarButton {
             );
         }
 
-        elem
+        maybe_attach_keytip(elem, keytip)
     }
 }
 
@@ -1615,5 +1818,65 @@ impl ToolbarDivider {
             .h(px(18.0))
             .mx(px(4.0))
             .bg(rgba(UiConstants::DIVIDER_RGBA))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[::core::prelude::rust_2024::test]
+    fn test_toolbar_keytip_mappings() {
+        let expected = [
+            ("tb-new", "W"),
+            ("tb-cut", "X"),
+            ("tb-copy", "C"),
+            ("tb-paste", "V"),
+            ("tb-rename", "M"),
+            ("tb-share", "H"),
+            ("tb-delete", "D"),
+            ("tb-props", "O"),
+            ("tb-filter", "F"),
+            ("tb-sel", "S"),
+            ("tb-sort", "A"),
+            ("tb-group", "G"),
+            ("tb-layout", "L"),
+            ("tb-pane", "P"),
+        ];
+
+        assert_eq!(TOOLBAR_KEYTIPS.len(), expected.len());
+        let mut seen_keys = HashSet::new();
+        for (id, key) in expected {
+            assert_eq!(toolbar_keytip_for(id), Some(key));
+            assert!(seen_keys.insert(key), "Duplicate toolbar keytip: {key}");
+        }
+        assert_eq!(toolbar_keytip_for("tb-unknown"), None);
+    }
+
+    #[::core::prelude::rust_2024::test]
+    fn test_toolbar_filter_visible_by_default() {
+        let customization = ToolbarCustomizationState::default();
+        assert!(customization.is_visible("filter"));
+    }
+
+    #[::core::prelude::rust_2024::test]
+    fn test_button_highlight_style_precedence() {
+        assert_eq!(
+            ButtonHighlightStyle::from_flags(true, true),
+            ButtonHighlightStyle::Highlighted
+        );
+        assert_eq!(
+            ButtonHighlightStyle::from_flags(true, false),
+            ButtonHighlightStyle::Highlighted
+        );
+        assert_eq!(
+            ButtonHighlightStyle::from_flags(false, true),
+            ButtonHighlightStyle::Active
+        );
+        assert_eq!(
+            ButtonHighlightStyle::from_flags(false, false),
+            ButtonHighlightStyle::Normal
+        );
     }
 }

@@ -31,7 +31,11 @@ impl MainViewState {
             pane_type: PaneType::Single,
             dual_pane_split: DualPaneSplit::Horizontal,
             view_mode,
-            target: ViewTarget::Directory(root.clone()),
+            target: if root.to_string_lossy().is_empty() || root.to_string_lossy() == "Home" {
+                ViewTarget::Home
+            } else {
+                ViewTarget::Directory(root.clone())
+            },
             primary_path: root,
             secondary_path: None,
             items: Vec::new(),
@@ -76,6 +80,7 @@ impl MainViewState {
             tags_cache: std::collections::HashMap::new(),
             home_tags_cache: Vec::new(),
             icon_paths: std::collections::HashMap::new(),
+            home_shell_icons: std::collections::HashMap::new(),
             view_lock_enabled: false,
             zoom_level,
             scroll_handle: ScrollHandle::new(),
@@ -1489,7 +1494,7 @@ impl MainView {
                     {
                         let list_origin = point(
                             base_origin.x,
-                            base_origin.y + filter_offset_y + 30.0,
+                            base_origin.y + filter_offset_y + 40.0,
                         );
                         Self::details_view_for_pane(
                             state,
@@ -1540,12 +1545,14 @@ impl MainView {
                     )
                 }
                 ViewMode::Columns => {
-                    let z = state.zoom_level.clamp(0.0, 1.0);
-                    let zoom_scale = 0.80 + z * 0.55;
-                    let col1_w = (state.column_widths.miller_col1 * zoom_scale)
-                        .clamp(130.0, (pane_w * 0.45).max(200.0))
+                    let spec = crate::ui::views::types::MainViewState::columns_layout_spec(
+                        state.zoom_level,
+                        state.compact_mode,
+                    );
+                    let col1_w = (state.column_widths.miller_col1 * spec.zoom_scale)
+                        .clamp(150.0, (pane_w * 0.45).max(200.0))
                         .round();
-                    let header_h = (28.0 + z * 8.0).round();
+                    let header_h = spec.header_height;
                     let col2_origin = point(
                         base_origin.x + col1_w + 6.0,
                         base_origin.y + filter_offset_y + header_h,

@@ -11,9 +11,70 @@ use crate::config::config::AppConfig;
 #[cfg(windows)]
 use crate::platform::windows::cloud_drive_service::{enumerate_cloud_drives, CloudProvider};
 #[cfg(windows)]
-use crate::platform::windows::drive_service::{enumerate_drives, DriveType};
+use crate::platform::windows::drive_service::{enumerate_drives, DriveInfo, DriveType};
 #[cfg(windows)]
 use crate::platform::windows::wsl_service::enumerate_wsl_distros;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-platform helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Resolve a bundled icon path under `assets/icons/<name>` without failing if missing.
+pub fn bundled_icon_path(name: &str) -> Option<std::path::PathBuf> {
+    type IconCache = std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>;
+    static CACHE: std::sync::OnceLock<IconCache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let resolved = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("assets").join("icons").join(name))),
+        Some(std::path::PathBuf::from("assets").join("icons").join(name)),
+        Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join("icons")
+                .join(name),
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| candidate.is_file());
+
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name.to_string(), resolved.clone());
+
+    resolved
+}
+
+/// Format a Windows drive root label (e.g. `Windows (C:)`) from the cached drive label map.
+pub fn format_drive_root_label(path: &std::path::Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        DriveInfo::cached_display_label(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+fn is_expandable_fs_path(path: &FilesPath) -> bool {
+    let s = path.to_string_lossy();
+    !s.is_empty() && !s.starts_with("shell:") && s != "Home"
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data models — shared by sidebar_state and sidebar view
@@ -130,6 +191,52 @@ pub enum SectionId {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tree & Drive metadata models
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SidebarTreeChild {
+    pub path: FilesPath,
+    pub label: String,
+    pub has_subfolders: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SidebarDriveMeta {
+    pub display_name: String,
+    pub file_system: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub usage_percent: f32,
+    pub capacity_summary: String,
+}
+
+fn section_config_aliases(id: SectionId) -> &'static [&'static str] {
+    match id {
+        SectionId::Favorites => &["Favorites", "Pinned"],
+        SectionId::Tags => &["Tags"],
+        SectionId::Libraries => &["Libraries"],
+        SectionId::ThisPc => &["ThisPc", "Drives", "This PC"],
+        SectionId::CloudDrives => &["CloudDrives", "Cloud Drives"],
+        SectionId::Network => &["Network"],
+        SectionId::Wsl => &["Wsl", "WSL"],
+    }
+}
+
+fn section_name_to_id(name: &str) -> Option<SectionId> {
+    match name {
+        "Favorites" | "Pinned" => Some(SectionId::Favorites),
+        "Tags" => Some(SectionId::Tags),
+        "Libraries" => Some(SectionId::Libraries),
+        "ThisPc" | "Drives" | "This PC" => Some(SectionId::ThisPc),
+        "CloudDrives" | "Cloud Drives" => Some(SectionId::CloudDrives),
+        "Network" => Some(SectionId::Network),
+        "Wsl" | "WSL" => Some(SectionId::Wsl),
+        _ => None,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -176,51 +283,52 @@ pub struct SidebarState {
     pub reorder_collapsed_backup: Option<Vec<(SectionId, bool)>>,
     /// Bouncy (spring-loaded) scroll state for rubber-band overscroll
     pub bouncy_scroll: BouncyScrollState,
+
+    // Tree expansion, lazy child folders, shell icons, and drive metadata
+    pub expanded_paths: std::collections::HashSet<FilesPath>,
+    pub tree_children: std::collections::HashMap<FilesPath, Vec<SidebarTreeChild>>,
+    pub tree_loading: std::collections::HashSet<FilesPath>,
+    pub shell_icons: std::collections::HashMap<FilesPath, std::path::PathBuf>,
+    pub drive_meta_by_root: std::collections::HashMap<FilesPath, SidebarDriveMeta>,
 }
 
 impl SidebarState {
     pub fn new() -> Self {
         let config = AppConfig::load();
-        let mut state = Self::default();
-        state.width = config
+        let width = config
             .sidebar
             .sidebar_width
             .unwrap_or(UiConstants::SIDEBAR_WIDTH_RAW as f32)
             .max(UiConstants::SIDEBAR_WIDTH_MIN_RAW as f32)
             .min(UiConstants::SIDEBAR_WIDTH_MAX_RAW as f32);
+        let mut state = Self {
+            width,
+            ..Self::default()
+        };
         state.reload(&config);
         state
     }
 
     pub fn reload(&mut self, config: &AppConfig) {
-        self.sections = build_all_sections();
+        self.sections = build_all_sections_with_config(config);
+        self.drive_meta_by_root = build_drives_meta();
 
         // Apply saved section order if available
         if let Some(order) = &config.sidebar.section_order {
-            let name_to_id: std::collections::HashMap<&str, SectionId> = [
-                ("Favorites", SectionId::Favorites),
-                ("Tags", SectionId::Tags),
-                ("Libraries", SectionId::Libraries),
-                ("ThisPc", SectionId::ThisPc),
-                ("CloudDrives", SectionId::CloudDrives),
-                ("Network", SectionId::Network),
-                ("Wsl", SectionId::Wsl),
-            ]
-            .iter()
-            .cloned()
-            .collect();
-
             // Build sections in the configured order
             let mut reordered: Vec<SidebarSectionData> = Vec::new();
             let mut remaining: std::collections::HashSet<SectionId> =
                 self.sections.iter().map(|s| s.id).collect();
 
             for name in order {
-                if let Some(&sid) = name_to_id.get(name.as_str()) {
-                    if let Some(idx) = self.sections.iter().position(|s| s.id == sid) {
-                        reordered.push(self.sections.remove(idx));
-                        remaining.remove(&sid);
-                    }
+                if let Some((sid, idx)) = section_name_to_id(name.as_str()).and_then(|sid| {
+                    self.sections
+                        .iter()
+                        .position(|s| s.id == sid)
+                        .map(|idx| (sid, idx))
+                }) {
+                    reordered.push(self.sections.remove(idx));
+                    remaining.remove(&sid);
                 }
             }
 
@@ -236,21 +344,11 @@ impl SidebarState {
 
         // Apply saved hidden sections
         if let Some(hidden) = &config.sidebar.hidden_sections {
-            let name_to_id: std::collections::HashMap<&str, SectionId> = [
-                ("Favorites", SectionId::Favorites),
-                ("Tags", SectionId::Tags),
-                ("Libraries", SectionId::Libraries),
-                ("ThisPc", SectionId::ThisPc),
-                ("CloudDrives", SectionId::CloudDrives),
-                ("Network", SectionId::Network),
-                ("Wsl", SectionId::Wsl),
-            ]
-            .iter()
-            .cloned()
-            .collect();
             self.hidden_sections.clear();
             for name in hidden {
-                if let Some(&sid) = name_to_id.get(name.as_str()) {
+                if let Some(sid) = section_name_to_id(name.as_str())
+                    .filter(|sid| !self.hidden_sections.contains(sid))
+                {
                     self.hidden_sections.push(sid);
                 }
             }
@@ -259,8 +357,10 @@ impl SidebarState {
         // Apply saved collapsed state of sections
         if let Some(collapsed_map) = &config.sidebar.section_collapsed {
             for section in &mut self.sections {
-                let key = format!("{:?}", section.id);
-                if let Some(&collapsed) = collapsed_map.get(&key) {
+                if let Some(&collapsed) = section_config_aliases(section.id)
+                    .iter()
+                    .find_map(|key| collapsed_map.get(*key))
+                {
                     section.collapsed = collapsed;
                 }
             }
@@ -268,6 +368,119 @@ impl SidebarState {
 
         // Update display order to match current section order
         self.section_display_order = self.sections.iter().map(|s| s.id).collect();
+    }
+
+    pub fn is_path_expanded(&self, path: &FilesPath) -> bool {
+        self.expanded_paths.contains(path)
+    }
+
+    fn cached_library_path(name: &str) -> Option<&'static FilesPath> {
+        match name {
+            "Desktop" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Desktop".to_string()).get_path())
+                    .as_ref()
+            }
+            "Documents" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Documents".to_string()).get_path())
+                    .as_ref()
+            }
+            "Downloads" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Downloads".to_string()).get_path())
+                    .as_ref()
+            }
+            "Pictures" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Pictures".to_string()).get_path())
+                    .as_ref()
+            }
+            "Music" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Music".to_string()).get_path())
+                    .as_ref()
+            }
+            "Videos" => {
+                static P: std::sync::OnceLock<Option<FilesPath>> = std::sync::OnceLock::new();
+                P.get_or_init(|| SidebarItemId::Library("Videos".to_string()).get_path())
+                    .as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn item_expandable_path(item: &SidebarItem) -> Option<&FilesPath> {
+        match &item.id {
+            SidebarItemId::Pinned(path) if is_expandable_fs_path(path) => Some(path),
+            SidebarItemId::Drive { root, .. } if is_expandable_fs_path(root) => Some(root),
+            SidebarItemId::Library(name) => {
+                Self::cached_library_path(name).filter(|path| is_expandable_fs_path(path))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn visible_tree_rows_for_root(&self, root: &FilesPath) -> Vec<(usize, SidebarTreeChild)> {
+        const MAX_TREE_DEPTH: usize = 12;
+        if !self.expanded_paths.contains(root) {
+            return Vec::new();
+        }
+        let mut rows = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(root.clone());
+        self.collect_tree_rows(root, 1, MAX_TREE_DEPTH, &mut visited, &mut rows);
+        rows
+    }
+
+    fn collect_tree_rows(
+        &self,
+        parent: &FilesPath,
+        depth: usize,
+        max_depth: usize,
+        visited: &mut std::collections::HashSet<FilesPath>,
+        rows: &mut Vec<(usize, SidebarTreeChild)>,
+    ) {
+        if depth > max_depth {
+            return;
+        }
+        let Some(children) = self.tree_children.get(parent) else {
+            return;
+        };
+        for child in children {
+            if !visited.insert(child.path.clone()) {
+                continue;
+            }
+            rows.push((depth, child.clone()));
+            if depth < max_depth && self.expanded_paths.contains(&child.path) {
+                self.collect_tree_rows(&child.path, depth + 1, max_depth, visited, rows);
+            }
+        }
+    }
+
+    pub fn collect_shell_icon_paths(&self) -> Vec<FilesPath> {
+        let mut seen = std::collections::HashSet::new();
+        let mut paths = Vec::new();
+        let mut push_if_valid = |path: &FilesPath| {
+            if is_expandable_fs_path(path) && seen.insert(path.clone()) {
+                paths.push(path.clone());
+            }
+        };
+
+        for section in &self.sections {
+            for item in &section.items {
+                if let Some(path) = Self::item_expandable_path(item) {
+                    push_if_valid(path);
+                    if self.expanded_paths.contains(path) {
+                        for (_, child) in self.visible_tree_rows_for_root(path) {
+                            push_if_valid(&child.path);
+                        }
+                    }
+                }
+            }
+        }
+
+        paths
     }
 
     pub fn save_width(&self) {
@@ -579,60 +792,92 @@ impl SidebarState {
 // Section building — canonical version
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(windows)]
-fn build_favorites_section() -> SidebarSectionData {
-    let config = AppConfig::load();
-    let mut items: Vec<SidebarItem> = config
-        .sidebar
-        .pinned_locations
-        .iter()
-        .map(|path_str| {
-            let path = FilesPath::new(path_str.as_str());
-            let label = path
-                .as_path()
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path_str.clone());
-            SidebarItem {
-                id: SidebarItemId::Pinned(path.clone()),
+fn normalize_pinned_dedup_key(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy();
+    let trimmed = raw.trim_end_matches(['\\', '/']);
+    #[cfg(windows)]
+    {
+        trimmed.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        if trimmed.is_empty() && raw.starts_with('/') {
+            "/".to_string()
+        } else {
+            trimmed.to_ascii_lowercase()
+        }
+    }
+}
+
+fn build_favorites_section_with_config(config: &AppConfig) -> SidebarSectionData {
+    let mut items: Vec<SidebarItem> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut push_pinned = |path: FilesPath, label: String| {
+        let key = normalize_pinned_dedup_key(path.as_path());
+        if !key.is_empty() && seen_keys.insert(key) {
+            items.push(SidebarItem {
+                id: SidebarItemId::Pinned(path),
                 label,
                 icon: "\u{E8B7}".to_string(), // Folder glyph
                 badge: None,
-            }
-        })
-        .collect();
+            });
+        }
+    };
 
-    // Add Quick Access pinned folders from Windows File Explorer
-    if let Ok(quick_access_pins) = read_quick_access_pins() {
-        for pin in quick_access_pins {
-            let label = pin
-                .as_path()
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Pinned Folder".to_string());
-            // Skip duplicates (already in pinned_locations)
-            if !items.iter().any(|i| i.id.get_path().as_ref() == Some(&pin)) {
-                items.push(SidebarItem {
-                    id: SidebarItemId::Pinned(pin),
-                    label,
-                    icon: "\u{E8B7}".to_string(),
-                    badge: None,
-                });
-            }
+    // 1. User-pinned folders from config (preserving user pin order)
+    for path_str in &config.sidebar.pinned_locations {
+        if path_str.trim().is_empty() {
+            continue;
+        }
+        let path = FilesPath::new(path_str.as_str());
+        let label = path
+            .as_path()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| path_str.clone());
+        push_pinned(path, label);
+    }
+
+    // 2. Standard user folders (Downloads, Documents, Pictures, Videos) if not already pinned
+    for (name, primary) in [
+        ("Downloads", dirs::download_dir()),
+        ("Documents", dirs::document_dir()),
+        ("Pictures", dirs::picture_dir()),
+        ("Videos", dirs::video_dir()),
+    ] {
+        if let Some(path) = SidebarItemId::library_path(primary, name) {
+            push_pinned(path, name.to_string());
         }
     }
 
-    // Add Recycle Bin
-    items.push(SidebarItem {
-        id: SidebarItemId::RecycleBin,
-        label: "Recycle Bin".to_string(),
-        icon: "\u{E74D}".to_string(),        // Delete/Recycle glyph
-        badge: Some(SidebarBadge::Count(0)), // Mock count
-    });
+    // 3. Quick Access pinned folders & Recycle Bin (Windows)
+    #[cfg(windows)]
+    {
+        if let Ok(quick_access_pins) = read_quick_access_pins() {
+            for pin in quick_access_pins {
+                let label = pin
+                    .as_path()
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "Pinned Folder".to_string());
+                push_pinned(pin, label);
+            }
+        }
+
+        items.push(SidebarItem {
+            id: SidebarItemId::RecycleBin,
+            label: "Recycle Bin".to_string(),
+            icon: "\u{E74D}".to_string(),        // Delete/Recycle glyph
+            badge: Some(SidebarBadge::Count(0)), // Mock count
+        });
+    }
 
     SidebarSectionData {
         id: SectionId::Favorites,
-        title: "Favorites".to_string(),
+        title: "Pinned".to_string(),
         items,
         collapsed: false,
     }
@@ -656,7 +901,7 @@ fn read_quick_access_pins() -> Result<Vec<FilesPath>, Box<dyn std::error::Error>
     for entry in std::fs::read_dir(&qa_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "lnk") {
+        if path.extension().is_some_and(|e| e == "lnk") {
             if let Some(target) = resolve_lnk_target(&path) {
                 pins.push(target);
             }
@@ -753,117 +998,25 @@ fn resolve_lnk_target(lnk_path: &std::path::Path) -> Option<FilesPath> {
     }
 }
 
-#[cfg(not(windows))]
-fn build_favorites_section() -> SidebarSectionData {
-    SidebarSectionData {
-        id: SectionId::Favorites,
-        title: "Favorites".to_string(),
-        items: vec![],
-        collapsed: false,
-    }
-}
-
-#[cfg(windows)]
-fn build_libraries_section() -> SidebarSectionData {
-    let mut items = Vec::new();
-
-    if dirs::home_dir().is_some() {
-        items.push(SidebarItem {
-            id: SidebarItemId::Library("Desktop".to_string()),
-            label: "Desktop".to_string(),
-            icon: "\u{E8B7}".to_string(),
-            badge: None,
-        });
-        if dirs::document_dir().is_some() {
-            items.push(SidebarItem {
-                id: SidebarItemId::Library("Documents".to_string()),
-                label: "Documents".to_string(),
-                icon: "\u{E8B7}".to_string(),
-                badge: None,
-            });
-        }
-        if dirs::download_dir().is_some() {
-            items.push(SidebarItem {
-                id: SidebarItemId::Library("Downloads".to_string()),
-                label: "Downloads".to_string(),
-                icon: "\u{E8B7}".to_string(),
-                badge: None,
-            });
-        }
-        if dirs::picture_dir().is_some() {
-            items.push(SidebarItem {
-                id: SidebarItemId::Library("Pictures".to_string()),
-                label: "Pictures".to_string(),
-                icon: "\u{E8B7}".to_string(),
-                badge: None,
-            });
-        }
-        if dirs::audio_dir().is_some() {
-            items.push(SidebarItem {
-                id: SidebarItemId::Library("Music".to_string()),
-                label: "Music".to_string(),
-                icon: "\u{E8B7}".to_string(),
-                badge: None,
-            });
-        }
-        if dirs::video_dir().is_some() {
-            items.push(SidebarItem {
-                id: SidebarItemId::Library("Videos".to_string()),
-                label: "Videos".to_string(),
-                icon: "\u{E714}".to_string(),
-                badge: None,
-            });
-        }
-    }
-
-    SidebarSectionData {
-        id: SectionId::Libraries,
-        title: "Libraries".to_string(),
-        items,
-        collapsed: false,
-    }
-}
-
-#[cfg(not(windows))]
-fn build_libraries_section() -> SidebarSectionData {
-    SidebarSectionData {
-        id: SectionId::Libraries,
-        title: "Libraries".to_string(),
-        items: vec![],
-        collapsed: false,
-    }
-}
-
 #[cfg(windows)]
 fn build_drives_section() -> SidebarSectionData {
-    let items: Vec<SidebarItem> = enumerate_drives()
+    let drives = enumerate_drives();
+    DriveInfo::update_label_cache(&drives);
+    let items: Vec<SidebarItem> = drives
         .into_iter()
-        .map(|d| {
-            let label = if d.label.is_empty() {
-                d.root.as_path().to_string_lossy().to_string()
-            } else {
-                d.label.clone()
-            };
-            let icon = drive_icon(d.drive_type);
-            let badge = if d.total_bytes > 0 {
-                Some(SidebarBadge::Usage(d.usage_ratio() as f32))
-            } else {
-                None
-            };
-            SidebarItem {
-                id: SidebarItemId::Drive {
-                    root: d.root.clone(),
-                    drive_type: d.drive_type,
-                },
-                label,
-                icon: icon.to_string(),
-                badge,
-            }
+        .map(|d| SidebarItem {
+            id: SidebarItemId::Drive {
+                root: d.root.clone(),
+                drive_type: d.drive_type,
+            },
+            label: d.display_name(),
+            icon: drive_icon(d.drive_type).to_string(),
+            badge: None,
         })
         .collect();
     SidebarSectionData {
         id: SectionId::ThisPc,
-        title: "This PC".to_string(),
+        title: "Drives".to_string(),
         items,
         collapsed: false,
     }
@@ -873,10 +1026,35 @@ fn build_drives_section() -> SidebarSectionData {
 fn build_drives_section() -> SidebarSectionData {
     SidebarSectionData {
         id: SectionId::ThisPc,
-        title: "This PC".to_string(),
+        title: "Drives".to_string(),
         items: vec![],
         collapsed: false,
     }
+}
+
+#[cfg(windows)]
+fn build_drives_meta() -> std::collections::HashMap<FilesPath, SidebarDriveMeta> {
+    let drives = enumerate_drives();
+    DriveInfo::update_label_cache(&drives);
+    drives
+        .into_iter()
+        .map(|d| {
+            let meta = SidebarDriveMeta {
+                display_name: d.display_name(),
+                file_system: d.file_system.clone(),
+                total_bytes: d.total_bytes,
+                free_bytes: d.free_bytes,
+                usage_percent: d.usage_percent() as f32,
+                capacity_summary: d.capacity_summary(),
+            };
+            (d.root, meta)
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn build_drives_meta() -> std::collections::HashMap<FilesPath, SidebarDriveMeta> {
+    std::collections::HashMap::new()
 }
 
 #[cfg(windows)]
@@ -897,7 +1075,7 @@ fn build_cloud_drives_section() -> SidebarSectionData {
         id: SectionId::CloudDrives,
         title: "Cloud Drives".to_string(),
         items,
-        collapsed: false,
+        collapsed: true,
     }
 }
 
@@ -907,7 +1085,7 @@ fn build_cloud_drives_section() -> SidebarSectionData {
         id: SectionId::CloudDrives,
         title: "Cloud Drives".to_string(),
         items: vec![],
-        collapsed: false,
+        collapsed: true,
     }
 }
 
@@ -921,7 +1099,7 @@ fn build_network_section() -> SidebarSectionData {
             icon: "\u{E802}".to_string(),
             badge: None,
         }],
-        collapsed: false,
+        collapsed: true,
     }
 }
 
@@ -940,7 +1118,7 @@ fn build_wsl_section() -> SidebarSectionData {
         id: SectionId::Wsl,
         title: "WSL".to_string(),
         items,
-        collapsed: false,
+        collapsed: true,
     }
 }
 
@@ -950,7 +1128,7 @@ fn build_wsl_section() -> SidebarSectionData {
         id: SectionId::Wsl,
         title: "WSL".to_string(),
         items: vec![],
-        collapsed: false,
+        collapsed: true,
     }
 }
 
@@ -985,9 +1163,13 @@ fn cloud_icon(_provider: ()) -> &'static str {
     "chrome://vector_icons/fluent/cloud.svg"
 }
 
-pub fn build_all_sections() -> Vec<SidebarSectionData> {
+fn build_all_sections_with_config(config: &AppConfig) -> Vec<SidebarSectionData> {
     vec![
-        build_favorites_section(),
+        build_favorites_section_with_config(config),
+        build_drives_section(),
+        build_cloud_drives_section(),
+        build_network_section(),
+        build_wsl_section(),
         SidebarSectionData {
             id: SectionId::Tags,
             title: "Tags".to_string(),
@@ -1005,14 +1187,13 @@ pub fn build_all_sections() -> Vec<SidebarSectionData> {
                     badge: None,
                 },
             ],
-            collapsed: false,
+            collapsed: true,
         },
-        build_libraries_section(),
-        build_drives_section(),
-        build_cloud_drives_section(),
-        build_network_section(),
-        build_wsl_section(),
     ]
+}
+
+pub fn build_all_sections() -> Vec<SidebarSectionData> {
+    build_all_sections_with_config(&AppConfig::load())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1342,6 +1523,11 @@ mod tests {
         assert!(state.active_item.is_none());
         assert!(!state.collapsed);
         assert_eq!(state.width, 0.0);
+        assert!(state.expanded_paths.is_empty());
+        assert!(state.tree_children.is_empty());
+        assert!(state.tree_loading.is_empty());
+        assert!(state.shell_icons.is_empty());
+        assert!(state.drive_meta_by_root.is_empty());
     }
 
     #[test]
@@ -1374,7 +1560,7 @@ mod tests {
     fn test_sidebar_state_with_manual_sections() {
         let sections = vec![SidebarSectionData {
             id: SectionId::Favorites,
-            title: "Favorites".to_string(),
+            title: "Pinned".to_string(),
             items: vec![SidebarItem {
                 id: SidebarItemId::RecycleBin,
                 label: "Recycle Bin".to_string(),
@@ -1402,6 +1588,372 @@ mod tests {
                 Some(SidebarItemId::RecycleBin) => (),
                 other => panic!("Expected RecycleBin, got {:?}", other),
             }
+        }
+    }
+
+    #[test]
+    fn test_build_all_sections_order_titles_and_defaults() {
+        let sections = build_all_sections_with_config(&AppConfig::default());
+        let summary: Vec<(SectionId, &str, bool)> = sections
+            .iter()
+            .map(|s| (s.id, s.title.as_str(), s.collapsed))
+            .collect();
+
+        assert_eq!(
+            summary,
+            [
+                (SectionId::Favorites, "Pinned", false),
+                (SectionId::ThisPc, "Drives", false),
+                (SectionId::CloudDrives, "Cloud Drives", true),
+                (SectionId::Network, "Network", true),
+                (SectionId::Wsl, "WSL", true),
+                (SectionId::Tags, "Tags", true),
+            ]
+        );
+        assert!(!sections.iter().any(|s| s.id == SectionId::Libraries));
+
+        if let Some(drives) = sections.iter().find(|s| s.id == SectionId::ThisPc) {
+            for item in &drives.items {
+                assert!(item.badge.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_reload_pinned_dedup_aliases_and_collapsed_overrides() {
+        let mut config = AppConfig::default();
+        #[cfg(windows)]
+        let (pin1, pin1_dup, pin2, expected_key) = (
+            r"C:\CustomPin".to_string(),
+            r"c:/CustomPin/".to_string(),
+            r"D:\AnotherPin".to_string(),
+            r"c:\custompin",
+        );
+        #[cfg(not(windows))]
+        let (pin1, pin1_dup, pin2, expected_key) = (
+            "/CustomPin".to_string(),
+            "/custompin/".to_string(),
+            "/AnotherPin".to_string(),
+            "/custompin",
+        );
+        config.sidebar.pinned_locations = vec![pin1, pin1_dup, pin2];
+        config.sidebar.section_order = Some(vec![
+            "Drives".to_string(),
+            "Pinned".to_string(),
+            "This PC".to_string(),
+            "Favorites".to_string(),
+            "Tags".to_string(),
+        ]);
+        config.sidebar.hidden_sections = Some(vec![
+            "Pinned".to_string(),
+            "Favorites".to_string(),
+            "This PC".to_string(),
+        ]);
+        let mut collapsed_map = std::collections::HashMap::new();
+        collapsed_map.insert("Tags".to_string(), false);
+        collapsed_map.insert("Pinned".to_string(), true);
+        collapsed_map.insert("Cloud Drives".to_string(), false);
+        config.sidebar.section_collapsed = Some(collapsed_map);
+
+        let mut state = SidebarState::default();
+        state.reload(&config);
+
+        assert_eq!(state.sections[0].id, SectionId::ThisPc);
+        assert_eq!(state.sections[1].id, SectionId::Favorites);
+        assert_eq!(state.sections[2].id, SectionId::Tags);
+
+        assert!(state.sections[1].collapsed);
+        assert!(!state.sections[2].collapsed);
+        let cloud_section = state
+            .sections
+            .iter()
+            .find(|s| s.id == SectionId::CloudDrives)
+            .expect("CloudDrives section should exist");
+        assert!(!cloud_section.collapsed);
+
+        assert_eq!(
+            state.hidden_sections,
+            vec![SectionId::Favorites, SectionId::ThisPc]
+        );
+
+        let pinned_items = &state.sections[1].items;
+        let custom_pin_count = pinned_items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    &item.id,
+                    SidebarItemId::Pinned(p) if normalize_pinned_dedup_key(p.as_path()) == expected_key
+                )
+            })
+            .count();
+        assert_eq!(custom_pin_count, 1);
+        assert_eq!(pinned_items[0].label, "CustomPin");
+        assert_eq!(pinned_items[1].label, "AnotherPin");
+    }
+
+    #[test]
+    fn test_visible_tree_rows_for_root() {
+        let mut state = SidebarState::default();
+        let root = FilesPath::new(r"C:\Root");
+        let a = FilesPath::new(r"C:\Root\A");
+        let b = FilesPath::new(r"C:\Root\B");
+        let a1 = FilesPath::new(r"C:\Root\A\A1");
+        let a2 = FilesPath::new(r"C:\Root\A\A2");
+        let a1x = FilesPath::new(r"C:\Root\A\A1\A1x");
+
+        state.tree_children.insert(
+            root.clone(),
+            vec![
+                SidebarTreeChild {
+                    path: a.clone(),
+                    label: "A".to_string(),
+                    has_subfolders: true,
+                },
+                SidebarTreeChild {
+                    path: b.clone(),
+                    label: "B".to_string(),
+                    has_subfolders: false,
+                },
+            ],
+        );
+        state.tree_children.insert(
+            a.clone(),
+            vec![
+                SidebarTreeChild {
+                    path: a1.clone(),
+                    label: "A1".to_string(),
+                    has_subfolders: true,
+                },
+                SidebarTreeChild {
+                    path: a2.clone(),
+                    label: "A2".to_string(),
+                    has_subfolders: false,
+                },
+            ],
+        );
+        state.tree_children.insert(
+            a1.clone(),
+            vec![SidebarTreeChild {
+                path: a1x.clone(),
+                label: "A1x".to_string(),
+                has_subfolders: false,
+            }],
+        );
+
+        // Root collapsed -> empty
+        assert!(!state.is_path_expanded(&root));
+        assert!(state.visible_tree_rows_for_root(&root).is_empty());
+
+        // Expand root + A + A1 -> full multi-level DFS
+        state.expanded_paths.insert(root.clone());
+        state.expanded_paths.insert(a.clone());
+        state.expanded_paths.insert(a1.clone());
+        assert!(state.is_path_expanded(&root));
+
+        let rows: Vec<(usize, String)> = state
+            .visible_tree_rows_for_root(&root)
+            .into_iter()
+            .map(|(d, c)| (d, c.label))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (1, "A".to_string()),
+                (2, "A1".to_string()),
+                (3, "A1x".to_string()),
+                (2, "A2".to_string()),
+                (1, "B".to_string()),
+            ]
+        );
+
+        // Collapse A -> hides A1, A1x, A2
+        state.expanded_paths.remove(&a);
+        let collapsed_rows: Vec<(usize, String)> = state
+            .visible_tree_rows_for_root(&root)
+            .into_iter()
+            .map(|(d, c)| (d, c.label))
+            .collect();
+        assert_eq!(
+            collapsed_rows,
+            [(1, "A".to_string()), (1, "B".to_string())]
+        );
+
+        // Re-expand A -> restores nested subtree
+        state.expanded_paths.insert(a.clone());
+        let restored_rows: Vec<(usize, String)> = state
+            .visible_tree_rows_for_root(&root)
+            .into_iter()
+            .map(|(d, c)| (d, c.label))
+            .collect();
+        assert_eq!(restored_rows, rows);
+
+        // Cycle safety: cyc_root -> x -> y -> x and y -> cyc_root
+        let cyc_root = FilesPath::new(r"C:\Cycle");
+        let cyc_x = FilesPath::new(r"C:\Cycle\X");
+        let cyc_y = FilesPath::new(r"C:\Cycle\Y");
+        state.expanded_paths.insert(cyc_root.clone());
+        state.expanded_paths.insert(cyc_x.clone());
+        state.expanded_paths.insert(cyc_y.clone());
+        state.tree_children.insert(
+            cyc_root.clone(),
+            vec![SidebarTreeChild {
+                path: cyc_x.clone(),
+                label: "X".to_string(),
+                has_subfolders: true,
+            }],
+        );
+        state.tree_children.insert(
+            cyc_x.clone(),
+            vec![SidebarTreeChild {
+                path: cyc_y.clone(),
+                label: "Y".to_string(),
+                has_subfolders: true,
+            }],
+        );
+        state.tree_children.insert(
+            cyc_y.clone(),
+            vec![
+                SidebarTreeChild {
+                    path: cyc_x.clone(),
+                    label: "X".to_string(),
+                    has_subfolders: true,
+                },
+                SidebarTreeChild {
+                    path: cyc_root.clone(),
+                    label: "Cycle".to_string(),
+                    has_subfolders: true,
+                },
+            ],
+        );
+
+        let cyc_rows: Vec<(usize, String)> = state
+            .visible_tree_rows_for_root(&cyc_root)
+            .into_iter()
+            .map(|(d, c)| (d, c.label))
+            .collect();
+        assert_eq!(cyc_rows, [(1, "X".to_string()), (2, "Y".to_string())]);
+
+        // Depth cap (12 levels max)
+        let deep_root = FilesPath::new(r"C:\Deep");
+        state.expanded_paths.insert(deep_root.clone());
+        let mut parent = deep_root.clone();
+        for level in 1..=15 {
+            let child = FilesPath::new(format!(r"C:\Deep\L{}", level));
+            state.expanded_paths.insert(child.clone());
+            state.tree_children.insert(
+                parent,
+                vec![SidebarTreeChild {
+                    path: child.clone(),
+                    label: format!("L{}", level),
+                    has_subfolders: true,
+                }],
+            );
+            parent = child;
+        }
+        let deep_rows = state.visible_tree_rows_for_root(&deep_root);
+        assert_eq!(deep_rows.len(), 12);
+        assert_eq!(deep_rows.first().map(|(d, _)| *d), Some(1));
+        assert_eq!(deep_rows.last().map(|(d, _)| *d), Some(12));
+    }
+
+    #[test]
+    fn test_bundled_icon_path_finds_assets() {
+        for name in [
+            "sidebar_home.png",
+            "sidebar_pinned.png",
+            "sidebar_drives.png",
+            "folder_icon.png",
+        ] {
+            let first = bundled_icon_path(name)
+                .unwrap_or_else(|| panic!("Expected bundled icon {} to exist", name));
+            assert!(first.is_file(), "Icon path {:?} should be a file", first);
+            let cached = bundled_icon_path(name);
+            assert_eq!(cached, Some(first));
+        }
+        assert!(bundled_icon_path("nonexistent_sidebar_icon_xyz.png").is_none());
+    }
+
+    #[test]
+    fn test_item_expandable_path_and_collect_shell_icon_paths() {
+        let pinned_real = SidebarItem {
+            id: SidebarItemId::Pinned(FilesPath::new(r"C:\Work")),
+            label: "Work".to_string(),
+            icon: String::new(),
+            badge: None,
+        };
+        let pinned_shell = SidebarItem {
+            id: SidebarItemId::Pinned(FilesPath::new("shell:RecycleBinFolder")),
+            label: "Recycle".to_string(),
+            icon: String::new(),
+            badge: None,
+        };
+        let pinned_home = SidebarItem {
+            id: SidebarItemId::Pinned(FilesPath::new("Home")),
+            label: "Home".to_string(),
+            icon: String::new(),
+            badge: None,
+        };
+        let network = SidebarItem {
+            id: SidebarItemId::Network,
+            label: "Network".to_string(),
+            icon: String::new(),
+            badge: None,
+        };
+        let tag = SidebarItem {
+            id: SidebarItemId::Tag("Red".to_string()),
+            label: "Red".to_string(),
+            icon: String::new(),
+            badge: None,
+        };
+
+        assert_eq!(
+            SidebarState::item_expandable_path(&pinned_real),
+            Some(&FilesPath::new(r"C:\Work"))
+        );
+        assert_eq!(SidebarState::item_expandable_path(&pinned_shell), None);
+        assert_eq!(SidebarState::item_expandable_path(&pinned_home), None);
+        assert_eq!(SidebarState::item_expandable_path(&network), None);
+        assert_eq!(SidebarState::item_expandable_path(&tag), None);
+
+        let mut state = SidebarState::default();
+        let work_path = FilesPath::new(r"C:\Work");
+        let child_path = FilesPath::new(r"C:\Work\Sub");
+        state.sections = vec![SidebarSectionData {
+            id: SectionId::Favorites,
+            title: "Pinned".to_string(),
+            items: vec![
+                pinned_real.clone(),
+                pinned_real,
+                pinned_shell,
+                pinned_home,
+                network,
+            ],
+            collapsed: false,
+        }];
+        state.expanded_paths.insert(work_path.clone());
+        state.tree_children.insert(
+            work_path.clone(),
+            vec![SidebarTreeChild {
+                path: child_path.clone(),
+                label: "Sub".to_string(),
+                has_subfolders: false,
+            }],
+        );
+
+        let collected = state.collect_shell_icon_paths();
+        assert_eq!(collected, vec![work_path, child_path]);
+    }
+
+    #[test]
+    fn test_format_drive_root_label() {
+        #[cfg(windows)]
+        {
+            assert!(format_drive_root_label(std::path::Path::new(r"C:\")).is_some());
+            assert!(format_drive_root_label(std::path::Path::new(r"C:\Users")).is_none());
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(format_drive_root_label(std::path::Path::new("/")).is_none());
         }
     }
 }

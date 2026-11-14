@@ -368,6 +368,26 @@ impl MainViewState {
         };
 
         if self.group_by == GroupColumn::None {
+            if self.view_mode == ViewMode::List {
+                let spec = Self::list_layout_spec(pane_w, self.zoom_level, self.compact_mode);
+                let total_rows = Self::list_rows_per_col(
+                    visible.len(),
+                    spec.cols,
+                    spec.row_height,
+                    self.effective_list_viewport_h(),
+                );
+                if total_rows == 0 {
+                    return Vec::new();
+                }
+                let active_cols = visible.len().div_ceil(total_rows).max(1).min(spec.cols);
+                return (0..total_rows)
+                    .map(|r| {
+                        (0..active_cols)
+                            .filter_map(|c| visible.get(c * total_rows + r).copied())
+                            .collect()
+                    })
+                    .collect();
+            }
             return visible.chunks(cols).map(|c| c.to_vec()).collect();
         }
 
@@ -418,10 +438,9 @@ impl MainViewState {
                 }
             }
             ViewMode::Cards => {
-                let (cols, card_w, row_h, gap, pad) =
-                    Self::cards_layout_metrics(pane_w, zoom, compact);
+                let spec = Self::cards_layout_spec(pane_w, zoom, compact);
                 let header_h = if compact { 28.0 } else { 32.0 };
-                let flattened = self.flatten_grouped_grid_items(&visible, cols.max(1));
+                let flattened = self.flatten_grouped_grid_items(&visible, spec.cols.max(1));
                 let mut y = 0.0_f32;
                 for entry in flattened {
                     match entry {
@@ -430,13 +449,13 @@ impl MainViewState {
                         }
                         GroupedGridItem::Row(indices) => {
                             for (col, &idx) in indices.iter().enumerate() {
-                                let x0 = pad + col as f32 * (card_w + gap);
+                                let x0 = spec.padding + col as f32 * (spec.card_width + spec.gap);
                                 let y0 = y;
-                                let x1 = x0 + card_w;
-                                let y1 = y0 + row_h - 4.0;
+                                let x1 = x0 + spec.card_width;
+                                let y1 = y0 + spec.card_height;
                                 bounds.push((idx, (x0, y0, x1, y1)));
                             }
-                            y += row_h;
+                            y += spec.row_height;
                         }
                     }
                 }
@@ -466,8 +485,7 @@ impl MainViewState {
                 }
             }
             ViewMode::Details | ViewMode::Tree => {
-                let base_row_h = if compact { 22.0 } else { 26.0 };
-                let row_h = (base_row_h + zoom * 22.0).round();
+                let row_h = Self::details_layout_spec(zoom, compact).row_height;
                 let header_h = row_h.max(30.0);
                 let flattened = self.flatten_grouped_items(&visible);
                 let mut y = 0.0_f32;
@@ -484,11 +502,10 @@ impl MainViewState {
                 }
             }
             ViewMode::Columns => {
-                let base_row_h = if compact { 20.0 } else { 22.0 };
-                let row_h = (base_row_h + zoom * 22.0).round();
+                let spec = Self::columns_layout_spec(zoom, compact);
+                let row_h = spec.row_height;
                 let header_h = row_h.max(30.0);
-                let zoom_scale = 0.80 + zoom.clamp(0.0, 1.0) * 0.55;
-                let col2_w = (self.column_widths.miller_col2 * zoom_scale)
+                let col2_w = (self.column_widths.miller_col2 * spec.zoom_scale)
                     .clamp(160.0, (pane_w * 0.55).max(240.0));
                 let flattened = self.flatten_grouped_items(&visible);
                 let mut y = 0.0_f32;

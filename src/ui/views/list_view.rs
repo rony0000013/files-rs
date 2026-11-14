@@ -104,19 +104,15 @@ impl MainViewState {
             get_file_type_icon_and_color(&ext)
         };
 
-        let show_size_badge = !is_dir && !lod_fast && col_w >= 210.0;
         let avail_text_w = (col_w
-            - icon_size
-            - 26.0
-            - if show_size_badge { 48.0 } else { 0.0 }
-            - if is_checkbox && !lod_fast { 22.0 } else { 0.0 })
-        .max(54.0);
-        let (display_label, effective_font_size, effective_line_h) = adaptive_three_line_label(
-            &display_name,
-            avail_text_w,
-            text_size,
-            (text_size - 2.2).max(8.5),
-        );
+            - (icon_size + 4.0)
+            - 32.0
+            - if is_checkbox { 22.0 } else { 0.0 })
+        .max(60.0);
+        let _ = (avail_text_w, lod_fast);
+        let effective_font_size = text_size;
+        let effective_line_h = (text_size * 1.28).ceil();
+        let icon_box = icon_size + 4.0;
 
         let mut cell = div()
             .id(ElementId::from(
@@ -130,11 +126,10 @@ impl MainViewState {
             .items_center()
             .overflow_hidden()
             .w(px(col_w))
-            .h(px(row_h - 3.0))
-            .px(px(8.0))
-            .py(px(2.0))
-            .gap(px(7.0))
-            .rounded(px(5.0))
+            .h(px((row_h - 2.0).max(20.0)))
+            .px(px(12.0))
+            .gap(px(6.0))
+            .rounded(px(4.0))
             .border(px(1.0))
             .border_color(if is_drop_target {
                 rgba(0x60CDFFFFu32)
@@ -309,29 +304,23 @@ impl MainViewState {
         cell = cell
             .child(
                 div()
-                    .w(px(icon_size))
-                    .h(px(icon_size))
+                    .w(px(icon_box))
+                    .h(px(icon_box))
+                    .p(px(2.0))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(if !lod_fast {
-                        if let Some(icon_path) = icon_paths.get(&path) {
-                            img(icon_path.clone())
-                                .w(px(icon_size))
-                                .h(px(icon_size))
-                                .into_any_element()
-                        } else {
-                            div()
-                                .text_size(px(icon_size * 0.72))
-                                .font_family(UiConstants::FONT_MDL2)
-                                .text_color(rgb(fallback_color))
-                                .child(fallback_glyph)
-                                .into_any_element()
-                        }
+                    .child(if let Some(icon_path) = icon_paths.get(&path) {
+                        img(icon_path.clone())
+                            .w(px(icon_size))
+                            .h(px(icon_size))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .rounded(px(2.0))
+                            .into_any_element()
                     } else {
                         div()
-                            .text_size(px(icon_size * 0.72))
+                            .text_size(px(icon_size * 0.78))
                             .font_family(UiConstants::FONT_MDL2)
                             .text_color(rgb(fallback_color))
                             .child(fallback_glyph)
@@ -342,33 +331,19 @@ impl MainViewState {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .max_h(px(row_h - 6.0))
-                    .overflow_hidden()
+                    .truncate()
                     .text_size(px(effective_font_size))
                     .line_height(px(effective_line_h))
                     .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                    .line_clamp(3)
-                    .text_ellipsis()
                     .child(if main_state.renaming_index == Some(idx) {
                         crate::ui::views::helpers::render_inline_rename_single(
                             &main_state.rename_input,
                             view_row.clone(),
                         )
                     } else {
-                        display_label.into_any_element()
+                        display_name.into_any_element()
                     }),
             );
-
-        if show_size_badge {
-            cell = cell.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.0))
-                    .line_height(px(13.0))
-                    .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
-                    .child(format_size(item.size)),
-            );
-        }
 
         cell.into_any_element()
     }
@@ -384,8 +359,9 @@ impl MainViewState {
     ) -> impl IntoElement {
         let zoom = self.zoom_level;
         let compact = self.compact_mode;
-        let (cols, _col_w, _row_h, _gap, _padding) = Self::list_layout_metrics(pane_w, zoom, compact);
-        let row_count = (visible.len() + cols - 1) / cols.max(1);
+        let spec = Self::list_layout_spec(pane_w, zoom, compact);
+        let avail_h = self.effective_list_viewport_h();
+        let row_count = Self::list_rows_per_col(visible.len(), spec.cols, spec.row_height, avail_h);
 
         div()
             .id(SharedString::from(match pane_focus {
@@ -506,10 +482,21 @@ impl MainViewState {
                         let icon_paths = &app_state.state.main_view.icon_paths;
                         let zoom = main_state.zoom_level;
                         let compact = main_state.compact_mode;
-                        let (cols, col_w, row_h, gap, padding) =
-                            Self::list_layout_metrics(pane_w, zoom, compact);
-                        let icon_size = (15.0 + zoom * 33.0).clamp(14.0, 50.0);
-                        let text_size = (10.0 + zoom * 4.5).clamp(10.0, 15.0);
+                        let spec = Self::list_layout_spec(pane_w, zoom, compact);
+                        let cols = spec.cols;
+                        let col_w = spec.col_width;
+                        let row_h = spec.row_height;
+                        let gap = spec.gap;
+                        let padding = spec.padding;
+                        let icon_size = spec.icon_size;
+                        let text_size = spec.text_size;
+                        let total_rows = Self::list_rows_per_col(
+                            visible_rc.len(),
+                            cols,
+                            row_h,
+                            main_state.effective_list_viewport_h(),
+                        )
+                        .max(1);
                         let is_checkbox = main_state.selection_mode == SelectionMode::Checkbox;
                         let is_hover_select =
                             main_state.selection_mode == SelectionMode::HoverSelect;
@@ -520,54 +507,54 @@ impl MainViewState {
                             .hovered_target_folder
                             .clone();
                         let is_dragging_any = app_state.state.main_view.drag_state.is_dragging;
-                        let lod_fast = zoom < 0.20;
+                        let lod_fast = false;
 
                         range
                             .map(|row_idx| {
-                                let start = row_idx * cols;
-                                let end = (start + cols).min(visible_rc.len());
-                                let items_in_row = end.saturating_sub(start);
+                                let active_cols = visible_rc.len().div_ceil(total_rows).max(1).min(cols);
+                                let mut row_cells: Vec<AnyElement> = (0..active_cols)
+                                    .map(|col| {
+                                        let i = col * total_rows + row_idx;
+                                        if i < visible_rc.len() {
+                                            let idx = visible_rc[i];
+                                            if let Some(item) = fi.items.get(idx) {
+                                                let is_selected =
+                                                    main_state.selected_indices.contains(&idx);
+                                                let is_dir =
+                                                    matches!(item.file_type, FileType::Directory);
+                                                let is_drop_target = is_dragging_any
+                                                    && is_dir
+                                                    && hovered_drop_folder.as_ref()
+                                                        == Some(&item.path);
 
-                                let mut row_cells: Vec<AnyElement> = (start..end)
-                                    .filter_map(|i| {
-                                        let idx = visible_rc[i];
-                                        let item = fi.items.get(idx)?;
-                                        let is_selected = main_state.selected_indices.contains(&idx);
-                                        let is_dir = matches!(item.file_type, FileType::Directory);
-                                        let is_drop_target = is_dragging_any
-                                            && is_dir
-                                            && hovered_drop_folder.as_ref() == Some(&item.path);
-
-                                        Some(Self::render_single_list_cell(
-                                            item,
-                                            idx,
-                                            is_selected,
-                                            is_drop_target,
-                                            col_w,
-                                            row_h,
-                                            icon_size,
-                                            text_size,
-                                            is_checkbox,
-                                            is_hover_select,
-                                            lod_fast,
-                                            main_state,
-                                            icon_paths,
-                                            pane_focus,
-                                            pane_w,
-                                            view.clone(),
-                                        ))
-                                    })
-                                    .collect();
-
-                                for _ in items_in_row..cols {
-                                    row_cells.push(
+                                                return Self::render_single_list_cell(
+                                                    item,
+                                                    idx,
+                                                    is_selected,
+                                                    is_drop_target,
+                                                    col_w,
+                                                    row_h,
+                                                    icon_size,
+                                                    text_size,
+                                                    is_checkbox,
+                                                    is_hover_select,
+                                                    lod_fast,
+                                                    main_state,
+                                                    icon_paths,
+                                                    pane_focus,
+                                                    pane_w,
+                                                    view.clone(),
+                                                );
+                                            }
+                                        }
                                         div()
                                             .w(px(col_w))
                                             .flex_shrink_0()
                                             .invisible()
-                                            .into_any_element(),
-                                    );
-                                }
+                                            .into_any_element()
+                                    })
+                                    .collect();
+                                let _ = &mut row_cells;
 
                                 div()
                                     .w_full()
@@ -603,16 +590,21 @@ impl MainViewState {
     ) -> impl IntoElement {
         let zoom = self.zoom_level;
         let compact = self.compact_mode;
-        let (cols, col_w, row_h, gap, padding) = Self::list_layout_metrics(pane_w, zoom, compact);
+        let spec = Self::list_layout_spec(pane_w, zoom, compact);
+        let cols = spec.cols;
+        let col_w = spec.col_width;
+        let row_h = spec.row_height;
+        let gap = spec.gap;
+        let padding = spec.padding;
         let flattened = self.flatten_grouped_grid_items(visible, cols.max(1));
         let header_h = if compact { 28.0 } else { 32.0 };
-        let icon_size = (15.0 + zoom * 33.0).clamp(14.0, 50.0);
-        let text_size = (10.0 + zoom * 4.5).clamp(10.0, 15.0);
+        let icon_size = spec.icon_size;
+        let text_size = spec.text_size;
         let is_checkbox = self.selection_mode == SelectionMode::Checkbox;
         let is_hover_select = self.selection_mode == SelectionMode::HoverSelect;
         let hovered_drop_folder = self.drag_state.hovered_target_folder.clone();
         let is_dragging_any = self.drag_state.is_dragging;
-        let lod_fast = zoom < 0.20;
+        let lod_fast = false;
 
         let item_heights: Vec<f32> = flattened
             .iter()
@@ -1244,6 +1236,8 @@ impl MainViewState {
         pane_w: f32,
         view: Entity<crate::app::AppWindow>,
     ) -> AnyElement {
+        let _ = (col_w, row_h);
+        let spec = MainViewState::cards_layout_spec(pane_w, zoom, main_state.compact_mode);
         let is_dir = matches!(item.file_type, FileType::Directory);
         let is_cut = main_state.cut_paths.contains(item.path.as_path());
         let path = item.path.clone();
@@ -1263,34 +1257,18 @@ impl MainViewState {
             .and_then(|t| t.first())
             .cloned();
 
-        let card_h = (row_h - 6.0).max(42.0);
-        let badge_box = (card_h * 0.78).clamp(32.0, 116.0);
-        let title_size = (10.5 + zoom * 5.0).clamp(10.5, 16.0);
-        let sub_size = (9.0 + zoom * 3.0).clamp(9.0, 13.0);
-        let avail_title_w = (col_w
-            - badge_box
-            - 36.0
-            - if is_checkbox { 22.0 } else { 0.0 }
-            - if tag_badge.is_some() { 44.0 } else { 0.0 })
-        .max(64.0);
-        let (display_label, effective_title_size, effective_title_line_h) =
-            adaptive_three_line_label(
-                &display_name,
-                avail_title_w,
-                title_size,
-                (title_size - 2.0).max(9.0),
-            );
-
-        let date_str = format_system_time(item.modified);
-        let subtitle = if is_dir {
-            format!("File folder • {}", date_str)
+        let type_str = if is_dir {
+            "Folder".to_string()
+        } else if ext.is_empty() {
+            "File".to_string()
         } else {
-            let type_lbl = if ext.is_empty() {
-                "File".to_string()
-            } else {
-                ext.to_uppercase()
-            };
-            format!("{} • {} • {}", type_lbl, format_size(item.size), date_str)
+            format!("{} File", ext.to_uppercase())
+        };
+        let contextual_date = format_system_time(item.modified);
+        let size_str = if is_dir {
+            String::new()
+        } else {
+            format_size(item.size)
         };
 
         let icon_el: AnyElement = if is_thumb {
@@ -1299,20 +1277,21 @@ impl MainViewState {
                 .cloned()
                 .unwrap_or_else(|| path.as_path().to_path_buf());
             img(img_src)
-                .w(px(badge_box))
-                .h(px(badge_box))
-                .object_fit(ObjectFit::Cover)
-                .rounded(px(6.0))
+                .w(px(spec.icon_size))
+                .h(px(spec.icon_size))
+                .object_fit(ObjectFit::Contain)
+                .rounded(px(4.0))
                 .into_any_element()
         } else if let Some(icon_path) = icon_paths.get(&path) {
             img(icon_path.clone())
-                .w(px(badge_box * 0.78))
-                .h(px(badge_box * 0.78))
+                .w(px(spec.icon_size))
+                .h(px(spec.icon_size))
                 .object_fit(ObjectFit::Contain)
+                .rounded(px(3.0))
                 .into_any_element()
         } else {
             div()
-                .text_size(px(badge_box * 0.56))
+                .text_size(px(spec.icon_size * 0.72))
                 .font_family(UiConstants::FONT_MDL2)
                 .text_color(rgb(fallback_color))
                 .child(fallback_glyph)
@@ -1327,17 +1306,13 @@ impl MainViewState {
                     PaneFocus::Secondary => 130000,
                 },
             ))
-            .w(px(col_w))
-            .h(px(card_h))
+            .relative()
+            .w(px(spec.card_width))
+            .h(px(spec.card_height))
             .flex_shrink_0()
             .overflow_hidden()
             .flex()
-            .flex_row()
-            .items_center()
-            .px(px(10.0))
-            .py(px(4.0))
-            .gap(px(10.0))
-            .rounded(px(7.0))
+            .rounded(px(8.0))
             .cursor_pointer()
             .border(px(1.0))
             .border_color(if is_drop_target {
@@ -1345,14 +1320,14 @@ impl MainViewState {
             } else if is_selected {
                 rgba(0x60CDFF99u32)
             } else {
-                rgba(0xFFFFFF10u32)
+                rgba(UiConstants::CARD_STROKE_RGBA)
             })
             .bg(if is_drop_target {
                 rgba(0x0078D444u32)
             } else if is_selected {
                 rgba(UiConstants::BG_ITEM_SELECTED_RGBA)
             } else {
-                rgba(0xFFFFFF06u32)
+                rgba(0xFFFFFF08u32)
             })
             .hover(|s| {
                 s.bg(if is_selected {
@@ -1360,8 +1335,14 @@ impl MainViewState {
                 } else {
                     rgba(0xFFFFFF12u32)
                 })
-            })
-            .on_mouse_down(MouseButton::Left, {
+            });
+
+        let mut card = if spec.is_horizontal {
+            card.flex_row()
+        } else {
+            card.flex_col()
+        }
+        .on_mouse_down(MouseButton::Left, {
                 let v = view.clone();
                 let p_nav = path.clone();
                 move |ev, _, cx| {
@@ -1440,9 +1421,11 @@ impl MainViewState {
         if is_selected {
             card = card.child(
                 div()
+                    .absolute()
+                    .top(px((spec.card_height * 0.22).round()))
+                    .left(px(2.0))
                     .w(px(3.0))
-                    .h(px((card_h * 0.55).clamp(16.0, 28.0)))
-                    .flex_shrink_0()
+                    .h(px((spec.card_height * 0.55).clamp(16.0, 28.0)))
                     .rounded(px(1.5))
                     .bg(rgb(UiConstants::ACCENT_COLOR_RGB)),
             );
@@ -1456,12 +1439,127 @@ impl MainViewState {
                 .border_color(rgba(0x60CDFFCCu32));
         }
 
-        if is_checkbox {
+        let top_details = div()
+            .w_full()
+            .flex_col()
+            .gap(px(2.0))
+            .overflow_hidden()
+            .child(if main_state.renaming_index == Some(idx) {
+                crate::ui::views::helpers::render_inline_rename_single(
+                    &main_state.rename_input,
+                    view.clone(),
+                )
+            } else {
+                div()
+                    .w_full()
+                    .overflow_hidden()
+                    .text_size(px(13.5))
+                    .line_height(px(17.0))
+                    .font_weight(FontWeight(600.0))
+                    .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
+                    .line_clamp(spec.max_lines)
+                    .text_ellipsis()
+                    .child(display_name)
+                    .into_any_element()
+            })
+            .child(
+                div()
+                    .w_full()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                    .child(type_str),
+            );
+
+        let bottom_details = div()
+            .w_full()
+            .flex_col()
+            .gap(px(2.0))
+            .children(if spec.show_contextual {
+                Some(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_size(px(11.5))
+                        .line_height(px(15.0))
+                        .text_color(rgba(UiConstants::TEXT_MUTED_RGBA))
+                        .child(contextual_date)
+                        .into_any_element(),
+                )
+            } else {
+                None
+            })
+            .child(
+                div()
+                    .w_full()
+                    .min_h(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(6.0))
+                    .child(if !size_str.is_empty() {
+                        div()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .line_height(px(15.0))
+                            .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
+                            .child(size_str)
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    })
+                    .children(tag_badge.map(|tag| {
+                        div()
+                            .flex_shrink_0()
+                            .px(px(5.0))
+                            .py(px(1.0))
+                            .rounded(px(3.0))
+                            .bg(rgba(0xB4A0FF28u32))
+                            .text_size(px(9.5))
+                            .line_height(px(12.0))
+                            .text_color(rgb(0xB4A0FF))
+                            .child(tag)
+                    })),
+            );
+
+        card = card
+            .child(
+                div()
+                    .w(px(spec.preview_width))
+                    .h(px(spec.preview_height))
+                    .flex_shrink_0()
+                    .bg(rgba(0xFFFFFF0Cu32))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(icon_el),
+            )
+            .child(
+                div()
+                    .w(px(spec.details_width))
+                    .h(px(spec.details_height))
+                    .flex_shrink_0()
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .overflow_hidden()
+                    .child(top_details)
+                    .child(bottom_details),
+            );
+
+        if is_checkbox || is_selected {
             card = card.child(
                 div()
-                    .w(px(16.0))
-                    .h(px(16.0))
-                    .flex_shrink_0()
+                    .absolute()
+                    .top(px(6.0))
+                    .left(px(6.0))
+                    .w(px(20.0))
+                    .h(px(20.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1489,7 +1587,7 @@ impl MainViewState {
                             .bg(if is_selected {
                                 rgba(UiConstants::ACCENT_RGBA)
                             } else {
-                                rgba(0x00000000)
+                                rgba(0x00000044u32)
                             })
                             .child(if is_selected {
                                 div()
@@ -1508,77 +1606,6 @@ impl MainViewState {
             );
         }
 
-        card.child(
-            div()
-                .w(px(badge_box))
-                .h(px(badge_box))
-                .flex_shrink_0()
-                .rounded(px(6.0))
-                .bg(rgba(0xFFFFFF08u32))
-                .flex()
-                .items_center()
-                .justify_center()
-                .overflow_hidden()
-                .child(icon_el),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .max_h(px(card_h - 6.0))
-                .flex_col()
-                .justify_center()
-                .gap(px(2.0))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_start()
-                        .gap(px(6.0))
-                        .overflow_hidden()
-                        .child(if main_state.renaming_index == Some(idx) {
-                            crate::ui::views::helpers::render_inline_rename_single(
-                                &main_state.rename_input,
-                                view.clone(),
-                            )
-                        } else {
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .text_size(px(effective_title_size))
-                                .line_height(px(effective_title_line_h))
-                                .font_weight(FontWeight(600.0))
-                                .text_color(rgba(UiConstants::TEXT_PRIMARY_RGBA))
-                                .line_clamp(3)
-                                .text_ellipsis()
-                                .child(display_label)
-                                .into_any_element()
-                        })
-                        .children(tag_badge.map(|tag| {
-                            div()
-                                .flex_shrink_0()
-                                .px(px(5.0))
-                                .py(px(1.0))
-                                .rounded(px(3.0))
-                                .bg(rgba(0xB4A0FF28u32))
-                                .text_size(px(9.5))
-                                .line_height(px(12.0))
-                                .text_color(rgb(0xB4A0FF))
-                                .child(tag)
-                        })),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .truncate()
-                        .text_size(px(sub_size))
-                        .line_height(px(14.0))
-                        .text_color(rgba(UiConstants::TEXT_SECONDARY_RGBA))
-                        .child(subtitle),
-                ),
-        )
-        .into_any_element()
+        card.into_any_element()
     }
 }

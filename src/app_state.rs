@@ -217,6 +217,10 @@ pub struct AppState {
     pub type_to_select_last_time: Option<std::time::Instant>,
     /// Active floating right-click context menu for any text field
     pub text_context_menu: Option<crate::ui::components::text_input::TextInputContextMenuState>,
+    /// Whether Alt-keytip badges are currently visible
+    pub keytips_visible: bool,
+    /// Temporarily highlighted button `(button_id, started_at)` after keytip activation
+    pub highlighted_button: Option<(String, std::time::Instant)>,
 }
 
 impl AppState {
@@ -304,6 +308,8 @@ impl AppState {
             type_to_select_buffer: String::new(),
             type_to_select_last_time: None,
             text_context_menu: None,
+            keytips_visible: false,
+            highlighted_button: None,
         }
     }
 
@@ -365,6 +371,61 @@ impl AppState {
     pub fn active_file_items(&self) -> Entity<FileItems> {
         self.pane_file_items(self.active_pane_focus())
     }
+
+    /// Returns `true` if `id` matches the active button highlight within the 320 ms window.
+    pub fn is_button_highlighted(&self, id: &str) -> bool {
+        highlight_is_active(
+            self.highlighted_button.as_ref(),
+            id,
+            std::time::Instant::now(),
+        )
+    }
+
+    /// Starts or refreshes the 320 ms activation highlight for `id`.
+    pub fn trigger_button_highlight(&mut self, id: impl Into<String>) {
+        highlight_trigger(&mut self.highlighted_button, id, std::time::Instant::now());
+    }
+
+    /// Clears `highlighted_button` if at least 320 ms have elapsed; returns `true` if cleared.
+    pub fn expire_button_highlight(&mut self) -> bool {
+        highlight_expire(&mut self.highlighted_button, std::time::Instant::now())
+    }
+}
+
+const BUTTON_HIGHLIGHT_DURATION: std::time::Duration = std::time::Duration::from_millis(320);
+
+fn highlight_is_active(
+    highlighted: Option<&(String, std::time::Instant)>,
+    id: &str,
+    now: std::time::Instant,
+) -> bool {
+    matches!(
+        highlighted,
+        Some((btn_id, since))
+            if btn_id == id && now.saturating_duration_since(*since) < BUTTON_HIGHLIGHT_DURATION
+    )
+}
+
+fn highlight_trigger(
+    highlighted: &mut Option<(String, std::time::Instant)>,
+    id: impl Into<String>,
+    now: std::time::Instant,
+) {
+    *highlighted = Some((id.into(), now));
+}
+
+fn highlight_expire(
+    highlighted: &mut Option<(String, std::time::Instant)>,
+    now: std::time::Instant,
+) -> bool {
+    if matches!(
+        highlighted.as_ref(),
+        Some((_, since)) if now.saturating_duration_since(*since) >= BUTTON_HIGHLIGHT_DURATION
+    ) {
+        *highlighted = None;
+        return true;
+    }
+    false
 }
 
 pub struct SidebarDragState {
@@ -396,6 +457,16 @@ pub struct HoverTooltipData {
 pub struct ButtonTooltipData {
     pub text: String,
     pub shortcut: Option<String>,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
+/// Data for rich sidebar tooltips shown on hover (drives, folders, pins)
+#[derive(Debug, Clone)]
+pub struct SidebarTooltipData {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub usage_percent: Option<f32>,
+    pub detail_line: Option<String>,
     pub position: gpui::Point<gpui::Pixels>,
 }
 
@@ -568,6 +639,10 @@ pub struct AppWindow {
     pub button_tooltip: Option<ButtonTooltipData>,
     /// Active button tooltip timer task
     pub button_tooltip_task: Option<Task<()>>,
+    /// Hover tooltip state for sidebar items
+    pub sidebar_tooltip: Option<SidebarTooltipData>,
+    /// Active sidebar tooltip timer task
+    pub sidebar_tooltip_task: Option<Task<()>>,
     /// Lightweight hover label for context-menu toolbar buttons and classic
     /// rows: (text, cursor position). Set on row hover, cleared on leave and
     /// whenever the menu closes.
@@ -667,5 +742,87 @@ mod tests {
             );
             assert!(view.keys().all(|p| p.as_path().parent() == Some(dir.as_path())));
         }
+    }
+
+    #[::core::prelude::rust_2024::test]
+    fn test_button_highlight_trigger_check_and_expire() {
+        use std::time::{Duration, Instant};
+
+        assert_eq!(BUTTON_HIGHLIGHT_DURATION, Duration::from_millis(320));
+
+        let mut highlighted: Option<(String, Instant)> = None;
+        let t0 = Instant::now();
+
+        assert!(!highlight_is_active(highlighted.as_ref(), "back", t0));
+        assert!(!highlight_expire(&mut highlighted, t0));
+
+        highlight_trigger(&mut highlighted, "back", t0);
+        assert!(highlight_is_active(highlighted.as_ref(), "back", t0));
+        assert!(!highlight_is_active(highlighted.as_ref(), "forward", t0));
+
+        // Still active at 319 ms; must not expire early.
+        let before_expiry = t0 + Duration::from_millis(319);
+        assert!(highlight_is_active(
+            highlighted.as_ref(),
+            "back",
+            before_expiry
+        ));
+        assert!(!highlight_expire(&mut highlighted, before_expiry));
+        assert!(highlighted.is_some());
+
+        // Inactive and expires once elapsed >= 320 ms.
+        let at_expiry = t0 + Duration::from_millis(320);
+        assert!(!highlight_is_active(highlighted.as_ref(), "back", at_expiry));
+        assert!(highlight_expire(&mut highlighted, at_expiry));
+        assert!(highlighted.is_none());
+
+        // Subsequent expire is a no-op returning false.
+        assert!(!highlight_expire(
+            &mut highlighted,
+            t0 + Duration::from_millis(500)
+        ));
+    }
+
+    #[::core::prelude::rust_2024::test]
+    fn test_button_highlight_retrigger_replaces_id_and_resets_timer() {
+        use std::time::{Duration, Instant};
+
+        let mut highlighted: Option<(String, Instant)> = None;
+        let t0 = Instant::now();
+        highlight_trigger(&mut highlighted, "nav_back", t0);
+
+        let t1 = t0 + Duration::from_millis(250);
+        highlight_trigger(&mut highlighted, "nav_forward", t1);
+
+        // 350 ms after t0 (would have expired nav_back), only 100 ms after t1.
+        let t2 = t0 + Duration::from_millis(350);
+        assert!(!highlight_is_active(highlighted.as_ref(), "nav_back", t2));
+        assert!(highlight_is_active(highlighted.as_ref(), "nav_forward", t2));
+        assert!(!highlight_expire(&mut highlighted, t2));
+
+        let t3 = t1 + Duration::from_millis(320);
+        assert!(!highlight_is_active(highlighted.as_ref(), "nav_forward", t3));
+        assert!(highlight_expire(&mut highlighted, t3));
+        assert!(highlighted.is_none());
+    }
+
+    #[::core::prelude::rust_2024::test]
+    fn test_sidebar_tooltip_data_construct_and_clone() {
+        let data = SidebarTooltipData {
+            title: "Local Disk (C:)".to_string(),
+            subtitle: Some("NTFS".to_string()),
+            usage_percent: Some(0.75),
+            detail_line: Some("120 GB free of 480 GB".to_string()),
+            position: gpui::point(gpui::px(16.0), gpui::px(96.0)),
+        };
+        let cloned = data.clone();
+        assert_eq!(cloned.title, "Local Disk (C:)");
+        assert_eq!(cloned.subtitle.as_deref(), Some("NTFS"));
+        assert!(cloned.usage_percent.is_some_and(|p| (p - 0.75).abs() < f32::EPSILON));
+        assert_eq!(
+            cloned.detail_line.as_deref(),
+            Some("120 GB free of 480 GB")
+        );
+        assert_eq!(cloned.position, gpui::point(gpui::px(16.0), gpui::px(96.0)));
     }
 }

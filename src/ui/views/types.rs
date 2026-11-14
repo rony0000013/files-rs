@@ -877,6 +877,10 @@ pub struct MainViewState {
     #[serde(skip)]
     pub icon_paths:
         std::collections::HashMap<crate::core::path_util::FilesPath, std::path::PathBuf>,
+    /// Cached Windows Shell icons for Home view drives and quick-access folders
+    #[serde(skip)]
+    pub home_shell_icons:
+        std::collections::HashMap<crate::core::path_util::FilesPath, std::path::PathBuf>,
     /// Drag operation state (runtime-only, not persisted)
     #[serde(skip)]
     pub drag_state: DragState,

@@ -157,12 +157,12 @@ impl MainViewState {
             .flex_row()
             .flex_shrink_0()
             .overflow_hidden()
-            .h(px(r_h))
-            .px(px(8.0))
+            .h(px((r_h - 2.0).max(20.0)))
+            .px(px(12.0))
             .items_center()
             .gap(px(6.0))
             .rounded(px(4.0))
-            .mx(px(4.0))
+            .mx(px(8.0))
             .border(px(1.0))
             .border_color(if is_drop_target {
                 rgba(0x60CDFFFFu32)
@@ -285,8 +285,9 @@ impl MainViewState {
             })
             .child(
                 div()
-                    .w(px(i_size))
-                    .h(px(i_size))
+                    .w(px(i_size + 4.0))
+                    .h(px(i_size + 4.0))
+                    .p(px(2.0))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -295,10 +296,12 @@ impl MainViewState {
                         img(icon_path.clone())
                             .w(px(i_size))
                             .h(px(i_size))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .rounded(px(2.0))
                             .into_any_element()
                     } else {
                         div()
-                            .text_size(px(i_size * 0.72))
+                            .text_size(px(i_size * 0.78))
                             .font_family(UiConstants::FONT_MDL2)
                             .text_color(rgb(fallback_color))
                             .child(fallback_glyph)
@@ -363,11 +366,11 @@ impl MainViewState {
             })
             .unwrap_or_else(|| "Root".to_string());
 
-        // Zoom slider scales all 3 columns (widths, row heights, icon sizes, and font sizes)
-        let zoom = self.zoom_level.clamp(0.0, 1.0);
-        let zoom_scale = 0.80 + zoom * 0.55;
+        // Canonical Files-community ColumnsViewSizeKind metrics + gentle blade scaling
+        let spec = MainViewState::columns_layout_spec(self.zoom_level, self.compact_mode);
+        let zoom_scale = spec.zoom_scale;
         let col1_w = (self.column_widths.miller_col1 * zoom_scale)
-            .clamp(130.0, (pane_w * 0.45).max(200.0))
+            .clamp(150.0, (pane_w * 0.45).max(200.0))
             .round();
         let col2_w = (self.column_widths.miller_col2 * zoom_scale)
             .clamp(160.0, (pane_w * 0.55).max(240.0))
@@ -376,12 +379,11 @@ impl MainViewState {
             .clamp(180.0, pane_w.max(260.0))
             .round();
 
-        let base_r_h = if self.compact_mode { 20.0 } else { 22.0 };
-        let r_h = (base_r_h + zoom * 22.0).round();
-        let i_size = (r_h - 8.0).clamp(14.0, 32.0);
-        let t_size = (11.0 + zoom * 3.0).clamp(10.5, 14.5);
+        let r_h = spec.row_height;
+        let i_size = spec.icon_size;
+        let t_size = spec.text_size;
         let line_h = (t_size * 1.24).ceil();
-        let header_h = (28.0 + zoom * 8.0).round();
+        let header_h = spec.header_height;
 
         let v_up = view.clone();
         let parent_dir_for_up = parent_dir.clone();
@@ -468,11 +470,13 @@ impl MainViewState {
                         let main_state = app_state.state.pane_view(pane_focus);
                         let visible_rc = main_state.visible_items_rc();
                         let icon_paths = &app_state.state.main_view.icon_paths;
-                        let z = main_state.zoom_level.clamp(0.0, 1.0);
-                        let b_rh = if main_state.compact_mode { 20.0 } else { 22.0 };
-                        let row_h = (b_rh + z * 22.0).round();
-                        let icon_sz = (row_h - 8.0).clamp(14.0, 32.0);
-                        let txt_sz = (11.0 + z * 3.0).clamp(10.5, 14.5);
+                        let spec = MainViewState::columns_layout_spec(
+                            main_state.zoom_level,
+                            main_state.compact_mode,
+                        );
+                        let row_h = spec.row_height;
+                        let icon_sz = spec.icon_size;
+                        let txt_sz = spec.text_size;
                         let ln_h = (txt_sz * 1.24).ceil();
                         let hovered_drop = app_state
                             .state
@@ -638,11 +642,13 @@ impl MainViewState {
                                 move |range, _win, cx| {
                                     let app_state = view.read(cx);
                                     let main_state = app_state.state.pane_view(pane_focus);
-                                    let z = main_state.zoom_level.clamp(0.0, 1.0);
-                                    let b_rh = if main_state.compact_mode { 20.0 } else { 22.0 };
-                                    let row_h = (b_rh + z * 22.0).round();
-                                    let icon_sz = (row_h - 8.0).clamp(14.0, 32.0);
-                                    let txt_sz = (11.0 + z * 3.0).clamp(10.5, 14.5);
+                                    let spec = MainViewState::columns_layout_spec(
+                                        main_state.zoom_level,
+                                        main_state.compact_mode,
+                                    );
+                                    let row_h = spec.row_height;
+                                    let icon_sz = spec.icon_size;
+                                    let txt_sz = spec.text_size;
                                     let ln_h = (txt_sz * 1.24).ceil();
                                     let hovered_drop = app_state
                                         .state
@@ -1380,11 +1386,13 @@ impl MainViewState {
                         move |range, _win, cx| {
                             let app_state = view.read(cx);
                             let main_state = app_state.state.pane_view(pane_focus);
-                            let z = main_state.zoom_level.clamp(0.0, 1.0);
-                            let b_rh = if main_state.compact_mode { 20.0 } else { 22.0 };
-                            let row_h = (b_rh + z * 22.0).round();
-                            let icon_sz = (row_h - 8.0).clamp(14.0, 32.0);
-                            let txt_sz = (11.0 + z * 3.0).clamp(10.5, 14.5);
+                            let spec = MainViewState::columns_layout_spec(
+                                main_state.zoom_level,
+                                main_state.compact_mode,
+                            );
+                            let row_h = spec.row_height;
+                            let icon_sz = spec.icon_size;
+                            let txt_sz = spec.text_size;
                             let ln_h = (txt_sz * 1.24).ceil();
                             let hovered_drop = app_state
                                 .state

@@ -290,9 +290,16 @@ impl ThumbnailService {
         // This always requests 256×256 and downscales, so we get the best
         // available source at native resolution before any scaling happens.
         #[cfg(windows)]
-        if let Ok(result) =
-            Self::extract_via_shell_item_factory(windows::core::PCWSTR(wide_path.as_ptr()), cx, cy)
-        {
+        if let Ok(result) = Self::extract_via_shell_item_factory(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            cx,
+            cy,
+            if cx >= 256 {
+                windows::Win32::UI::Shell::SIIGBF_RESIZETOFIT
+            } else {
+                windows::Win32::UI::Shell::SIIGBF_BIGGERSIZEOK
+            },
+        ) {
             // ISIF succeeded — but if it returned a small result (much smaller
             // than target), the image quality will be degraded. Check the actual
             // returned dimensions: if either axis is < 80% of target, the icon
@@ -436,16 +443,11 @@ impl ThumbnailService {
         raw_path: windows::core::PCWSTR,
         cx: u32,
         cy: u32,
+        flags: windows::Win32::UI::Shell::SIIGBF,
     ) -> Result<ThumbnailResult> {
         use windows::Win32::Foundation::SIZE;
-        use windows::Win32::Graphics::Gdi::{
-            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, SelectObject,
-            BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, RGBQUAD,
-        };
-        use windows::Win32::UI::Shell::{
-            IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
-            SIIGBF_RESIZETOFIT,
-        };
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
+        use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName};
 
         // Create IShellItemImageFactory from the file path
         let factory: IShellItemImageFactory = unsafe {
@@ -453,17 +455,10 @@ impl ThumbnailService {
                 .map_err(|e| anyhow!("SHCreateItemFromParsingName failed: {:?}", e))?
         };
 
-        // Request 256×256 using SIIGBF_RESIZETOFIT so Windows WIC scales directly
-        // to <= 256×256 in hardware/SIMD instead of returning oversized 1024px+
-        // bitmaps that require heavy CPU downscaling.
+        // Request target dimensions using caller-supplied SIIGBF flags
         let sz = SIZE {
             cx: cx as i32,
             cy: cy as i32,
-        };
-        let flags = if cx >= 256 {
-            SIIGBF_RESIZETOFIT
-        } else {
-            SIIGBF_BIGGERSIZEOK
         };
 
         let hbitmap: HBITMAP = unsafe {
@@ -476,13 +471,13 @@ impl ThumbnailService {
             return Err(anyhow!("IShellItemImageFactory returned invalid HBITMAP"));
         }
 
-        // Read pixel data from the HBITMAP
-        let (pixel_data, bmp_w, bmp_h) = unsafe { Self::read_hbitmap_pixels(hbitmap) }
-            .ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
-
+        // Read pixel data from the HBITMAP and always release the GDI bitmap handle
+        let pixels_opt = unsafe { Self::read_hbitmap_pixels(hbitmap) };
         unsafe {
             let _ = DeleteObject(hbitmap.into());
-        };
+        }
+        let (pixel_data, bmp_w, bmp_h) =
+            pixels_opt.ok_or_else(|| anyhow!("Failed to read HBITMAP pixels"))?;
 
         // Core quality fix: if we got 256×256 from ISIF, downscale to (cx × cy)
         // with Lanczos3. If it's already exactly (cx × cy), return directly.
@@ -1362,6 +1357,206 @@ impl ThumbnailService {
             }
         }
         let _ = std::fs::remove_file(&tmp_path);
+        false
+    }
+
+    /// Extract an authentic Windows Shell icon for any path (including drive roots
+    /// such as `C:\`, `D:\` and Known Folders such as `Downloads`, `Documents`,
+    /// `Pictures`, `Videos`, `Desktop`, `Music`) without `GetFileAttributesExW` checks.
+    #[cfg(windows)]
+    pub fn extract_shell_icon(&self, path: &FilesPath, size: u32) -> Result<ThumbnailResult> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::{
+            SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SIIGBF_BIGGERSIZEOK,
+            SIIGBF_ICONONLY,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+        if size == 0 {
+            return Err(anyhow!("Icon size must be greater than zero"));
+        }
+
+        struct ComInitGuard(bool);
+        impl Drop for ComInitGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe {
+                        CoUninitialize();
+                    }
+                }
+            }
+        }
+        let _com_guard =
+            ComInitGuard(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() });
+
+        let wide_path: Vec<u16> = {
+            let raw = path.as_path().as_os_str();
+            let s = raw.to_string_lossy();
+            if s.len() == 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
+                format!("{}\\", s)
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect()
+            } else {
+                raw.encode_wide().chain(std::iter::once(0)).collect()
+            }
+        };
+
+        if let Ok(result) = Self::extract_via_shell_item_factory(
+            PCWSTR(wide_path.as_ptr()),
+            size,
+            size,
+            SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+        ) {
+            return Ok(result);
+        }
+
+        let mut shfi: SHFILEINFOW = unsafe { std::mem::zeroed() };
+        let ret = unsafe {
+            SHGetFileInfoW(
+                PCWSTR(wide_path.as_ptr()),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut shfi),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
+
+        if ret == 0 || shfi.hIcon.is_invalid() {
+            if !shfi.hIcon.is_invalid() {
+                unsafe {
+                    let _ = DestroyIcon(shfi.hIcon);
+                }
+            }
+            return Err(anyhow!(
+                "Failed to extract shell icon for {:?}",
+                path.as_path()
+            ));
+        }
+
+        let pixels = unsafe { Self::extract_icon_pixels(shfi.hIcon, size, size) };
+        unsafe {
+            let _ = DestroyIcon(shfi.hIcon);
+        }
+
+        let data = pixels.ok_or_else(|| {
+            anyhow!(
+                "Failed to extract HICON pixel data for {:?}",
+                path.as_path()
+            )
+        })?;
+        let expected_len = (size as usize)
+            .checked_mul(size as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| anyhow!("Icon dimensions overflow: {}x{}", size, size))?;
+        if data.len() < expected_len {
+            return Err(anyhow!(
+                "Extracted shell icon buffer too small: {} < {}",
+                data.len(),
+                expected_len
+            ));
+        }
+
+        Ok(ThumbnailResult {
+            data,
+            width: size,
+            height: size,
+            format: ImageFormat::Bmp,
+        })
+    }
+
+    /// Extract a Windows Shell icon for `path` at `size`×`size` and write it as a PNG
+    /// to `out_png`. Returns `true` if `out_png` already exists or was written cleanly.
+    #[cfg(windows)]
+    pub fn extract_shell_icon_to_png(
+        &self,
+        path: &FilesPath,
+        out_png: &std::path::Path,
+        size: u32,
+    ) -> bool {
+        if out_png.exists() {
+            return true;
+        }
+        if out_png.file_name().is_none() {
+            return false;
+        }
+        if let Some(parent) = out_png.parent() {
+            if !parent.as_os_str().is_empty() && std::fs::create_dir_all(parent).is_err() {
+                return false;
+            }
+        }
+
+        let Ok(res) = self.extract_shell_icon(path, size) else {
+            return false;
+        };
+        if res.width == 0 || res.height == 0 {
+            return false;
+        }
+        let expected_len = match (res.width as usize)
+            .checked_mul(res.height as usize)
+            .and_then(|n| n.checked_mul(4))
+        {
+            Some(n) if res.data.len() >= n => n,
+            _ => return false,
+        };
+
+        let mut rgba = res.data;
+        rgba.truncate(expected_len);
+        for px in rgba.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+
+        let Some(buf) =
+            image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(res.width, res.height, rgba)
+        else {
+            return false;
+        };
+
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_name = format!(
+            ".{}.{}.{}.tmp",
+            out_png
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("icon"),
+            std::process::id(),
+            seq
+        );
+        let tmp_path = out_png.with_file_name(tmp_name);
+
+        if buf
+            .save_with_format(&tmp_path, image::ImageFormat::Png)
+            .is_ok()
+        {
+            if std::fs::rename(&tmp_path, out_png).is_ok() {
+                return true;
+            }
+            if out_png.exists() {
+                let _ = std::fs::remove_file(&tmp_path);
+                return true;
+            }
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+        false
+    }
+
+    #[cfg(not(windows))]
+    pub fn extract_shell_icon(&self, _path: &FilesPath, _size: u32) -> Result<ThumbnailResult> {
+        Err(anyhow!("Shell icon extraction is only supported on Windows"))
+    }
+
+    #[cfg(not(windows))]
+    pub fn extract_shell_icon_to_png(
+        &self,
+        _path: &FilesPath,
+        _out_png: &std::path::Path,
+        _size: u32,
+    ) -> bool {
         false
     }
 }

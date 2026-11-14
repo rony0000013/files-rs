@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use files_rs::app::{AppState, AppWindow};
 use files_rs::config::config::AppConfig;
 use files_rs::config::settings_model::SettingsModel;

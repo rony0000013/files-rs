@@ -62,28 +62,25 @@ pub struct TabState {
 const MAX_HISTORY: usize = 50;
 
 impl TabState {
-    pub fn new(path: FilesPath, view_mode: ViewMode) -> Self {
-        Self {
-            path: path.clone(),
-            view_mode,
-            zoom_level: 0.5,
-            per_view_zoom_levels: HashMap::new(),
-            scroll_offset_px: 0.0,
-            sort: SortState::default(),
-            history_back: VecDeque::with_capacity(MAX_HISTORY),
-            history_forward: VecDeque::with_capacity(MAX_HISTORY),
-            secondary_pane_path: None,
-            secondary_history_back: VecDeque::with_capacity(MAX_HISTORY),
-            secondary_history_forward: VecDeque::with_capacity(MAX_HISTORY),
-            selection: Vec::new(),
-            pinned: false,
-            target: crate::ui::views::types::ViewTarget::Directory(path),
+    /// Resolve the initial `ViewTarget` for a tab path, mapping `"Home"` and empty paths to `ViewTarget::Home`.
+    fn target_for_path(path: &FilesPath) -> crate::ui::views::types::ViewTarget {
+        let cow = path.to_string_lossy();
+        let path_str: &str = &cow;
+        if path_str == "Home" || path_str.is_empty() {
+            crate::ui::views::types::ViewTarget::Home
+        } else {
+            crate::ui::views::types::ViewTarget::Directory(path.clone())
         }
     }
 
+    pub fn new(path: FilesPath, view_mode: ViewMode) -> Self {
+        Self::new_with_zoom(path, view_mode, 0.5)
+    }
+
     pub fn new_with_zoom(path: FilesPath, view_mode: ViewMode, zoom_level: f32) -> Self {
+        let target = Self::target_for_path(&path);
         Self {
-            path: path.clone(),
+            path,
             view_mode,
             zoom_level,
             per_view_zoom_levels: HashMap::new(),
@@ -96,7 +93,7 @@ impl TabState {
             secondary_history_forward: VecDeque::with_capacity(MAX_HISTORY),
             selection: Vec::new(),
             pinned: false,
-            target: crate::ui::views::types::ViewTarget::Directory(path),
+            target,
         }
     }
 
@@ -717,6 +714,30 @@ mod tests {
         assert!(tab.history_forward.is_empty());
         assert!(tab.selection.is_empty());
         assert!(tab.secondary_pane_path.is_none());
+    }
+
+    #[test]
+    fn test_tab_state_new_home_target() {
+        use crate::ui::views::types::ViewTarget;
+
+        let home_tab = TabState::new(FilesPath::new("Home"), ViewMode::List);
+        assert_eq!(home_tab.target, ViewTarget::Home);
+
+        let empty_tab = TabState::new(FilesPath::new(""), ViewMode::List);
+        assert_eq!(empty_tab.target, ViewTarget::Home);
+
+        let zoom_home_tab = TabState::new_with_zoom(FilesPath::new("Home"), ViewMode::Grid, 0.75);
+        assert_eq!(zoom_home_tab.target, ViewTarget::Home);
+
+        let zoom_empty_tab = TabState::new_with_zoom(FilesPath::new(""), ViewMode::Grid, 0.75);
+        assert_eq!(zoom_empty_tab.target, ViewTarget::Home);
+
+        let dir_path = FilesPath::new("/home/user");
+        let dir_tab = TabState::new(dir_path.clone(), ViewMode::List);
+        assert_eq!(dir_tab.target, ViewTarget::Directory(dir_path.clone()));
+
+        let zoom_dir_tab = TabState::new_with_zoom(dir_path.clone(), ViewMode::Grid, 0.75);
+        assert_eq!(zoom_dir_tab.target, ViewTarget::Directory(dir_path));
     }
 
     #[test]

@@ -115,7 +115,11 @@ impl OpenInIDEService {
             None => return false,
         };
 
-        let output = Command::new("where").arg(exe_name).output();
+        use std::os::windows::process::CommandExt;
+        let output = Command::new("where")
+            .arg(exe_name)
+            .creation_flags(0x08000000)
+            .output();
 
         matches!(output, Ok(o) if o.status.success())
     }
